@@ -9,21 +9,43 @@ export interface HoldingWithPrice {
   assetType: AssetType
   quantity: number
   avgBuyPrice: number
+  avgBuyPriceCzk: number | null
   currency: string
   accountId: string
+  accountName: string | null
   currentPrice: number | null
   currentPriceCurrency: string | null
   currentValue: number | null
+  currentValueCzk: number | null
   unrealizedPnl: number | null
+  unrealizedPnlCzk: number | null
   unrealizedPnlPct: number | null
 }
 
 export interface PortfolioSummary {
-  totalValue: number
-  totalCost: number
-  totalUnrealizedPnl: number
+  totalValueCzk: number
+  totalCostCzk: number
+  totalUnrealizedPnlCzk: number
   totalUnrealizedPnlPct: number
+  czkRates: Record<string, number>
   holdings: HoldingWithPrice[]
+  accounts: { id: string; name: string; type: string }[]
+  warnings: { symbol: string; issue: string }[]
+}
+
+export interface AccountCash {
+  accountId: string
+  accountName: string
+  accountType: string
+  color: string | null
+  balances: { currency: string; amount: number; amountCzk: number }[]
+  totalCzk: number
+}
+
+export interface CashSummary {
+  accounts: AccountCash[]
+  totalCashCzk: number
+  czkRates: Record<string, number>
 }
 
 export interface ParsedInvestmentTransaction {

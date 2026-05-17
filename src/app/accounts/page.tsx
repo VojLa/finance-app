@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 
 type Account = {
   id: string
@@ -10,19 +11,7 @@ type Account = {
   color: string | null
 }
 
-const ACCOUNT_TYPES = [
-  { value: "broker", label: "Broker (T212, IBKR...)" },
-  { value: "exchange", label: "Exchange (Anycoin, Binance...)" },
-  { value: "cash", label: "Hotovost" },
-  { value: "crypto_wallet", label: "Crypto peněženka" },
-]
-
-const TYPE_LABELS: Record<string, string> = {
-  broker: "Broker",
-  exchange: "Exchange",
-  cash: "Hotovost",
-  crypto_wallet: "Crypto peněženka",
-}
+type EditForm = { name: string; type: string; currency: string }
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -32,6 +21,11 @@ export default function AccountsPage() {
   const [currency, setCurrency] = useState("EUR")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<EditForm>({ name: "", type: "", currency: "" })
+  const [editLoading, setEditLoading] = useState(false)
+  const [editError, setEditError] = useState("")
 
   async function load() {
     const res = await fetch("/api/accounts")
@@ -58,6 +52,36 @@ export default function AccountsPage() {
       setType("broker")
       setCurrency("EUR")
       setShowForm(false)
+      load()
+    }
+  }
+
+  function startEdit(acc: Account) {
+    setEditingId(acc.id)
+    setEditForm({ name: acc.name, type: acc.type, currency: acc.currency })
+    setEditError("")
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditError("")
+  }
+
+  async function handleEdit(e: React.FormEvent, id: string) {
+    e.preventDefault()
+    setEditLoading(true)
+    setEditError("")
+    const res = await fetch(`/api/accounts?id=${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editForm),
+    })
+    setEditLoading(false)
+    if (!res.ok) {
+      const d = await res.json()
+      setEditError(d.error)
+    } else {
+      setEditingId(null)
       load()
     }
   }
@@ -147,21 +171,87 @@ export default function AccountsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {accounts.map(acc => (
             <div key={acc.id} className="bg-white rounded-xl border border-gray-200 p-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="font-medium text-gray-900">{acc.name}</p>
-                  <p className="text-sm text-gray-500 mt-0.5">
-                    {TYPE_LABELS[acc.type] ?? acc.type} · {acc.currency}
-                  </p>
+              {editingId === acc.id ? (
+                <form onSubmit={e => handleEdit(e, acc.id)} className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Název</label>
+                    <input
+                      value={editForm.name}
+                      onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                      required
+                      className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Typ</label>
+                    <select
+                      value={editForm.type}
+                      onChange={e => setEditForm(f => ({ ...f, type: e.target.value }))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {ACCOUNT_TYPES.map(t => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Měna</label>
+                    <select
+                      value={editForm.currency}
+                      onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="EUR">EUR</option>
+                      <option value="CZK">CZK</option>
+                      <option value="USD">USD</option>
+                    </select>
+                  </div>
+                  {editError && <p className="text-xs text-red-600">{editError}</p>}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="submit"
+                      disabled={editLoading}
+                      className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {editLoading ? "Ukládám..." : "Uložit"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEdit}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100"
+                    >
+                      Zrušit
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="font-medium text-gray-900">{acc.name}</p>
+                    <p className="text-sm text-gray-500 mt-0.5">
+                      {ACCOUNT_TYPE_LABELS[acc.type] ?? acc.type} · {acc.currency}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => startEdit(acc)}
+                      className="text-gray-300 hover:text-blue-500 p-1 rounded transition-colors"
+                      title="Upravit"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleDelete(acc.id)}
+                      className="text-gray-300 hover:text-red-500 p-1 rounded transition-colors text-lg leading-none"
+                      title="Smazat"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => handleDelete(acc.id)}
-                  className="text-gray-300 hover:text-red-500 text-lg leading-none"
-                  title="Smazat"
-                >
-                  ×
-                </button>
-              </div>
+              )}
             </div>
           ))}
         </div>

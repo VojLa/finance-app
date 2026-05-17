@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "npm run seed"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
@@ -24,8 +28,11 @@
   },
   "devDependencies": {
     "@types/node": "25.8.0",
+    "@types/papaparse": "^5.5.2",
     "@types/react": "19.2.14",
     "prisma": "^6.0.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.22.1",
     "typescript": "^5.8.3"
   }
 }

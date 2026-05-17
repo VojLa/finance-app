@@ -32,6 +32,32 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(account, { status: 201 })
 }
 
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions)
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get("id")
+  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
+
+  const account = await prisma.account.findFirst({ where: { id, userId: session.user.id } })
+  if (!account) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
+
+  const { name, type, currency, color } = await req.json()
+
+  const updated = await prisma.account.update({
+    where: { id },
+    data: {
+      ...(name && { name }),
+      ...(type && { type }),
+      ...(currency && { currency }),
+      color: color ?? account.color,
+    },
+  })
+
+  return NextResponse.json(updated)
+}
+
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })

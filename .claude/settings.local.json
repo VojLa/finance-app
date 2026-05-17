@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node \"d:/Programing/finance-app/node_modules/yahoo-finance2/esm/src/index.js\")",
+      "Bash(node --input-type=module -e ' *)"
+    ]
+  }
+}

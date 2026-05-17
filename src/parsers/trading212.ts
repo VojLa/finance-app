@@ -5,6 +5,12 @@ import type { InvestmentType, AssetType } from "@prisma/client"
 const ACTION_MAP: Record<string, InvestmentType> = {
   "Market buy": "buy",
   "Market sell": "sell",
+  "Stop buy": "buy",
+  "Stop sell": "sell",
+  "Limit buy": "buy",
+  "Limit sell": "sell",
+  "Stop loss": "sell",
+  "Take profit": "sell",
   "Deposit": "deposit",
   "Withdrawal": "withdrawal",
   "Dividend (Ordinary)": "dividend",

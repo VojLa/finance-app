@@ -1,13 +1,15 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 
 type Account = { id: string; name: string; type: string }
 type ImportResult = { imported: number; skipped: number } | null
 
 const SOURCES = [
-  { value: "trading212", label: "Trading 212", endpoint: "/api/import/trading212", accepts: "broker" },
-  { value: "anycoin", label: "Anycoin", endpoint: "/api/import/anycoin", accepts: "exchange" },
+  { value: "trading212",    label: "Trading 212",    endpoint: "/api/import/trading212",    accepts: ["broker"] },
+  { value: "anycoin",       label: "Anycoin",         endpoint: "/api/import/anycoin",        accepts: ["exchange"] },
+  { value: "raiffeisenbank", label: "Raiffeisenbank", endpoint: "/api/import/raiffeisenbank", accepts: ["bank"] },
 ]
 
 export default function ImportPage() {
@@ -23,7 +25,14 @@ export default function ImportPage() {
     fetch("/api/accounts").then(r => r.json()).then(setAccounts)
   }, [])
 
-  const filteredAccounts = accounts.filter(a => a.type === source.accepts)
+  const filteredAccounts = accounts.filter(a => source.accepts.includes(a.type))
+
+  function handleSourceChange(s: typeof SOURCES[0]) {
+    setSource(s)
+    setAccountId("")
+    setResult(null)
+    setError("")
+  }
 
   async function handleImport(e: React.FormEvent) {
     e.preventDefault()
@@ -54,14 +63,15 @@ export default function ImportPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <form onSubmit={handleImport} className="space-y-5">
+          {/* Výběr zdroje */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Zdroj</label>
-            <div className="flex gap-3">
+            <div className="flex gap-2 flex-wrap">
               {SOURCES.map(s => (
                 <button
                   key={s.value}
                   type="button"
-                  onClick={() => { setSource(s); setAccountId("") }}
+                  onClick={() => handleSourceChange(s)}
                   className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
                     source.value === s.value
                       ? "bg-blue-600 text-white border-blue-600"
@@ -74,11 +84,13 @@ export default function ImportPage() {
             </div>
           </div>
 
+          {/* Výběr účtu */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Účet</label>
             {filteredAccounts.length === 0 ? (
               <p className="text-sm text-amber-600">
-                Žádný kompatibilní účet. Nejdřív přidej účet na stránce{" "}
+                Žádný kompatibilní účet (typ:{" "}
+                {source.accepts.map(t => ACCOUNT_TYPE_LABELS[t]).join(", ")}). Nejdřív přidej účet na stránce{" "}
                 <a href="/accounts" className="underline">Účty</a>.
               </p>
             ) : (
@@ -96,6 +108,7 @@ export default function ImportPage() {
             )}
           </div>
 
+          {/* Upload souboru */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">CSV soubor</label>
             <input
@@ -124,6 +137,13 @@ export default function ImportPage() {
             {loading ? "Importuji..." : "Importovat"}
           </button>
         </form>
+      </div>
+
+      {/* Nápověda k formátům */}
+      <div className="mt-6 text-xs text-gray-400 space-y-1">
+        <p><strong className="text-gray-500">Trading 212:</strong> Exportovat z app → History → Export CSV</p>
+        <p><strong className="text-gray-500">Anycoin:</strong> Účet → Přehled transakcí → Export</p>
+        <p><strong className="text-gray-500">Raiffeisenbank:</strong> Internetbanking → Pohyby → Export CSV (UTF-8, středník)</p>
       </div>
     </div>
   )

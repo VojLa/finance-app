@@ -34,9 +34,11 @@ export async function POST(req: NextRequest) {
     t => !t.externalId || !existingIds.has(t.externalId)
   )
 
+  let warnings: { symbol: string; quantity: number }[] = []
   if (newTransactions.length > 0) {
     await prisma.investmentTransaction.createMany({ data: newTransactions })
-    await recalculateHoldings(accountId)
+    const result = await recalculateHoldings(accountId)
+    warnings = result.warnings
   }
 
   await prisma.importLog.create({
@@ -52,5 +54,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     imported: newTransactions.length,
     skipped: transactions.length - newTransactions.length,
+    warnings,
   })
 }

@@ -1,7 +1,7 @@
 import { prisma } from "./prisma"
 import type { AssetType } from "@prisma/client"
 
-export async function recalculateHoldings(accountId: string) {
+export async function recalculateHoldings(accountId: string): Promise<{ warnings: { symbol: string; quantity: number }[] }> {
   const buys = await prisma.investmentTransaction.findMany({
     where: { accountId, type: "buy" },
     orderBy: { date: "asc" },
@@ -45,6 +45,11 @@ export async function recalculateHoldings(accountId: string) {
     pos.quantity -= sellQty
   }
 
+  const warnings: { symbol: string; quantity: number }[] = []
+  for (const [symbol, pos] of Object.entries(positions)) {
+    if (pos.quantity < -0.000001) warnings.push({ symbol, quantity: pos.quantity })
+  }
+
   await prisma.$transaction(
     Object.entries(positions)
       .filter(([, pos]) => pos.quantity > 0.000001)
@@ -78,4 +83,6 @@ export async function recalculateHoldings(accountId: string) {
       symbol: { notIn: Object.keys(positions).filter(s => positions[s].quantity > 0.000001) },
     },
   })
+
+  return { warnings }
 }

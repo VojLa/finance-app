@@ -11,8 +11,8 @@ interface Props {
 
 export function AllocationPie({ holdings }: Props) {
   const data = holdings
-    .filter(h => h.currentValue && h.currentValue > 0)
-    .map(h => ({ name: h.symbol, value: h.currentValue! }))
+    .filter(h => h.currentValueCzk && h.currentValueCzk > 0)
+    .map(h => ({ name: h.symbol, value: Math.round(h.currentValueCzk!) }))
 
   if (data.length === 0) return null
 
