@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  passwordHash String?
+  createdAt    DateTime  @default(now())
+  accounts     Account[]
+}
+
+model Account {
+  id                     String                  @id @default(cuid())
+  name                   String
+  type                   AccountType
+  currency               String
+  color                  String?
+  userId                 String
+  user                   User                    @relation(fields: [userId], references: [id])
+  investmentTransactions InvestmentTransaction[]
+  holdings               Holding[]
+  importLogs             ImportLog[]
+  createdAt              DateTime                @default(now())
+}
+
+enum AccountType {
+  broker
+  exchange
+  cash
+  crypto_wallet
+}
+
+model InvestmentTransaction {
+  id                  String        @id @default(cuid())
+  date                DateTime
+  type                InvestmentType
+
+  symbol              String?
+  isin                String?
+  name                String?
+  assetType           AssetType?
+
+  quantity            Float?
+  pricePerUnit        Float?
+  priceCurrency       String?
+
+  totalAmount         Float?
+  totalCurrency       String?
+
+  fee                 Float?
+  feeCurrency         String?
+
+  exchangeRate        Float?
+
+  orderId             String?
+  externalId          String?
+
+  realizedPnl         Float?
+  realizedPnlCurrency String?
+
+  accountId           String
+  account             Account       @relation(fields: [accountId], references: [id])
+  createdAt           DateTime      @default(now())
+}
+
+enum InvestmentType {
+  buy
+  sell
+  deposit
+  withdrawal
+  dividend
+  interest
+  currency_conversion
+  staking_reward
+  airdrop
+  fee
+}
+
+enum AssetType {
+  stock
+  etf
+  crypto
+  commodity
+  other
+}
+
+model Holding {
+  id          String    @id @default(cuid())
+  symbol      String
+  name        String?
+  assetType   AssetType
+  quantity    Float
+  avgBuyPrice Float
+  currency    String
+  accountId   String
+  account     Account   @relation(fields: [accountId], references: [id])
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([symbol, accountId])
+}
+
+model ExchangeRate {
+  id           String     @id @default(cuid())
+  fromCurrency String
+  toCurrency   String
+  rate         Float
+  date         DateTime
+  source       RateSource
+
+  @@unique([fromCurrency, toCurrency, date])
+}
+
+enum RateSource {
+  cnb
+  ecb
+  manual
+}
+
+model ImportLog {
+  id           String       @id @default(cuid())
+  filename     String
+  source       ImportSource
+  rowsImported Int
+  rowsSkipped  Int
+  accountId    String
+  account      Account      @relation(fields: [accountId], references: [id])
+  importedAt   DateTime     @default(now())
+}
+
+enum ImportSource {
+  raiffeisenbank
+  trading212
+  anycoin
+  manual
+}
