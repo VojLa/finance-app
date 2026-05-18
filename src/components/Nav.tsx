@@ -2,15 +2,16 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { signOut, useSession } from "next-auth/react"
+import { useSession } from "next-auth/react"
 
 const links = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/portfolio", label: "Portfolio" },
+  { href: "/dashboard", label: "Přehled" },
   { href: "/transactions", label: "Transakce" },
   { href: "/budget", label: "Rozpočty" },
   { href: "/accounts", label: "Účty" },
+  { href: "/portfolio", label: "Portfolio" },
   { href: "/import", label: "Import" },
+  { href: "/settings", label: "Nastavení" },
 ]
 
 export function Nav() {
@@ -39,15 +40,7 @@ export function Nav() {
           ))}
         </div>
       </div>
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-500">{session.user.email}</span>
-        <button
-          onClick={() => signOut({ callbackUrl: "/login" })}
-          className="text-sm text-gray-500 hover:text-gray-900"
-        >
-          Odhlásit
-        </button>
-      </div>
+      <span className="text-sm text-gray-500">{session.user.email}</span>
     </nav>
   )
 }

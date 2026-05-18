@@ -45,16 +45,44 @@ export default function ImportPage() {
     fd.append("file", file)
     fd.append("accountId", accountId)
 
-    const res = await fetch(source.endpoint, { method: "POST", body: fd })
-    const data = await res.json()
+    try {
+    const res = await fetch(source.endpoint, {
+      method: "POST",
+      body: fd,
+    })
+
+    const text = await res.text()
+
+    let data: any = null
+
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      data = null
+    }
+
     setLoading(false)
 
     if (!res.ok) {
-      setError(data.error || "Import selhal")
-    } else {
-      setResult(data)
-      setFile(null)
+      setError(
+        data?.error ||
+        text ||
+        `Import selhal. Server vrátil status ${res.status}.`
+      )
+      return
     }
+
+    if (!data) {
+      setError("Import endpoint nevrátil žádná JSON data.")
+      return
+    }
+
+    setResult(data)
+    setFile(null)
+  } catch (err) {
+    setLoading(false)
+    setError(err instanceof Error ? err.message : "Import selhal.")
+  }
   }
 
   return (

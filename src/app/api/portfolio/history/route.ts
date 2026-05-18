@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
-import { getCzkRates, toCzk } from "@/lib/rates"
+import { prisma, toNum } from "@/lib/prisma"
+import { getCzkRates, toCzk } from "@/modules/portfolio/rates/service"
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -33,15 +33,13 @@ export async function GET(req: NextRequest) {
 
   const czkRates = await getCzkRates()
 
-  // Seskupit po měsících, kumulativní součet
   const monthlyMap: Record<string, number> = {}
   for (const tx of buys) {
-    const key = tx.date.toISOString().slice(0, 7) // "YYYY-MM"
-    const amountCzk = toCzk(tx.totalAmount ?? 0, tx.totalCurrency ?? "EUR", czkRates)
+    const key = tx.date.toISOString().slice(0, 7)
+    const amountCzk = toCzk(toNum(tx.totalAmount), tx.totalCurrency ?? "EUR", czkRates)
     monthlyMap[key] = (monthlyMap[key] ?? 0) + amountCzk
   }
 
-  // Vyplnit chybějící měsíce a spočítat kumulativní hodnotu
   const months = Object.keys(monthlyMap).sort()
   const firstMonth = months[0]
   const lastMonth = new Date().toISOString().slice(0, 7)

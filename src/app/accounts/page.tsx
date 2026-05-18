@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react"
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from "@/lib/constants"
+import { fmt, fmtCzk } from "@/lib/format"
+import type { AccountCash } from "@/types"
 
 type Account = {
   id: string
@@ -13,8 +15,44 @@ type Account = {
 
 type EditForm = { name: string; type: string; currency: string }
 
+function AccountBalance({ cash, accountCurrency }: { cash: AccountCash | undefined; accountCurrency: string }) {
+  if (!cash || cash.balances.length === 0) {
+    return <p className="text-sm text-gray-400 mt-2">Žádné transakce</p>
+  }
+
+  // Primární zůstatek — nejprve v měně účtu, jinak největší absolutní hodnota
+  const primary =
+    cash.balances.find(b => b.currency === accountCurrency) ??
+    cash.balances[0]
+
+  const isNegative = primary.amount < 0
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <p className={`text-lg font-semibold tabular-nums ${isNegative ? "text-red-600" : "text-gray-900"}`}>
+        {fmt(primary.amount)} {primary.currency}
+      </p>
+      {primary.currency !== "CZK" && (
+        <p className="text-xs text-gray-400 mt-0.5">≈ {fmtCzk(primary.amountCzk)}</p>
+      )}
+      {cash.balances.length > 1 && (
+        <div className="mt-1 space-y-0.5">
+          {cash.balances
+            .filter(b => b.currency !== primary.currency)
+            .map(b => (
+              <p key={b.currency} className="text-xs text-gray-400 tabular-nums">
+                {fmt(b.amount)} {b.currency}
+              </p>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [cashMap, setCashMap] = useState<Record<string, AccountCash>>({})
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState("")
   const [type, setType] = useState("broker")
@@ -28,8 +66,17 @@ export default function AccountsPage() {
   const [editError, setEditError] = useState("")
 
   async function load() {
-    const res = await fetch("/api/accounts")
-    if (res.ok) setAccounts(await res.json())
+    const [accRes, cashRes] = await Promise.all([
+      fetch("/api/accounts"),
+      fetch("/api/accounts/cash"),
+    ])
+    if (accRes.ok) setAccounts(await accRes.json())
+    if (cashRes.ok) {
+      const cashData = await cashRes.json()
+      const map: Record<string, AccountCash> = {}
+      for (const a of cashData.accounts ?? []) map[a.accountId] = a
+      setCashMap(map)
+    }
   }
 
   useEffect(() => { load() }, [])
@@ -226,13 +273,14 @@ export default function AccountsPage() {
                 </form>
               ) : (
                 <div className="flex items-start justify-between">
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900">{acc.name}</p>
                     <p className="text-sm text-gray-500 mt-0.5">
                       {ACCOUNT_TYPE_LABELS[acc.type] ?? acc.type} · {acc.currency}
                     </p>
+                    <AccountBalance cash={cashMap[acc.id]} accountCurrency={acc.currency} />
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 ml-3 shrink-0">
                     <button
                       onClick={() => startEdit(acc)}
                       className="text-gray-300 hover:text-blue-500 p-1 rounded transition-colors"

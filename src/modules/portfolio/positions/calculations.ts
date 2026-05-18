@@ -1,13 +1,9 @@
-import { prisma } from "./prisma"
+import { prisma, toNum } from "@/lib/prisma"
 import type { AssetType } from "@prisma/client"
 
 export async function recalculateHoldings(accountId: string): Promise<{ warnings: { symbol: string; quantity: number }[] }> {
-  const buys = await prisma.investmentTransaction.findMany({
-    where: { accountId, type: "buy" },
-    orderBy: { date: "asc" },
-  })
-  const sells = await prisma.investmentTransaction.findMany({
-    where: { accountId, type: "sell" },
+  const txs = await prisma.investmentTransaction.findMany({
+    where: { accountId, type: { in: ["buy", "sell"] } },
     orderBy: { date: "asc" },
   })
 
@@ -19,8 +15,9 @@ export async function recalculateHoldings(accountId: string): Promise<{ warnings
     name: string | null
   }> = {}
 
-  for (const tx of buys) {
+  for (const tx of txs) {
     if (!tx.symbol) continue
+
     if (!positions[tx.symbol]) {
       positions[tx.symbol] = {
         quantity: 0,
@@ -30,19 +27,19 @@ export async function recalculateHoldings(accountId: string): Promise<{ warnings
         name: tx.name,
       }
     }
-    const qty = tx.quantity ?? 0
-    const price = tx.pricePerUnit ?? 0
-    positions[tx.symbol].quantity += qty
-    positions[tx.symbol].totalCost += qty * price
-  }
 
-  for (const tx of sells) {
-    if (!tx.symbol || !positions[tx.symbol]) continue
     const pos = positions[tx.symbol]
-    const sellQty = tx.quantity ?? 0
-    const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
-    pos.totalCost -= sellQty * avgPrice
-    pos.quantity -= sellQty
+    const qty = toNum(tx.quantity)
+    const price = toNum(tx.pricePerUnit)
+
+    if (tx.type === "buy") {
+      pos.quantity += qty
+      pos.totalCost += qty * price
+    } else if (tx.type === "sell") {
+      const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
+      pos.totalCost -= qty * avgPrice
+      pos.quantity -= qty
+    }
   }
 
   const warnings: { symbol: string; quantity: number }[] = []
@@ -76,7 +73,6 @@ export async function recalculateHoldings(accountId: string): Promise<{ warnings
       )
   )
 
-  // Smazat pozice s nulovým nebo záporným množstvím
   await prisma.holding.deleteMany({
     where: {
       accountId,

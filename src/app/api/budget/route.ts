@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { prisma, toNum, serializePrisma } from "@/lib/prisma"
 
-// GET /api/budget?month=5&year=2026
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -17,7 +16,11 @@ export async function GET(req: NextRequest) {
     include: { items: { include: { category: true } } },
   })
 
-  if (budget && budget.items.length > 0) {
+  if (!budget) return NextResponse.json(null)
+
+  let spentMap: Record<string, number> = {}
+
+  if (budget.items.length > 0) {
     const start = new Date(year, month - 1, 1)
     const end = new Date(year, month, 1)
 
@@ -32,25 +35,29 @@ export async function GET(req: NextRequest) {
       _sum: { amount: true },
     })
 
-    const spentMap = Object.fromEntries(
-      spentRows.map(r => [r.categoryId, r._sum.amount ?? 0])
+    spentMap = Object.fromEntries(
+      spentRows.map(r => [r.categoryId, toNum(r._sum.amount)])
     )
-
-    for (const item of budget.items) {
-      item.spent = spentMap[item.categoryId] ?? 0
-    }
   }
 
-  return NextResponse.json(budget)
+  const result = {
+    ...budget,
+    items: budget.items.map(item => ({
+      ...serializePrisma(item),
+      amount: toNum(item.amount),
+      spent: spentMap[item.categoryId] ?? 0,
+      rolloverAmount: item.rolloverAmount ? toNum(item.rolloverAmount) : null,
+    })),
+  }
+
+  return NextResponse.json(result)
 }
 
-// POST /api/budget — vytvořit/aktualizovat budget pro měsíc
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   const { month, year, items } = await req.json()
-  // items: [{ categoryId, amount }]
 
   const budget = await prisma.budget.upsert({
     where: { month_year_userId: { month, year, userId: session.user.id } },

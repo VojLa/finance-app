@@ -1,4 +1,4 @@
-import { prisma } from "./prisma"
+import { prisma } from "@/lib/prisma"
 
 export async function autoCategorize(accountId: string) {
   const [rules, uncategorized] = await Promise.all([

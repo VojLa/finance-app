@@ -8,13 +8,14 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String?
-  passwordHash String?
-  createdAt    DateTime  @default(now())
-  accounts     Account[]
-  budgets      Budget[]
+  id            String        @id @default(cuid())
+  email         String        @unique
+  name          String?
+  passwordHash  String?
+  createdAt     DateTime      @default(now())
+  accounts      Account[]
+  budgets       Budget[]
+  importBatches ImportBatch[]
 }
 
 model Account {
@@ -28,7 +29,7 @@ model Account {
   investmentTransactions InvestmentTransaction[]
   transactions           Transaction[]
   holdings               Holding[]
-  importLogs             ImportLog[]
+  importBatches          ImportBatch[]
   createdAt              DateTime                @default(now())
 }
 
@@ -43,9 +44,9 @@ enum AccountType {
 model Transaction {
   id             String          @id @default(cuid())
   date           DateTime
-  amount         Float
+  amount         Decimal         @db.Decimal(18, 6)
   currency       String
-  amountCzk      Float?
+  amountCzk      Decimal?        @db.Decimal(18, 6)
   type           TransactionType
   description    String?
   note           String?
@@ -59,19 +60,19 @@ model Transaction {
 }
 
 model Category {
-  id          String         @id @default(cuid())
-  name        String
-  icon        String?
-  color       String?
-  type        CategoryType
-  parentId    String?
-  parent      Category?      @relation("Subcategories", fields: [parentId], references: [id])
-  children    Category[]     @relation("Subcategories")
-  isDefault   Boolean        @default(false)
-  userId      String?
+  id           String         @id @default(cuid())
+  name         String
+  icon         String?
+  color        String?
+  type         CategoryType
+  parentId     String?
+  parent       Category?      @relation("Subcategories", fields: [parentId], references: [id])
+  children     Category[]     @relation("Subcategories")
+  isDefault    Boolean        @default(false)
+  userId       String?
   transactions Transaction[]
-  budgetItems BudgetItem[]
-  rules       CategoryRule[]
+  budgetItems  BudgetItem[]
+  rules        CategoryRule[]
 }
 
 enum CategoryType {
@@ -109,10 +110,10 @@ model Budget {
 
 model BudgetItem {
   id             String   @id @default(cuid())
-  amount         Float
-  spent          Float    @default(0)
+  amount         Decimal  @db.Decimal(18, 6)
+  spent          Decimal  @default(0) @db.Decimal(18, 6)
   currency       String   @default("CZK")
-  rolloverAmount Float?
+  rolloverAmount Decimal? @db.Decimal(18, 6)
   budgetId       String
   budget         Budget   @relation(fields: [budgetId], references: [id], onDelete: Cascade)
   categoryId     String
@@ -126,7 +127,7 @@ enum TransactionType {
 }
 
 model InvestmentTransaction {
-  id                  String        @id @default(cuid())
+  id                  String         @id @default(cuid())
   date                DateTime
   type                InvestmentType
 
@@ -135,27 +136,27 @@ model InvestmentTransaction {
   name                String?
   assetType           AssetType?
 
-  quantity            Float?
-  pricePerUnit        Float?
+  quantity            Decimal?       @db.Decimal(28, 10)
+  pricePerUnit        Decimal?       @db.Decimal(28, 10)
   priceCurrency       String?
 
-  totalAmount         Float?
+  totalAmount         Decimal?       @db.Decimal(28, 10)
   totalCurrency       String?
 
-  fee                 Float?
+  fee                 Decimal?       @db.Decimal(18, 6)
   feeCurrency         String?
 
-  exchangeRate        Float?
+  exchangeRate        Decimal?       @db.Decimal(18, 8)
 
   orderId             String?
   externalId          String?
 
-  realizedPnl         Float?
+  realizedPnl         Decimal?       @db.Decimal(28, 10)
   realizedPnlCurrency String?
 
   accountId           String
-  account             Account       @relation(fields: [accountId], references: [id])
-  createdAt           DateTime      @default(now())
+  account             Account        @relation(fields: [accountId], references: [id])
+  createdAt           DateTime       @default(now())
 }
 
 enum InvestmentType {
@@ -184,8 +185,8 @@ model Holding {
   symbol      String
   name        String?
   assetType   AssetType
-  quantity    Float
-  avgBuyPrice Float
+  quantity    Decimal   @db.Decimal(28, 10)
+  avgBuyPrice Decimal   @db.Decimal(28, 10)
   currency    String
   accountId   String
   account     Account   @relation(fields: [accountId], references: [id])
@@ -198,7 +199,7 @@ model ExchangeRate {
   id           String     @id @default(cuid())
   fromCurrency String
   toCurrency   String
-  rate         Float
+  rate         Decimal    @db.Decimal(18, 8)
   date         DateTime
   source       RateSource
 
@@ -211,15 +212,17 @@ enum RateSource {
   manual
 }
 
-model ImportLog {
-  id           String       @id @default(cuid())
-  filename     String
-  source       ImportSource
-  rowsImported Int
-  rowsSkipped  Int
-  accountId    String
-  account      Account      @relation(fields: [accountId], references: [id])
-  importedAt   DateTime     @default(now())
+model ImportBatch {
+  id        String       @id @default(cuid())
+  userId    String
+  accountId String
+  source    ImportSource
+  filename  String
+  checksum  String       @unique
+  rowCount  Int
+  createdAt DateTime     @default(now())
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }
 
 enum ImportSource {

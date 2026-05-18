@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { prisma, serializePrisma } from "@/lib/prisma"
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl
   const page = Math.max(1, parseInt(searchParams.get("page") ?? "1"))
   const limit = 50
-  const type = searchParams.get("type") // income | expense | transfer
+  const type = searchParams.get("type")
   const categoryId = searchParams.get("categoryId")
   const accountId = searchParams.get("accountId")
   const search = searchParams.get("q")
@@ -44,10 +44,9 @@ export async function GET(req: NextRequest) {
     }),
   ])
 
-  return NextResponse.json({ transactions, total, page, pages: Math.ceil(total / limit) })
+  return NextResponse.json(serializePrisma({ transactions, total, page, pages: Math.ceil(total / limit) }))
 }
 
-// PATCH /api/transactions — přiřadit kategorii k transakci
 export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -70,5 +69,5 @@ export async function PATCH(req: NextRequest) {
     include: { category: true },
   })
 
-  return NextResponse.json(updated)
+  return NextResponse.json(serializePrisma(updated))
 }

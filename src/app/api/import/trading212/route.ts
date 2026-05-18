@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
-import { parseTrading212 } from "@/parsers/trading212"
-import { recalculateHoldings } from "@/lib/portfolio"
+import { importCsv, DuplicateImportError } from "@/modules/imports/import-service"
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -20,40 +19,19 @@ export async function POST(req: NextRequest) {
   const account = await prisma.account.findFirst({ where: { id: accountId, userId: session.user.id } })
   if (!account) return NextResponse.json({ error: "Účet nenalezen" }, { status: 404 })
 
-  const csvText = await file.text()
-  const transactions = parseTrading212(csvText, accountId)
-
-  const existingIds = new Set(
-    (await prisma.investmentTransaction.findMany({
-      where: { accountId, externalId: { not: null } },
-      select: { externalId: true },
-    })).map(t => t.externalId)
-  )
-
-  const newTransactions = transactions.filter(
-    t => !t.externalId || !existingIds.has(t.externalId)
-  )
-
-  let warnings: { symbol: string; quantity: number }[] = []
-  if (newTransactions.length > 0) {
-    await prisma.investmentTransaction.createMany({ data: newTransactions })
-    const result = await recalculateHoldings(accountId)
-    warnings = result.warnings
-  }
-
-  await prisma.importLog.create({
-    data: {
+  try {
+    const result = await importCsv({
+      content: await file.text(),
       filename: file.name,
-      source: "trading212",
-      rowsImported: newTransactions.length,
-      rowsSkipped: transactions.length - newTransactions.length,
       accountId,
-    },
-  })
-
-  return NextResponse.json({
-    imported: newTransactions.length,
-    skipped: transactions.length - newTransactions.length,
-    warnings,
-  })
+      userId: session.user.id,
+      source: "trading212",
+    })
+    return NextResponse.json(result)
+  } catch (e) {
+    if (e instanceof DuplicateImportError) {
+      return NextResponse.json({ error: e.message }, { status: 409 })
+    }
+    throw e
+  }
 }

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
-import { getCzkRates, toCzk } from "@/lib/rates"
+import { prisma, toNum } from "@/lib/prisma"
+import { getCzkRates, toCzk } from "@/modules/portfolio/rates/service"
 import type { CashSummary } from "@/types"
 
 export async function GET() {
@@ -17,7 +17,6 @@ export async function GET() {
     getCzkRates(),
   ])
 
-  // accountId -> currency -> amount
   const cashMap: Record<string, Record<string, number>> = {}
 
   const investmentAccountIds = accounts
@@ -41,6 +40,7 @@ export async function GET() {
       if (tx.totalAmount == null || !tx.totalCurrency) continue
       if (!cashMap[tx.accountId]) cashMap[tx.accountId] = {}
 
+      const amount = toNum(tx.totalAmount)
       let delta: number
       switch (tx.type) {
         case "deposit":
@@ -48,11 +48,11 @@ export async function GET() {
         case "dividend":
         case "interest":
         case "staking_reward":
-          delta = Math.abs(tx.totalAmount)
+          delta = Math.abs(amount)
           break
         case "withdrawal":
         case "buy":
-          delta = -Math.abs(tx.totalAmount)
+          delta = -Math.abs(amount)
           break
         default:
           continue
@@ -74,7 +74,8 @@ export async function GET() {
 
     for (const tx of txs) {
       if (!cashMap[tx.accountId]) cashMap[tx.accountId] = {}
-      const delta = tx.type === "income" ? tx.amount : -tx.amount
+      const amount = toNum(tx.amount)
+      const delta = tx.type === "income" ? amount : -amount
       cashMap[tx.accountId][tx.currency] =
         (cashMap[tx.accountId][tx.currency] ?? 0) + delta
     }
