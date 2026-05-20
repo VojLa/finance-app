@@ -4,13 +4,43 @@ import { useEffect, useState } from "react"
 import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 
 type Account = { id: string; name: string; type: string }
-type ImportResult = { imported: number; skipped: number } | null
+
+type ImportResult = {
+  imported: number
+  skipped: number
+  parsed?: number
+  warnings?: unknown[]
+} | null
+
+type ImportResponse = {
+  imported?: number
+  skipped?: number
+  parsed?: number
+  warnings?: unknown[]
+  error?: string
+}
 
 const SOURCES = [
-  { value: "trading212",    label: "Trading 212",    endpoint: "/api/import/trading212",    accepts: ["broker"] },
-  { value: "anycoin",       label: "Anycoin",         endpoint: "/api/import/anycoin",        accepts: ["exchange"] },
+  { value: "trading212", label: "Trading 212", endpoint: "/api/import/trading212", accepts: ["broker"] },
+  { value: "anycoin", label: "Anycoin", endpoint: "/api/import/anycoin", accepts: ["exchange"] },
   { value: "raiffeisenbank", label: "Raiffeisenbank", endpoint: "/api/import/raiffeisenbank", accepts: ["bank"] },
 ]
+
+async function readImportResponse(res: Response): Promise<ImportResponse> {
+  const text = await res.text()
+
+  if (!text) {
+    return {}
+  }
+
+  try {
+    return JSON.parse(text) as ImportResponse
+  } catch {
+    return {
+      error: text,
+    }
+  }
+}
 
 export default function ImportPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -36,7 +66,9 @@ export default function ImportPage() {
 
   async function handleImport(e: React.FormEvent) {
     e.preventDefault()
+
     if (!file || !accountId) return
+
     setLoading(true)
     setError("")
     setResult(null)
@@ -46,43 +78,30 @@ export default function ImportPage() {
     fd.append("accountId", accountId)
 
     try {
-    const res = await fetch(source.endpoint, {
-      method: "POST",
-      body: fd,
-    })
+      const res = await fetch(source.endpoint, {
+        method: "POST",
+        body: fd,
+      })
 
-    const text = await res.text()
+      const data = await readImportResponse(res)
 
-    let data: any = null
+      if (!res.ok) {
+        setError(data.error || `Import selhal. Server vrátil status ${res.status}.`)
+        return
+      }
 
-    try {
-      data = text ? JSON.parse(text) : null
-    } catch {
-      data = null
+      setResult({
+        imported: data.imported ?? 0,
+        skipped: data.skipped ?? 0,
+        parsed: data.parsed,
+        warnings: data.warnings,
+      })
+      setFile(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import selhal.")
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
-
-    if (!res.ok) {
-      setError(
-        data?.error ||
-        text ||
-        `Import selhal. Server vrátil status ${res.status}.`
-      )
-      return
-    }
-
-    if (!data) {
-      setError("Import endpoint nevrátil žádná JSON data.")
-      return
-    }
-
-    setResult(data)
-    setFile(null)
-  } catch (err) {
-    setLoading(false)
-    setError(err instanceof Error ? err.message : "Import selhal.")
-  }
   }
 
   return (
@@ -91,7 +110,6 @@ export default function ImportPage() {
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <form onSubmit={handleImport} className="space-y-5">
-          {/* Výběr zdroje */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Zdroj</label>
             <div className="flex gap-2 flex-wrap">
@@ -112,7 +130,6 @@ export default function ImportPage() {
             </div>
           </div>
 
-          {/* Výběr účtu */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Účet</label>
             {filteredAccounts.length === 0 ? (
@@ -136,7 +153,6 @@ export default function ImportPage() {
             )}
           </div>
 
-          {/* Upload souboru */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">CSV soubor</label>
             <input
@@ -151,9 +167,14 @@ export default function ImportPage() {
           {error && <p className="text-sm text-red-600">{error}</p>}
 
           {result && (
-            <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800">
-              Importováno: <strong>{result.imported}</strong> transakcí,
-              přeskočeno (duplicity): <strong>{result.skipped}</strong>
+            <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800 space-y-1">
+              <p>
+                Importováno: <strong>{result.imported}</strong> transakcí,
+                přeskočeno (duplicity): <strong>{result.skipped}</strong>
+              </p>
+              {typeof result.parsed === "number" && (
+                <p>Rozpoznáno v CSV: <strong>{result.parsed}</strong> řádků</p>
+              )}
             </div>
           )}
 
@@ -167,11 +188,10 @@ export default function ImportPage() {
         </form>
       </div>
 
-      {/* Nápověda k formátům */}
       <div className="mt-6 text-xs text-gray-400 space-y-1">
         <p><strong className="text-gray-500">Trading 212:</strong> Exportovat z app → History → Export CSV</p>
         <p><strong className="text-gray-500">Anycoin:</strong> Účet → Přehled transakcí → Export</p>
-        <p><strong className="text-gray-500">Raiffeisenbank:</strong> Internetbanking → Pohyby → Export CSV (UTF-8, středník)</p>
+        <p><strong className="text-gray-500">Raiffeisenbank:</strong> Internetbanking → Pohyby / Karty → Export CSV</p>
       </div>
     </div>
   )
