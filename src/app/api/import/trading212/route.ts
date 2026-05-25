@@ -1,81 +1,36 @@
-import { NextRequest, NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { NextResponse } from "next/server"
 
-import { prisma } from "@/lib/prisma"
-import { recalculateHoldings } from "@/lib/portfolio"
-import { parseTrading212 } from "@/imports/trading212/parser"
-import {
-  getImportContext,
-  handleImportError,
-  writeImportLog,
-} from "@/imports/utils/api"
-
-function isString(value: string | null | undefined): value is string {
-  return Boolean(value)
-}
+import { DuplicateImportError, importCsv } from "@/modules/imports"
+import { getImportContext, handleImportError } from "@/imports/utils/api"
 
 export async function POST(req: NextRequest) {
   try {
     const context = await getImportContext(req)
-
-    if (!context.ok) {
-      return context.response
-    }
+    if (!context.ok) return context.response
 
     const csvText = await context.file.text()
-    const transactions = parseTrading212(csvText, context.accountId)
-    const externalIds = transactions.map(row => row.externalId).filter(isString)
-
-    const existingIds =
-      externalIds.length > 0
-        ? new Set(
-            (
-              await prisma.investmentTransaction.findMany({
-                where: {
-                  accountId: context.accountId,
-                  externalId: {
-                    in: externalIds,
-                  },
-                },
-                select: {
-                  externalId: true,
-                },
-              })
-            )
-              .map(row => row.externalId)
-              .filter(isString)
-          )
-        : new Set<string>()
-
-    const newTransactions = transactions.filter(
-      transaction => !transaction.externalId || !existingIds.has(transaction.externalId)
-    )
-
-    let warnings: { symbol: string; quantity: number }[] = []
-
-    if (newTransactions.length > 0) {
-      await prisma.investmentTransaction.createMany({
-        data: newTransactions,
-      })
-
-      const result = await recalculateHoldings(context.accountId)
-      warnings = result.warnings
-    }
-
-    await writeImportLog({
+    const result = await importCsv({
+      content: csvText,
       filename: context.file.name,
-      source: "trading212",
-      rowsImported: newTransactions.length,
-      rowsSkipped: transactions.length - newTransactions.length,
       accountId: context.accountId,
+      userId: context.userId,
+      source: "trading212",
     })
 
     return NextResponse.json({
-      imported: newTransactions.length,
-      skipped: transactions.length - newTransactions.length,
-      parsed: transactions.length,
-      warnings,
+      imported: result.imported,
+      skipped: result.skipped,
+      duplicates: result.duplicates,
+      parsed: result.parsed,
+      rowsTotal: result.rowsTotal,
+      duplicateFile: result.duplicateFile,
+      warnings: result.warnings,
     })
   } catch (error) {
+    if (error instanceof DuplicateImportError) {
+      return NextResponse.json({ error: error.message }, { status: 409 })
+    }
     return handleImportError(error, "Trading 212 import error")
   }
 }

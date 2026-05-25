@@ -20,7 +20,7 @@ export async function autoCategorize(accountId: string) {
           ? (tx.counterparty ?? "").toLowerCase()
           : (tx.description ?? "").toLowerCase()
 
-      if (haystack.includes(rule.keyword.toLowerCase())) {
+      if (haystack.includes(rule.value.toLowerCase())) {
         const catType = rule.category.type
         if (catType === "both" || catType === tx.type) {
           updates.push({ id: tx.id, categoryId: rule.categoryId })
@@ -32,7 +32,7 @@ export async function autoCategorize(accountId: string) {
 
   if (updates.length > 0) {
     await prisma.$transaction(
-      updates.map(u =>
+      updates.map((u) =>
         prisma.transaction.update({ where: { id: u.id }, data: { categoryId: u.categoryId } })
       )
     )

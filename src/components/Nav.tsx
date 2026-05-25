@@ -9,6 +9,7 @@ const links = [
   { href: "/transactions", label: "Transakce" },
   { href: "/budget", label: "Rozpočty" },
   { href: "/accounts", label: "Účty" },
+  { href: "/categories", label: "Kategorie" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/import", label: "Import" },
   { href: "/settings", label: "Nastavení" },
@@ -25,7 +26,7 @@ export function Nav() {
       <div className="flex items-center gap-6">
         <span className="font-semibold text-gray-900">Finance</span>
         <div className="flex gap-1">
-          {links.map(link => (
+          {links.map((link) => (
             <Link
               key={link.href}
               href={link.href}

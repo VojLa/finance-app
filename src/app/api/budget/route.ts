@@ -1,7 +1,9 @@
-import { NextRequest, NextResponse } from "next/server"
+import type { NextRequest } from "next/server"
+import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma, toNum, serializePrisma } from "@/lib/prisma"
+import { prisma } from "@/lib/prisma"
+import { getBudgetProgress, saveMonthlyBudget } from "@/modules/budgets"
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
@@ -10,76 +12,41 @@ export async function GET(req: NextRequest) {
   const now = new Date()
   const month = parseInt(req.nextUrl.searchParams.get("month") ?? String(now.getMonth() + 1))
   const year = parseInt(req.nextUrl.searchParams.get("year") ?? String(now.getFullYear()))
+  const sharedUserId = req.nextUrl.searchParams.get("sharedUserId")
 
-  const budget = await prisma.budget.findUnique({
-    where: { month_year_userId: { month, year, userId: session.user.id } },
-    include: { items: { include: { category: true } } },
-  })
-
-  if (!budget) return NextResponse.json(null)
-
-  let spentMap: Record<string, number> = {}
-
-  if (budget.items.length > 0) {
-    const start = new Date(year, month - 1, 1)
-    const end = new Date(year, month, 1)
-
-    const spentRows = await prisma.transaction.groupBy({
-      by: ["categoryId"],
-      where: {
-        account: { userId: session.user.id },
-        categoryId: { in: budget.items.map(i => i.categoryId) },
-        type: "expense",
-        date: { gte: start, lt: end },
-      },
-      _sum: { amount: true },
+  if (sharedUserId) {
+    const hasAccess = await prisma.accountShare.findFirst({
+      where: { sharedWithId: session.user.id, ownerId: sharedUserId, role: "editor" },
     })
-
-    spentMap = Object.fromEntries(
-      spentRows.map(r => [r.categoryId, toNum(r._sum.amount)])
-    )
+    if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
+    return NextResponse.json(await getBudgetProgress({ userId: sharedUserId, month, year }))
   }
 
-  const result = {
-    ...budget,
-    items: budget.items.map(item => ({
-      ...serializePrisma(item),
-      amount: toNum(item.amount),
-      spent: spentMap[item.categoryId] ?? 0,
-      rolloverAmount: item.rolloverAmount ? toNum(item.rolloverAmount) : null,
-    })),
-  }
-
-  return NextResponse.json(result)
+  return NextResponse.json(await getBudgetProgress({ userId: session.user.id, month, year }))
 }
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const { month, year, items } = await req.json()
+  const { month, year, rollover = false, items = [], sharedUserId } = await req.json()
 
-  const budget = await prisma.budget.upsert({
-    where: { month_year_userId: { month, year, userId: session.user.id } },
-    update: {},
-    create: { month, year, userId: session.user.id },
+  let targetUserId = session.user.id
+  if (sharedUserId) {
+    const hasAccess = await prisma.accountShare.findFirst({
+      where: { sharedWithId: session.user.id, ownerId: sharedUserId, role: "editor" },
+    })
+    if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
+    targetUserId = sharedUserId
+  }
+
+  const budget = await saveMonthlyBudget({
+    userId: targetUserId,
+    month,
+    year,
+    rollover,
+    items,
   })
 
-  await Promise.all(
-    (items ?? []).map((item: { categoryId: string; amount: number }) =>
-      prisma.budgetItem.upsert({
-        where: { id: `${budget.id}-${item.categoryId}` },
-        update: { amount: item.amount },
-        create: {
-          id: `${budget.id}-${item.categoryId}`,
-          amount: item.amount,
-          budgetId: budget.id,
-          categoryId: item.categoryId,
-          currency: "CZK",
-        },
-      })
-    )
-  )
-
-  return NextResponse.json({ ok: true })
+  return NextResponse.json(budget)
 }

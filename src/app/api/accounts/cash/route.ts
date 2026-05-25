@@ -20,18 +20,18 @@ export async function GET() {
   const cashMap: Record<string, Record<string, number>> = {}
 
   const investmentAccountIds = accounts
-    .filter(a => ["broker", "exchange", "crypto_wallet"].includes(a.type))
-    .map(a => a.id)
+    .filter((a) => ["broker", "exchange", "crypto_wallet"].includes(a.type))
+    .map((a) => a.id)
 
-  const bankAccountIds = accounts
-    .filter(a => ["bank", "cash"].includes(a.type))
-    .map(a => a.id)
+  const bankAccountIds = accounts.filter((a) => ["bank", "cash"].includes(a.type)).map((a) => a.id)
 
   if (investmentAccountIds.length > 0) {
     const txs = await prisma.investmentTransaction.findMany({
       where: {
         accountId: { in: investmentAccountIds },
-        type: { in: ["deposit", "withdrawal", "buy", "sell", "dividend", "interest", "staking_reward"] },
+        type: {
+          in: ["deposit", "withdrawal", "buy", "sell", "dividend", "interest", "staking_reward"],
+        },
       },
       select: { accountId: true, type: true, totalAmount: true, totalCurrency: true },
     })
@@ -76,13 +76,12 @@ export async function GET() {
       if (!cashMap[tx.accountId]) cashMap[tx.accountId] = {}
       const amount = toNum(tx.amount)
       const delta = tx.type === "income" ? amount : -amount
-      cashMap[tx.accountId][tx.currency] =
-        (cashMap[tx.accountId][tx.currency] ?? 0) + delta
+      cashMap[tx.accountId][tx.currency] = (cashMap[tx.accountId][tx.currency] ?? 0) + delta
     }
   }
 
   let totalCashCzk = 0
-  const accountResults = accounts.map(account => {
+  const accountResults = accounts.map((account) => {
     const balances = Object.entries(cashMap[account.id] ?? {})
       .filter(([, amount]) => Math.abs(amount) >= 0.01)
       .map(([currency, amount]) => ({
@@ -106,7 +105,7 @@ export async function GET() {
   })
 
   const summary: CashSummary = {
-    accounts: accountResults.filter(a => a.balances.length > 0),
+    accounts: accountResults.filter((a) => a.balances.length > 0),
     totalCashCzk,
     czkRates,
   }

@@ -27,6 +27,7 @@ export interface PortfolioSummary {
   totalCostCzk: number
   totalUnrealizedPnlCzk: number
   totalUnrealizedPnlPct: number
+  totalRealizedPnlCzk: number
   czkRates: Record<string, number>
   holdings: HoldingWithPrice[]
   accounts: { id: string; name: string; type: string }[]

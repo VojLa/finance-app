@@ -3,7 +3,16 @@
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts"
 import type { HoldingWithPrice } from "@/types"
 
-const COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16"]
+const COLORS = [
+  "#3b82f6",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#ec4899",
+  "#06b6d4",
+  "#84cc16",
+]
 
 interface Props {
   holdings: HoldingWithPrice[]
@@ -11,8 +20,8 @@ interface Props {
 
 export function AllocationPie({ holdings }: Props) {
   const data = holdings
-    .filter(h => h.currentValueCzk && h.currentValueCzk > 0)
-    .map(h => ({ name: h.symbol, value: Math.round(h.currentValueCzk!) }))
+    .filter((h) => h.currentValueCzk && h.currentValueCzk > 0)
+    .map((h) => ({ name: h.symbol, value: Math.round(h.currentValueCzk!) }))
 
   if (data.length === 0) return null
 
@@ -32,9 +41,7 @@ export function AllocationPie({ holdings }: Props) {
             <Cell key={i} fill={COLORS[i % COLORS.length]} />
           ))}
         </Pie>
-        <Tooltip
-          formatter={(value: number) => [`${value.toFixed(2)}`, "Hodnota"]}
-        />
+        <Tooltip formatter={(value: number) => [`${value.toFixed(2)}`, "Hodnota"]} />
         <Legend />
       </PieChart>
     </ResponsiveContainer>

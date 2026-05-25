@@ -1,52 +1,62 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import Link from "next/link"
 import { HoldingsTable } from "@/components/portfolio/HoldingsTable"
 import { AllocationPie } from "@/components/charts/AllocationPie"
 import { PortfolioLineChart } from "@/components/charts/PortfolioLineChart"
 import type { PortfolioSummary } from "@/types"
 import { fmtCzk, fmtPct } from "@/lib/format"
 
-interface HistoryPoint {
+interface NetWorthPoint {
   month: string
   label: string
+  cashCzk: number
   investedCzk: number
+  netWorthCzk: number
 }
 
 export default function PortfolioPage() {
   const [data, setData] = useState<PortfolioSummary | null>(null)
-  const [history, setHistory] = useState<HistoryPoint[]>([])
+  const [netWorthHistory, setNetWorthHistory] = useState<NetWorthPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
 
-  const load = useCallback(async (refresh = false) => {
-    const accountParam = selectedAccountId ? `accountId=${selectedAccountId}&` : ""
-    const portfolioUrl = `/api/portfolio?${accountParam}${refresh ? `_t=${Date.now()}` : ""}`.replace(/\?$/, "")
-    const historyUrl = `/api/portfolio/history${selectedAccountId ? `?accountId=${selectedAccountId}` : ""}`
+  const load = useCallback(
+    async (refresh = false) => {
+      const accountParam = selectedAccountId ? `accountId=${selectedAccountId}&` : ""
+      const portfolioUrl =
+        `/api/portfolio?${accountParam}${refresh ? `_t=${Date.now()}` : ""}`.replace(/\?$/, "")
+      const netWorthUrl = `/api/portfolio/networth${selectedAccountId ? `?accountId=${selectedAccountId}` : ""}`
 
-    if (refresh) {
-      setRefreshing(true)
-      await fetch("/api/rates?refresh=true")
-    }
+      if (refresh) {
+        setRefreshing(true)
+        await fetch("/api/rates?refresh=true")
+      }
 
-    const [portfolio, hist] = await Promise.all([
-      fetch(portfolioUrl).then(r => r.json()),
-      fetch(historyUrl).then(r => r.json()),
-    ])
-    setData(portfolio)
-    setHistory(Array.isArray(hist) ? hist : [])
-    setLoading(false)
-    setRefreshing(false)
-  }, [selectedAccountId])
+      const [portfolio, netWorth] = await Promise.all([
+        fetch(portfolioUrl).then((r) => r.json()),
+        fetch(netWorthUrl).then((r) => r.json()),
+      ])
+      setData(portfolio)
+      setNetWorthHistory(Array.isArray(netWorth) ? netWorth : [])
+      setLoading(false)
+      setRefreshing(false)
+    },
+    [selectedAccountId]
+  )
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+  }, [load])
 
   if (loading) {
     return <div className="text-gray-400 py-12 text-center">Načítám portfolio...</div>
   }
 
   const pnlPositive = (data?.totalUnrealizedPnlCzk ?? 0) >= 0
+  const realizedPositive = (data?.totalRealizedPnlCzk ?? 0) >= 0
   const accounts = data?.accounts ?? []
   const warnings = data?.warnings ?? []
 
@@ -54,14 +64,22 @@ export default function PortfolioPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Portfolio</h1>
-        <button
-          onClick={() => load(true)}
-          disabled={refreshing}
-          className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 transition-colors"
-        >
-          <span className={refreshing ? "animate-spin inline-block" : ""}>↻</span>
-          {refreshing ? "Aktualizuji..." : "Aktualizovat ceny"}
-        </button>
+        <div className="flex gap-2">
+          <Link
+            href="/portfolio/add"
+            className="flex items-center gap-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg px-3 py-1.5 transition-colors"
+          >
+            + Přidat transakci
+          </Link>
+          <button
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+          >
+            <span className={refreshing ? "animate-spin inline-block" : ""}>↻</span>
+            {refreshing ? "Aktualizuji..." : "Aktualizovat ceny"}
+          </button>
+        </div>
       </div>
 
       {accounts.length > 1 && (
@@ -76,7 +94,7 @@ export default function PortfolioPage() {
           >
             Vše
           </button>
-          {accounts.map(a => (
+          {accounts.map((a) => (
             <button
               key={a.id}
               onClick={() => setSelectedAccountId(a.id)}
@@ -98,13 +116,15 @@ export default function PortfolioPage() {
           <div>
             <p className="font-medium text-amber-800 text-sm">Upozornění na data portfolia</p>
             {warnings.map((w, i) => (
-              <p key={i} className="text-sm text-amber-700">{w.symbol}: {w.issue}</p>
+              <p key={i} className="text-sm text-amber-700">
+                {w.symbol}: {w.issue}
+              </p>
             ))}
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-sm text-gray-500 mb-1">Celková hodnota</p>
           <p className="text-2xl font-semibold">{fmtCzk(data?.totalValueCzk ?? 0)}</p>
@@ -115,13 +135,27 @@ export default function PortfolioPage() {
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-sm text-gray-500 mb-1">Nerealizovaný P&L</p>
-          <p className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}>
-            {pnlPositive ? "+" : ""}{fmtCzk(data?.totalUnrealizedPnlCzk ?? 0)}
+          <p
+            className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}
+          >
+            {pnlPositive ? "+" : ""}
+            {fmtCzk(data?.totalUnrealizedPnlCzk ?? 0)}
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <p className="text-sm text-gray-500 mb-1">Realizovaný P&L</p>
+          <p
+            className={`text-2xl font-semibold ${realizedPositive ? "text-green-600" : "text-red-600"}`}
+          >
+            {realizedPositive ? "+" : ""}
+            {fmtCzk(data?.totalRealizedPnlCzk ?? 0)}
           </p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-sm text-gray-500 mb-1">Výnos</p>
-          <p className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}>
+          <p
+            className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}
+          >
             {fmtPct(data?.totalUnrealizedPnlPct ?? 0)}
           </p>
         </div>
@@ -129,14 +163,28 @@ export default function PortfolioPage() {
 
       {data?.czkRates && (
         <div className="flex gap-4 text-xs text-gray-400">
-          <span>1 EUR = {data.czkRates["EUR"]?.toLocaleString("cs-CZ", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} Kč</span>
-          <span>1 USD = {data.czkRates["USD"]?.toLocaleString("cs-CZ", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} Kč</span>
+          <span>
+            1 EUR ={" "}
+            {data.czkRates["EUR"]?.toLocaleString("cs-CZ", {
+              minimumFractionDigits: 3,
+              maximumFractionDigits: 3,
+            })}{" "}
+            Kč
+          </span>
+          <span>
+            1 USD ={" "}
+            {data.czkRates["USD"]?.toLocaleString("cs-CZ", {
+              minimumFractionDigits: 3,
+              maximumFractionDigits: 3,
+            })}{" "}
+            Kč
+          </span>
         </div>
       )}
 
-      {history.length > 1 && (
+      {netWorthHistory.length > 1 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <PortfolioLineChart data={history} currentValueCzk={data?.totalValueCzk} />
+          <PortfolioLineChart data={netWorthHistory} currentValueCzk={data?.totalValueCzk} />
         </div>
       )}
 
@@ -153,7 +201,12 @@ export default function PortfolioPage() {
           {(data?.holdings.length ?? 0) > 0 ? (
             <AllocationPie holdings={data!.holdings} />
           ) : (
-            <div className="text-center text-gray-400 py-8">Žádná data</div>
+            <div className="text-center text-gray-400 py-8 text-sm">
+              <p className="mb-3">Žádné pozice</p>
+              <Link href="/portfolio/add" className="text-blue-500 hover:underline">
+                Přidat první transakci →
+              </Link>
+            </div>
           )}
         </div>
       </div>

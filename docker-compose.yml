@@ -1,24 +1,42 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
+    container_name: finance-app-db
     environment:
       POSTGRES_DB: finance_app
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finance_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   app:
-    image: node:20-alpine
-    working_dir: /app
-    command: sh -c "npm install && npm run dev"
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: finance-app-web
+    command: sh -c "npm run db:generate && npm run dev"
     ports:
       - "3000:3000"
     volumes:
       - ./:/app
+      - node_modules:/app/node_modules
+      - next_cache:/app/.next
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: development-secret-change-me
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  node_modules:
+  next_cache:

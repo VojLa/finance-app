@@ -12,7 +12,14 @@ function fmtCzk(n: number | null | undefined) {
 
 function fmtNum(n: number | null | undefined, decimals = 2) {
   if (n === null || n === undefined) return <span className="text-gray-300">—</span>
-  return <span>{n.toLocaleString("cs-CZ", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</span>
+  return (
+    <span>
+      {n.toLocaleString("cs-CZ", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      })}
+    </span>
+  )
 }
 
 function pnlColor(n: number | null) {
@@ -51,10 +58,13 @@ export function HoldingsTable({ holdings, showAccount }: Props) {
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">
-          {holdings.map(h => (
+          {holdings.map((h) => (
             <tr key={h.id} className="hover:bg-gray-50 transition-colors">
               <td className="py-3">
-                <Link href={`/portfolio/${h.symbol}`} className="font-medium text-blue-600 hover:underline">
+                <Link
+                  href={`/portfolio/${h.symbol}`}
+                  className="font-medium text-blue-600 hover:underline"
+                >
                   {h.symbol}
                 </Link>
                 {h.name && <p className="text-xs text-gray-400">{h.name}</p>}
@@ -67,22 +77,35 @@ export function HoldingsTable({ holdings, showAccount }: Props) {
                 {fmtNum(h.avgBuyPrice)} {h.currency}
               </td>
               <td className="py-3 text-right font-mono">
-                {h.currentPrice !== null
-                  ? <span>{fmtNum(h.currentPrice)} {h.currentPriceCurrency}</span>
-                  : <span className="text-gray-300">—</span>}
+                {h.currentPrice !== null ? (
+                  <span>
+                    {fmtNum(h.currentPrice)} {h.currentPriceCurrency}
+                  </span>
+                ) : (
+                  <span className="text-gray-300">—</span>
+                )}
               </td>
               <td className="py-3 text-right font-mono text-gray-500">
-                {h.currentValue !== null
-                  ? <span>{fmtNum(h.currentValue)} {h.currentPriceCurrency}</span>
-                  : <span className="text-gray-300">—</span>}
+                {h.currentValue !== null ? (
+                  <span>
+                    {fmtNum(h.currentValue)} {h.currentPriceCurrency}
+                  </span>
+                ) : (
+                  <span className="text-gray-300">—</span>
+                )}
               </td>
-              <td className="py-3 text-right font-mono font-medium">
-                {fmtCzk(h.currentValueCzk)}
-              </td>
-              <td className={`py-3 text-right font-mono font-medium ${pnlColor(h.unrealizedPnlCzk)}`}>
-                {h.unrealizedPnlCzk !== null
-                  ? <span>{h.unrealizedPnlCzk >= 0 ? "+" : ""}{fmtCzk(h.unrealizedPnlCzk)}</span>
-                  : <span className="text-gray-300">—</span>}
+              <td className="py-3 text-right font-mono font-medium">{fmtCzk(h.currentValueCzk)}</td>
+              <td
+                className={`py-3 text-right font-mono font-medium ${pnlColor(h.unrealizedPnlCzk)}`}
+              >
+                {h.unrealizedPnlCzk !== null ? (
+                  <span>
+                    {h.unrealizedPnlCzk >= 0 ? "+" : ""}
+                    {fmtCzk(h.unrealizedPnlCzk)}
+                  </span>
+                ) : (
+                  <span className="text-gray-300">—</span>
+                )}
               </td>
               <td className={`py-3 text-right font-mono ${pnlColor(h.unrealizedPnlPct)}`}>
                 {h.unrealizedPnlPct !== null

@@ -1,6 +1,9 @@
 export function fmt(n: number | null | undefined, decimals = 2): string {
   if (n === null || n === undefined) return "—"
-  return n.toLocaleString("cs-CZ", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  return n.toLocaleString("cs-CZ", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
 }
 
 export function fmtCzk(n: number | null | undefined): string {
@@ -9,5 +12,9 @@ export function fmtCzk(n: number | null | undefined): string {
 }
 
 export function fmtPct(n: number): string {
-  return (n >= 0 ? "+" : "") + n.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " %"
+  return (
+    (n >= 0 ? "+" : "") +
+    n.toLocaleString("cs-CZ", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+    " %"
+  )
 }

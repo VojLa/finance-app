@@ -7,10 +7,17 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
-  },
-  "prisma": {
-    "seed": "npm run seed"
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:validate": "prisma validate",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
@@ -30,6 +37,12 @@
     "@types/node": "25.8.0",
     "@types/papaparse": "^5.5.2",
     "@types/react": "19.2.14",
+    "@typescript-eslint/eslint-plugin": "^8.59.4",
+    "@typescript-eslint/parser": "^8.59.4",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.30",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3",
     "prisma": "^6.0.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.22.1",

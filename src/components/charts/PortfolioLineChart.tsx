@@ -8,6 +8,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts"
 
@@ -15,6 +16,7 @@ interface DataPoint {
   month: string
   label: string
   investedCzk: number
+  netWorthCzk?: number
 }
 
 interface Props {
@@ -40,13 +42,15 @@ function fmtCzk(n: number) {
 export function PortfolioLineChart({ data, currentValueCzk }: Props) {
   const [range, setRange] = useState<Range>("ALL")
 
+  const hasNetWorth = data.some((d) => d.netWorthCzk !== undefined)
+
   const filtered = useMemo(() => {
     if (range === "ALL") return data
     const cutoff = new Date()
-    const months = RANGES.find(r => r.value === range)!.months!
+    const months = RANGES.find((r) => r.value === range)!.months!
     cutoff.setMonth(cutoff.getMonth() - months)
     const cutoffStr = cutoff.toISOString().slice(0, 7)
-    return data.filter(d => d.month >= cutoffStr)
+    return data.filter((d) => d.month >= cutoffStr)
   }, [data, range])
 
   if (data.length === 0) return null
@@ -56,12 +60,14 @@ export function PortfolioLineChart({ data, currentValueCzk }: Props) {
     currentCzk: i === filtered.length - 1 && currentValueCzk ? currentValueCzk : undefined,
   }))
 
+  const title = hasNetWorth ? "Historický vývoj čisté hodnoty" : "Vývoj investované částky"
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-medium">Vývoj investované částky</h2>
+        <h2 className="text-lg font-medium">{title}</h2>
         <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-          {RANGES.map(r => (
+          {RANGES.map((r) => (
             <button
               key={r.value}
               onClick={() => setRange(r.value)}
@@ -83,6 +89,10 @@ export function PortfolioLineChart({ data, currentValueCzk }: Props) {
               <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
               <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
             </linearGradient>
+            <linearGradient id="netWorthGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#10b981" stopOpacity={0.15} />
+              <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+            </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
           <XAxis
@@ -101,12 +111,17 @@ export function PortfolioLineChart({ data, currentValueCzk }: Props) {
             domain={["auto", "auto"]}
           />
           <Tooltip
-            formatter={(value: number) => [
-              value.toLocaleString("cs-CZ", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " Kč",
+            formatter={(value: number, name: string) => [
+              value.toLocaleString("cs-CZ", {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0,
+              }) + " Kč",
+              name,
             ]}
             labelStyle={{ color: "#1e293b", fontWeight: 500 }}
             contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
           />
+          {hasNetWorth && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
           <Area
             type="monotone"
             dataKey="investedCzk"
@@ -117,6 +132,18 @@ export function PortfolioLineChart({ data, currentValueCzk }: Props) {
             dot={false}
             activeDot={{ r: 4 }}
           />
+          {hasNetWorth && (
+            <Area
+              type="monotone"
+              dataKey="netWorthCzk"
+              name="Čistá hodnota"
+              stroke="#10b981"
+              strokeWidth={2}
+              fill="url(#netWorthGrad)"
+              dot={false}
+              activeDot={{ r: 4 }}
+            />
+          )}
         </AreaChart>
       </ResponsiveContainer>
     </div>
