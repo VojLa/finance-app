@@ -1,6 +1,19 @@
-import type { AccountType, AssetType, InvestmentType, ImportSource } from "@prisma/client"
+import type { AccountType, AssetType, ImportSource } from "@prisma/client"
 
-export type { AccountType, AssetType, InvestmentType, ImportSource }
+export type { AccountType, AssetType, ImportSource }
+
+export type ParsedInvestmentAction =
+  | "buy"
+  | "sell"
+  | "deposit"
+  | "withdrawal"
+  | "dividend"
+  | "interest"
+  | "currency_conversion"
+  | "staking_reward"
+  | "airdrop"
+  | "fee"
+  | "transfer"
 
 export interface HoldingWithPrice {
   id: string
@@ -49,9 +62,9 @@ export interface CashSummary {
   czkRates: Record<string, number>
 }
 
-export interface ParsedInvestmentTransaction {
+export interface ParsedInvestmentEvent {
   date: Date
-  type: InvestmentType
+  type: ParsedInvestmentAction
   symbol?: string | null
   isin?: string | null
   name?: string | null
@@ -63,6 +76,10 @@ export interface ParsedInvestmentTransaction {
   totalCurrency?: string | null
   fee?: number | null
   feeCurrency?: string | null
+  conversionFromAmount?: number | null
+  conversionFromCurrency?: string | null
+  conversionToAmount?: number | null
+  conversionToCurrency?: string | null
   exchangeRate?: number | null
   orderId?: string | null
   externalId?: string | null

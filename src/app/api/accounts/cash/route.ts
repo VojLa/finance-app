@@ -3,15 +3,17 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma, toNum } from "@/lib/prisma"
 import { getCzkRates, toCzk } from "@/modules/portfolio/rates/service"
+import { getAccessibleAccountIds } from "@/lib/accountAccess"
 import type { CashSummary } from "@/types"
 
 export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
+  const accessibleIds = await getAccessibleAccountIds(session.user.id, "viewer")
   const [accounts, czkRates] = await Promise.all([
     prisma.account.findMany({
-      where: { userId: session.user.id },
+      where: { id: { in: accessibleIds } },
       orderBy: { createdAt: "asc" },
     }),
     getCzkRates(),
@@ -23,43 +25,27 @@ export async function GET() {
     .filter((a) => ["broker", "exchange", "crypto_wallet"].includes(a.type))
     .map((a) => a.id)
 
-  const bankAccountIds = accounts.filter((a) => ["bank", "cash"].includes(a.type)).map((a) => a.id)
+  const bankAccountIds = accounts
+    .filter((a) => ["bank", "cash", "savings"].includes(a.type))
+    .map((a) => a.id)
 
   if (investmentAccountIds.length > 0) {
-    const txs = await prisma.investmentTransaction.findMany({
+    const txs = await prisma.investmentMovement.findMany({
       where: {
         accountId: { in: investmentAccountIds },
-        type: {
-          in: ["deposit", "withdrawal", "buy", "sell", "dividend", "interest", "staking_reward"],
-        },
+        kind: { in: ["cash", "fee", "tax"] },
+        event: { deletedAt: null, archivedAt: null },
       },
-      select: { accountId: true, type: true, totalAmount: true, totalCurrency: true },
+      select: { accountId: true, direction: true, quantity: true, currency: true },
     })
 
     for (const tx of txs) {
-      if (tx.totalAmount == null || !tx.totalCurrency) continue
       if (!cashMap[tx.accountId]) cashMap[tx.accountId] = {}
 
-      const amount = toNum(tx.totalAmount)
-      let delta: number
-      switch (tx.type) {
-        case "deposit":
-        case "sell":
-        case "dividend":
-        case "interest":
-        case "staking_reward":
-          delta = Math.abs(amount)
-          break
-        case "withdrawal":
-        case "buy":
-          delta = -Math.abs(amount)
-          break
-        default:
-          continue
-      }
+      const amount = Math.abs(toNum(tx.quantity))
+      const delta = tx.direction === "in" ? amount : -amount
 
-      cashMap[tx.accountId][tx.totalCurrency] =
-        (cashMap[tx.accountId][tx.totalCurrency] ?? 0) + delta
+      cashMap[tx.accountId][tx.currency] = (cashMap[tx.accountId][tx.currency] ?? 0) + delta
     }
   }
 

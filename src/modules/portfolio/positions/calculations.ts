@@ -1,13 +1,28 @@
 import { prisma, toNum } from "@/lib/prisma"
 import type { AssetType } from "@prisma/client"
 
+type LedgerEvent = Awaited<ReturnType<typeof loadLedgerEvents>>[number]
+
+async function loadLedgerEvents(accountId: string) {
+  return prisma.investmentEvent.findMany({
+    where: { accountId, deletedAt: null, archivedAt: null },
+    include: { movements: true },
+    orderBy: { date: "asc" },
+  })
+}
+
+function assetMovement(event: LedgerEvent) {
+  return event.movements.find((movement) => movement.kind === "asset" && movement.sourceSymbol)
+}
+
+function cashMovement(event: LedgerEvent) {
+  return event.movements.find((movement) => movement.kind === "cash")
+}
+
 export async function recalculateHoldings(
   accountId: string
 ): Promise<{ warnings: { symbol: string; quantity: number }[] }> {
-  const txs = await prisma.investmentTransaction.findMany({
-    where: { accountId, type: { in: ["buy", "sell", "deposit", "withdrawal"] } },
-    orderBy: { date: "asc" },
-  })
+  const events = await loadLedgerEvents(accountId)
 
   const positions: Record<
     string,
@@ -17,47 +32,55 @@ export async function recalculateHoldings(
       currency: string
       assetType: AssetType
       name: string | null
+      assetId: string | null
+      realizedPnl: number
+      realizedPnlCurrency: string | null
     }
   > = {}
 
   const realizedPnlUpdates: { id: string; realizedPnl: number; currency: string }[] = []
 
-  for (const tx of txs) {
-    if (!tx.symbol) continue
+  for (const event of events) {
+    const asset = assetMovement(event)
+    if (!asset?.sourceSymbol) continue
 
-    if (!positions[tx.symbol]) {
-      positions[tx.symbol] = {
-        quantity: 0,
-        totalCost: 0,
-        currency: tx.priceCurrency ?? "EUR",
-        assetType: tx.assetType ?? "stock",
-        name: tx.name,
-      }
+    const symbol = asset.sourceSymbol
+    positions[symbol] ||= {
+      quantity: 0,
+      totalCost: 0,
+      currency: asset.valueCurrency ?? asset.currency ?? "EUR",
+      assetType: asset.sourceAssetType ?? "stock",
+      name: event.description,
+      assetId: asset.assetId,
+      realizedPnl: 0,
+      realizedPnlCurrency: asset.valueCurrency ?? null,
     }
 
-    const pos = positions[tx.symbol]
-    const qty = toNum(tx.quantity)
-    const price = toNum(tx.pricePerUnit)
+    const pos = positions[symbol]
+    const qty = toNum(asset.quantity)
+    const cash = cashMovement(event)
+    const cashValue = cash ? toNum(cash.quantity) : toNum(asset.valueAmount)
+    const price = toNum(asset.pricePerUnit) || (qty > 0 ? cashValue / qty : 0)
 
-    if (tx.type === "buy") {
-      pos.quantity += qty
-      pos.totalCost += qty * price
-    } else if (tx.type === "deposit") {
+    if (asset.direction === "in") {
       pos.quantity += qty
       if (price > 0) pos.totalCost += qty * price
-    } else if (tx.type === "sell") {
-      const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
+      continue
+    }
+
+    const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
+    const realizedPnl = (price - avgPrice) * qty
+    pos.realizedPnl += realizedPnl
+    pos.realizedPnlCurrency = asset.valueCurrency ?? pos.currency
+    pos.totalCost -= qty * avgPrice
+    pos.quantity -= qty
+
+    if (event.type === "trade") {
       realizedPnlUpdates.push({
-        id: tx.id,
-        realizedPnl: (price - avgPrice) * qty,
-        currency: tx.priceCurrency ?? pos.currency,
+        id: event.id,
+        realizedPnl,
+        currency: asset.valueCurrency ?? pos.currency,
       })
-      pos.totalCost -= qty * avgPrice
-      pos.quantity -= qty
-    } else if (tx.type === "withdrawal") {
-      const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
-      pos.totalCost -= qty * avgPrice
-      pos.quantity -= qty
     }
   }
 
@@ -79,6 +102,8 @@ export async function recalculateHoldings(
             currency: pos.currency,
             assetType: pos.assetType,
             name: pos.name,
+            assetId: pos.assetId,
+            realizedPnl: pos.realizedPnl,
           },
           create: {
             symbol,
@@ -87,7 +112,9 @@ export async function recalculateHoldings(
             avgBuyPrice: pos.totalCost / pos.quantity,
             currency: pos.currency,
             assetType: pos.assetType,
+            assetId: pos.assetId,
             accountId,
+            realizedPnl: pos.realizedPnl,
           },
         })
       }
@@ -98,7 +125,7 @@ export async function recalculateHoldings(
     })
 
     for (const upd of realizedPnlUpdates) {
-      await tx.investmentTransaction.update({
+      await tx.investmentEvent.update({
         where: { id: upd.id },
         data: { realizedPnl: upd.realizedPnl, realizedPnlCurrency: upd.currency },
       })

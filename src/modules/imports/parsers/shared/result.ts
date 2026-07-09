@@ -23,6 +23,7 @@ export interface ParserContext {
 export interface RowParseOutcome<T> {
   row: T | null
   issue?: ParseIssue
+  issues?: ParseIssue[]
 }
 
 export function createParseResult<T>(
@@ -45,9 +46,8 @@ export function mapParsedRows<T>(
     const outcome = mapRow(rawRow, rowNumber)
 
     if (outcome.row) rows.push(outcome.row)
-    if (outcome.issue) {
-      issues.push({ rowNumber, raw: rawRow, ...outcome.issue })
-    }
+    const rowIssues = outcome.issues ?? (outcome.issue ? [outcome.issue] : [])
+    issues.push(...rowIssues.map((issue) => ({ ...issue, rowNumber, raw: rawRow })))
   })
 
   return createParseResult(rows, rawRows.length, issues)

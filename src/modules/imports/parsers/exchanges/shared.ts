@@ -1,6 +1,6 @@
 export {
   buildStandaloneInvestment as buildStandalone,
-  compactInvestmentTransactions as compactTransactions,
+  compactInvestmentEvents as compactEvents,
   getOrCreateOrder,
   type OrderRows,
   type ParsedInvestmentMovementRow as ParsedRow,

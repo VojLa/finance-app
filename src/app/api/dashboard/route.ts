@@ -9,8 +9,6 @@ import { getBudgetProgress } from "@/modules/budgets"
 const BANK_ACCOUNT_TYPES = new Set(["bank", "cash", "savings"])
 const INVESTMENT_ACCOUNT_TYPES = new Set(["broker", "exchange", "crypto_wallet"])
 const LIABILITY_ACCOUNT_TYPES = new Set(["credit_card", "loan", "mortgage"])
-const INVESTMENT_CASH_IN = new Set(["deposit", "sell", "dividend", "interest", "staking_reward"])
-const INVESTMENT_CASH_OUT = new Set(["withdrawal", "buy"])
 
 function monthStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1)
@@ -25,11 +23,11 @@ function monthLabel(date: Date) {
 }
 
 function transactionAmountCzk(
-  tx: { amount: unknown; amountCzk: unknown; currency: string },
+  tx: { amount: unknown; reportingAmount: unknown; reportingCurrency: string | null; currency: string },
   czkRates: Record<string, number>
 ) {
-  const converted = toNum(tx.amountCzk as never)
-  if (converted) return converted
+  const converted = toNum(tx.reportingAmount as never)
+  if (converted && tx.reportingCurrency === "CZK") return converted
   return toCzk(toNum(tx.amount as never), tx.currency, czkRates)
 }
 
@@ -101,22 +99,22 @@ export async function GET() {
         accountId: true,
         type: true,
         amount: true,
-        amountCzk: true,
+        reportingAmount: true,
+        reportingCurrency: true,
         currency: true,
       },
     }),
-    prisma.investmentTransaction.findMany({
+    prisma.investmentMovement.findMany({
       where: {
         accountId: { in: investmentAccountIds },
-        type: {
-          in: ["deposit", "withdrawal", "buy", "sell", "dividend", "interest", "staking_reward"],
-        },
+        kind: { in: ["cash", "fee", "tax"] },
+        event: { deletedAt: null, archivedAt: null },
       },
       select: {
         accountId: true,
-        type: true,
-        totalAmount: true,
-        totalCurrency: true,
+        direction: true,
+        quantity: true,
+        currency: true,
       },
     }),
     prisma.holding.findMany({
@@ -180,23 +178,17 @@ export async function GET() {
   }
 
   for (const tx of investmentCashTransactions) {
-    if (tx.totalAmount == null || !tx.totalCurrency) continue
     const balance = accountBalanceMap.get(tx.accountId)
     if (!balance) continue
 
-    const amount = Math.abs(toNum(tx.totalAmount))
-    const direction = INVESTMENT_CASH_IN.has(tx.type)
-      ? 1
-      : INVESTMENT_CASH_OUT.has(tx.type)
-        ? -1
-        : 0
-    if (!direction) continue
+    const amount = Math.abs(toNum(tx.quantity))
+    const direction = tx.direction === "in" ? 1 : -1
 
     const signedNative = amount * direction
-    const signedCzk = toCzk(signedNative, tx.totalCurrency, czkRates)
+    const signedCzk = toCzk(signedNative, tx.currency, czkRates)
 
     balance.totalCzk += signedCzk
-    balance.balances[tx.totalCurrency] = (balance.balances[tx.totalCurrency] ?? 0) + signedNative
+    balance.balances[tx.currency] = (balance.balances[tx.currency] ?? 0) + signedNative
   }
 
   const serializedAccountBalances = accountBalances

@@ -68,17 +68,16 @@ function previousMonth(month: number, year: number) {
 
 async function getSpentByCategory(
   userId: string,
-  month: number,
-  year: number,
+  start: Date,
+  end: Date,
   categoryIds: string[]
 ): Promise<Record<string, number>> {
   if (categoryIds.length === 0) return {}
 
-  const { start, end } = monthRange(month, year)
   const spentRows = await prisma.transaction.groupBy({
     by: ["categoryId"],
     where: {
-      account: { userId },
+      account: { members: { some: { userId } } },
       categoryId: { in: categoryIds },
       type: "expense",
       date: { gte: start, lt: end },
@@ -86,7 +85,14 @@ async function getSpentByCategory(
     _sum: { amount: true },
   })
 
-  return Object.fromEntries(spentRows.map((row) => [row.categoryId, toNum(row._sum.amount)]))
+  return Object.fromEntries(spentRows.map((row) => [row.categoryId, toNum(row._sum?.amount)]))
+}
+
+async function findMonthlyBudget(userId: string, month: number, year: number) {
+  const { start, end } = monthRange(month, year)
+  return prisma.budget.findFirst({
+    where: { userId, periodStart: start, periodEnd: end, name: "Monthly budget" },
+  })
 }
 
 async function calculateRolloverAmount(
@@ -96,15 +102,24 @@ async function calculateRolloverAmount(
   year: number
 ): Promise<number> {
   const prev = previousMonth(month, year)
-  const previousBudget = await prisma.budget.findUnique({
-    where: { month_year_userId: { month: prev.month, year: prev.year, userId } },
-    include: { items: true },
+  const { start, end } = monthRange(prev.month, prev.year)
+  const previousBudget = await prisma.budget.findFirst({
+    where: { userId, periodStart: start, periodEnd: end, name: "Monthly budget" },
+    include: {
+      items: {
+        include: {
+          categories: true,
+        },
+      },
+    },
   })
 
-  const previousItem = previousBudget?.items.find((item) => item.categoryId === categoryId)
+  const previousItem = previousBudget?.items.find((item) =>
+    item.categories.some((category) => category.categoryId === categoryId)
+  )
   if (!previousItem) return 0
 
-  const spentMap = await getSpentByCategory(userId, prev.month, prev.year, [categoryId])
+  const spentMap = await getSpentByCategory(userId, start, end, [categoryId])
   const previousLimit = toNum(previousItem.amount) + toNum(previousItem.rolloverAmount)
 
   return previousLimit - (spentMap[categoryId] ?? 0)
@@ -158,13 +173,18 @@ export async function getBudgetProgress({
   month: number
   year: number
 }): Promise<BudgetProgress | null> {
-  const budget = await prisma.budget.findUnique({
-    where: { month_year_userId: { month, year, userId } },
+  const { start, end } = monthRange(month, year)
+  const budget = await prisma.budget.findFirst({
+    where: { userId, periodStart: start, periodEnd: end, name: "Monthly budget" },
     include: {
       items: {
         include: {
-          category: {
-            select: { id: true, name: true, icon: true, color: true },
+          categories: {
+            include: {
+              category: {
+                select: { id: true, name: true, icon: true, color: true },
+              },
+            },
           },
         },
         orderBy: { createdAt: "asc" },
@@ -174,18 +194,18 @@ export async function getBudgetProgress({
 
   if (!budget) return null
 
-  const spentMap = await getSpentByCategory(
-    userId,
-    month,
-    year,
-    budget.items.map((item) => item.categoryId)
+  const categoryIds = budget.items.flatMap((item) =>
+    item.categories.map((category) => category.categoryId)
   )
+  const spentMap = await getSpentByCategory(userId, start, end, categoryIds)
 
   const items: BudgetProgressItem[] = budget.items.map((item) => {
+    const primaryCategory = item.categories[0]?.category
+    const itemCategoryIds = item.categories.map((category) => category.categoryId)
     const amount = toNum(item.amount)
     const rolloverAmount = toNum(item.rolloverAmount)
     const effectiveAmount = amount + rolloverAmount
-    const spent = spentMap[item.categoryId] ?? 0
+    const spent = itemCategoryIds.reduce((sum, categoryId) => sum + (spentMap[categoryId] ?? 0), 0)
     const progressPct = effectiveAmount > 0 ? Math.min(100, (spent / effectiveAmount) * 100) : 0
 
     return {
@@ -198,6 +218,8 @@ export async function getBudgetProgress({
       progressPct,
       isApproaching: effectiveAmount > 0 && spent / effectiveAmount >= BUDGET_APPROACHING_THRESHOLD,
       isOver: spent > effectiveAmount,
+      categoryId: primaryCategory?.id ?? "",
+      category: primaryCategory ?? { id: "", name: item.name ?? "Budget", icon: null, color: null },
     }
   })
 
@@ -212,8 +234,10 @@ export async function getBudgetProgress({
     include: {
       budgetItem: {
         include: {
-          category: {
-            select: { name: true },
+          categories: {
+            include: {
+              category: { select: { id: true, name: true } },
+            },
           },
         },
       },
@@ -228,11 +252,11 @@ export async function getBudgetProgress({
 
   return {
     id: budget.id,
-    month: budget.month,
-    year: budget.year,
+    month,
+    year,
     periodType: budget.periodType,
     currency: budget.currency,
-    rollover: budget.rollover,
+    rollover: budget.rolloverEnabled,
     totalLimit,
     totalBaseLimit,
     totalRollover,
@@ -240,15 +264,18 @@ export async function getBudgetProgress({
     totalRemaining: totalLimit - totalSpent,
     progressPct: totalLimit > 0 ? Math.min(100, (totalSpent / totalLimit) * 100) : 0,
     isOver: totalSpent > totalLimit,
-    alerts: alerts.map((alert) => ({
-      id: alert.id,
-      type: alert.type,
-      categoryId: alert.budgetItemId,
-      categoryName: alert.budgetItem.category.name,
-      threshold: toNum(alert.threshold),
-      triggeredAt: alert.triggeredAt,
-      acknowledgedAt: alert.acknowledgedAt,
-    })),
+    alerts: alerts.map((alert) => {
+      const category = alert.budgetItem.categories[0]?.category
+      return {
+        id: alert.id,
+        type: alert.type,
+        categoryId: category?.id ?? alert.budgetItemId,
+        categoryName: category?.name ?? alert.budgetItem.name ?? "Budget",
+        threshold: toNum(alert.threshold),
+        triggeredAt: alert.triggeredAt,
+        acknowledgedAt: alert.acknowledgedAt,
+      }
+    }),
     items,
   }
 }
@@ -266,11 +293,23 @@ export async function saveMonthlyBudget({
   rollover: boolean
   items: BudgetInputItem[]
 }) {
-  const budget = await prisma.budget.upsert({
-    where: { month_year_userId: { month, year, userId } },
-    update: { rollover },
-    create: { month, year, userId, rollover },
-  })
+  const { start, end } = monthRange(month, year)
+  const existing = await findMonthlyBudget(userId, month, year)
+  const budget = existing
+    ? await prisma.budget.update({
+        where: { id: existing.id },
+        data: { rolloverEnabled: rollover },
+      })
+    : await prisma.budget.create({
+        data: {
+          name: "Monthly budget",
+          periodStart: start,
+          periodEnd: end,
+          periodType: "monthly",
+          userId,
+          rolloverEnabled: rollover,
+        },
+      })
 
   const validItems = items.filter(
     (item) => item.categoryId && Number.isFinite(item.amount) && item.amount > 0
@@ -278,6 +317,7 @@ export async function saveMonthlyBudget({
 
   const rows = await Promise.all(
     validItems.map(async (item) => ({
+      name: null,
       amount: item.amount,
       budgetId: budget.id,
       categoryId: item.categoryId,
@@ -294,8 +334,19 @@ export async function saveMonthlyBudget({
     })
     await tx.budgetItem.deleteMany({ where: { budgetId: budget.id } })
 
-    if (rows.length > 0) {
-      await tx.budgetItem.createMany({ data: rows })
+    for (const row of rows) {
+      await tx.budgetItem.create({
+        data: {
+          name: row.name,
+          amount: row.amount,
+          budgetId: row.budgetId,
+          currency: row.currency,
+          rolloverAmount: row.rolloverAmount,
+          categories: {
+            create: { categoryId: row.categoryId },
+          },
+        },
+      })
     }
   })
 

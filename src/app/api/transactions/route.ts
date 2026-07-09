@@ -134,6 +134,9 @@ export async function DELETE(req: NextRequest) {
   const tx = await prisma.transaction.findFirst({ where: { id, accountId: { in: accountIds } } })
   if (!tx) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
 
-  await prisma.transaction.delete({ where: { id } })
+  await prisma.$transaction([
+    prisma.transactionSplit.deleteMany({ where: { transactionId: id } }),
+    prisma.transaction.delete({ where: { id } }),
+  ])
   return NextResponse.json({ ok: true })
 }

@@ -13,6 +13,13 @@ export class DuplicateImportError extends Error {
   }
 }
 
+function firstParsedDate(rows: Array<{ date?: Date | null }>) {
+  return rows.reduce<Date | null>((first, row) => {
+    if (!row.date) return first
+    return !first || row.date < first ? row.date : first
+  }, null)
+}
+
 export async function importCsv({
   content,
   filename,
@@ -30,11 +37,59 @@ export async function importCsv({
   const definition = getImportDefinition(source)
   const parseResult = definition.parse(content, accountId)
   const rowsTotal = parseResult.rowsTotal
+  const importStartDate = firstParsedDate(parseResult.rows)
 
   const existing = await prisma.importBatch.findFirst({ where: { userId, accountId, checksum } })
   if (existing) {
     const storedProcessed = (existing.rowsImported ?? 0) + (existing.rowsSkipped ?? 0)
     const parsed = storedProcessed > 0 ? storedProcessed : parseResult.rows.length
+
+    if (existing.status === "failed") {
+      await prisma.importBatch.update({
+        where: { id: existing.id },
+        data: { status: "processing", completedAt: null },
+      })
+
+      try {
+        await definition.afterCompleted?.({
+          userId,
+          accountId,
+          importBatchId: existing.id,
+          importStartDate,
+        })
+
+        await prisma.importBatch.update({
+          where: { id: existing.id },
+          data: {
+            rowsTotal,
+            rowsImported: existing.rowsImported ?? 0,
+            rowsSkipped: existing.rowsSkipped ?? 0,
+            status: "completed",
+            completedAt: new Date(),
+          },
+        })
+      } catch (error) {
+        await prisma.importBatch.update({
+          where: { id: existing.id },
+          data: {
+            status: "failed",
+            completedAt: new Date(),
+          },
+        })
+        throw error
+      }
+
+      return {
+        imported: 0,
+        skipped: parsed,
+        duplicates: parsed,
+        parsed,
+        rowsTotal,
+        duplicateFile: true,
+        parseIssues: parseResult.issues,
+        warnings: [],
+      }
+    }
 
     return {
       imported: 0,
@@ -81,7 +136,7 @@ export async function importCsv({
       },
     })
 
-    await definition.afterCompleted?.(userId)
+    await definition.afterCompleted?.({ userId, accountId, importBatchId: batch.id, importStartDate })
 
     return result
   } catch (error) {

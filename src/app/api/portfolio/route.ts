@@ -33,8 +33,13 @@ export async function GET(req: NextRequest) {
   const allHoldings = accounts.flatMap((a) => a.holdings)
   const allAccountIds = accounts.map((a) => a.id)
 
-  const realizedPnlRows = await prisma.investmentTransaction.findMany({
-    where: { accountId: { in: allAccountIds }, realizedPnl: { not: null } },
+  const realizedPnlRows = await prisma.investmentEvent.findMany({
+    where: {
+      accountId: { in: allAccountIds },
+      deletedAt: null,
+      archivedAt: null,
+      realizedPnl: { not: null },
+    },
     select: { realizedPnl: true, realizedPnlCurrency: true },
   })
   const totalRealizedPnlCzk = realizedPnlRows.reduce(
@@ -66,6 +71,7 @@ export async function GET(req: NextRequest) {
 
   let totalCostCzkAcc = 0
   let pricedCostCzkAcc = 0
+  const missingPriceWarnings: { symbol: string; issue: string }[] = []
 
   const holdings: HoldingWithPrice[] = allHoldings.map((h) => {
     const liveData = prices[h.symbol]
@@ -83,6 +89,7 @@ export async function GET(req: NextRequest) {
     const costCzk = toCzk(costInOrigCurrency, h.currency, czkRates)
     totalCostCzkAcc += costCzk
     const avgBuyPriceCzk = toCzk(avgBuy, h.currency, czkRates)
+    const currentValueCzkWithFallback = currentValueCzk ?? costCzk
 
     const unrealizedPnl =
       currentValue !== null && priceCurrency === h.currency
@@ -95,6 +102,11 @@ export async function GET(req: NextRequest) {
 
     if (currentValueCzk !== null) {
       pricedCostCzkAcc += costCzk
+    } else {
+      missingPriceWarnings.push({
+        symbol: h.symbol,
+        issue: "Chybi live cena - pro celkovou hodnotu je docasne pouzita nakupni hodnota",
+      })
     }
 
     return {
@@ -111,7 +123,7 @@ export async function GET(req: NextRequest) {
       currentPrice,
       currentPriceCurrency: priceCurrency,
       currentValue,
-      currentValueCzk,
+      currentValueCzk: currentValueCzkWithFallback,
       unrealizedPnl,
       unrealizedPnlCzk,
       unrealizedPnlPct,
@@ -119,8 +131,12 @@ export async function GET(req: NextRequest) {
   })
 
   const totalValueCzk = holdings.reduce((sum, h) => sum + (h.currentValueCzk ?? 0), 0)
+  const totalPricedValueCzk = holdings.reduce(
+    (sum, h) => (h.unrealizedPnlCzk !== null ? sum + (h.currentValueCzk ?? 0) : sum),
+    0
+  )
   const totalCostCzk = totalCostCzkAcc
-  const totalUnrealizedPnlCzk = totalValueCzk - pricedCostCzkAcc
+  const totalUnrealizedPnlCzk = totalPricedValueCzk - pricedCostCzkAcc
   const totalUnrealizedPnlPct =
     pricedCostCzkAcc > 0 ? (totalUnrealizedPnlCzk / pricedCostCzkAcc) * 100 : 0
 
@@ -128,6 +144,7 @@ export async function GET(req: NextRequest) {
     ...(totalValueCzk < 0
       ? [{ symbol: "portfolio", issue: "Celková hodnota portfolia je záporná — zkontroluj data" }]
       : []),
+    ...missingPriceWarnings,
     ...holdings
       .filter((h) => h.avgBuyPrice < 0)
       .map((h) => ({

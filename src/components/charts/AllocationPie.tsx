@@ -16,12 +16,17 @@ const COLORS = [
 
 interface Props {
   holdings: HoldingWithPrice[]
+  cashCzk?: number
+  includeCash?: boolean
 }
 
-export function AllocationPie({ holdings }: Props) {
-  const data = holdings
-    .filter((h) => h.currentValueCzk && h.currentValueCzk > 0)
-    .map((h) => ({ name: h.symbol, value: Math.round(h.currentValueCzk!) }))
+export function AllocationPie({ holdings, cashCzk = 0, includeCash = false }: Props) {
+  const data = [
+    ...holdings
+      .filter((h) => h.currentValueCzk && h.currentValueCzk > 0)
+      .map((h) => ({ name: h.symbol, value: Math.round(h.currentValueCzk!) })),
+    ...(includeCash && cashCzk > 0 ? [{ name: "Cash", value: Math.round(cashCzk) }] : []),
+  ]
 
   if (data.length === 0) return null
 

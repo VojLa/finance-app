@@ -1,15 +1,23 @@
 import { prisma } from "@/lib/prisma"
 import type { ImportSource } from "@prisma/client"
-import type { ParsedInvestmentTransaction } from "@/types"
+import type { ParsedInvestmentEvent } from "@/types"
 import { autoCategorize } from "@/modules/wallet/transactions/categorize"
+import { createInvestmentEvents } from "@/modules/portfolio/ledger/service"
 import { recalculateHoldings } from "@/modules/portfolio/positions/calculations"
-import { createNetWorthSnapshot, createPortfolioSnapshot } from "@/modules/snapshots"
+import { createDailyAccountSnapshotsFromImport, createNetWorthSnapshot } from "@/modules/snapshots"
 import { parseRaiffeisenbankResult, type RaiffeisenRow } from "./parsers/banks/raiffeisenbank"
 import { parseTrading212Result } from "./parsers/brokers/trading212"
 import { parseAnycoinResult } from "./parsers/exchanges/anycoin"
 import type { ParseResult } from "./parsers/shared/result"
 
-type ImportRow = ParsedInvestmentTransaction | RaiffeisenRow
+type ImportRow = ParsedInvestmentEvent | RaiffeisenRow
+
+interface ImportCompletedContext {
+  userId: string
+  accountId: string
+  importBatchId: string
+  importStartDate?: Date | null
+}
 
 interface ImportDefinition<T extends ImportRow> {
   source: ImportSource
@@ -19,35 +27,31 @@ interface ImportDefinition<T extends ImportRow> {
   postProcess?: (
     accountId: string
   ) => Promise<{ warnings?: { symbol: string; quantity: number }[] } | void>
-  afterCompleted?: (userId: string) => Promise<unknown>
+  afterCompleted?: (context: ImportCompletedContext) => Promise<unknown>
 }
 
 type AnyImportDefinition = ImportDefinition<ImportRow>
 
 function investmentDefinition(
   source: "trading212" | "anycoin",
-  parse: (content: string, accountId: string) => ParseResult<ParsedInvestmentTransaction>
-): ImportDefinition<ParsedInvestmentTransaction> {
+  parse: (content: string, accountId: string) => ParseResult<ParsedInvestmentEvent>
+): ImportDefinition<ParsedInvestmentEvent> {
   return {
     source,
     parse,
     fetchExistingIds: (accountId) =>
-      prisma.investmentTransaction.findMany({
+      prisma.investmentEvent.findMany({
         where: { accountId, externalId: { not: null } },
         select: { externalId: true },
       }),
     saveRows: async (rows, importBatchId) => {
-      await prisma.investmentTransaction.createMany({
-        data: rows.map((transaction) => ({ ...transaction, importBatchId })),
-      })
+      await createInvestmentEvents(rows, { importBatchId, source })
     },
     postProcess: (accountId) => recalculateHoldings(accountId),
-    afterCompleted: (userId) =>
-      createPortfolioSnapshot({
-        userId,
-        source: "import_event",
-        granularity: "minute",
-      }),
+    afterCompleted: async ({ userId, accountId, importBatchId, importStartDate }) => {
+      await createDailyAccountSnapshotsFromImport({ accountId, importBatchId, importStartDate })
+      await createNetWorthSnapshot({ userId })
+    },
   }
 }
 
@@ -78,7 +82,7 @@ export const importDefinitions = {
       })
     },
     postProcess: (accountId: string) => autoCategorize(accountId),
-    afterCompleted: (userId: string) => createNetWorthSnapshot({ userId }),
+    afterCompleted: ({ userId }) => createNetWorthSnapshot({ userId }),
   } satisfies ImportDefinition<RaiffeisenRow>,
   manual: null,
 } as Record<ImportSource, AnyImportDefinition | null>

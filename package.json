@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "next lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -17,7 +19,8 @@
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "prices:backfill": "tsx scripts/backfill-prices.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
@@ -46,6 +49,7 @@
     "prisma": "^6.0.0",
     "ts-node": "^10.9.2",
     "tsx": "^4.22.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.8"
   }
 }

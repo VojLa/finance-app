@@ -1,16 +1,11 @@
 import type { TransactionType } from "@prisma/client"
-import type { CsvRow } from "../shared/csv"
+import { parseCsvRows, type CsvRow } from "../shared/csv"
 import { parseNum } from "../shared/number"
 import { parseCzechDate } from "../shared/date"
-import {
-  parseBankCsvRows,
-  buildDescription,
-  buildFallbackRef,
-  detectTransactionType,
-} from "./shared"
+import { buildDescription, buildFallbackRef, detectTransactionType } from "./shared"
 import { mapParsedRows, type ParseResult, type RowParseOutcome } from "../shared/result"
 
-export interface RaiffeisenRow {
+export interface ParsedTransaction {
   date: Date
   amount: number
   currency: string
@@ -20,6 +15,8 @@ export interface RaiffeisenRow {
   externalId: string
   accountId: string
 }
+
+export type RaiffeisenRow = ParsedTransaction
 
 function isCardStatement(row: CsvRow): boolean {
   return (
@@ -39,7 +36,11 @@ function isAccountStatement(row: CsvRow): boolean {
   )
 }
 
-function parseAccountRow(row: CsvRow, accountId: string, rowIndex: number): RaiffeisenRow | null {
+function parseAccountRow(
+  row: CsvRow,
+  accountId: string,
+  rowIndex: number
+): ParsedTransaction | null {
   const amount = parseNum(row["Zaúčtovaná částka"])
   const date = parseCzechDate(row["Datum provedení"])
   if (amount === null || date === null) return null
@@ -57,7 +58,7 @@ function parseAccountRow(row: CsvRow, accountId: string, rowIndex: number): Raif
   }
 }
 
-function parseCardRow(row: CsvRow, accountId: string, rowIndex: number): RaiffeisenRow | null {
+function parseCardRow(row: CsvRow, accountId: string, rowIndex: number): ParsedTransaction | null {
   const amount = parseNum(row["Zaúčtovaná částka"])
   const date = parseCzechDate(row["Datum transakce"])
   if (amount === null || date === null) return null
@@ -87,7 +88,7 @@ function parseRow(
   row: CsvRow,
   accountId: string,
   rowIndex: number
-): RowParseOutcome<RaiffeisenRow> {
+): RowParseOutcome<ParsedTransaction> {
   const parsed = isCardStatement(row)
     ? parseCardRow(row, accountId, rowIndex)
     : isAccountStatement(row)
@@ -109,12 +110,13 @@ function parseRow(
 export function parseRaiffeisenbankResult(
   csvText: string,
   accountId: string
-): ParseResult<RaiffeisenRow> {
-  return mapParsedRows(parseBankCsvRows(csvText), (row, rowNumber) =>
-    parseRow(row, accountId, rowNumber - 1)
+): ParseResult<ParsedTransaction> {
+  return mapParsedRows(
+    parseCsvRows(csvText, { delimiter: ";", skipEmptyLines: "greedy" }),
+    (row, rowNumber) => parseRow(row, accountId, rowNumber - 1)
   )
 }
 
-export function parseRaiffeisenbank(csvText: string, accountId: string): RaiffeisenRow[] {
+export function parseRaiffeisenbank(csvText: string, accountId: string): ParsedTransaction[] {
   return parseRaiffeisenbankResult(csvText, accountId).rows
 }

@@ -15,8 +15,12 @@ export async function GET(req: NextRequest) {
   const sharedUserId = req.nextUrl.searchParams.get("sharedUserId")
 
   if (sharedUserId) {
-    const hasAccess = await prisma.accountShare.findFirst({
-      where: { sharedWithId: session.user.id, ownerId: sharedUserId, role: "editor" },
+    const hasAccess = await prisma.accountMember.findFirst({
+      where: {
+        userId: session.user.id,
+        role: { in: ["editor", "admin", "owner"] },
+        account: { members: { some: { userId: sharedUserId, role: "owner" } } },
+      },
     })
     if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
     return NextResponse.json(await getBudgetProgress({ userId: sharedUserId, month, year }))
@@ -33,8 +37,12 @@ export async function POST(req: NextRequest) {
 
   let targetUserId = session.user.id
   if (sharedUserId) {
-    const hasAccess = await prisma.accountShare.findFirst({
-      where: { sharedWithId: session.user.id, ownerId: sharedUserId, role: "editor" },
+    const hasAccess = await prisma.accountMember.findFirst({
+      where: {
+        userId: session.user.id,
+        role: { in: ["editor", "admin", "owner"] },
+        account: { members: { some: { userId: sharedUserId, role: "owner" } } },
+      },
     })
     if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
     targetUserId = sharedUserId

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 import { fmt, fmtCzk } from "@/lib/format"
 import type { AccountCash } from "@/types"
@@ -17,7 +17,7 @@ type Account = {
 
 type EditForm = { name: string; type: string; currency: string }
 
-interface AccountShare {
+interface AccountMemberShare {
   id: string
   role: string
   sharedWith: { id: string; email: string; name: string | null }
@@ -71,20 +71,20 @@ function ShareDialog({
   accountName: string
   onClose: () => void
 }) {
-  const [shares, setShares] = useState<AccountShare[]>([])
+  const [shares, setShares] = useState<AccountMemberShare[]>([])
   const [email, setEmail] = useState("")
   const [role, setRole] = useState<"viewer" | "editor">("viewer")
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState("")
 
-  async function loadShares() {
+  const loadShares = useCallback(async () => {
     const res = await fetch(`/api/accounts/${accountId}/shares`)
     if (res.ok) setShares(await res.json())
-  }
+  }, [accountId])
 
   useEffect(() => {
     loadShares()
-  }, [accountId])
+  }, [loadShares])
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()

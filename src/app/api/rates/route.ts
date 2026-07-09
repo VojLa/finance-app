@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { getAccessibleAccountIds } from "@/lib/accountAccess"
 import { getLivePrices, clearPriceCache, getCzkRates } from "@/modules/portfolio/rates/service"
 import { createPortfolioSnapshot } from "@/modules/snapshots"
 
@@ -12,8 +13,9 @@ export async function GET(req: NextRequest) {
 
   const refresh = req.nextUrl.searchParams.get("refresh") === "true"
 
+  const accountIds = await getAccessibleAccountIds(session.user.id, "viewer")
   const accounts = await prisma.account.findMany({
-    where: { userId: session.user.id },
+    where: { id: { in: accountIds } },
     include: { holdings: { select: { symbol: true, assetType: true, currency: true } } },
   })
 

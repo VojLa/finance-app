@@ -72,7 +72,7 @@ export async function DELETE(req: NextRequest) {
   await prisma.$transaction([
     prisma.category.updateMany({ where: { parentId: id }, data: { parentId: null } }),
     prisma.transaction.updateMany({ where: { categoryId: id }, data: { categoryId: null } }),
-    prisma.budgetItem.deleteMany({ where: { categoryId: id } }),
+    prisma.budgetItemCategory.deleteMany({ where: { categoryId: id } }),
     prisma.category.delete({ where: { id } }),
   ])
 

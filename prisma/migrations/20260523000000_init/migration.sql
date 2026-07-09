@@ -2,13 +2,16 @@
 CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateEnum
-CREATE TYPE "ShareRole" AS ENUM ('viewer', 'editor');
+CREATE TYPE "AccountMemberRole" AS ENUM ('owner', 'admin', 'viewer', 'editor');
+
+-- CreateEnum
+CREATE TYPE "AccountRelationType" AS ENUM ('owner', 'joint_owner', 'manager', 'beneficiary', 'collaborator');
+
+-- CreateEnum
+CREATE TYPE "AccountInviteStatus" AS ENUM ('pending', 'accepted', 'revoked', 'expired');
 
 -- CreateEnum
 CREATE TYPE "AccountType" AS ENUM ('bank', 'cash', 'savings', 'broker', 'exchange', 'crypto_wallet', 'credit_card', 'loan', 'mortgage');
-
--- CreateEnum
-CREATE TYPE "AccountOwnershipType" AS ENUM ('single_owner', 'joint_owner', 'child_managed');
 
 -- CreateEnum
 CREATE TYPE "TransactionType" AS ENUM ('income', 'expense', 'transfer');
@@ -44,7 +47,13 @@ CREATE TYPE "AssetAliasProvider" AS ENUM ('coingecko', 'yahoo_finance', 'stooq',
 CREATE TYPE "PriceSource" AS ENUM ('coingecko', 'yahoo_finance', 'stooq', 'manual', 'broker', 'exchange');
 
 -- CreateEnum
-CREATE TYPE "InvestmentType" AS ENUM ('buy', 'sell', 'deposit', 'withdrawal', 'dividend', 'interest', 'currency_conversion', 'staking_reward', 'airdrop', 'fee', 'transfer');
+CREATE TYPE "InvestmentEventType" AS ENUM ('trade', 'cash_deposit', 'cash_withdrawal', 'dividend', 'interest', 'currency_conversion', 'asset_transfer', 'fee', 'staking_reward', 'airdrop', 'adjustment');
+
+-- CreateEnum
+CREATE TYPE "InvestmentMovementKind" AS ENUM ('asset', 'cash', 'fee', 'tax');
+
+-- CreateEnum
+CREATE TYPE "MovementDirection" AS ENUM ('in', 'out');
 
 -- CreateEnum
 CREATE TYPE "AssetType" AS ENUM ('stock', 'etf', 'crypto', 'commodity', 'cash', 'bond', 'other');
@@ -65,13 +74,13 @@ CREATE TYPE "ImportRowStatus" AS ENUM ('pending', 'imported', 'skipped', 'duplic
 CREATE TYPE "ImportLogLevel" AS ENUM ('info', 'warning', 'error');
 
 -- CreateEnum
-CREATE TYPE "ImportLogEvent" AS ENUM ('started', 'parse_error', 'validation_failed', 'dedup_skipped', 'holdings_recalculated', 'completed', 'failed');
+CREATE TYPE "ImportLogEvent" AS ENUM ('started', 'parse_error', 'validation_failed', 'dedup_skipped', 'holdings_recalculated', 'snapshots_recalculated', 'snapshot_validation_failed', 'completed', 'failed');
 
 -- CreateEnum
 CREATE TYPE "SnapshotGranularity" AS ENUM ('minute', 'hour', 'day', 'week', 'month');
 
 -- CreateEnum
-CREATE TYPE "PortfolioSnapshotSource" AS ENUM ('import_event', 'price_refresh', 'holdings_recalculation', 'scheduled', 'manual_recalculation');
+CREATE TYPE "SnapshotSource" AS ENUM ('import_event', 'price_refresh', 'holdings_recalculation', 'scheduled', 'manual_recalculation');
 
 -- CreateTable
 CREATE TABLE "User" (
@@ -93,9 +102,8 @@ CREATE TABLE "Account" (
     "type" "AccountType" NOT NULL,
     "currency" TEXT NOT NULL,
     "color" TEXT,
-    "ownershipType" "AccountOwnershipType" NOT NULL DEFAULT 'single_owner',
     "isArchived" BOOLEAN NOT NULL DEFAULT false,
-    "userId" TEXT NOT NULL,
+    "archivedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -103,15 +111,37 @@ CREATE TABLE "Account" (
 );
 
 -- CreateTable
-CREATE TABLE "AccountShare" (
+CREATE TABLE "AccountMember" (
     "id" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
-    "ownerId" TEXT NOT NULL,
-    "sharedWithId" TEXT NOT NULL,
-    "role" "ShareRole" NOT NULL DEFAULT 'viewer',
+    "userId" TEXT NOT NULL,
+    "role" "AccountMemberRole" NOT NULL DEFAULT 'viewer',
+    "relationType" "AccountRelationType" NOT NULL DEFAULT 'owner',
+    "invitedById" TEXT,
+    "acceptedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "AccountShare_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "AccountMember_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AccountInvite" (
+    "id" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "inviterId" TEXT NOT NULL,
+    "acceptedById" TEXT,
+    "email" TEXT NOT NULL,
+    "role" "AccountMemberRole" NOT NULL DEFAULT 'viewer',
+    "status" "AccountInviteStatus" NOT NULL DEFAULT 'pending',
+    "tokenHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "acceptedAt" TIMESTAMP(3),
+    "revokedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AccountInvite_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -121,7 +151,8 @@ CREATE TABLE "Transaction" (
     "bookingDate" TIMESTAMP(3),
     "amount" DECIMAL(18,6) NOT NULL,
     "currency" TEXT NOT NULL,
-    "amountCzk" DECIMAL(18,6),
+    "reportingAmount" DECIMAL(18,6),
+    "reportingCurrency" TEXT,
     "type" "TransactionType" NOT NULL,
     "classification" "TransactionClassification",
     "description" TEXT,
@@ -129,6 +160,8 @@ CREATE TABLE "Transaction" (
     "counterparty" TEXT,
     "externalId" TEXT,
     "isReviewed" BOOLEAN NOT NULL DEFAULT false,
+    "archivedAt" TIMESTAMP(3),
+    "deletedAt" TIMESTAMP(3),
     "categoryId" TEXT,
     "accountId" TEXT NOT NULL,
     "importBatchId" TEXT,
@@ -146,6 +179,20 @@ CREATE TABLE "TransactionPair" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "TransactionPair_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "TransactionSplit" (
+    "id" TEXT NOT NULL,
+    "transactionId" TEXT NOT NULL,
+    "categoryId" TEXT,
+    "amount" DECIMAL(18,6) NOT NULL,
+    "currency" TEXT NOT NULL,
+    "note" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "TransactionSplit_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -210,11 +257,12 @@ CREATE TABLE "CategoryRule" (
 -- CreateTable
 CREATE TABLE "Budget" (
     "id" TEXT NOT NULL,
-    "month" INTEGER NOT NULL,
-    "year" INTEGER NOT NULL,
+    "name" TEXT NOT NULL,
+    "periodStart" TIMESTAMP(3) NOT NULL,
+    "periodEnd" TIMESTAMP(3) NOT NULL,
     "periodType" "BudgetPeriodType" NOT NULL DEFAULT 'monthly',
     "currency" TEXT NOT NULL DEFAULT 'CZK',
-    "rollover" BOOLEAN NOT NULL DEFAULT false,
+    "rolloverEnabled" BOOLEAN NOT NULL DEFAULT false,
     "userId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -225,15 +273,35 @@ CREATE TABLE "Budget" (
 -- CreateTable
 CREATE TABLE "BudgetItem" (
     "id" TEXT NOT NULL,
+    "name" TEXT,
     "amount" DECIMAL(18,6) NOT NULL,
     "currency" TEXT NOT NULL DEFAULT 'CZK',
     "rolloverAmount" DECIMAL(18,6),
     "budgetId" TEXT NOT NULL,
-    "categoryId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "BudgetItem_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BudgetItemCategory" (
+    "id" TEXT NOT NULL,
+    "budgetItemId" TEXT NOT NULL,
+    "categoryId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "BudgetItemCategory_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BudgetAccount" (
+    "id" TEXT NOT NULL,
+    "budgetId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "BudgetAccount_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -264,6 +332,24 @@ CREATE TABLE "Asset" (
 );
 
 -- CreateTable
+CREATE TABLE "AssetListing" (
+    "id" TEXT NOT NULL,
+    "assetId" TEXT NOT NULL,
+    "symbol" TEXT NOT NULL,
+    "exchange" TEXT,
+    "mic" TEXT,
+    "currency" TEXT NOT NULL,
+    "country" TEXT,
+    "provider" "PriceSource",
+    "providerSymbol" TEXT,
+    "isPrimary" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AssetListing_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "AssetAlias" (
     "id" TEXT NOT NULL,
     "assetId" TEXT NOT NULL,
@@ -278,6 +364,7 @@ CREATE TABLE "AssetAlias" (
 CREATE TABLE "PriceSnapshot" (
     "id" TEXT NOT NULL,
     "assetId" TEXT NOT NULL,
+    "listingId" TEXT,
     "price" DECIMAL(28,10) NOT NULL,
     "currency" TEXT NOT NULL,
     "source" "PriceSource" NOT NULL,
@@ -288,33 +375,46 @@ CREATE TABLE "PriceSnapshot" (
 );
 
 -- CreateTable
-CREATE TABLE "InvestmentTransaction" (
+CREATE TABLE "InvestmentEvent" (
     "id" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "type" "InvestmentEventType" NOT NULL,
     "date" TIMESTAMP(3) NOT NULL,
-    "type" "InvestmentType" NOT NULL,
-    "assetId" TEXT,
-    "symbol" TEXT,
-    "isin" TEXT,
-    "name" TEXT,
-    "assetType" "AssetType",
-    "quantity" DECIMAL(28,10),
-    "pricePerUnit" DECIMAL(28,10),
-    "priceCurrency" TEXT,
-    "totalAmount" DECIMAL(28,10),
-    "totalCurrency" TEXT,
-    "fee" DECIMAL(18,6),
-    "feeCurrency" TEXT,
-    "exchangeRate" DECIMAL(18,8),
-    "orderId" TEXT,
+    "source" "ImportSource",
     "externalId" TEXT,
+    "orderId" TEXT,
+    "description" TEXT,
     "realizedPnl" DECIMAL(28,10),
     "realizedPnlCurrency" TEXT,
-    "accountId" TEXT NOT NULL,
     "importBatchId" TEXT,
+    "archivedAt" TIMESTAMP(3),
+    "deletedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "InvestmentTransaction_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "InvestmentEvent_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "InvestmentMovement" (
+    "id" TEXT NOT NULL,
+    "eventId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "assetId" TEXT,
+    "kind" "InvestmentMovementKind" NOT NULL,
+    "direction" "MovementDirection" NOT NULL,
+    "quantity" DECIMAL(28,10) NOT NULL,
+    "currency" TEXT NOT NULL,
+    "pricePerUnit" DECIMAL(28,10),
+    "valueAmount" DECIMAL(28,10),
+    "valueCurrency" TEXT,
+    "sourceSymbol" TEXT,
+    "sourceAssetType" "AssetType",
+    "note" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "InvestmentMovement_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -332,6 +432,7 @@ CREATE TABLE "Holding" (
     "realizedPnl" DECIMAL(28,10),
     "assetId" TEXT,
     "accountId" TEXT NOT NULL,
+    "calculatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Holding_pkey" PRIMARY KEY ("id")
@@ -366,6 +467,8 @@ CREATE TABLE "ImportBatch" (
     "rowsSkipped" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "completedAt" TIMESTAMP(3),
+    "retainUntil" TIMESTAMP(3),
+    "rawDataPurgedAt" TIMESTAMP(3),
 
     CONSTRAINT "ImportBatch_pkey" PRIMARY KEY ("id")
 );
@@ -382,7 +485,7 @@ CREATE TABLE "ImportRow" (
     "status" "ImportRowStatus" NOT NULL DEFAULT 'pending',
     "errorMessage" TEXT,
     "createdTransactionId" TEXT,
-    "createdInvestmentTransactionId" TEXT,
+    "createdInvestmentEventId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "ImportRow_pkey" PRIMARY KEY ("id")
@@ -404,53 +507,104 @@ CREATE TABLE "ImportLog" (
 CREATE TABLE "NetWorthSnapshot" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "date" TIMESTAMP(3) NOT NULL,
+    "timestamp" TIMESTAMP(3) NOT NULL,
+    "granularity" "SnapshotGranularity" NOT NULL,
+    "source" "SnapshotSource" NOT NULL,
     "currency" TEXT NOT NULL DEFAULT 'CZK',
     "cashValue" DECIMAL(18,6) NOT NULL,
     "portfolioValue" DECIMAL(18,6) NOT NULL,
     "liabilitiesValue" DECIMAL(18,6) NOT NULL,
     "totalNetWorth" DECIMAL(18,6) NOT NULL,
+    "isRecalculated" BOOLEAN NOT NULL DEFAULT false,
+    "calculatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "calculationVersion" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "NetWorthSnapshot_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "PortfolioSnapshot" (
+CREATE TABLE "AccountSnapshot" (
     "id" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
     "timestamp" TIMESTAMP(3) NOT NULL,
     "granularity" "SnapshotGranularity" NOT NULL,
-    "source" "PortfolioSnapshotSource" NOT NULL,
+    "source" "SnapshotSource" NOT NULL,
     "currency" TEXT NOT NULL DEFAULT 'CZK',
+    "cashValue" DECIMAL(18,6) NOT NULL,
+    "investmentValue" DECIMAL(18,6) NOT NULL,
+    "investmentCostBasis" DECIMAL(18,6) NOT NULL DEFAULT 0,
+    "liabilitiesValue" DECIMAL(18,6) NOT NULL,
     "totalValue" DECIMAL(18,6) NOT NULL,
     "isRecalculated" BOOLEAN NOT NULL DEFAULT false,
+    "calculatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "calculationVersion" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "PortfolioSnapshot_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "AccountSnapshot_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "PortfolioSnapshotItem" (
+CREATE TABLE "AccountSnapshotItem" (
     "id" TEXT NOT NULL,
     "snapshotId" TEXT NOT NULL,
     "assetId" TEXT,
     "symbol" TEXT NOT NULL,
-    "accountId" TEXT NOT NULL,
     "quantity" DECIMAL(28,10) NOT NULL,
     "pricePerUnit" DECIMAL(28,10) NOT NULL,
+    "priceCurrency" TEXT,
+    "priceSource" "PriceSource",
+    "priceTimestamp" TIMESTAMP(3),
     "value" DECIMAL(18,6) NOT NULL,
+    "costBasis" DECIMAL(28,10),
+    "costCurrency" TEXT,
     "allocationPct" DECIMAL(8,4) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "PortfolioSnapshotItem_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "AccountSnapshotItem_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "AccountShare_accountId_sharedWithId_key" ON "AccountShare"("accountId", "sharedWithId");
+CREATE INDEX "Account_type_idx" ON "Account"("type");
+
+-- CreateIndex
+CREATE INDEX "Account_isArchived_idx" ON "Account"("isArchived");
+
+-- CreateIndex
+CREATE INDEX "AccountMember_userId_idx" ON "AccountMember"("userId");
+
+-- CreateIndex
+CREATE INDEX "AccountMember_accountId_role_idx" ON "AccountMember"("accountId", "role");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AccountMember_accountId_userId_key" ON "AccountMember"("accountId", "userId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AccountInvite_tokenHash_key" ON "AccountInvite"("tokenHash");
+
+-- CreateIndex
+CREATE INDEX "AccountInvite_accountId_status_idx" ON "AccountInvite"("accountId", "status");
+
+-- CreateIndex
+CREATE INDEX "AccountInvite_email_status_idx" ON "AccountInvite"("email", "status");
+
+-- CreateIndex
+CREATE INDEX "AccountInvite_inviterId_createdAt_idx" ON "AccountInvite"("inviterId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Transaction_accountId_date_idx" ON "Transaction"("accountId", "date");
+
+-- CreateIndex
+CREATE INDEX "Transaction_accountId_externalId_idx" ON "Transaction"("accountId", "externalId");
+
+-- CreateIndex
+CREATE INDEX "Transaction_categoryId_date_idx" ON "Transaction"("categoryId", "date");
+
+-- CreateIndex
+CREATE INDEX "Transaction_importBatchId_idx" ON "Transaction"("importBatchId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "TransactionPair_fromTransactionId_key" ON "TransactionPair"("fromTransactionId");
@@ -459,49 +613,211 @@ CREATE UNIQUE INDEX "TransactionPair_fromTransactionId_key" ON "TransactionPair"
 CREATE UNIQUE INDEX "TransactionPair_toTransactionId_key" ON "TransactionPair"("toTransactionId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Budget_month_year_userId_key" ON "Budget"("month", "year", "userId");
+CREATE INDEX "TransactionSplit_transactionId_idx" ON "TransactionSplit"("transactionId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "BudgetItem_budgetId_categoryId_key" ON "BudgetItem"("budgetId", "categoryId");
+CREATE INDEX "TransactionSplit_categoryId_idx" ON "TransactionSplit"("categoryId");
+
+-- CreateIndex
+CREATE INDEX "Counterparty_userId_idx" ON "Counterparty"("userId");
+
+-- CreateIndex
+CREATE INDEX "Counterparty_userId_name_idx" ON "Counterparty"("userId", "name");
+
+-- CreateIndex
+CREATE INDEX "CounterpartyAlias_counterpartyId_idx" ON "CounterpartyAlias"("counterpartyId");
+
+-- CreateIndex
+CREATE INDEX "Category_userId_idx" ON "Category"("userId");
+
+-- CreateIndex
+CREATE INDEX "Category_parentId_idx" ON "Category"("parentId");
+
+-- CreateIndex
+CREATE INDEX "Category_userId_type_idx" ON "Category"("userId", "type");
+
+-- CreateIndex
+CREATE INDEX "CategoryRule_userId_idx" ON "CategoryRule"("userId");
+
+-- CreateIndex
+CREATE INDEX "CategoryRule_categoryId_idx" ON "CategoryRule"("categoryId");
+
+-- CreateIndex
+CREATE INDEX "CategoryRule_field_operator_idx" ON "CategoryRule"("field", "operator");
+
+-- CreateIndex
+CREATE INDEX "Budget_userId_periodStart_periodEnd_idx" ON "Budget"("userId", "periodStart", "periodEnd");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Budget_userId_periodStart_periodEnd_name_key" ON "Budget"("userId", "periodStart", "periodEnd", "name");
+
+-- CreateIndex
+CREATE INDEX "BudgetItem_budgetId_idx" ON "BudgetItem"("budgetId");
+
+-- CreateIndex
+CREATE INDEX "BudgetItemCategory_categoryId_idx" ON "BudgetItemCategory"("categoryId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BudgetItemCategory_budgetItemId_categoryId_key" ON "BudgetItemCategory"("budgetItemId", "categoryId");
+
+-- CreateIndex
+CREATE INDEX "BudgetAccount_accountId_idx" ON "BudgetAccount"("accountId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BudgetAccount_budgetId_accountId_key" ON "BudgetAccount"("budgetId", "accountId");
+
+-- CreateIndex
+CREATE INDEX "BudgetAlert_userId_triggeredAt_idx" ON "BudgetAlert"("userId", "triggeredAt");
+
+-- CreateIndex
+CREATE INDEX "BudgetAlert_budgetItemId_idx" ON "BudgetAlert"("budgetItemId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Asset_symbol_key" ON "Asset"("symbol");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "AssetAlias_assetId_provider_key" ON "AssetAlias"("assetId", "provider");
+CREATE INDEX "Asset_isin_idx" ON "Asset"("isin");
+
+-- CreateIndex
+CREATE INDEX "Asset_assetType_idx" ON "Asset"("assetType");
+
+-- CreateIndex
+CREATE INDEX "AssetListing_assetId_idx" ON "AssetListing"("assetId");
+
+-- CreateIndex
+CREATE INDEX "AssetListing_symbol_idx" ON "AssetListing"("symbol");
+
+-- CreateIndex
+CREATE INDEX "AssetListing_provider_providerSymbol_idx" ON "AssetListing"("provider", "providerSymbol");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AssetListing_assetId_symbol_exchange_currency_key" ON "AssetListing"("assetId", "symbol", "exchange", "currency");
+
+-- CreateIndex
+CREATE INDEX "AssetAlias_assetId_provider_idx" ON "AssetAlias"("assetId", "provider");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AssetAlias_provider_externalId_key" ON "AssetAlias"("provider", "externalId");
+
+-- CreateIndex
+CREATE INDEX "PriceSnapshot_assetId_timestamp_idx" ON "PriceSnapshot"("assetId", "timestamp");
+
+-- CreateIndex
+CREATE INDEX "PriceSnapshot_listingId_timestamp_idx" ON "PriceSnapshot"("listingId", "timestamp");
+
+-- CreateIndex
+CREATE INDEX "PriceSnapshot_source_timestamp_idx" ON "PriceSnapshot"("source", "timestamp");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "PriceSnapshot_assetId_timestamp_source_key" ON "PriceSnapshot"("assetId", "timestamp", "source");
 
 -- CreateIndex
+CREATE INDEX "InvestmentEvent_accountId_date_idx" ON "InvestmentEvent"("accountId", "date");
+
+-- CreateIndex
+CREATE INDEX "InvestmentEvent_accountId_externalId_idx" ON "InvestmentEvent"("accountId", "externalId");
+
+-- CreateIndex
+CREATE INDEX "InvestmentEvent_orderId_idx" ON "InvestmentEvent"("orderId");
+
+-- CreateIndex
+CREATE INDEX "InvestmentEvent_importBatchId_idx" ON "InvestmentEvent"("importBatchId");
+
+-- CreateIndex
+CREATE INDEX "InvestmentMovement_eventId_idx" ON "InvestmentMovement"("eventId");
+
+-- CreateIndex
+CREATE INDEX "InvestmentMovement_accountId_createdAt_idx" ON "InvestmentMovement"("accountId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "InvestmentMovement_assetId_idx" ON "InvestmentMovement"("assetId");
+
+-- CreateIndex
+CREATE INDEX "InvestmentMovement_kind_idx" ON "InvestmentMovement"("kind");
+
+-- CreateIndex
+CREATE INDEX "Holding_accountId_idx" ON "Holding"("accountId");
+
+-- CreateIndex
+CREATE INDEX "Holding_assetId_idx" ON "Holding"("assetId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Holding_symbol_accountId_key" ON "Holding"("symbol", "accountId");
+
+-- CreateIndex
+CREATE INDEX "ExchangeRate_fromCurrency_toCurrency_date_idx" ON "ExchangeRate"("fromCurrency", "toCurrency", "date");
+
+-- CreateIndex
+CREATE INDEX "ExchangeRate_source_date_idx" ON "ExchangeRate"("source", "date");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "ExchangeRate_fromCurrency_toCurrency_date_source_key" ON "ExchangeRate"("fromCurrency", "toCurrency", "date", "source");
 
 -- CreateIndex
+CREATE INDEX "ImportBatch_userId_createdAt_idx" ON "ImportBatch"("userId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "ImportBatch_accountId_createdAt_idx" ON "ImportBatch"("accountId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "ImportBatch_source_status_idx" ON "ImportBatch"("source", "status");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "ImportBatch_userId_accountId_checksum_key" ON "ImportBatch"("userId", "accountId", "checksum");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "NetWorthSnapshot_userId_date_currency_key" ON "NetWorthSnapshot"("userId", "date", "currency");
+CREATE INDEX "ImportRow_importBatchId_status_idx" ON "ImportRow"("importBatchId", "status");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PortfolioSnapshot_userId_timestamp_currency_granularity_key" ON "PortfolioSnapshot"("userId", "timestamp", "currency", "granularity");
+CREATE INDEX "ImportRow_deduplicationKey_idx" ON "ImportRow"("deduplicationKey");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PortfolioSnapshotItem_snapshotId_symbol_accountId_key" ON "PortfolioSnapshotItem"("snapshotId", "symbol", "accountId");
+CREATE UNIQUE INDEX "ImportRow_importBatchId_rowNumber_key" ON "ImportRow"("importBatchId", "rowNumber");
+
+-- CreateIndex
+CREATE INDEX "ImportLog_importBatchId_createdAt_idx" ON "ImportLog"("importBatchId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "ImportLog_level_createdAt_idx" ON "ImportLog"("level", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "NetWorthSnapshot_userId_granularity_timestamp_idx" ON "NetWorthSnapshot"("userId", "granularity", "timestamp");
+
+-- CreateIndex
+CREATE INDEX "NetWorthSnapshot_source_timestamp_idx" ON "NetWorthSnapshot"("source", "timestamp");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "NetWorthSnapshot_userId_timestamp_currency_granularity_key" ON "NetWorthSnapshot"("userId", "timestamp", "currency", "granularity");
+
+-- CreateIndex
+CREATE INDEX "AccountSnapshot_accountId_granularity_timestamp_idx" ON "AccountSnapshot"("accountId", "granularity", "timestamp");
+
+-- CreateIndex
+CREATE INDEX "AccountSnapshot_source_timestamp_idx" ON "AccountSnapshot"("source", "timestamp");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AccountSnapshot_accountId_timestamp_currency_granularity_key" ON "AccountSnapshot"("accountId", "timestamp", "currency", "granularity");
+
+-- CreateIndex
+CREATE INDEX "AccountSnapshotItem_assetId_idx" ON "AccountSnapshotItem"("assetId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AccountSnapshotItem_snapshotId_symbol_key" ON "AccountSnapshotItem"("snapshotId", "symbol");
 
 -- AddForeignKey
-ALTER TABLE "Account" ADD CONSTRAINT "Account_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AccountMember" ADD CONSTRAINT "AccountMember_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AccountShare" ADD CONSTRAINT "AccountShare_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "AccountMember" ADD CONSTRAINT "AccountMember_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AccountShare" ADD CONSTRAINT "AccountShare_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AccountInvite" ADD CONSTRAINT "AccountInvite_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AccountShare" ADD CONSTRAINT "AccountShare_sharedWithId_fkey" FOREIGN KEY ("sharedWithId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AccountInvite" ADD CONSTRAINT "AccountInvite_inviterId_fkey" FOREIGN KEY ("inviterId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "AccountInvite" ADD CONSTRAINT "AccountInvite_acceptedById_fkey" FOREIGN KEY ("acceptedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Transaction" ADD CONSTRAINT "Transaction_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "Category"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -517,6 +833,12 @@ ALTER TABLE "TransactionPair" ADD CONSTRAINT "TransactionPair_fromTransactionId_
 
 -- AddForeignKey
 ALTER TABLE "TransactionPair" ADD CONSTRAINT "TransactionPair_toTransactionId_fkey" FOREIGN KEY ("toTransactionId") REFERENCES "Transaction"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TransactionSplit" ADD CONSTRAINT "TransactionSplit_transactionId_fkey" FOREIGN KEY ("transactionId") REFERENCES "Transaction"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "TransactionSplit" ADD CONSTRAINT "TransactionSplit_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "Category"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Counterparty" ADD CONSTRAINT "Counterparty_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -537,7 +859,16 @@ ALTER TABLE "Budget" ADD CONSTRAINT "Budget_userId_fkey" FOREIGN KEY ("userId") 
 ALTER TABLE "BudgetItem" ADD CONSTRAINT "BudgetItem_budgetId_fkey" FOREIGN KEY ("budgetId") REFERENCES "Budget"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "BudgetItem" ADD CONSTRAINT "BudgetItem_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "Category"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "BudgetItemCategory" ADD CONSTRAINT "BudgetItemCategory_budgetItemId_fkey" FOREIGN KEY ("budgetItemId") REFERENCES "BudgetItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BudgetItemCategory" ADD CONSTRAINT "BudgetItemCategory_categoryId_fkey" FOREIGN KEY ("categoryId") REFERENCES "Category"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BudgetAccount" ADD CONSTRAINT "BudgetAccount_budgetId_fkey" FOREIGN KEY ("budgetId") REFERENCES "Budget"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BudgetAccount" ADD CONSTRAINT "BudgetAccount_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "BudgetAlert" ADD CONSTRAINT "BudgetAlert_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -546,19 +877,31 @@ ALTER TABLE "BudgetAlert" ADD CONSTRAINT "BudgetAlert_userId_fkey" FOREIGN KEY (
 ALTER TABLE "BudgetAlert" ADD CONSTRAINT "BudgetAlert_budgetItemId_fkey" FOREIGN KEY ("budgetItemId") REFERENCES "BudgetItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "AssetListing" ADD CONSTRAINT "AssetListing_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "AssetAlias" ADD CONSTRAINT "AssetAlias_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InvestmentTransaction" ADD CONSTRAINT "InvestmentTransaction_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InvestmentTransaction" ADD CONSTRAINT "InvestmentTransaction_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "InvestmentEvent" ADD CONSTRAINT "InvestmentEvent_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InvestmentTransaction" ADD CONSTRAINT "InvestmentTransaction_importBatchId_fkey" FOREIGN KEY ("importBatchId") REFERENCES "ImportBatch"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "InvestmentEvent" ADD CONSTRAINT "InvestmentEvent_importBatchId_fkey" FOREIGN KEY ("importBatchId") REFERENCES "ImportBatch"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_eventId_fkey" FOREIGN KEY ("eventId") REFERENCES "InvestmentEvent"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Holding" ADD CONSTRAINT "Holding_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -582,13 +925,11 @@ ALTER TABLE "ImportLog" ADD CONSTRAINT "ImportLog_importBatchId_fkey" FOREIGN KE
 ALTER TABLE "NetWorthSnapshot" ADD CONSTRAINT "NetWorthSnapshot_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "PortfolioSnapshot" ADD CONSTRAINT "PortfolioSnapshot_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "AccountSnapshot" ADD CONSTRAINT "AccountSnapshot_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "PortfolioSnapshotItem" ADD CONSTRAINT "PortfolioSnapshotItem_snapshotId_fkey" FOREIGN KEY ("snapshotId") REFERENCES "PortfolioSnapshot"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "AccountSnapshotItem" ADD CONSTRAINT "AccountSnapshotItem_snapshotId_fkey" FOREIGN KEY ("snapshotId") REFERENCES "AccountSnapshot"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "PortfolioSnapshotItem" ADD CONSTRAINT "PortfolioSnapshotItem_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "AccountSnapshotItem" ADD CONSTRAINT "AccountSnapshotItem_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AddForeignKey
-ALTER TABLE "PortfolioSnapshotItem" ADD CONSTRAINT "PortfolioSnapshotItem_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

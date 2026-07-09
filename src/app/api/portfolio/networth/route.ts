@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { assertAccountAccess } from "@/lib/accountAccess"
 import { getNetWorthSnapshotHistory } from "@/modules/snapshots"
 
 export async function GET(req: NextRequest) {
@@ -12,11 +12,8 @@ export async function GET(req: NextRequest) {
   const filterAccountId = req.nextUrl.searchParams.get("accountId")
 
   if (filterAccountId) {
-    const account = await prisma.account.findFirst({
-      where: { id: filterAccountId, userId: session.user.id },
-      select: { id: true },
-    })
-    if (!account) return NextResponse.json({ error: "Account not found" }, { status: 404 })
+    const hasAccess = await assertAccountAccess(filterAccountId, session.user.id, "viewer")
+    if (!hasAccess) return NextResponse.json({ error: "Account not found" }, { status: 404 })
   }
 
   const history = await getNetWorthSnapshotHistory({

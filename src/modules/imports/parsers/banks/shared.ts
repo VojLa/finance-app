@@ -1,42 +1,11 @@
-import Papa from "papaparse"
 import type { TransactionType } from "@prisma/client"
-import type { CsvRow } from "../shared/csv"
-
-export function cleanValue(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .replace(/^"|"$/g, "")
-}
-
-function normalizeRow(row: Record<string, unknown>): CsvRow {
-  const normalized: CsvRow = {}
-  for (const [key, value] of Object.entries(row)) {
-    normalized[key.replace(/^﻿/, "").trim()] = cleanValue(value)
-  }
-  return normalized
-}
-
-function isEmptyRow(row: CsvRow): boolean {
-  return Object.values(row).every((v) => !v || v.trim() === "")
-}
-
-export function parseBankCsvRows(csvText: string): CsvRow[] {
-  const result = Papa.parse<Record<string, unknown>>(csvText, {
-    delimiter: ";",
-    header: true,
-    skipEmptyLines: "greedy",
-  })
-  if (result.errors.length > 0) {
-    console.warn("Bank CSV parse warnings:", result.errors)
-  }
-  return result.data.map(normalizeRow).filter((row) => !isEmptyRow(row))
-}
+import { cleanCsvValue, type CsvRow } from "../shared/csv"
 
 export function buildDescription(parts: Array<string | undefined>): string {
   return parts
-    .map(cleanValue)
+    .map(cleanCsvValue)
     .filter(Boolean)
-    .filter((v, i, arr) => arr.indexOf(v) === i)
+    .filter((value, index, values) => values.indexOf(value) === index)
     .join(" | ")
 }
 
@@ -44,15 +13,15 @@ export function buildFallbackRef(prefix: string, row: CsvRow, rowIndex: number):
   return [
     prefix,
     String(rowIndex),
-    row["Datum provedení"] || row["Datum transakce"],
-    row["Datum zaúčtování"] || row["Datum zúčtování"],
-    row["Zaúčtovaná částka"],
-    row["Měna účtu"] || row["Měna zaúčtování"],
+    row["Datum provedenĂ­"] || row["Datum transakce"],
+    row["Datum zaĂşÄŤtovĂˇnĂ­"] || row["Datum zĂşÄŤtovĂˇnĂ­"],
+    row["ZaĂşÄŤtovanĂˇ ÄŤĂˇstka"],
+    row["MÄ›na ĂşÄŤtu"] || row["MÄ›na zaĂşÄŤtovĂˇnĂ­"],
     row["Typ transakce"],
-    row["Název protiúčtu"] || row["Název Obchodníka"],
-    row["Zpráva"] || row["Popis/Místo transakce"],
+    row["NĂˇzev protiĂşÄŤtu"] || row["NĂˇzev ObchodnĂ­ka"],
+    row["ZprĂˇva"] || row["Popis/MĂ­sto transakce"],
   ]
-    .map(cleanValue)
+    .map(cleanCsvValue)
     .join(":")
     .replace(/\s+/g, " ")
 }
@@ -60,7 +29,8 @@ export function buildFallbackRef(prefix: string, row: CsvRow, rowIndex: number):
 export function detectTransactionType(amount: number, transactionText: string): TransactionType {
   const lower = transactionText.toLowerCase()
   if (amount > 0) return "income"
-  if (lower.includes("příchozí") || lower.includes("vrácení") || lower.includes("refund"))
+  if (lower.includes("pĹ™Ă­chozĂ­") || lower.includes("vrĂˇcenĂ­") || lower.includes("refund")) {
     return "income"
+  }
   return "expense"
 }

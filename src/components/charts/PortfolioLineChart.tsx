@@ -1,89 +1,236 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo } from "react"
 import {
-  AreaChart,
   Area,
-  XAxis,
-  YAxis,
+  AreaChart,
   CartesianGrid,
-  Tooltip,
   Legend,
   ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts"
+import type { TooltipProps } from "recharts"
+import type { HoldingWithPrice } from "@/types"
 
-interface DataPoint {
+export interface PortfolioChartDataPoint {
+  timestamp?: string
   month: string
   label: string
   investedCzk: number
+  netDepositsCzk?: number
+  cashCzk?: number
+  investmentCostBasisCzk?: number
+  realizedPnlCzk?: number
+  unrealizedPnlCzk?: number
+  valueCzk?: number
   netWorthCzk?: number
+  allocations?: { symbol: string; accountId: string; valueCzk: number; allocationPct: number }[]
+  positions?: HoldingWithPrice[]
+}
+
+export type PortfolioChartRange = "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL"
+export type PortfolioValueMode = "investments" | "total"
+
+type ChartPoint = PortfolioChartDataPoint & {
+  baselineCzk: number
+  displayValueCzk: number
+  dateLabel: string
+}
+
+type ChartMouseState = {
+  activePayload?: Array<{ payload?: ChartPoint }>
 }
 
 interface Props {
-  data: DataPoint[]
+  data: PortfolioChartDataPoint[]
   currentValueCzk?: number
+  range: PortfolioChartRange
+  onRangeChange: (range: PortfolioChartRange) => void
+  valueMode: PortfolioValueMode
+  onValueModeChange: (mode: PortfolioValueMode) => void
+  activePoint?: PortfolioChartDataPoint | null
+  isLocked?: boolean
+  onActivePointChange?: (point: PortfolioChartDataPoint) => void
+  onLockedChange?: (locked: boolean) => void
 }
 
-type Range = "3M" | "6M" | "1Y" | "ALL"
-
-const RANGES: { label: string; value: Range; months: number | null }[] = [
-  { label: "3 měs.", value: "3M", months: 3 },
-  { label: "6 měs.", value: "6M", months: 6 },
-  { label: "1 rok", value: "1Y", months: 12 },
-  { label: "Vše", value: "ALL", months: null },
+const RANGES: { label: string; value: PortfolioChartRange }[] = [
+  { label: "Tyden", value: "1W" },
+  { label: "Mesic", value: "1M" },
+  { label: "3 mes.", value: "3M" },
+  { label: "6 mes.", value: "6M" },
+  { label: "1 rok", value: "1Y" },
+  { label: "Vse", value: "ALL" },
 ]
 
 function fmtCzk(n: number) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} M Kč`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)} tis. Kč`
-  return `${n} Kč`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} M Kc`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)} tis. Kc`
+  return `${n} Kc`
 }
 
-export function PortfolioLineChart({ data, currentValueCzk }: Props) {
-  const [range, setRange] = useState<Range>("ALL")
+function pointDateLabel(point: PortfolioChartDataPoint) {
+  if (!point.timestamp) return point.label
+  const date = new Date(point.timestamp)
+  if (Number.isNaN(date.getTime())) return point.label
+  return date.toLocaleDateString("cs-CZ", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  })
+}
 
+function getChartPoint(state: ChartMouseState | null | undefined) {
+  return state?.activePayload?.[0]?.payload ?? null
+}
+
+function isChartPoint(value: unknown): value is ChartPoint {
+  return typeof value === "object" && value !== null && "dateLabel" in value
+}
+
+export function PortfolioLineChart({
+  data,
+  currentValueCzk,
+  range,
+  onRangeChange,
+  valueMode,
+  onValueModeChange,
+  activePoint,
+  isLocked = false,
+  onActivePointChange,
+  onLockedChange,
+}: Props) {
   const hasNetWorth = data.some((d) => d.netWorthCzk !== undefined)
+  const showValueMode = hasNetWorth && data.some((d) => d.cashCzk !== undefined)
 
-  const filtered = useMemo(() => {
-    if (range === "ALL") return data
-    const cutoff = new Date()
-    const months = RANGES.find((r) => r.value === range)!.months!
-    cutoff.setMonth(cutoff.getMonth() - months)
-    const cutoffStr = cutoff.toISOString().slice(0, 7)
-    return data.filter((d) => d.month >= cutoffStr)
-  }, [data, range])
+  const chartData = useMemo(
+    () =>
+      data.map((d, i) => {
+        const netWorthCzk = d.netWorthCzk ?? d.investedCzk
+        const investmentValueCzk =
+          d.cashCzk !== undefined ? Math.max(0, netWorthCzk - d.cashCzk) : netWorthCzk
+        const baselineCzk =
+          valueMode === "total" ? (d.netDepositsCzk ?? d.investedCzk) : d.investedCzk
+
+        return {
+          ...d,
+          baselineCzk,
+          dateLabel: pointDateLabel(d),
+          displayValueCzk: valueMode === "total" ? netWorthCzk : investmentValueCzk,
+          currentCzk:
+            i === data.length - 1 && currentValueCzk && valueMode === "investments"
+              ? currentValueCzk
+              : undefined,
+        }
+      }),
+    [currentValueCzk, data, valueMode]
+  )
 
   if (data.length === 0) return null
 
-  const chartData = filtered.map((d, i) => ({
-    ...d,
-    currentCzk: i === filtered.length - 1 && currentValueCzk ? currentValueCzk : undefined,
-  }))
+  const title =
+    hasNetWorth && valueMode === "investments"
+      ? "Historicky vyvoj investic"
+      : hasNetWorth
+        ? "Historicky vyvoj ciste hodnoty"
+        : "Vyvoj investovane castky"
+  const valueLabel = valueMode === "total" ? "Investice + cash" : "Jen investice"
+  const baselineLabel = valueMode === "total" ? "Vlozeno" : "Investovano"
+  const activeDateLabel = activePoint ? pointDateLabel(activePoint) : null
 
-  const title = hasNetWorth ? "Historický vývoj čisté hodnoty" : "Vývoj investované částky"
+  const handleMouseMove = (state: ChartMouseState) => {
+    if (isLocked) return
+    const point = getChartPoint(state)
+    if (point) onActivePointChange?.(point)
+  }
+
+  const handleClick = (state: ChartMouseState) => {
+    const point = getChartPoint(state)
+
+    if (isLocked) {
+      onLockedChange?.(false)
+      if (point) onActivePointChange?.(point)
+      return
+    }
+
+    if (point) {
+      onActivePointChange?.(point)
+      onLockedChange?.(true)
+    }
+  }
+
+  const renderDateTooltip = ({ active, payload }: TooltipProps<number, string>) => {
+    if (!active || isLocked) return null
+    const point = payload?.[0]?.payload
+    if (!isChartPoint(point)) return null
+
+    return (
+      <div className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-700 shadow-sm">
+        {point.dateLabel}
+      </div>
+    )
+  }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-medium">{title}</h2>
-        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-          {RANGES.map((r) => (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-lg font-medium">{title}</h2>
+          {activeDateLabel && (
+            <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">
+              {isLocked ? "Zamceno" : "Vybrano"}: {activeDateLabel}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {showValueMode && (
             <button
-              key={r.value}
-              onClick={() => setRange(r.value)}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                range === r.value
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
+              type="button"
+              role="switch"
+              aria-checked={valueMode === "total"}
+              onClick={() => onValueModeChange(valueMode === "total" ? "investments" : "total")}
+              className="flex h-8 items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 text-xs font-medium text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-900"
             >
-              {r.label}
+              <span
+                className={`relative h-4 w-7 rounded-full transition-colors ${
+                  valueMode === "total" ? "bg-gray-900" : "bg-gray-300"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
+                    valueMode === "total" ? "translate-x-3.5" : "translate-x-0.5"
+                  }`}
+                />
+              </span>
+              {valueLabel}
             </button>
-          ))}
+          )}
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {RANGES.map((r) => (
+              <button
+                key={r.value}
+                onClick={() => onRangeChange(r.value)}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  range === r.value
+                    ? "bg-white text-gray-900 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       <ResponsiveContainer width="100%" height={240}>
-        <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+        <AreaChart
+          data={chartData}
+          margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+          onMouseMove={handleMouseMove}
+          onClick={handleClick}
+        >
           <defs>
             <linearGradient id="investedGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
@@ -111,34 +258,31 @@ export function PortfolioLineChart({ data, currentValueCzk }: Props) {
             domain={["auto", "auto"]}
           />
           <Tooltip
-            formatter={(value: number, name: string) => [
-              value.toLocaleString("cs-CZ", {
-                minimumFractionDigits: 0,
-                maximumFractionDigits: 0,
-              }) + " Kč",
-              name,
-            ]}
-            labelStyle={{ color: "#1e293b", fontWeight: 500 }}
-            contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 13 }}
+            content={renderDateTooltip}
+            cursor={{ stroke: "#94a3b8", strokeDasharray: "4 4" }}
           />
           {hasNetWorth && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
           <Area
-            type="monotone"
-            dataKey="investedCzk"
-            name="Investováno"
+            type="linear"
+            dataKey="baselineCzk"
+            name={baselineLabel}
             stroke="#3b82f6"
             strokeWidth={2}
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
             fill="url(#investedGrad)"
             dot={false}
             activeDot={{ r: 4 }}
           />
           {hasNetWorth && (
             <Area
-              type="monotone"
-              dataKey="netWorthCzk"
-              name="Čistá hodnota"
+              type="linear"
+              dataKey="displayValueCzk"
+              name={valueLabel}
               stroke="#10b981"
               strokeWidth={2}
+              strokeLinecap="butt"
+              strokeLinejoin="miter"
               fill="url(#netWorthGrad)"
               dot={false}
               activeDot={{ r: 4 }}

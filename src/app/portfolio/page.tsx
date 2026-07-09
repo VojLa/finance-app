@@ -4,31 +4,34 @@ import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { HoldingsTable } from "@/components/portfolio/HoldingsTable"
 import { AllocationPie } from "@/components/charts/AllocationPie"
-import { PortfolioLineChart } from "@/components/charts/PortfolioLineChart"
+import {
+  PortfolioLineChart,
+  type PortfolioChartDataPoint,
+  type PortfolioChartRange,
+  type PortfolioValueMode,
+} from "@/components/charts/PortfolioLineChart"
 import type { PortfolioSummary } from "@/types"
 import { fmtCzk, fmtPct } from "@/lib/format"
 
-interface NetWorthPoint {
-  month: string
-  label: string
-  cashCzk: number
-  investedCzk: number
-  netWorthCzk: number
-}
-
 export default function PortfolioPage() {
   const [data, setData] = useState<PortfolioSummary | null>(null)
-  const [netWorthHistory, setNetWorthHistory] = useState<NetWorthPoint[]>([])
+  const [netWorthHistory, setNetWorthHistory] = useState<PortfolioChartDataPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const [historyRange, setHistoryRange] = useState<PortfolioChartRange>("1Y")
+  const [portfolioValueMode, setPortfolioValueMode] = useState<PortfolioValueMode>("total")
+  const [activeHistoryPoint, setActiveHistoryPoint] = useState<PortfolioChartDataPoint | null>(null)
+  const [historyLocked, setHistoryLocked] = useState(false)
 
   const load = useCallback(
     async (refresh = false) => {
       const accountParam = selectedAccountId ? `accountId=${selectedAccountId}&` : ""
       const portfolioUrl =
         `/api/portfolio?${accountParam}${refresh ? `_t=${Date.now()}` : ""}`.replace(/\?$/, "")
-      const netWorthUrl = `/api/portfolio/networth${selectedAccountId ? `?accountId=${selectedAccountId}` : ""}`
+      const historyParams = new URLSearchParams({ range: historyRange })
+      if (selectedAccountId) historyParams.set("accountId", selectedAccountId)
+      const historyUrl = `/api/portfolio/history?${historyParams.toString()}`
 
       if (refresh) {
         setRefreshing(true)
@@ -37,28 +40,56 @@ export default function PortfolioPage() {
 
       const [portfolio, netWorth] = await Promise.all([
         fetch(portfolioUrl).then((r) => r.json()),
-        fetch(netWorthUrl).then((r) => r.json()),
+        fetch(historyUrl).then((r) => r.json()),
       ])
       setData(portfolio)
       setNetWorthHistory(Array.isArray(netWorth) ? netWorth : [])
       setLoading(false)
       setRefreshing(false)
     },
-    [selectedAccountId]
+    [historyRange, selectedAccountId]
   )
 
   useEffect(() => {
     load()
   }, [load])
 
+  useEffect(() => {
+    setActiveHistoryPoint(null)
+    setHistoryLocked(false)
+  }, [historyRange, selectedAccountId])
+
   if (loading) {
     return <div className="text-gray-400 py-12 text-center">Načítám portfolio...</div>
   }
 
-  const pnlPositive = (data?.totalUnrealizedPnlCzk ?? 0) >= 0
-  const realizedPositive = (data?.totalRealizedPnlCzk ?? 0) >= 0
   const accounts = data?.accounts ?? []
   const warnings = data?.warnings ?? []
+  const latestHistoryPoint = netWorthHistory.at(-1) ?? null
+  const displayPoint = activeHistoryPoint ?? latestHistoryPoint
+  const pointNetWorthCzk = displayPoint?.netWorthCzk ?? displayPoint?.valueCzk ?? null
+  const pointCashCzk = displayPoint?.cashCzk ?? 0
+  const pointInvestmentValueCzk =
+    pointNetWorthCzk !== null ? Math.max(0, pointNetWorthCzk - pointCashCzk) : null
+  const displayTotalValueCzk =
+    portfolioValueMode === "total"
+      ? (pointNetWorthCzk ?? data?.totalValueCzk ?? 0)
+      : (pointInvestmentValueCzk ?? data?.totalValueCzk ?? 0)
+  const displayBaselineCzk =
+    portfolioValueMode === "total"
+      ? (displayPoint?.netDepositsCzk ?? data?.totalCostCzk ?? 0)
+      : (displayPoint?.investedCzk ?? data?.totalCostCzk ?? 0)
+  const displayPnlCzk = displayTotalValueCzk - displayBaselineCzk
+  const displayReturnPct = displayBaselineCzk > 0 ? (displayPnlCzk / displayBaselineCzk) * 100 : 0
+  const displayCashCzk = displayPoint?.cashCzk ?? 0
+  const displayRealizedPnlCzk = displayPoint?.realizedPnlCzk ?? data?.totalRealizedPnlCzk ?? 0
+  const displayUnrealizedPnlCzk = displayPoint?.unrealizedPnlCzk ?? data?.totalUnrealizedPnlCzk ?? 0
+  const pnlPositive = displayPnlCzk >= 0
+  const realizedPnlPositive = displayRealizedPnlCzk >= 0
+  const unrealizedPnlPositive = displayUnrealizedPnlCzk >= 0
+  const displayedHoldings = displayPoint?.positions ?? data?.holdings ?? []
+  const hasAllocationData =
+    displayedHoldings.length > 0 || (portfolioValueMode === "total" && displayCashCzk > 0)
 
   return (
     <div className="space-y-6">
@@ -124,39 +155,47 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500 mb-1">Celková hodnota</p>
-          <p className="text-2xl font-semibold">{fmtCzk(data?.totalValueCzk ?? 0)}</p>
+          <p className="text-sm text-gray-500 mb-1">
+            {portfolioValueMode === "total" ? "Celkova hodnota" : "Hodnota investic"}
+          </p>
+          <p className="text-2xl font-semibold">{fmtCzk(displayTotalValueCzk)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500 mb-1">Investováno</p>
-          <p className="text-2xl font-semibold">{fmtCzk(data?.totalCostCzk ?? 0)}</p>
+          <p className="text-sm text-gray-500 mb-1">
+            {portfolioValueMode === "total" ? "Vlozeno" : "Investovano"}
+          </p>
+          <p className="text-2xl font-semibold">{fmtCzk(displayBaselineCzk)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500 mb-1">Nerealizovaný P&L</p>
+          <p className="text-sm text-gray-500 mb-1">Realizovane P&L</p>
           <p
-            className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}
+            className={`text-2xl font-semibold ${realizedPnlPositive ? "text-green-600" : "text-red-600"}`}
           >
-            {pnlPositive ? "+" : ""}
-            {fmtCzk(data?.totalUnrealizedPnlCzk ?? 0)}
+            {realizedPnlPositive ? "+" : ""}
+            {fmtCzk(displayRealizedPnlCzk)}
           </p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500 mb-1">Realizovaný P&L</p>
+          <p className="text-sm text-gray-500 mb-1">Nerealizovane P&L</p>
           <p
-            className={`text-2xl font-semibold ${realizedPositive ? "text-green-600" : "text-red-600"}`}
+            className={`text-2xl font-semibold ${unrealizedPnlPositive ? "text-green-600" : "text-red-600"}`}
           >
-            {realizedPositive ? "+" : ""}
-            {fmtCzk(data?.totalRealizedPnlCzk ?? 0)}
+            {unrealizedPnlPositive ? "+" : ""}
+            {fmtCzk(displayUnrealizedPnlCzk)}
           </p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500 mb-1">Výnos</p>
+          <p className="text-sm text-gray-500 mb-1">Hotovost</p>
+          <p className="text-2xl font-semibold">{fmtCzk(displayCashCzk)}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <p className="text-sm text-gray-500 mb-1">Vynos</p>
           <p
             className={`text-2xl font-semibold ${pnlPositive ? "text-green-600" : "text-red-600"}`}
           >
-            {fmtPct(data?.totalUnrealizedPnlPct ?? 0)}
+            {fmtPct(displayReturnPct)}
           </p>
         </div>
       </div>
@@ -184,7 +223,18 @@ export default function PortfolioPage() {
 
       {netWorthHistory.length > 1 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <PortfolioLineChart data={netWorthHistory} currentValueCzk={data?.totalValueCzk} />
+          <PortfolioLineChart
+            data={netWorthHistory}
+            currentValueCzk={displayTotalValueCzk}
+            range={historyRange}
+            onRangeChange={setHistoryRange}
+            valueMode={portfolioValueMode}
+            onValueModeChange={setPortfolioValueMode}
+            activePoint={displayPoint}
+            isLocked={historyLocked}
+            onActivePointChange={setActiveHistoryPoint}
+            onLockedChange={setHistoryLocked}
+          />
         </div>
       )}
 
@@ -192,14 +242,18 @@ export default function PortfolioPage() {
         <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="text-lg font-medium mb-4">Pozice</h2>
           <HoldingsTable
-            holdings={data?.holdings ?? []}
+            holdings={displayedHoldings}
             showAccount={selectedAccountId === null && accounts.length > 1}
           />
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="text-lg font-medium mb-4">Alokace (CZK)</h2>
-          {(data?.holdings.length ?? 0) > 0 ? (
-            <AllocationPie holdings={data!.holdings} />
+          {hasAllocationData ? (
+            <AllocationPie
+              holdings={displayedHoldings}
+              cashCzk={displayCashCzk}
+              includeCash={portfolioValueMode === "total"}
+            />
           ) : (
             <div className="text-center text-gray-400 py-8 text-sm">
               <p className="mb-3">Žádné pozice</p>

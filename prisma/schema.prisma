@@ -10,63 +10,110 @@ datasource db {
 // ─── User Domain ─────────────────────────────────────────────────────────────
 
 model User {
-  id                     String                  @id @default(cuid())
-  email                  String                  @unique
-  name                   String?
-  passwordHash           String?
-  baseCurrency           String                  @default("CZK")
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
-  accounts               Account[]
-  budgets                Budget[]
-  budgetAlerts           BudgetAlert[]
-  importBatches          ImportBatch[]
-  counterparties         Counterparty[]
-  netWorthSnapshots      NetWorthSnapshot[]
-  portfolioSnapshots     PortfolioSnapshot[]
-  myShares               AccountShare[]          @relation("MyShares")
-  sharedWithMe           AccountShare[]          @relation("SharedWithMe")
+  id                 String             @id @default(cuid())
+  email              String             @unique
+  name               String?
+  passwordHash       String?
+  baseCurrency       String             @default("CZK")
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  accountMemberships AccountMember[]
+  budgets            Budget[]
+  budgetAlerts       BudgetAlert[]
+  importBatches      ImportBatch[]
+  counterparties     Counterparty[]
+  netWorthSnapshots  NetWorthSnapshot[]
+  sentInvites        AccountInvite[]    @relation("SentAccountInvites")
+  acceptedInvites    AccountInvite[]    @relation("AcceptedAccountInvites")
 }
 
 // ─── Account Domain ───────────────────────────────────────────────────────────
 
 model Account {
-  id                     String                  @id @default(cuid())
-  name                   String
-  type                   AccountType
-  currency               String
-  color                  String?
-  ownershipType          AccountOwnershipType    @default(single_owner)
-  isArchived             Boolean                 @default(false)
-  userId                 String
-  user                   User                    @relation(fields: [userId], references: [id])
-  investmentTransactions InvestmentTransaction[]
-  transactions           Transaction[]
-  holdings               Holding[]
-  importBatches          ImportBatch[]
-  portfolioSnapshotItems PortfolioSnapshotItem[]
-  shares                 AccountShare[]
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
+  id                  String               @id @default(cuid())
+  name                String
+  type                AccountType
+  currency            String
+  color               String?
+  isArchived          Boolean              @default(false)
+  archivedAt          DateTime?
+  members             AccountMember[]
+  investmentEvents    InvestmentEvent[]
+  investmentMovements InvestmentMovement[]
+  transactions        Transaction[]
+  holdings            Holding[]
+  budgetLinks         BudgetAccount[]
+  importBatches       ImportBatch[]
+  snapshots           AccountSnapshot[]
+  invites             AccountInvite[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([type])
+  @@index([isArchived])
 }
 
-model AccountShare {
-  id           String    @id @default(cuid())
+model AccountMember {
+  id           String              @id @default(cuid())
   accountId    String
-  account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  ownerId      String
-  owner        User      @relation("MyShares", fields: [ownerId], references: [id])
-  sharedWithId String
-  sharedWith   User      @relation("SharedWithMe", fields: [sharedWithId], references: [id])
-  role         ShareRole @default(viewer)
-  createdAt    DateTime  @default(now())
+  account      Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         AccountMemberRole   @default(viewer)
+  relationType AccountRelationType @default(owner)
+  invitedById  String?
+  acceptedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
 
-  @@unique([accountId, sharedWithId])
+  @@unique([accountId, userId])
+  @@index([userId])
+  @@index([accountId, role])
 }
 
-enum ShareRole {
+model AccountInvite {
+  id           String              @id @default(cuid())
+  accountId    String
+  account      Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inviterId    String
+  inviter      User                @relation("SentAccountInvites", fields: [inviterId], references: [id])
+  acceptedById String?
+  acceptedBy   User?               @relation("AcceptedAccountInvites", fields: [acceptedById], references: [id])
+  email        String
+  role         AccountMemberRole   @default(viewer)
+  status       AccountInviteStatus @default(pending)
+  tokenHash    String              @unique
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([accountId, status])
+  @@index([email, status])
+  @@index([inviterId, createdAt])
+}
+
+enum AccountMemberRole {
+  owner
+  admin
   viewer
   editor
+}
+
+enum AccountRelationType {
+  owner
+  joint_owner
+  manager
+  beneficiary
+  collaborator
+}
+
+enum AccountInviteStatus {
+  pending
+  accepted
+  revoked
+  expired
 }
 
 enum AccountType {
@@ -81,38 +128,41 @@ enum AccountType {
   mortgage
 }
 
-enum AccountOwnershipType {
-  single_owner
-  joint_owner
-  child_managed
-}
-
 // ─── Transaction Domain ───────────────────────────────────────────────────────
 
 model Transaction {
-  id              String                   @id @default(cuid())
-  date            DateTime
-  bookingDate     DateTime?
-  amount          Decimal                  @db.Decimal(18, 6)
-  currency        String
-  amountCzk       Decimal?                 @db.Decimal(18, 6)
-  type            TransactionType
-  classification  TransactionClassification?
-  description     String?
-  note            String?
-  counterparty    String?
-  externalId      String?
-  isReviewed      Boolean                  @default(false)
-  categoryId      String?
-  category        Category?                @relation(fields: [categoryId], references: [id])
-  accountId       String
-  account         Account                  @relation(fields: [accountId], references: [id])
-  importBatchId   String?
-  importBatch     ImportBatch?             @relation(fields: [importBatchId], references: [id])
-  pair            TransactionPair?         @relation("PairFrom")
-  pairedWith      TransactionPair?         @relation("PairTo")
-  createdAt       DateTime                 @default(now())
-  updatedAt       DateTime                 @updatedAt
+  id                String                     @id @default(cuid())
+  date              DateTime
+  bookingDate       DateTime?
+  amount            Decimal                    @db.Decimal(18, 6)
+  currency          String
+  reportingAmount   Decimal?                   @db.Decimal(18, 6)
+  reportingCurrency String?
+  type              TransactionType
+  classification    TransactionClassification?
+  description       String?
+  note              String?
+  counterparty      String?
+  externalId        String?
+  isReviewed        Boolean                    @default(false)
+  archivedAt        DateTime?
+  deletedAt         DateTime?
+  categoryId        String?
+  category          Category?                  @relation(fields: [categoryId], references: [id])
+  accountId         String
+  account           Account                    @relation(fields: [accountId], references: [id])
+  importBatchId     String?
+  importBatch       ImportBatch?               @relation(fields: [importBatchId], references: [id])
+  pair              TransactionPair?           @relation("PairFrom")
+  pairedWith        TransactionPair?           @relation("PairTo")
+  splits            TransactionSplit[]
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  @@index([accountId, date])
+  @@index([accountId, externalId])
+  @@index([categoryId, date])
+  @@index([importBatchId])
 }
 
 enum TransactionType {
@@ -137,28 +187,47 @@ enum TransactionClassification {
 }
 
 model TransactionPair {
-  id                  String      @id @default(cuid())
-  fromTransactionId   String      @unique
-  toTransactionId     String      @unique
-  fromTransaction     Transaction @relation("PairFrom", fields: [fromTransactionId], references: [id])
-  toTransaction       Transaction @relation("PairTo", fields: [toTransactionId], references: [id])
-  createdAt           DateTime    @default(now())
+  id                String      @id @default(cuid())
+  fromTransactionId String      @unique
+  toTransactionId   String      @unique
+  fromTransaction   Transaction @relation("PairFrom", fields: [fromTransactionId], references: [id])
+  toTransaction     Transaction @relation("PairTo", fields: [toTransactionId], references: [id])
+  createdAt         DateTime    @default(now())
+}
+
+model TransactionSplit {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  categoryId    String?
+  category      Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  amount        Decimal     @db.Decimal(18, 6)
+  currency      String
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([transactionId])
+  @@index([categoryId])
 }
 
 // ─── Counterparty Domain ──────────────────────────────────────────────────────
 
 model Counterparty {
-  id            String               @id @default(cuid())
+  id            String              @id @default(cuid())
   userId        String
-  user          User                 @relation(fields: [userId], references: [id])
+  user          User                @relation(fields: [userId], references: [id])
   name          String
-  type          CounterpartyType     @default(other)
+  type          CounterpartyType    @default(other)
   accountNumber String?
   iban          String?
   notes         String?
   aliases       CounterpartyAlias[]
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([userId])
+  @@index([userId, name])
 }
 
 enum CounterpartyType {
@@ -181,6 +250,8 @@ model CounterpartyAlias {
   alias          String
   matchType      AliasMatchType @default(contains)
   createdAt      DateTime       @default(now())
+
+  @@index([counterpartyId])
 }
 
 enum AliasMatchType {
@@ -193,21 +264,26 @@ enum AliasMatchType {
 // ─── Category Domain ──────────────────────────────────────────────────────────
 
 model Category {
-  id           String         @id @default(cuid())
+  id           String               @id @default(cuid())
   name         String
   icon         String?
   color        String?
   type         CategoryType
   parentId     String?
-  parent       Category?      @relation("Subcategories", fields: [parentId], references: [id])
-  children     Category[]     @relation("Subcategories")
-  isDefault    Boolean        @default(false)
+  parent       Category?            @relation("Subcategories", fields: [parentId], references: [id])
+  children     Category[]           @relation("Subcategories")
+  isDefault    Boolean              @default(false)
   userId       String?
   transactions Transaction[]
-  budgetItems  BudgetItem[]
+  splits       TransactionSplit[]
+  budgetItems  BudgetItemCategory[]
   rules        CategoryRule[]
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@index([userId])
+  @@index([parentId])
+  @@index([userId, type])
 }
 
 enum CategoryType {
@@ -229,6 +305,10 @@ model CategoryRule {
   category       Category                   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   createdAt      DateTime                   @default(now())
   updatedAt      DateTime                   @updatedAt
+
+  @@index([userId])
+  @@index([categoryId])
+  @@index([field, operator])
 }
 
 enum RuleField {
@@ -248,19 +328,22 @@ enum RuleOperator {
 // ─── Budget Domain ────────────────────────────────────────────────────────────
 
 model Budget {
-  id              String          @id @default(cuid())
-  month           Int
-  year            Int
+  id              String           @id @default(cuid())
+  name            String
+  periodStart     DateTime
+  periodEnd       DateTime
   periodType      BudgetPeriodType @default(monthly)
-  currency        String          @default("CZK")
-  rollover        Boolean         @default(false)
+  currency        String           @default("CZK")
+  rolloverEnabled Boolean          @default(false)
   userId          String
-  user            User            @relation(fields: [userId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+  accounts        BudgetAccount[]
   items           BudgetItem[]
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  @@unique([month, year, userId])
+  @@unique([userId, periodStart, periodEnd, name])
+  @@index([userId, periodStart, periodEnd])
 }
 
 enum BudgetPeriodType {
@@ -271,19 +354,43 @@ enum BudgetPeriodType {
 }
 
 model BudgetItem {
-  id             String       @id @default(cuid())
-  amount         Decimal      @db.Decimal(18, 6)
-  currency       String       @default("CZK")
-  rolloverAmount Decimal?     @db.Decimal(18, 6)
+  id             String               @id @default(cuid())
+  name           String?
+  amount         Decimal              @db.Decimal(18, 6)
+  currency       String               @default("CZK")
+  rolloverAmount Decimal?             @db.Decimal(18, 6)
   budgetId       String
-  budget         Budget       @relation(fields: [budgetId], references: [id], onDelete: Cascade)
-  categoryId     String
-  category       Category     @relation(fields: [categoryId], references: [id])
+  budget         Budget               @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  categories     BudgetItemCategory[]
   budgetAlerts   BudgetAlert[]
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
-  @@unique([budgetId, categoryId])
+  @@index([budgetId])
+}
+
+model BudgetItemCategory {
+  id           String     @id @default(cuid())
+  budgetItemId String
+  budgetItem   BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([budgetItemId, categoryId])
+  @@index([categoryId])
+}
+
+model BudgetAccount {
+  id        String   @id @default(cuid())
+  budgetId  String
+  budget    Budget   @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([budgetId, accountId])
+  @@index([accountId])
 }
 
 model BudgetAlert {
@@ -296,6 +403,9 @@ model BudgetAlert {
   threshold      Decimal         @db.Decimal(5, 4)
   triggeredAt    DateTime        @default(now())
   acknowledgedAt DateTime?
+
+  @@index([userId, triggeredAt])
+  @@index([budgetItemId])
 }
 
 enum BudgetAlertType {
@@ -307,19 +417,45 @@ enum BudgetAlertType {
 // ─── Investment Domain ────────────────────────────────────────────────────────
 
 model Asset {
-  id             String                  @id @default(cuid())
-  symbol         String                  @unique
-  isin           String?
-  name           String?
-  assetType      AssetType
+  id                   String                @id @default(cuid())
+  symbol               String                @unique
+  isin                 String?
+  name                 String?
+  assetType            AssetType
+  currency             String
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  aliases              AssetAlias[]
+  listings             AssetListing[]
+  priceSnapshots       PriceSnapshot[]
+  holdings             Holding[]
+  investmentMovements  InvestmentMovement[]
+  accountSnapshotItems AccountSnapshotItem[]
+
+  @@index([isin])
+  @@index([assetType])
+}
+
+model AssetListing {
+  id             String          @id @default(cuid())
+  assetId        String
+  asset          Asset           @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  symbol         String
+  exchange       String?
+  mic            String?
   currency       String
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  aliases                AssetAlias[]
-  priceSnapshots         PriceSnapshot[]
-  holdings               Holding[]
-  investmentTransactions InvestmentTransaction[]
-  portfolioSnapshotItems PortfolioSnapshotItem[]
+  country        String?
+  provider       PriceSource?
+  providerSymbol String?
+  isPrimary      Boolean         @default(false)
+  priceSnapshots PriceSnapshot[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([assetId, symbol, exchange, currency])
+  @@index([assetId])
+  @@index([symbol])
+  @@index([provider, providerSymbol])
 }
 
 model AssetAlias {
@@ -330,7 +466,8 @@ model AssetAlias {
   externalId String
   createdAt  DateTime           @default(now())
 
-  @@unique([assetId, provider])
+  @@unique([provider, externalId])
+  @@index([assetId, provider])
 }
 
 enum AssetAliasProvider {
@@ -342,16 +479,21 @@ enum AssetAliasProvider {
 }
 
 model PriceSnapshot {
-  id        String      @id @default(cuid())
+  id        String        @id @default(cuid())
   assetId   String
-  asset     Asset       @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  price     Decimal     @db.Decimal(28, 10)
+  asset     Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  listingId String?
+  listing   AssetListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  price     Decimal       @db.Decimal(28, 10)
   currency  String
   source    PriceSource
   timestamp DateTime
-  createdAt DateTime    @default(now())
+  createdAt DateTime      @default(now())
 
   @@unique([assetId, timestamp, source])
+  @@index([assetId, timestamp])
+  @@index([listingId, timestamp])
+  @@index([source, timestamp])
 }
 
 enum PriceSource {
@@ -363,56 +505,83 @@ enum PriceSource {
   exchange
 }
 
-model InvestmentTransaction {
-  id                  String         @id @default(cuid())
-  date                DateTime
-  type                InvestmentType
-
-  assetId             String?
-  asset               Asset?         @relation(fields: [assetId], references: [id])
-  symbol              String?
-  isin                String?
-  name                String?
-  assetType           AssetType?
-
-  quantity            Decimal?       @db.Decimal(28, 10)
-  pricePerUnit        Decimal?       @db.Decimal(28, 10)
-  priceCurrency       String?
-
-  totalAmount         Decimal?       @db.Decimal(28, 10)
-  totalCurrency       String?
-
-  fee                 Decimal?       @db.Decimal(18, 6)
-  feeCurrency         String?
-
-  exchangeRate        Decimal?       @db.Decimal(18, 8)
-
-  orderId             String?
-  externalId          String?
-
-  realizedPnl         Decimal?       @db.Decimal(28, 10)
-  realizedPnlCurrency String?
-
+model InvestmentEvent {
+  id                  String               @id @default(cuid())
   accountId           String
-  account             Account        @relation(fields: [accountId], references: [id])
+  account             Account              @relation(fields: [accountId], references: [id])
+  type                InvestmentEventType
+  date                DateTime
+  source              ImportSource?
+  externalId          String?
+  orderId             String?
+  description         String?
+  realizedPnl         Decimal?             @db.Decimal(28, 10)
+  realizedPnlCurrency String?
   importBatchId       String?
-  importBatch         ImportBatch?   @relation(fields: [importBatchId], references: [id])
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  importBatch         ImportBatch?         @relation(fields: [importBatchId], references: [id])
+  movements           InvestmentMovement[]
+  archivedAt          DateTime?
+  deletedAt           DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([accountId, date])
+  @@index([accountId, externalId])
+  @@index([orderId])
+  @@index([importBatchId])
 }
 
-enum InvestmentType {
-  buy
-  sell
-  deposit
-  withdrawal
+model InvestmentMovement {
+  id              String                 @id @default(cuid())
+  eventId         String
+  event           InvestmentEvent        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         Account                @relation(fields: [accountId], references: [id])
+  assetId         String?
+  asset           Asset?                 @relation(fields: [assetId], references: [id])
+  kind            InvestmentMovementKind
+  direction       MovementDirection
+  quantity        Decimal                @db.Decimal(28, 10)
+  currency        String
+  pricePerUnit    Decimal?               @db.Decimal(28, 10)
+  valueAmount     Decimal?               @db.Decimal(28, 10)
+  valueCurrency   String?
+  sourceSymbol    String?
+  sourceAssetType AssetType?
+  note            String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@index([eventId])
+  @@index([accountId, createdAt])
+  @@index([assetId])
+  @@index([kind])
+}
+
+enum InvestmentEventType {
+  trade
+  cash_deposit
+  cash_withdrawal
   dividend
   interest
   currency_conversion
+  asset_transfer
+  fee
   staking_reward
   airdrop
+  adjustment
+}
+
+enum InvestmentMovementKind {
+  asset
+  cash
   fee
-  transfer
+  tax
+}
+
+enum MovementDirection {
+  in
+  out
 }
 
 enum AssetType {
@@ -441,9 +610,12 @@ model Holding {
   asset         Asset?    @relation(fields: [assetId], references: [id])
   accountId     String
   account       Account   @relation(fields: [accountId], references: [id])
+  calculatedAt  DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@unique([symbol, accountId])
+  @@index([accountId])
+  @@index([assetId])
 }
 
 // ─── Market Data ──────────────────────────────────────────────────────────────
@@ -458,6 +630,8 @@ model ExchangeRate {
   createdAt    DateTime           @default(now())
 
   @@unique([fromCurrency, toCurrency, date, source])
+  @@index([fromCurrency, toCurrency, date])
+  @@index([source, date])
 }
 
 enum ExchangeRateSource {
@@ -471,28 +645,33 @@ enum ExchangeRateSource {
 // ─── Import Domain ────────────────────────────────────────────────────────────
 
 model ImportBatch {
-  id                     String                  @id @default(cuid())
-  userId                 String
-  accountId              String
-  source                 ImportSource
-  filename               String
-  fileSize               Int?
-  fileEncoding           String?
-  checksum               String
-  status                 ImportStatus            @default(completed)
-  rowsTotal              Int?
-  rowsImported           Int?
-  rowsSkipped            Int?
-  createdAt              DateTime                @default(now())
-  completedAt            DateTime?
-  user                   User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  account                Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  transactions           Transaction[]
-  investmentTransactions InvestmentTransaction[]
-  importRows             ImportRow[]
-  importLogs             ImportLog[]
+  id               String            @id @default(cuid())
+  userId           String
+  accountId        String
+  source           ImportSource
+  filename         String
+  fileSize         Int?
+  fileEncoding     String?
+  checksum         String
+  status           ImportStatus      @default(completed)
+  rowsTotal        Int?
+  rowsImported     Int?
+  rowsSkipped      Int?
+  createdAt        DateTime          @default(now())
+  completedAt      DateTime?
+  retainUntil      DateTime?
+  rawDataPurgedAt  DateTime?
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions     Transaction[]
+  investmentEvents InvestmentEvent[]
+  importRows       ImportRow[]
+  importLogs       ImportLog[]
 
   @@unique([userId, accountId, checksum])
+  @@index([userId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([source, status])
 }
 
 enum ImportSource {
@@ -512,19 +691,23 @@ enum ImportStatus {
 }
 
 model ImportRow {
-  id                            String        @id @default(cuid())
-  importBatchId                 String
-  importBatch                   ImportBatch   @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
-  rowNumber                     Int
-  rawData                       Json
-  normalizedData                Json?
-  validationErrors              Json?
-  deduplicationKey              String?
-  status                        ImportRowStatus @default(pending)
-  errorMessage                  String?
-  createdTransactionId          String?
-  createdInvestmentTransactionId String?
-  createdAt                     DateTime      @default(now())
+  id                       String          @id @default(cuid())
+  importBatchId            String
+  importBatch              ImportBatch     @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  rowNumber                Int
+  rawData                  Json
+  normalizedData           Json?
+  validationErrors         Json?
+  deduplicationKey         String?
+  status                   ImportRowStatus @default(pending)
+  errorMessage             String?
+  createdTransactionId     String?
+  createdInvestmentEventId String?
+  createdAt                DateTime        @default(now())
+
+  @@unique([importBatchId, rowNumber])
+  @@index([importBatchId, status])
+  @@index([deduplicationKey])
 }
 
 enum ImportRowStatus {
@@ -544,6 +727,9 @@ model ImportLog {
   event         ImportLogEvent
   message       String?
   createdAt     DateTime       @default(now())
+
+  @@index([importBatchId, createdAt])
+  @@index([level, createdAt])
 }
 
 enum ImportLogLevel {
@@ -558,6 +744,8 @@ enum ImportLogEvent {
   validation_failed
   dedup_skipped
   holdings_recalculated
+  snapshots_recalculated
+  snapshot_validation_failed
   completed
   failed
 }
@@ -565,34 +753,25 @@ enum ImportLogEvent {
 // ─── Snapshot Domain ──────────────────────────────────────────────────────────
 
 model NetWorthSnapshot {
-  id               String   @id @default(cuid())
-  userId           String
-  user             User     @relation(fields: [userId], references: [id])
-  date             DateTime
-  currency         String   @default("CZK")
-  cashValue        Decimal  @db.Decimal(18, 6)
-  portfolioValue   Decimal  @db.Decimal(18, 6)
-  liabilitiesValue Decimal  @db.Decimal(18, 6)
-  totalNetWorth    Decimal  @db.Decimal(18, 6)
-  createdAt        DateTime @default(now())
-
-  @@unique([userId, date, currency])
-}
-
-model PortfolioSnapshot {
-  id           String                  @id @default(cuid())
-  userId       String
-  user         User                    @relation(fields: [userId], references: [id])
-  timestamp    DateTime
-  granularity  SnapshotGranularity
-  source       PortfolioSnapshotSource
-  currency     String                  @default("CZK")
-  totalValue   Decimal                 @db.Decimal(18, 6)
-  isRecalculated Boolean               @default(false)
-  items        PortfolioSnapshotItem[]
-  createdAt    DateTime                @default(now())
+  id                 String              @id @default(cuid())
+  userId             String
+  user               User                @relation(fields: [userId], references: [id])
+  timestamp          DateTime
+  granularity        SnapshotGranularity
+  source             SnapshotSource
+  currency           String              @default("CZK")
+  cashValue          Decimal             @db.Decimal(18, 6)
+  portfolioValue     Decimal             @db.Decimal(18, 6)
+  liabilitiesValue   Decimal             @db.Decimal(18, 6)
+  totalNetWorth      Decimal             @db.Decimal(18, 6)
+  isRecalculated     Boolean             @default(false)
+  calculatedAt       DateTime            @default(now())
+  calculationVersion Int                 @default(1)
+  createdAt          DateTime            @default(now())
 
   @@unique([userId, timestamp, currency, granularity])
+  @@index([userId, granularity, timestamp])
+  @@index([source, timestamp])
 }
 
 enum SnapshotGranularity {
@@ -603,7 +782,7 @@ enum SnapshotGranularity {
   month
 }
 
-enum PortfolioSnapshotSource {
+enum SnapshotSource {
   import_event
   price_refresh
   holdings_recalculation
@@ -611,20 +790,48 @@ enum PortfolioSnapshotSource {
   manual_recalculation
 }
 
-model PortfolioSnapshotItem {
-  id               String            @id @default(cuid())
-  snapshotId       String
-  snapshot         PortfolioSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  assetId          String?
-  asset            Asset?            @relation(fields: [assetId], references: [id])
-  symbol           String
-  accountId        String
-  account          Account           @relation(fields: [accountId], references: [id])
-  quantity         Decimal           @db.Decimal(28, 10)
-  pricePerUnit     Decimal           @db.Decimal(28, 10)
-  value            Decimal           @db.Decimal(18, 6)
-  allocationPct    Decimal           @db.Decimal(8, 4)
-  createdAt        DateTime          @default(now())
+model AccountSnapshot {
+  id                  String                @id @default(cuid())
+  accountId           String
+  account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  timestamp           DateTime
+  granularity         SnapshotGranularity
+  source              SnapshotSource
+  currency            String                @default("CZK")
+  cashValue           Decimal               @db.Decimal(18, 6)
+  investmentValue     Decimal               @db.Decimal(18, 6)
+  investmentCostBasis Decimal               @default(0) @db.Decimal(18, 6)
+  liabilitiesValue    Decimal               @db.Decimal(18, 6)
+  totalValue          Decimal               @db.Decimal(18, 6)
+  isRecalculated      Boolean               @default(false)
+  calculatedAt        DateTime              @default(now())
+  calculationVersion  Int                   @default(1)
+  items               AccountSnapshotItem[]
+  createdAt           DateTime              @default(now())
 
-  @@unique([snapshotId, symbol, accountId])
+  @@unique([accountId, timestamp, currency, granularity])
+  @@index([accountId, granularity, timestamp])
+  @@index([source, timestamp])
+}
+
+model AccountSnapshotItem {
+  id             String          @id @default(cuid())
+  snapshotId     String
+  snapshot       AccountSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  assetId        String?
+  asset          Asset?          @relation(fields: [assetId], references: [id])
+  symbol         String
+  quantity       Decimal         @db.Decimal(28, 10)
+  pricePerUnit   Decimal         @db.Decimal(28, 10)
+  priceCurrency  String?
+  priceSource    PriceSource?
+  priceTimestamp DateTime?
+  value          Decimal         @db.Decimal(18, 6)
+  costBasis      Decimal?        @db.Decimal(28, 10)
+  costCurrency   String?
+  allocationPct  Decimal         @db.Decimal(8, 4)
+  createdAt      DateTime        @default(now())
+
+  @@unique([snapshotId, symbol])
+  @@index([assetId])
 }

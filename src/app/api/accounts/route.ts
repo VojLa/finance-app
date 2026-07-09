@@ -3,30 +3,34 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { assertAccountAccess } from "@/lib/accountAccess"
+
+async function getExistingSessionUserId(sessionUserId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: sessionUserId },
+    select: { id: true },
+  })
+  return user?.id ?? null
+}
 
 export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const [ownAccounts, sharedEntries] = await Promise.all([
-    prisma.account.findMany({
-      where: { userId: session.user.id },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.accountShare.findMany({
-      where: { sharedWithId: session.user.id },
-      include: { account: true },
-    }),
-  ])
+  const memberships = await prisma.accountMember.findMany({
+    where: { userId: session.user.id },
+    include: { account: true },
+    orderBy: { createdAt: "asc" },
+  })
 
-  const sharedAccounts = sharedEntries.map((s) => ({
-    ...s.account,
-    isShared: true,
-    shareRole: s.role,
-    ownerEmail: undefined,
-  }))
-
-  return NextResponse.json([...ownAccounts, ...sharedAccounts])
+  return NextResponse.json(
+    memberships.map((membership) => ({
+      ...membership.account,
+      isShared: membership.role !== "owner",
+      shareRole: membership.role,
+      relationType: membership.relationType,
+    }))
+  )
 }
 
 export async function POST(req: NextRequest) {
@@ -54,9 +58,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Neplatný typ účtu" }, { status: 400 })
   }
 
+  const userId = await getExistingSessionUserId(session.user.id)
+  if (!userId) {
+    return NextResponse.json(
+      { error: "Session odkazuje na neexistujiciho uzivatele. Prihlas se prosim znovu." },
+      { status: 401 }
+    )
+  }
+
   try {
     const account = await prisma.account.create({
-      data: { name, type, currency, color: color || null, userId: session.user.id },
+      data: {
+        name,
+        type,
+        currency,
+        color: color || null,
+        members: {
+          create: {
+            userId,
+            role: "owner",
+            relationType: "owner",
+            acceptedAt: new Date(),
+          },
+        },
+      },
     })
     return NextResponse.json(account, { status: 201 })
   } catch (err) {
@@ -73,7 +98,10 @@ export async function PATCH(req: NextRequest) {
   const id = searchParams.get("id")
   if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
 
-  const account = await prisma.account.findFirst({ where: { id, userId: session.user.id } })
+  const hasAccess = await assertAccountAccess(id, session.user.id, "admin")
+  if (!hasAccess) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
+
+  const account = await prisma.account.findUnique({ where: { id } })
   if (!account) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
 
   const { name, type, currency, color } = await req.json()
@@ -99,8 +127,8 @@ export async function DELETE(req: NextRequest) {
   const id = searchParams.get("id")
   if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
 
-  const account = await prisma.account.findFirst({ where: { id, userId: session.user.id } })
-  if (!account) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
+  const hasAccess = await assertAccountAccess(id, session.user.id, "owner")
+  if (!hasAccess) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
 
   const transactions = await prisma.transaction.findMany({
     where: { accountId: id },
@@ -117,9 +145,10 @@ export async function DELETE(req: NextRequest) {
         ],
       },
     }),
-    prisma.portfolioSnapshotItem.deleteMany({ where: { accountId: id } }),
+    prisma.accountSnapshot.deleteMany({ where: { accountId: id } }),
+    prisma.transactionSplit.deleteMany({ where: { transactionId: { in: transactionIds } } }),
     prisma.transaction.deleteMany({ where: { accountId: id } }),
-    prisma.investmentTransaction.deleteMany({ where: { accountId: id } }),
+    prisma.investmentEvent.deleteMany({ where: { accountId: id } }),
     prisma.holding.deleteMany({ where: { accountId: id } }),
     prisma.importBatch.deleteMany({ where: { accountId: id } }),
     prisma.account.delete({ where: { id } }),

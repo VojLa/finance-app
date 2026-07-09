@@ -1,47 +1,48 @@
 import { prisma } from "@/lib/prisma"
 
-/**
- * Returns all account IDs the user can access (owned + shared).
- * minRole "editor" excludes viewer-only shares.
- */
-export async function getAccessibleAccountIds(
-  userId: string,
-  minRole: "viewer" | "editor" = "viewer"
-): Promise<string[]> {
-  const [ownAccounts, sharedAccounts] = await Promise.all([
-    prisma.account.findMany({ where: { userId }, select: { id: true } }),
-    prisma.accountShare.findMany({
-      where: {
-        sharedWithId: userId,
-        ...(minRole === "editor" ? { role: "editor" } : {}),
-      },
-      select: { accountId: true },
-    }),
-  ])
-  return [...ownAccounts.map((a) => a.id), ...sharedAccounts.map((s) => s.accountId)]
+export type AccountAccessRole = "viewer" | "editor" | "admin" | "owner"
+
+const ROLE_RANK: Record<AccountAccessRole, number> = {
+  viewer: 1,
+  editor: 2,
+  admin: 3,
+  owner: 4,
 }
 
-/**
- * Returns true if the user owns the account or has a share with at least the given role.
- */
+function allowedRoles(minRole: AccountAccessRole): AccountAccessRole[] {
+  return (Object.keys(ROLE_RANK) as AccountAccessRole[]).filter(
+    (role) => ROLE_RANK[role] >= ROLE_RANK[minRole]
+  )
+}
+
+export async function getAccessibleAccountIds(
+  userId: string,
+  minRole: AccountAccessRole = "viewer"
+): Promise<string[]> {
+  const memberships = await prisma.accountMember.findMany({
+    where: {
+      userId,
+      role: { in: allowedRoles(minRole) },
+    },
+    select: { accountId: true },
+  })
+
+  return memberships.map((membership) => membership.accountId)
+}
+
 export async function assertAccountAccess(
   accountId: string,
   userId: string,
-  minRole: "viewer" | "editor" = "viewer"
+  minRole: AccountAccessRole = "viewer"
 ): Promise<boolean> {
-  const ownAccount = await prisma.account.findFirst({
-    where: { id: accountId, userId },
-    select: { id: true },
-  })
-  if (ownAccount) return true
-
-  const share = await prisma.accountShare.findFirst({
+  const membership = await prisma.accountMember.findFirst({
     where: {
       accountId,
-      sharedWithId: userId,
-      ...(minRole === "editor" ? { role: "editor" } : {}),
+      userId,
+      role: { in: allowedRoles(minRole) },
     },
     select: { id: true },
   })
-  return share !== null
+
+  return membership !== null
 }

@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { assertAccountAccess } from "@/lib/accountAccess"
 import { parseRaiffeisenbank } from "@/imports/raiffeisenbank/parser"
 
 export async function POST(req: NextRequest) {
@@ -18,10 +19,8 @@ export async function POST(req: NextRequest) {
   if (typeof accountId !== "string" || !accountId)
     return NextResponse.json({ error: "Missing accountId" }, { status: 400 })
 
-  const account = await prisma.account.findFirst({
-    where: { id: accountId, userId: session.user.id },
-  })
-  if (!account) return NextResponse.json({ error: "Account not found" }, { status: 404 })
+  const hasAccess = await assertAccountAccess(accountId, session.user.id, "editor")
+  if (!hasAccess) return NextResponse.json({ error: "Account not found" }, { status: 404 })
 
   const csvText = await file.text()
   const rows = parseRaiffeisenbank(csvText, accountId)
