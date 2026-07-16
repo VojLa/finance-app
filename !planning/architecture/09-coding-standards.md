@@ -21,6 +21,26 @@ Tento dokument nastavuje vyvojarske standardy pro backend, frontend i testy. Cil
 - funkce pojmenovavat podle use-case, ne podle detailu implementace
 - vyhybat se zkratkam bez jasneho vyznamu
 
+### Folder naming
+
+- slozky pojmenovavat konzistentne malymi pismeny
+- backend moduly pojmenovavat podle domen, napr. `imports`, `ledger`, `snapshots`
+
+### File naming
+
+- soubory pojmenovavat predvidatelne podle role, napr. `service.py`, `repository.py`, `contracts.py`
+- nepojmenovavat soubory podle docasnych implementacnich detailu
+
+### Class naming
+
+- tridy pojmenovavat podle domenoveho vyznamu
+- vyhybat se generickym nazvum jako `Manager`, `Helper`, `Processor`, pokud nejde o opravdu technickou roli
+
+### Method naming
+
+- metody pojmenovavat podle vysledku nebo use-case
+- preferovat `create_import_batch`, `rebuild_snapshots`, `get_portfolio_read_model` pred neurcitymi nazvy
+
 ---
 
 ## Modulova struktura
@@ -29,6 +49,19 @@ Tento dokument nastavuje vyvojarske standardy pro backend, frontend i testy. Cil
 - orchestrace patri do service vrstvy
 - persistence patri do repository vrstvy
 - DTO a kontrakty maji byt explicitni
+
+### Import rules
+
+- importovat jen to, co modul skutecne potrebuje
+- omezovat cyclic dependencies
+- frontend nesmi importovat backend business logiku
+
+### Dependency direction
+
+- UI zavisi na kontraktech, ne na backend implementaci
+- API zavisi na modulech
+- read modely zavisi na canonical datech, ne obracene
+- shared utility nesmi zavadet zpetnou business zavislost
 
 ---
 

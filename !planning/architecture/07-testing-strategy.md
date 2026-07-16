@@ -34,12 +34,43 @@ Pouziti:
 - parser parity
 - regression ochrana proti rozbiti importu
 
+### Contract testy
+
+Pouziti:
+
+- API response shape
+- shared contracts mezi frontendem a backendem
+- stabilita async job status endpointu
+
+### Snapshot testy
+
+Pouziti:
+
+- historicke casove rady
+- read model payload shape tam, kde je to uzitecne
+- ochrana proti rozbiti stabilnich projekci
+
 ### Snapshot a ledger parity testy
 
 Pouziti:
 
 - porovnani canonical historie a odvozenych vysledku
 - kontrola, ze holdings a snapshots odpovidaji ledgeru
+
+### Parser parity testy
+
+Pouziti:
+
+- porovnani nove parser implementace proti existujicimu ocekavanemu vysledku
+- kontrola, ze stejny vstup vraci stejny canonical vystup i po refaktoru
+
+### Performance testy
+
+Pouziti:
+
+- velke import batch scenare
+- snapshot rebuild pri velkem poctu transakci
+- Python -> Rust boundary overhead
 
 ### End-to-end smoke testy
 
@@ -53,6 +84,7 @@ Pouziti:
 ## Povinne oblasti testovani
 
 - parsery
+- parser parity
 - import idempotence
 - multi-file import
 - append-only ledger opravy
@@ -61,6 +93,8 @@ Pouziti:
 - snapshot rebuild a live continuation
 - portfolio a dashboard konzistence
 - reconciliation drift detection
+- async job contracty
+- performance kritickych use-cases
 
 ---
 
@@ -78,6 +112,8 @@ Pouziti:
 1. canonical data
 2. odvozene vypocty
 3. API kontrakty
-4. UI smoke flow
+4. parser parity a fixture coverage
+5. performance kritickych cest
+6. UI smoke flow
 
 Pokud je konflikt mezi mnozstvim testu a kvalitou testu, priorita je pokryt canonical a vypocetni vrstvy.

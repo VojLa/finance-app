@@ -50,6 +50,11 @@ backend/
         schemas/
         tests/
 
+shared_contracts/
+    api/
+    import_formats/
+    read_models/
+
 engine/
     rust/
         crates/
@@ -68,10 +73,18 @@ docs/
 
 - kazdy backend modul ma mit vlastni service boundary
 - `shared/` nesmi obsahovat business logiku
+- `shared_contracts/` je samostatna vrstva vedle `frontend/` a `backend/`, ne uvnitr backend shared
 - `api/` ma byt tenka vrstva nad moduly
 - `jobs/` orchestruje, ale nevlastni business pravidla
 - `schemas/` drzi Pydantic kontrakty
 - `db/` drzi DB integraci, ne domenove rozhodovani
+
+Pravidla pro `shared_contracts/`:
+
+- drzi pouze stabilni kontrakty mezi frontendem a backendem
+- nesmi drzet business logiku
+- nesmi se zmenit nahodne bez kontroly dopadu na obe strany
+- patri sem jen to, co opravdu potrebuji obe vrstvy
 
 ---
 
@@ -106,3 +119,4 @@ Dokud projekt bezi hybridne:
 
 - nova business logika patri uz do budoucich backend modulu, ne do novych `Next.js` route handleru
 - `Next.js` route muze byt docasny adapter, ale ne dlouhodoby vlastnik logiky
+- pokud frontend a backend sdili DTO nebo read model shape, ma jit jejich stabilni definice do `shared_contracts/`, ne do nahodne utility slozky

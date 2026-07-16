@@ -16,6 +16,18 @@ Pokud `03-modules.md` rika, kdo co vlastni, `05-domain-model.md` rika, jaka data
 - Vztahy musi byt odvoditelne z produktu, ne jen z technicke implementace.
 - Invarianty jsou stejne dulezite jako samotna pole.
 
+## Terminology lock
+
+- `LedgerEvent` je canonical udalost
+- `LedgerMovement` je atomicky pohyb uvnitr canonical udalosti
+- `Holding` je aktualni odvozeny stav
+- `AccountSnapshot` je historicky point-in-time stav jednoho uctu
+- `NetWorthSnapshot` je agregovany point-in-time stav napric ucty
+- `Read Models` je skupina ctecich projekci jako `Portfolio Read Model` a `Dashboard Read Model`
+- `Institution` je identita zdroje importu
+- `Asset` je canonical identita aktiva
+- `AssetListing` je konkretni obchodovatelna nebo provider-specific podoba aktiva
+
 ---
 
 ## Hlavni entity
@@ -90,10 +102,12 @@ Zivotni cyklus:
 
 - pridani do katalogu podporovanych instituci
 - rozsireni o nove exportni varianty
+- pripadne deaktivace nebo oznaceni, ze exportni format je zastaraly
 
 Invarianty:
 
 - parser pravidla se musi vazat ke konkretni instituci nebo exportnimu formatu
+- jedna instituce muze mit vice exportnich variant a vice parser pravidel v case
 
 ### ImportBatch
 
@@ -351,9 +365,17 @@ Vztahy:
 - vztahuje se k `Asset` nebo `AssetListing`
 - promita se do `LedgerEvent`
 
+Zivotni cyklus:
+
+- vznik z interni evidence, provider dat nebo manualniho potvrzeni
+- validace, ze se vztahuje ke spravne asset identite
+- projekce do canonical zmeny v `Ledger`
+- archivace jako historicka trzni udalost
+
 Invarianty:
 
 - pokud meni ekonomickou realitu pozice, musi se nakonec projevit canonical zmenou v ledgeru
+- nesmi existovat jen jako "informace bokem", pokud ma realny dopad do mnozstvi nebo cost basis
 
 ### ReconciliationRun
 
@@ -366,11 +388,19 @@ Vlastnik:
 Vztahy:
 
 - patri k `Account`
-- porovnava `Holding`, `Ledger`, `Snapshot` a externi statement
+- porovnava `Holding`, `Ledger`, `AccountSnapshot` a externi statement
+
+Zivotni cyklus:
+
+- spusteni manualne nebo automaticky
+- porovnani interniho stavu s externim statementem
+- vznik findings a drift stavu
+- oznaceni jako resolved, ignored nebo escalated podle dalsiho workflow
 
 Invarianty:
 
 - nesmi potichu menit canonical historii
+- musi byt dohledatelne, podle jakych dat a ke kteremu okamziku porovnani probehlo
 
 ### Notification
 
@@ -380,9 +410,17 @@ Uzivatelska nebo systemova notifikace vyvolana udalosti.
 Vlastnik:
 `Notifications`
 
+Zivotni cyklus:
+
+- vznik z backendove udalosti nebo jobu
+- queued nebo scheduled delivery
+- delivered, failed nebo dismissed stav podle typu notifikace
+- pripadna expirace nebo archivace
+
 Invarianty:
 
 - notifikace nesmi byt source of truth business stavu
+- notifikace musi byt odvoditelna z udalosti, ne naopak
 
 ### AuditLog
 
@@ -392,9 +430,16 @@ Dohledatelna stopa zmen a operaci.
 Vlastnik:
 `Audit`
 
+Zivotni cyklus:
+
+- vznik pri zmene, importu, jobu nebo systemove udalosti
+- ulozeni s metadaty o puvodu a case
+- retention nebo archivace podle budouci politiky
+
 Invarianty:
 
 - audit nenahrazuje canonical data
+- audit zaznam musi byt readonly z pohledu bezne business logiky
 
 ---
 

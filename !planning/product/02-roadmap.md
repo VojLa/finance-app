@@ -40,7 +40,12 @@ Co musi byt hotove:
 - `Domain Model`,
 - `Roadmap`,
 - `Scope`,
-- `Architecture`.
+- `Architecture`,
+- `Project Structure`,
+- `Testing Strategy`,
+- `API Guidelines`,
+- `Coding Standards`,
+- `Development Workflow`.
 
 Proc je tato faze uplne prvni:
 Bez predem rozhodnutych hranic se implementace rychle rozjede do chaosu a zacne se architektura prepisovat za pochodu.
@@ -51,6 +56,21 @@ Hlavni rizika:
 - chybejici hranice mezi moduly,
 - scope bez priorit,
 - implementace pred rozhodnutim zakladnich pravidel.
+
+---
+
+## Definition of Ready pro implementaci
+
+Implementacni prace je pripravljena ke startu jen tehdy, kdyz:
+
+- existuje relevantni planning dokument nebo scope rozhodnuti,
+- je jasne, do ktere domeny nebo modulu vec patri,
+- je znamy owner dat a source of truth,
+- je rozhodnute, jestli jde o canonical data, odvozeny vypocet nebo read model,
+- je jasne, jak bude vec testovana,
+- nejsou otevrene zakladni architektonicke nejasnosti.
+
+Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ---
 
