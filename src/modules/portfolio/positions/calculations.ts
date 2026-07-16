@@ -27,6 +27,8 @@ export async function recalculateHoldings(
   const positions: Record<
     string,
     {
+      listingId: string
+      symbol: string
       quantity: number
       totalCost: number
       currency: string
@@ -42,10 +44,13 @@ export async function recalculateHoldings(
 
   for (const event of events) {
     const asset = assetMovement(event)
-    if (!asset?.sourceSymbol) continue
+    if (!asset?.sourceSymbol || !asset.listingId) continue
 
     const symbol = asset.sourceSymbol
-    positions[symbol] ||= {
+    const key = asset.listingId
+    positions[key] ||= {
+      listingId: asset.listingId,
+      symbol,
       quantity: 0,
       totalCost: 0,
       currency: asset.valueCurrency ?? asset.currency ?? "EUR",
@@ -56,22 +61,28 @@ export async function recalculateHoldings(
       realizedPnlCurrency: asset.valueCurrency ?? null,
     }
 
-    const pos = positions[symbol]
+    const pos = positions[key]
     const qty = toNum(asset.quantity)
     const cash = cashMovement(event)
     const cashValue = cash ? toNum(cash.quantity) : toNum(asset.valueAmount)
     const price = toNum(asset.pricePerUnit) || (qty > 0 ? cashValue / qty : 0)
 
     if (asset.direction === "in") {
+      if (asset.valueCurrency && price > 0 && pos.totalCost === 0) {
+        pos.currency = asset.valueCurrency
+        pos.realizedPnlCurrency = asset.valueCurrency
+      }
       pos.quantity += qty
       if (price > 0) pos.totalCost += qty * price
       continue
     }
 
     const avgPrice = pos.quantity > 0 ? pos.totalCost / pos.quantity : 0
-    const realizedPnl = (price - avgPrice) * qty
-    pos.realizedPnl += realizedPnl
-    pos.realizedPnlCurrency = asset.valueCurrency ?? pos.currency
+    const realizedPnl = event.type === "trade" ? (price - avgPrice) * qty : 0
+    if (event.type === "trade") {
+      pos.realizedPnl += realizedPnl
+      pos.realizedPnlCurrency = asset.valueCurrency ?? pos.currency
+    }
     pos.totalCost -= qty * avgPrice
     pos.quantity -= qty
 
@@ -85,17 +96,17 @@ export async function recalculateHoldings(
   }
 
   const warnings: { symbol: string; quantity: number }[] = []
-  for (const [symbol, pos] of Object.entries(positions)) {
-    if (pos.quantity < -0.000001) warnings.push({ symbol, quantity: pos.quantity })
+  for (const pos of Object.values(positions)) {
+    if (pos.quantity < -0.000001) warnings.push({ symbol: pos.symbol, quantity: pos.quantity })
   }
 
-  const keepSymbols = Object.keys(positions).filter((s) => positions[s].quantity > 0.000001)
+  const keepListingIds = Object.keys(positions).filter((id) => positions[id].quantity > 0.000001)
 
   await prisma.$transaction(async (tx) => {
-    for (const [symbol, pos] of Object.entries(positions)) {
+    for (const [listingId, pos] of Object.entries(positions)) {
       if (pos.quantity > 0.000001) {
         await tx.holding.upsert({
-          where: { symbol_accountId: { symbol, accountId } },
+          where: { accountId_listingId: { accountId, listingId } },
           update: {
             quantity: pos.quantity,
             avgBuyPrice: pos.totalCost / pos.quantity,
@@ -103,16 +114,18 @@ export async function recalculateHoldings(
             assetType: pos.assetType,
             name: pos.name,
             assetId: pos.assetId,
+            listingId: pos.listingId,
             realizedPnl: pos.realizedPnl,
           },
           create: {
-            symbol,
+            symbol: pos.symbol,
             name: pos.name,
             quantity: pos.quantity,
             avgBuyPrice: pos.totalCost / pos.quantity,
             currency: pos.currency,
             assetType: pos.assetType,
             assetId: pos.assetId,
+            listingId: pos.listingId,
             accountId,
             realizedPnl: pos.realizedPnl,
           },
@@ -121,7 +134,7 @@ export async function recalculateHoldings(
     }
 
     await tx.holding.deleteMany({
-      where: { accountId, symbol: { notIn: keepSymbols } },
+      where: { accountId, listingId: { notIn: keepListingIds } },
     })
 
     for (const upd of realizedPnlUpdates) {

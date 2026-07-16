@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma"
-import { getHistoricalPrices } from "@/modules/portfolio/rates/service"
+import { getHistoricalPrices, priceLookupKey } from "@/modules/portfolio/rates/service"
 
 function todayEnd(date = new Date()) {
   const end = new Date(date)
@@ -19,6 +19,7 @@ async function main() {
       sourceAssetType: true,
       valueCurrency: true,
       currency: true,
+      listingId: true,
       event: { select: { date: true } },
     },
     orderBy: { event: { date: "asc" } },
@@ -26,21 +27,23 @@ async function main() {
 
   const bySymbol = new Map<
     string,
-    { symbol: string; assetType: string; currency: string; start: Date }
+    { symbol: string; assetType: string; currency: string; listingId: string | null; start: Date }
   >()
 
   for (const movement of movements) {
     if (!movement.sourceSymbol) continue
 
     const symbol = movement.sourceSymbol.toUpperCase()
-    const existing = bySymbol.get(symbol)
+    const key = movement.listingId ?? symbol
+    const existing = bySymbol.get(key)
     const start = movement.event.date
     if (existing && existing.start <= start) continue
 
-    bySymbol.set(symbol, {
+    bySymbol.set(key, {
       symbol,
       assetType: movement.sourceAssetType ?? "stock",
       currency: movement.valueCurrency ?? movement.currency,
+      listingId: movement.listingId,
       start,
     })
   }
@@ -50,11 +53,18 @@ async function main() {
 
   for (const item of symbols) {
     const result = await getHistoricalPrices(
-      [{ symbol: item.symbol, assetType: item.assetType, currency: item.currency }],
+      [
+        {
+          symbol: item.symbol,
+          assetType: item.assetType,
+          currency: item.currency,
+          listingId: item.listingId,
+        },
+      ],
       item.start,
       todayEnd()
     )
-    console.log(`${item.symbol}: ${result[item.symbol]?.length ?? 0} price points`)
+    console.log(`${item.symbol}: ${result[priceLookupKey(item)]?.length ?? 0} price points`)
   }
 }
 

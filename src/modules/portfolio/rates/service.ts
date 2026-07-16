@@ -30,41 +30,73 @@ const DEFAULT_PRICE_ALIASES: Record<string, Partial<Record<AssetAliasProvider, s
   VWCE: { yahoo_finance: ["VWCE.DE"], stooq: ["vwce.de"] },
 }
 
-type LivePrice = { price: number; currency: string; source: PriceSource }
+type LivePrice = {
+  price: number
+  currency: string
+  source: PriceSource
+  providerSymbol?: string | null
+  listingId?: string | null
+}
 type PublicPrice = { price: number; currency: string }
 export type HistoricalPricePoint = {
   date: Date
   price: number
   currency: string
   source: PriceSource
+  providerSymbol?: string | null
 }
 type CzkRates = Record<string, number>
 type ProviderAliases = Partial<Record<AssetAliasProvider, string[]>>
+type PriceLookupInput = {
+  symbol: string
+  assetType: string
+  currency: string
+  listingId?: string | null
+}
 
 const PRICE_TTL = 15 * 60 * 1000
 const FX_TTL = 4 * 60 * 60 * 1000
+const YAHOO_EXCHANGE_RATE_SOURCE: ExchangeRateSource = "yahoo_finance"
+const DEFAULT_FX_CURRENCIES = [
+  "EUR",
+  "USD",
+  "GBP",
+  "CHF",
+  "PLN",
+  "HUF",
+  "AUD",
+  "CAD",
+  "JPY",
+  "SEK",
+  "NOK",
+  "DKK",
+]
 
 const priceCache: Record<
   string,
-  { price: number; currency: string; source: PriceSource; ts: number }
+  {
+    price: number
+    currency: string
+    source: PriceSource
+    providerSymbol?: string | null
+    listingId?: string | null
+    ts: number
+  }
 > = {}
 let czkRatesCache: { rates: CzkRates; ts: number } | null = null
 let czkRatesFetch: Promise<CzkRates> | null = null
-
-const CNB_URL =
-  "https://www.cnb.cz/cs/financni-trhy/devizovy-trh/kurzy-devizoveho-trhu/kurzy-devizoveho-trhu/denni_kurz.txt"
 
 export function clearPriceCache() {
   for (const key of Object.keys(priceCache)) delete priceCache[key]
 }
 
 function todayStart(date = new Date()): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 }
 
 function addDays(date: Date, days: number): Date {
   const next = new Date(date)
-  next.setDate(next.getDate() + days)
+  next.setUTCDate(next.getUTCDate() + days)
   return next
 }
 
@@ -72,12 +104,16 @@ function cacheKey(symbol: string, assetType: string): string {
   return `${symbol.toUpperCase()}:${assetType}`
 }
 
+export function priceLookupKey(input: PriceLookupInput): string {
+  return input.listingId ?? `${input.symbol.toUpperCase()}:${input.assetType}:${input.currency}`
+}
+
 function unique(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)))]
 }
 
 async function getAssetAliases(symbol: string): Promise<ProviderAliases> {
-  const asset = await prisma.asset.findUnique({
+  const asset = await prisma.asset.findFirst({
     where: { symbol: symbol.toUpperCase() },
     include: { aliases: true },
   })
@@ -99,14 +135,15 @@ async function getAssetAliases(symbol: string): Promise<ProviderAliases> {
 }
 
 async function ensureAsset(symbol: string, assetType: string, currency: string) {
-  return prisma.asset.upsert({
-    where: { symbol: symbol.toUpperCase() },
-    update: {
-      assetType: assetType as AssetType,
-      currency,
-    },
-    create: {
-      symbol: symbol.toUpperCase(),
+  const normalizedSymbol = symbol.toUpperCase()
+  const existing = await prisma.asset.findFirst({
+    where: { symbol: normalizedSymbol, assetType: assetType as AssetType },
+  })
+  if (existing) return existing
+
+  return prisma.asset.create({
+    data: {
+      symbol: normalizedSymbol,
       assetType: assetType as AssetType,
       currency,
     },
@@ -117,50 +154,106 @@ async function ensureAssetListing(
   assetId: string,
   symbol: string,
   currency: string,
-  source: PriceSource
+  source: PriceSource,
+  providerSymbol?: string | null
 ) {
-  return prisma.assetListing.upsert({
-    where: {
-      assetId_symbol_exchange_currency: {
+  const normalizedSymbol = symbol.toUpperCase()
+  const normalizedProviderSymbol = (providerSymbol ?? symbol).toUpperCase()
+  const findExisting = async () => {
+    const byProvider = await prisma.assetListing.findUnique({
+      where: {
+        provider_providerSymbol_currency: {
+          provider: source,
+          providerSymbol: normalizedProviderSymbol,
+          currency,
+        },
+      },
+    })
+    if (byProvider) return byProvider
+
+    const byAssetIdentity = await prisma.assetListing.findFirst({
+      where: {
         assetId,
-        symbol: symbol.toUpperCase(),
+        symbol: normalizedSymbol,
         exchange: source,
         currency,
       },
+    })
+    if (byAssetIdentity) return byAssetIdentity
+
+    return prisma.assetListing.findFirst({
+      where: {
+        symbol: normalizedSymbol,
+        exchange: source,
+        currency,
+      },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
+    })
+  }
+
+  const existing = await findExisting()
+  if (existing) return existing
+
+  try {
+    return await prisma.assetListing.create({
+      data: {
+        assetId,
+        symbol: normalizedSymbol,
+        exchange: source,
+        currency,
+        provider: source,
+        providerSymbol: normalizedProviderSymbol,
+        isPrimary: true,
+      },
+    })
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "P2002") {
+      const existingAfterRace = await findExisting()
+      if (existingAfterRace) return existingAfterRace
+    }
+
+    throw error
+  }
+}
+
+async function findPriceListing(input: PriceLookupInput) {
+  if (input.listingId) {
+    return prisma.assetListing.findUnique({
+      where: { id: input.listingId },
+      include: { asset: true },
+    })
+  }
+
+  const symbol = input.symbol.toUpperCase()
+  return prisma.assetListing.findFirst({
+    where: {
+      currency: input.currency,
+      asset: { assetType: input.assetType as AssetType },
+      OR: [{ symbol }, { providerSymbol: symbol }],
     },
-    update: {
-      provider: source,
-      providerSymbol: symbol.toUpperCase(),
-    },
-    create: {
-      assetId,
-      symbol: symbol.toUpperCase(),
-      exchange: source,
-      currency,
-      provider: source,
-      providerSymbol: symbol.toUpperCase(),
-      isPrimary: true,
-    },
+    include: { asset: true },
+    orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
   })
 }
 
 async function getStoredLivePrice(
-  symbol: string,
-  assetType: string,
+  input: PriceLookupInput,
   maxAgeMs: number
 ): Promise<LivePrice | null> {
-  const asset = await prisma.asset.findUnique({
-    where: { symbol: symbol.toUpperCase() },
-    select: { id: true },
-  })
-  if (!asset) return null
-
+  const listing = await findPriceListing(input)
+  if (!listing) return null
   const minTimestamp = new Date(Date.now() - maxAgeMs)
   const snapshot = await prisma.priceSnapshot.findFirst({
-    where: {
-      assetId: asset.id,
-      timestamp: { gte: minTimestamp },
-    },
+    where: input.listingId
+      ? {
+          OR: [{ listingId: listing.id }, { assetId: listing.assetId }],
+          timestamp: { gte: minTimestamp },
+        }
+      : {
+          currency: input.currency,
+          OR: [{ listingId: listing.id }, { assetId: listing.assetId }],
+          timestamp: { gte: minTimestamp },
+        },
     orderBy: { timestamp: "desc" },
   })
 
@@ -170,6 +263,8 @@ async function getStoredLivePrice(
     price: toNum(snapshot.price),
     currency: snapshot.currency,
     source: snapshot.source,
+    providerSymbol: listing.providerSymbol,
+    listingId: listing.id,
   }
 }
 
@@ -177,36 +272,78 @@ async function storePriceSnapshot(
   symbol: string,
   assetType: string,
   fallbackCurrency: string,
-  data: LivePrice
-): Promise<void> {
-  const asset = await ensureAsset(symbol, assetType, data.currency || fallbackCurrency)
-  const listing = await ensureAssetListing(asset.id, symbol, data.currency, data.source)
+  data: LivePrice,
+  listingId?: string | null
+): Promise<LivePrice> {
+  const existingListing = listingId
+    ? await prisma.assetListing.findUnique({ where: { id: listingId }, include: { asset: true } })
+    : null
+  const asset =
+    existingListing?.asset ??
+    (await ensureAsset(symbol, assetType, data.currency || fallbackCurrency))
+  const listing =
+    existingListing ??
+    (await ensureAssetListing(
+      asset.id,
+      data.providerSymbol ?? symbol,
+      data.currency,
+      data.source,
+      data.providerSymbol
+    ))
 
-  await prisma.priceSnapshot.create({
-    data: {
+  const timestamp = new Date()
+  await prisma.priceSnapshot.upsert({
+    where: {
+      listingId_timestamp_source: {
+        listingId: listing.id,
+        timestamp,
+        source: data.source,
+      },
+    },
+    update: {
+      price: data.price,
+      currency: data.currency,
+    },
+    create: {
       assetId: asset.id,
       listingId: listing.id,
       price: data.price,
       currency: data.currency,
       source: data.source,
-      timestamp: new Date(),
+      timestamp,
     },
   })
+
+  return { ...data, listingId: listing.id }
 }
 
 async function storePriceSnapshotAt(
   symbol: string,
   assetType: string,
   fallbackCurrency: string,
-  data: HistoricalPricePoint
+  data: HistoricalPricePoint,
+  listingId?: string | null
 ): Promise<void> {
-  const asset = await ensureAsset(symbol, assetType, data.currency || fallbackCurrency)
-  const listing = await ensureAssetListing(asset.id, symbol, data.currency, data.source)
+  const existingListing = listingId
+    ? await prisma.assetListing.findUnique({ where: { id: listingId }, include: { asset: true } })
+    : null
+  const asset =
+    existingListing?.asset ??
+    (await ensureAsset(symbol, assetType, data.currency || fallbackCurrency))
+  const listing =
+    existingListing ??
+    (await ensureAssetListing(
+      asset.id,
+      data.providerSymbol ?? symbol,
+      data.currency,
+      data.source,
+      data.providerSymbol
+    ))
 
   await prisma.priceSnapshot.upsert({
     where: {
-      assetId_timestamp_source: {
-        assetId: asset.id,
+      listingId_timestamp_source: {
+        listingId: listing.id,
         timestamp: data.date,
         source: data.source,
       },
@@ -261,7 +398,7 @@ async function getStooqPrice(
       const price = Number.parseFloat(parts[6])
       if (!Number.isFinite(price) || price <= 0) continue
 
-      return { price, currency, source: "stooq" as const }
+      return { price, currency, source: "stooq" as const, providerSymbol: candidate }
     }
 
     return null
@@ -287,7 +424,7 @@ async function getCoinGeckoPrice(
       const price = data[geckoId]?.eur
       if (!Number.isFinite(price) || price <= 0) continue
 
-      return { price, currency: "EUR", source: "coingecko" }
+      return { price, currency: "EUR", source: "coingecko", providerSymbol: geckoId }
     }
 
     return null
@@ -339,6 +476,7 @@ async function getYahooChartPrice(
       price,
       currency: result?.meta?.currency ?? fallbackCurrency,
       source: "yahoo_finance",
+      providerSymbol: symbol,
     }
   } catch {
     return null
@@ -389,6 +527,7 @@ async function getYahooHistoricalPrices(
           price,
           currency,
           source: "yahoo_finance",
+          providerSymbol: candidate,
         })
       })
 
@@ -431,6 +570,7 @@ async function getCoinGeckoHistoricalPrices(
             price,
             currency: "EUR",
             source: "coingecko" as const,
+            providerSymbol: geckoId,
           }))
           .filter((point) => Number.isFinite(point.price) && point.price > 0)
 
@@ -453,21 +593,24 @@ async function getCoinGeckoHistoricalPrices(
 }
 
 async function getStoredHistoricalPrices(
-  symbol: string,
+  input: PriceLookupInput,
   start: Date,
   end: Date
 ): Promise<HistoricalPricePoint[]> {
-  const asset = await prisma.asset.findUnique({
-    where: { symbol: symbol.toUpperCase() },
-    select: { id: true },
-  })
-  if (!asset) return []
+  const listing = await findPriceListing(input)
+  if (!listing) return []
 
   const snapshots = await prisma.priceSnapshot.findMany({
-    where: {
-      assetId: asset.id,
-      timestamp: { gte: start, lte: end },
-    },
+    where: input.listingId
+      ? {
+          OR: [{ listingId: listing.id }, { assetId: listing.assetId }],
+          timestamp: { gte: start, lte: end },
+        }
+      : {
+          currency: input.currency,
+          OR: [{ listingId: listing.id }, { assetId: listing.assetId }],
+          timestamp: { gte: start, lte: end },
+        },
     orderBy: { timestamp: "asc" },
   })
 
@@ -476,16 +619,17 @@ async function getStoredHistoricalPrices(
     price: toNum(snapshot.price),
     currency: snapshot.currency,
     source: snapshot.source,
+    providerSymbol: listing.providerSymbol,
   }))
 }
 
-async function updateHoldingMarketValues(
-  symbol: string,
-  assetType: string,
-  data: LivePrice
-): Promise<void> {
+async function updateHoldingMarketValues(input: PriceLookupInput, data: LivePrice): Promise<void> {
   const holdings = await prisma.holding.findMany({
-    where: { symbol: symbol.toUpperCase(), assetType: assetType as AssetType },
+    where: input.listingId
+      ? { listingId: input.listingId }
+      : data.listingId
+        ? { listingId: data.listingId }
+        : { symbol: input.symbol.toUpperCase(), assetType: input.assetType as AssetType },
     select: { id: true, quantity: true, avgBuyPrice: true, currency: true },
   })
 
@@ -514,19 +658,21 @@ export async function getLivePrice(
   symbol: string,
   assetType: string,
   currency: string,
-  refresh = false
+  refresh = false,
+  listingId?: string | null
 ): Promise<PublicPrice | null> {
-  const key = cacheKey(symbol, assetType)
+  const input = { symbol, assetType, currency, listingId }
+  const key = listingId ?? cacheKey(symbol, `${assetType}:${currency}`)
   const cached = priceCache[key]
 
   if (!refresh && cached && Date.now() - cached.ts < PRICE_TTL) {
     return { price: cached.price, currency: cached.currency }
   }
 
-  const stored = !refresh ? await getStoredLivePrice(symbol, assetType, FX_TTL) : null
+  const stored = !refresh ? await getStoredLivePrice(input, FX_TTL) : null
   if (stored) {
     priceCache[key] = { ...stored, ts: Date.now() }
-    await updateHoldingMarketValues(symbol, assetType, stored)
+    await updateHoldingMarketValues(input, stored)
     return { price: stored.price, currency: stored.currency }
   }
 
@@ -539,49 +685,52 @@ export async function getLivePrice(
 
   if (!fetched) return null
 
-  priceCache[key] = { ...fetched, ts: Date.now() }
-  await storePriceSnapshot(symbol, assetType, currency, fetched)
-  await updateHoldingMarketValues(symbol, assetType, fetched)
+  const priced = await storePriceSnapshot(symbol, assetType, currency, fetched, listingId)
+  priceCache[key] = { ...priced, ts: Date.now() }
+  await updateHoldingMarketValues(input, priced)
 
-  return { price: fetched.price, currency: fetched.currency }
+  return { price: priced.price, currency: priced.currency }
 }
 
 export async function getLivePrices(
-  symbols: { symbol: string; assetType: string; currency: string }[],
+  symbols: PriceLookupInput[],
   refresh = false
 ): Promise<Record<string, PublicPrice | null>> {
   const uniqueSymbols = symbols.filter(
     (item, index, arr) =>
-      arr.findIndex(
-        (other) => other.symbol === item.symbol && other.assetType === item.assetType
-      ) === index
+      arr.findIndex((other) => priceLookupKey(other) === priceLookupKey(item)) === index
   )
 
   const results = await Promise.all(
-    uniqueSymbols.map(async ({ symbol, assetType, currency }) => ({
+    uniqueSymbols.map(async ({ symbol, assetType, currency, listingId }) => ({
+      key: priceLookupKey({ symbol, assetType, currency, listingId }),
       symbol,
-      data: await getLivePrice(symbol, assetType, currency, refresh),
+      data: await getLivePrice(symbol, assetType, currency, refresh, listingId),
     }))
   )
 
-  return Object.fromEntries(results.map((r) => [r.symbol, r.data]))
+  const output: Record<string, PublicPrice | null> = {}
+  for (const result of results) {
+    output[result.key] = result.data
+    output[result.symbol] ??= result.data
+  }
+  return output
 }
 
 export async function getHistoricalPrices(
-  symbols: { symbol: string; assetType: string; currency: string }[],
+  symbols: PriceLookupInput[],
   start: Date,
   end: Date
 ): Promise<Record<string, HistoricalPricePoint[]>> {
   const uniqueSymbols = symbols.filter(
     (item, index, arr) =>
-      arr.findIndex(
-        (other) => other.symbol === item.symbol && other.assetType === item.assetType
-      ) === index
+      arr.findIndex((other) => priceLookupKey(other) === priceLookupKey(item)) === index
   )
 
   const results = await Promise.all(
-    uniqueSymbols.map(async ({ symbol, assetType, currency }) => {
-      const stored = await getStoredHistoricalPrices(symbol, start, end)
+    uniqueSymbols.map(async ({ symbol, assetType, currency, listingId }) => {
+      const input = { symbol, assetType, currency, listingId }
+      const stored = await getStoredHistoricalPrices(input, start, end)
       const aliases = await getAssetAliases(symbol)
       let fetched: HistoricalPricePoint[]
       if (assetType === "crypto") {
@@ -611,72 +760,63 @@ export async function getHistoricalPrices(
       }
 
       await Promise.all(
-        fetched.map((point) => storePriceSnapshotAt(symbol, assetType, currency, point))
+        fetched.map((point) => storePriceSnapshotAt(symbol, assetType, currency, point, listingId))
       )
 
       return {
+        key: priceLookupKey(input),
         symbol,
         data: [...mergedByDay.values()].sort((a, b) => a.date.getTime() - b.date.getTime()),
       }
     })
   )
 
-  return Object.fromEntries(results.map((result) => [result.symbol, result.data]))
+  const output: Record<string, HistoricalPricePoint[]> = {}
+  for (const result of results) {
+    output[result.key] = result.data
+    output[result.symbol] ??= result.data
+  }
+  return output
 }
 
-function parseCnbDate(header: string): Date {
-  const match = header.match(/(\d{2})\.(\d{2})\.(\d{4})/)
-  if (!match) return todayStart()
-
-  const [, day, month, year] = match
-  return new Date(Number(year), Number(month) - 1, Number(day))
+function normalizeCurrencyList(currencies: Array<string | null | undefined>, baseCurrency: string) {
+  const normalizedBaseCurrency = baseCurrency.toUpperCase()
+  return [
+    ...new Set(
+      currencies
+        .map((currency) => currency?.toUpperCase())
+        .filter(
+          (currency): currency is string => Boolean(currency) && currency !== normalizedBaseCurrency
+        )
+    ),
+  ]
 }
 
-async function storeExchangeRates(
-  rates: CzkRates,
-  date: Date,
-  source: ExchangeRateSource
-): Promise<void> {
-  await Promise.all(
-    Object.entries(rates)
-      .filter(([currency]) => currency !== "CZK")
-      .map(([fromCurrency, rate]) =>
-        prisma.exchangeRate.upsert({
-          where: {
-            fromCurrency_toCurrency_date_source: {
-              fromCurrency,
-              toCurrency: "CZK",
-              date,
-              source,
-            },
-          },
-          update: { rate },
-          create: {
-            fromCurrency,
-            toCurrency: "CZK",
-            date,
-            source,
-            rate,
-          },
-        })
-      )
-  )
-}
-
-async function loadStoredCzkRates(date?: Date): Promise<CzkRates | null> {
+async function loadStoredExchangeRates({
+  date,
+  toCurrency = "CZK",
+  currencies = DEFAULT_FX_CURRENCIES,
+}: {
+  date?: Date
+  toCurrency?: string
+  currencies?: string[]
+} = {}): Promise<CzkRates | null> {
   const whereDate = date ? todayStart(date) : undefined
+  const normalizedToCurrency = toCurrency.toUpperCase()
+  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
 
   const rows = await prisma.exchangeRate.findMany({
     where: {
-      toCurrency: "CZK",
+      toCurrency: normalizedToCurrency,
+      ...(normalizedCurrencies.length > 0 ? { fromCurrency: { in: normalizedCurrencies } } : {}),
       ...(whereDate ? { date: { lte: whereDate } } : {}),
     },
-    orderBy: { date: "desc" },
+    orderBy: [{ date: "desc" }, { source: "desc" }],
   })
 
-  if (rows.length === 0) return null
+  if (rows.length === 0 && normalizedCurrencies.length > 0) return null
 
-  const rates: CzkRates = { CZK: 1 }
+  const rates: CzkRates = { [normalizedToCurrency]: 1 }
   for (const row of rows) {
     if (!rates[row.fromCurrency]) {
       rates[row.fromCurrency] = toNum(row.rate)
@@ -686,74 +826,212 @@ async function loadStoredCzkRates(date?: Date): Promise<CzkRates | null> {
   return rates
 }
 
-async function fetchCnbRates(): Promise<CzkRates> {
-  const rates: CzkRates = { CZK: 1 }
+async function fetchYahooHistoricalExchangeRates(
+  currencies: string[],
+  toCurrency: string,
+  start: Date,
+  end: Date
+): Promise<CzkRates> {
+  const normalizedToCurrency = toCurrency.toUpperCase()
+  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
+  const period1 = Math.floor(todayStart(start).getTime() / 1000)
+  const period2 = Math.floor(addDays(todayStart(end), 1).getTime() / 1000)
+  const latestRates: CzkRates = { [normalizedToCurrency]: 1 }
 
-  const res = await fetch(CNB_URL)
-  if (!res.ok) throw new Error(`CNB HTTP ${res.status}`)
+  await Promise.all(
+    normalizedCurrencies.map(async (fromCurrency) => {
+      const pair = `${fromCurrency}${normalizedToCurrency}=X`
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+          pair
+        )}?period1=${period1}&period2=${period2}&interval=1d`
+        const res = await fetch(url, { headers: { Accept: "application/json" } })
+        if (!res.ok) return
 
-  const text = await res.text()
-  const lines = text.trim().split("\n")
-  const rateDate = parseCnbDate(lines[0] ?? "")
+        const data = await res.json()
+        const result = data.chart?.result?.[0]
+        const timestamps: number[] = result?.timestamp ?? []
+        const closes: Array<number | null> = result?.indicators?.quote?.[0]?.close ?? []
+        const writes: Array<Promise<unknown>> = []
 
-  for (const line of lines.slice(2)) {
-    const parts = line.split("|")
-    if (parts.length < 5) continue
+        timestamps.forEach((timestamp, index) => {
+          const rate = closes[index]
+          if (!Number.isFinite(rate) || rate === null || rate <= 0) return
 
-    const quantity = Number.parseFloat(parts[2])
-    const code = parts[3].trim()
-    const rate = Number.parseFloat(parts[4].replace(",", "."))
+          const date = todayStart(new Date(timestamp * 1000))
+          latestRates[fromCurrency] = rate
 
-    if (code && Number.isFinite(rate) && Number.isFinite(quantity) && quantity > 0) {
-      rates[code] = rate / quantity
-    }
-  }
+          writes.push(
+            prisma.exchangeRate.upsert({
+              where: {
+                fromCurrency_toCurrency_date_source: {
+                  fromCurrency,
+                  toCurrency: normalizedToCurrency,
+                  date,
+                  source: YAHOO_EXCHANGE_RATE_SOURCE,
+                },
+              },
+              update: { rate },
+              create: {
+                fromCurrency,
+                toCurrency: normalizedToCurrency,
+                date,
+                source: YAHOO_EXCHANGE_RATE_SOURCE,
+                rate,
+              },
+            })
+          )
+        })
 
-  await storeExchangeRates(rates, todayStart(rateDate), "cnb")
-  return rates
+        await Promise.all(writes)
+      } catch {
+        return
+      }
+    })
+  )
+
+  return latestRates
 }
 
-export async function getCzkRates(refresh = false): Promise<CzkRates> {
-  if (!refresh && czkRatesCache && Date.now() - czkRatesCache.ts < FX_TTL) {
+async function fetchYahooLatestExchangeRates(
+  currencies: string[],
+  toCurrency: string
+): Promise<CzkRates> {
+  const today = todayStart()
+  return fetchYahooHistoricalExchangeRates(currencies, toCurrency, addDays(today, -10), today)
+}
+
+export async function ensureExchangeRatesForPeriod({
+  currencies,
+  toCurrency = "CZK",
+  start,
+  end,
+}: {
+  currencies: string[]
+  toCurrency?: string
+  start: Date
+  end: Date
+}) {
+  const normalizedToCurrency = toCurrency.toUpperCase()
+  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
+  if (normalizedCurrencies.length === 0) return
+
+  await fetchYahooHistoricalExchangeRates(
+    normalizedCurrencies,
+    normalizedToCurrency,
+    todayStart(start),
+    todayStart(end)
+  )
+}
+
+export async function getExchangeRates({
+  toCurrency = "CZK",
+  currencies = DEFAULT_FX_CURRENCIES,
+  refresh = false,
+}: {
+  toCurrency?: string
+  currencies?: string[]
+  refresh?: boolean
+} = {}): Promise<CzkRates> {
+  const normalizedToCurrency = toCurrency.toUpperCase()
+  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
+  const cacheKey = normalizedToCurrency === "CZK" ? "czk" : null
+
+  if (cacheKey === "czk" && !refresh && czkRatesCache && Date.now() - czkRatesCache.ts < FX_TTL) {
     return czkRatesCache.rates
   }
 
-  if (czkRatesFetch) return czkRatesFetch
+  if (cacheKey === "czk" && czkRatesFetch) return czkRatesFetch
 
-  czkRatesFetch = (async () => {
+  const fetchRates = (async () => {
     if (!refresh) {
-      const stored = await loadStoredCzkRates()
-      if (stored && stored.EUR && stored.USD) {
-        czkRatesCache = { rates: stored, ts: Date.now() }
+      const stored = await loadStoredExchangeRates({
+        toCurrency: normalizedToCurrency,
+        currencies: normalizedCurrencies,
+      })
+      const hasRequiredRates = normalizedCurrencies.every((currency) => stored?.[currency])
+      if (stored && hasRequiredRates) {
+        if (cacheKey === "czk") czkRatesCache = { rates: stored, ts: Date.now() }
         return stored
       }
     }
 
-    try {
-      const fetched = await fetchCnbRates()
-      czkRatesCache = { rates: fetched, ts: Date.now() }
-      return fetched
-    } catch {
-      const stored = await loadStoredCzkRates()
-      const fallback = stored ?? { CZK: 1, EUR: 25.2, USD: 23.1 }
-      czkRatesCache = { rates: fallback, ts: Date.now() }
-      return fallback
-    }
-  })().finally(() => {
-    czkRatesFetch = null
-  })
+    const fetched = await fetchYahooLatestExchangeRates(normalizedCurrencies, normalizedToCurrency)
+    const stored = await loadStoredExchangeRates({
+      toCurrency: normalizedToCurrency,
+      currencies: normalizedCurrencies,
+    })
+    const fallback = stored ?? fetched
 
-  return czkRatesFetch
+    if (cacheKey === "czk") czkRatesCache = { rates: fallback, ts: Date.now() }
+    return fallback
+  })()
+
+  if (cacheKey === "czk") {
+    czkRatesFetch = fetchRates.finally(() => {
+      czkRatesFetch = null
+    })
+    return czkRatesFetch
+  }
+
+  return fetchRates
 }
 
-export async function getHistoricalCzkRates(date: Date): Promise<CzkRates> {
-  return (await loadStoredCzkRates(date)) ?? (await getCzkRates())
+export async function getCzkRates(refresh = false): Promise<CzkRates> {
+  return getExchangeRates({ toCurrency: "CZK", refresh })
+}
+
+export async function getHistoricalExchangeRates({
+  date,
+  toCurrency = "CZK",
+  currencies = DEFAULT_FX_CURRENCIES,
+}: {
+  date: Date
+  toCurrency?: string
+  currencies?: string[]
+}): Promise<CzkRates> {
+  const normalizedToCurrency = toCurrency.toUpperCase()
+  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
+  const day = todayStart(date)
+  let stored = await loadStoredExchangeRates({
+    date: day,
+    toCurrency: normalizedToCurrency,
+    currencies: normalizedCurrencies,
+  })
+  const missing = normalizedCurrencies.filter((currency) => !stored?.[currency])
+
+  if (missing.length > 0) {
+    await fetchYahooHistoricalExchangeRates(missing, normalizedToCurrency, addDays(day, -14), day)
+    stored = await loadStoredExchangeRates({
+      date: day,
+      toCurrency: normalizedToCurrency,
+      currencies: normalizedCurrencies,
+    })
+  }
+
+  return stored ?? (await getExchangeRates({ toCurrency: normalizedToCurrency, currencies }))
+}
+
+export async function getHistoricalCzkRates(
+  date: Date,
+  currencies = DEFAULT_FX_CURRENCIES
+): Promise<CzkRates> {
+  return getHistoricalExchangeRates({ date, toCurrency: "CZK", currencies })
 }
 
 export function toCzk(amount: number, currency: string, czkRates: CzkRates): number {
-  if (currency === "CZK") return amount
+  return toDisplayCurrency(amount, currency, czkRates, "CZK")
+}
 
-  const rate = czkRates[currency]
+export function toDisplayCurrency(
+  amount: number,
+  currency: string,
+  rates: CzkRates,
+  displayCurrency = "CZK"
+): number {
+  if (currency === displayCurrency) return amount
+
+  const rate = rates[currency]
   if (!rate) return amount
 
   return amount * rate

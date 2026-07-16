@@ -54,7 +54,7 @@ export interface GroupedInvestmentParserDefinition<T extends ParsedInvestmentMov
     accountId: string
   ) => ParsedInvestmentEvent | null
   buildStandaloneTransaction?: (row: T, accountId: string) => ParsedInvestmentEvent | null
-  incompleteGroupIssue?: (groupId: string, rows: GroupedInvestmentRows<T>) => ParseIssue
+  incompleteGroupIssue?: (groupId: string, rows: GroupedInvestmentRows<T>) => ParseIssue | null
 }
 
 export function getOrCreateOrder<T extends ParsedInvestmentMovementRow>(
@@ -155,8 +155,11 @@ export function parseGroupedInvestmentCsv<T extends ParsedInvestmentMovementRow>
     const transaction = definition.buildGroupedTransaction(groupId, rows, accountId)
     if (transaction) return transaction
 
+    const incompleteIssue = definition.incompleteGroupIssue?.(groupId, rows)
+    if (incompleteIssue === null) return null
+
     issues.push(
-      definition.incompleteGroupIssue?.(groupId, rows) ?? {
+      incompleteIssue ?? {
         severity: "warning",
         code: "incomplete_group",
         message: `${definition.parserName} group ${groupId} could not be converted to an investment transaction.`,

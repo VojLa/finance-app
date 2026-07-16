@@ -13,6 +13,7 @@ Cil: mit spolehlivy technicky zaklad, na kterem se da bezpecne pridavat domenova
 - Vyresit opakovane warningy mimo domenu, napr. React hook warning v `accounts/page.tsx`.
 
 Navazuje na:
+
 - vsechny dalsi casti, protoze testy a citelny kod budou drzet zmeny pohromade.
 
 ## 2. Importy a parsery
@@ -20,11 +21,13 @@ Navazuje na:
 Cil: nove zdroje dat pridavat predvidatelne a bez kopirovani logiky.
 
 Hotovy smer:
+
 - Parsery jsou rozdelene na dve skupiny:
   - single-row parsery: jeden CSV radek = jedna investicni transakce, napr. Trading 212.
   - grouped parsery: jedna investice/smena vznikne z vice radku, napr. Anycoin.
 
 Dalsi kroky:
+
 - Dopsat dokumentaci, jak pridat novy parser.
 - Doplnit fixture CSV soubory pro realne exporty.
 - Rozsirit testy o edge cases:
@@ -35,6 +38,7 @@ Dalsi kroky:
 - U Raiffeisenbank poresit encoding a pripadne vice typu exportu.
 
 Navazuje na:
+
 - portfolio vypocty, protoze kvalita transakci rozhoduje o spravnych holdings a historii.
 
 ## 3. Portfolio pozice a P&L
@@ -42,12 +46,14 @@ Navazuje na:
 Cil: aktualni portfolio musi byt spravne i po nakupu, prodeji, vkladu a vyberu.
 
 Dalsi kroky:
+
 - Zkontrolovat `recalculateHoldings` proti realnym scenarum.
 - Rozhodnout, jestli zustaneme u prumerne nakupni ceny, nebo pozdeji pridame FIFO.
 - Ukladat realizovane P&L konzistentne pri sell transakcich.
 - Zachovat historii prodanych pozic pres transakce a snapshoty, ne pres aktualni `holding`.
 
 Navazuje na:
+
 - historicky graf portfolia.
 - dashboard/net worth.
 - danove reporty v budoucnu.
@@ -57,12 +63,16 @@ Navazuje na:
 Cil: ceny maji byt rychle, cachovane a dohledatelne i pro evropske ETF.
 
 Hotovy smer:
+
 - Live ceny pro ETF/akcie jdou pres Yahoo chart endpoint.
 - Crypto ceny jdou pres CoinGecko.
 - Ceny se ukladaji do `PriceSnapshot`.
 - Existuje zaklad pro aliasy symbolu, napr. `VUAA.DE`.
+- Fiat kurzy pro denni prepocet snapshotu se ukladaji do `ExchangeRate` se zdrojem `yahoo_finance`.
+- Snapshoty pouzivaji kurz k danemu dni a pri chybejicim dni posledni znamy predchozi kurz.
 
 Dalsi kroky:
+
 - Doplnit UI/admin misto pro rucni aliasy provideru.
 - Doplnit manual price fallback pro assety, ktere API nezna.
 - Nastavit cache pravidla:
@@ -72,6 +82,7 @@ Dalsi kroky:
 - Osetrit provider failures a zobrazit jasne warningy.
 
 Navazuje na:
+
 - portfolio hodnota.
 - historicke grafy.
 - snapshoty.
@@ -81,7 +92,12 @@ Navazuje na:
 Cil: grafy musi umet zobrazit historii zpetne, vcetne starych prodanych pozic.
 
 Hotovy smer:
-- Historie se zacina dopocitavat z `InvestmentTransaction`, ne jen z aktualnich holdings.
+
+- Historie se vytvari z `InvestmentEvent` a `InvestmentMovement`, ne jen z aktualnich holdings.
+- `AccountSnapshot` drzi display hodnoty v CZK i rozpad podle puvodnich men.
+- Snapshoty obsahuji cash, hodnotu investic, porizovaci cenu, vlozeno, realizovane/nerealizovane P&L, fee a tax.
+- `AccountSnapshotItem` drzi native hodnotu/cenu pozice vedle prepocitane display hodnoty.
+- Import investic vytvari denni snapshoty od zacatku importu po dnesek a predem doplni potrebne denni FX kurzy.
 - Podporovane rozsahy:
   - tyden
   - mesic
@@ -95,7 +111,8 @@ Hotovy smer:
   - vse: mesicni body.
 
 Dalsi kroky:
-- Optimalizovat vykon endpointu `/api/portfolio/history`.
+
+- Doplnit UI pro zobrazeni menoveho rozpadu snapshotu.
 - Neprepisovat snapshoty pri kazdem GET requestu, pokud nejsou zastarale.
 - Pouzivat ulozene historicke ceny, pokud uz pokryvaji obdobi.
 - Doplnit testy pro:
@@ -105,6 +122,7 @@ Dalsi kroky:
   - account filter.
 
 Navazuje na:
+
 - UX grafu.
 - rychlost aplikace.
 - presnost historickych reportu.
@@ -114,12 +132,14 @@ Navazuje na:
 Cil: dashboard, portfolio a cash cast maji pouzivat stejnou definici hodnot.
 
 Dalsi kroky:
+
 - Sjednotit vypocet cash, liabilities a portfolio value.
 - Rozhodnout, kdy se ma pouzit live hodnota a kdy fallback na nakupni hodnotu.
 - Net worth historii bud pocitat ze snapshotu, nebo rekonstruovat z transakci podobne jako portfolio.
 - Zkontrolovat, aby investment cash movements nebyly zapocitane dvakrat.
 
 Navazuje na:
+
 - portfolio history.
 - bankovni importy.
 - budouci reporty.
@@ -129,6 +149,7 @@ Navazuje na:
 Cil: appka ma byt pouzitelna pro beznou praci, ne jen pro technicky import.
 
 Dalsi kroky:
+
 - Portfolio graf:
   - zrychlit prepinani rozsahu.
   - ukazat loading stav pro historii.
@@ -143,6 +164,7 @@ Dalsi kroky:
   - varovani pro chybejici alias.
 
 Navazuje na:
+
 - vsechny domenove vypocty, protoze UI ma vysvetlovat jejich stav.
 
 ## 8. Doporučene poradi dalsi prace

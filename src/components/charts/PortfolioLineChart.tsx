@@ -24,6 +24,14 @@ export interface PortfolioChartDataPoint {
   investmentCostBasisCzk?: number
   realizedPnlCzk?: number
   unrealizedPnlCzk?: number
+  cashByCurrency?: Record<string, number>
+  investmentValueByCurrency?: Record<string, number>
+  investmentCostBasisByCurrency?: Record<string, number>
+  netDepositsByCurrency?: Record<string, number>
+  realizedPnlByCurrency?: Record<string, number>
+  unrealizedPnlByCurrency?: Record<string, number>
+  feesByCurrency?: Record<string, number>
+  taxesByCurrency?: Record<string, number>
   valueCzk?: number
   netWorthCzk?: number
   allocations?: { symbol: string; accountId: string; valueCzk: number; allocationPct: number }[]
@@ -53,6 +61,7 @@ interface Props {
   activePoint?: PortfolioChartDataPoint | null
   isLocked?: boolean
   onActivePointChange?: (point: PortfolioChartDataPoint) => void
+  onActivePointReset?: () => void
   onLockedChange?: (locked: boolean) => void
 }
 
@@ -100,6 +109,7 @@ export function PortfolioLineChart({
   activePoint,
   isLocked = false,
   onActivePointChange,
+  onActivePointReset,
   onLockedChange,
 }: Props) {
   const hasNetWorth = data.some((d) => d.netWorthCzk !== undefined)
@@ -159,6 +169,10 @@ export function PortfolioLineChart({
       onActivePointChange?.(point)
       onLockedChange?.(true)
     }
+  }
+
+  const handleMouseLeave = () => {
+    if (!isLocked) onActivePointReset?.()
   }
 
   const renderDateTooltip = ({ active, payload }: TooltipProps<number, string>) => {
@@ -229,6 +243,7 @@ export function PortfolioLineChart({
           data={chartData}
           margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
           onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
           onClick={handleClick}
         >
           <defs>

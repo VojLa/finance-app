@@ -24,6 +24,7 @@ export interface HoldingWithPrice {
   avgBuyPrice: number
   avgBuyPriceCzk: number | null
   currency: string
+  listingId: string | null
   accountId: string
   accountName: string | null
   currentPrice: number | null
@@ -76,6 +77,13 @@ export interface ParsedInvestmentEvent {
   totalCurrency?: string | null
   fee?: number | null
   feeCurrency?: string | null
+  note?: string | null
+  rawAction?: string | null
+  isPromotional?: boolean | null
+  linkedTransactionType?: "income" | "expense" | null
+  linkedTransactionDescription?: string | null
+  linkedTransactionCounterparty?: string | null
+  linkedTransactionNote?: string | null
   conversionFromAmount?: number | null
   conversionFromCurrency?: string | null
   conversionToAmount?: number | null

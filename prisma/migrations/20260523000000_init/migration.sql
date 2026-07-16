@@ -364,7 +364,7 @@ CREATE TABLE "AssetAlias" (
 CREATE TABLE "PriceSnapshot" (
     "id" TEXT NOT NULL,
     "assetId" TEXT NOT NULL,
-    "listingId" TEXT,
+    "listingId" TEXT NOT NULL,
     "price" DECIMAL(28,10) NOT NULL,
     "currency" TEXT NOT NULL,
     "source" "PriceSource" NOT NULL,
@@ -401,6 +401,7 @@ CREATE TABLE "InvestmentMovement" (
     "eventId" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
     "assetId" TEXT,
+    "listingId" TEXT,
     "kind" "InvestmentMovementKind" NOT NULL,
     "direction" "MovementDirection" NOT NULL,
     "quantity" DECIMAL(28,10) NOT NULL,
@@ -431,6 +432,7 @@ CREATE TABLE "Holding" (
     "unrealizedPnl" DECIMAL(28,10),
     "realizedPnl" DECIMAL(28,10),
     "assetId" TEXT,
+    "listingId" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
     "calculatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -549,6 +551,7 @@ CREATE TABLE "AccountSnapshotItem" (
     "id" TEXT NOT NULL,
     "snapshotId" TEXT NOT NULL,
     "assetId" TEXT,
+    "listingId" TEXT NOT NULL,
     "symbol" TEXT NOT NULL,
     "quantity" DECIMAL(28,10) NOT NULL,
     "pricePerUnit" DECIMAL(28,10) NOT NULL,
@@ -673,7 +676,7 @@ CREATE INDEX "BudgetAlert_userId_triggeredAt_idx" ON "BudgetAlert"("userId", "tr
 CREATE INDEX "BudgetAlert_budgetItemId_idx" ON "BudgetAlert"("budgetItemId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Asset_symbol_key" ON "Asset"("symbol");
+CREATE INDEX "Asset_symbol_idx" ON "Asset"("symbol");
 
 -- CreateIndex
 CREATE INDEX "Asset_isin_idx" ON "Asset"("isin");
@@ -694,6 +697,12 @@ CREATE INDEX "AssetListing_provider_providerSymbol_idx" ON "AssetListing"("provi
 CREATE UNIQUE INDEX "AssetListing_assetId_symbol_exchange_currency_key" ON "AssetListing"("assetId", "symbol", "exchange", "currency");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "AssetListing_symbol_exchange_currency_key" ON "AssetListing"("symbol", "exchange", "currency");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AssetListing_provider_providerSymbol_currency_key" ON "AssetListing"("provider", "providerSymbol", "currency");
+
+-- CreateIndex
 CREATE INDEX "AssetAlias_assetId_provider_idx" ON "AssetAlias"("assetId", "provider");
 
 -- CreateIndex
@@ -709,7 +718,7 @@ CREATE INDEX "PriceSnapshot_listingId_timestamp_idx" ON "PriceSnapshot"("listing
 CREATE INDEX "PriceSnapshot_source_timestamp_idx" ON "PriceSnapshot"("source", "timestamp");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PriceSnapshot_assetId_timestamp_source_key" ON "PriceSnapshot"("assetId", "timestamp", "source");
+CREATE UNIQUE INDEX "PriceSnapshot_listingId_timestamp_source_key" ON "PriceSnapshot"("listingId", "timestamp", "source");
 
 -- CreateIndex
 CREATE INDEX "InvestmentEvent_accountId_date_idx" ON "InvestmentEvent"("accountId", "date");
@@ -733,6 +742,9 @@ CREATE INDEX "InvestmentMovement_accountId_createdAt_idx" ON "InvestmentMovement
 CREATE INDEX "InvestmentMovement_assetId_idx" ON "InvestmentMovement"("assetId");
 
 -- CreateIndex
+CREATE INDEX "InvestmentMovement_listingId_idx" ON "InvestmentMovement"("listingId");
+
+-- CreateIndex
 CREATE INDEX "InvestmentMovement_kind_idx" ON "InvestmentMovement"("kind");
 
 -- CreateIndex
@@ -742,7 +754,10 @@ CREATE INDEX "Holding_accountId_idx" ON "Holding"("accountId");
 CREATE INDEX "Holding_assetId_idx" ON "Holding"("assetId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Holding_symbol_accountId_key" ON "Holding"("symbol", "accountId");
+CREATE INDEX "Holding_listingId_idx" ON "Holding"("listingId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Holding_accountId_listingId_key" ON "Holding"("accountId", "listingId");
 
 -- CreateIndex
 CREATE INDEX "ExchangeRate_fromCurrency_toCurrency_date_idx" ON "ExchangeRate"("fromCurrency", "toCurrency", "date");
@@ -802,7 +817,10 @@ CREATE UNIQUE INDEX "AccountSnapshot_accountId_timestamp_currency_granularity_ke
 CREATE INDEX "AccountSnapshotItem_assetId_idx" ON "AccountSnapshotItem"("assetId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "AccountSnapshotItem_snapshotId_symbol_key" ON "AccountSnapshotItem"("snapshotId", "symbol");
+CREATE INDEX "AccountSnapshotItem_listingId_idx" ON "AccountSnapshotItem"("listingId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "AccountSnapshotItem_snapshotId_listingId_key" ON "AccountSnapshotItem"("snapshotId", "listingId");
 
 -- AddForeignKey
 ALTER TABLE "AccountMember" ADD CONSTRAINT "AccountMember_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -886,7 +904,7 @@ ALTER TABLE "AssetAlias" ADD CONSTRAINT "AssetAlias_assetId_fkey" FOREIGN KEY ("
 ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "PriceSnapshot" ADD CONSTRAINT "PriceSnapshot_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "InvestmentEvent" ADD CONSTRAINT "InvestmentEvent_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -904,7 +922,13 @@ ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_accountId_fk
 ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "InvestmentMovement" ADD CONSTRAINT "InvestmentMovement_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "Holding" ADD CONSTRAINT "Holding_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Holding" ADD CONSTRAINT "Holding_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Holding" ADD CONSTRAINT "Holding_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -933,3 +957,5 @@ ALTER TABLE "AccountSnapshotItem" ADD CONSTRAINT "AccountSnapshotItem_snapshotId
 -- AddForeignKey
 ALTER TABLE "AccountSnapshotItem" ADD CONSTRAINT "AccountSnapshotItem_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "Asset"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- AddForeignKey
+ALTER TABLE "AccountSnapshotItem" ADD CONSTRAINT "AccountSnapshotItem_listingId_fkey" FOREIGN KEY ("listingId") REFERENCES "AssetListing"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

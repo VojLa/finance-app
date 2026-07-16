@@ -1,0 +1,2 @@
+"""Portfolio read model module."""
+

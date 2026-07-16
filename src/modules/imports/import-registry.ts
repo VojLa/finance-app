@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma"
-import type { ImportSource } from "@prisma/client"
+import type { ImportSource, TransactionClassification } from "@prisma/client"
 import type { ParsedInvestmentEvent } from "@/types"
 import { autoCategorize } from "@/modules/wallet/transactions/categorize"
 import { createInvestmentEvents } from "@/modules/portfolio/ledger/service"
@@ -32,6 +32,39 @@ interface ImportDefinition<T extends ImportRow> {
 
 type AnyImportDefinition = ImportDefinition<ImportRow>
 
+function linkedTransactionClassification(type: "income" | "expense"): TransactionClassification {
+  return type === "expense" ? "real_expense" : "real_income"
+}
+
+function linkedTransactionRows(rows: ParsedInvestmentEvent[], importBatchId: string) {
+  return rows
+    .filter(
+      (row) =>
+        row.linkedTransactionType &&
+        row.totalAmount != null &&
+        Math.abs(row.totalAmount) > 0 &&
+        row.totalCurrency
+    )
+    .map((row) => ({
+      date: row.date,
+      amount: Math.abs(row.totalAmount!),
+      currency: row.totalCurrency!,
+      type: row.linkedTransactionType!,
+      classification: linkedTransactionClassification(row.linkedTransactionType!),
+      description:
+        row.linkedTransactionDescription ||
+        row.name ||
+        row.note ||
+        row.rawAction ||
+        "Investment account card transaction",
+      counterparty: row.linkedTransactionCounterparty || row.name || null,
+      note: row.linkedTransactionNote || null,
+      externalId: row.externalId ? `cash-tx:${row.externalId}` : null,
+      accountId: row.accountId,
+      importBatchId,
+    }))
+}
+
 function investmentDefinition(
   source: "trading212" | "anycoin",
   parse: (content: string, accountId: string) => ParseResult<ParsedInvestmentEvent>
@@ -46,8 +79,16 @@ function investmentDefinition(
       }),
     saveRows: async (rows, importBatchId) => {
       await createInvestmentEvents(rows, { importBatchId, source })
+      const transactions = linkedTransactionRows(rows, importBatchId)
+      if (transactions.length > 0) {
+        await prisma.transaction.createMany({ data: transactions })
+      }
     },
-    postProcess: (accountId) => recalculateHoldings(accountId),
+    postProcess: async (accountId) => {
+      const result = await recalculateHoldings(accountId)
+      if (source === "trading212") await autoCategorize(accountId)
+      return result
+    },
     afterCompleted: async ({ userId, accountId, importBatchId, importStartDate }) => {
       await createDailyAccountSnapshotsFromImport({ accountId, importBatchId, importStartDate })
       await createNetWorthSnapshot({ userId })

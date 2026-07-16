@@ -4,7 +4,12 @@ import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
 import { getAccessibleAccountIds } from "@/lib/accountAccess"
-import { getLivePrices, clearPriceCache, getCzkRates } from "@/modules/portfolio/rates/service"
+import {
+  getLivePrices,
+  clearPriceCache,
+  getCzkRates,
+  priceLookupKey,
+} from "@/modules/portfolio/rates/service"
 import { createPortfolioSnapshot } from "@/modules/snapshots"
 
 export async function GET(req: NextRequest) {
@@ -16,12 +21,14 @@ export async function GET(req: NextRequest) {
   const accountIds = await getAccessibleAccountIds(session.user.id, "viewer")
   const accounts = await prisma.account.findMany({
     where: { id: { in: accountIds } },
-    include: { holdings: { select: { symbol: true, assetType: true, currency: true } } },
+    include: {
+      holdings: { select: { symbol: true, assetType: true, currency: true, listingId: true } },
+    },
   })
 
   const symbols = accounts
     .flatMap((a) => a.holdings)
-    .filter((h, i, arr) => arr.findIndex((x) => x.symbol === h.symbol) === i)
+    .filter((h, i, arr) => arr.findIndex((x) => priceLookupKey(x) === priceLookupKey(h)) === i)
 
   if (refresh) clearPriceCache()
 

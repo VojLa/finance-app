@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
 
-import { DuplicateImportError, importCsv } from "@/modules/imports"
+import { DuplicateImportError, importCsvFilesAsync } from "@/modules/imports"
 import { getImportContext, handleImportError } from "@/imports/utils/api"
 
 export async function POST(req: NextRequest) {
@@ -9,23 +9,23 @@ export async function POST(req: NextRequest) {
     const context = await getImportContext(req)
     if (!context.ok) return context.response
 
-    const csvText = await context.file.text()
-    const result = await importCsv({
-      content: csvText,
-      filename: context.file.name,
+    const files = await Promise.all(
+      context.files.map(async (file) => ({
+        content: await file.text(),
+        filename: file.name,
+      }))
+    )
+    const result = await importCsvFilesAsync({
+      files,
       accountId: context.accountId,
       userId: context.userId,
       source: "trading212",
     })
 
     return NextResponse.json({
-      imported: result.imported,
-      skipped: result.skipped,
-      duplicates: result.duplicates,
-      parsed: result.parsed,
-      rowsTotal: result.rowsTotal,
-      duplicateFile: result.duplicateFile,
-      warnings: result.warnings,
+      accepted: result.accepted,
+      batchIds: result.batchIds,
+      files: result.files,
     })
   } catch (error) {
     if (error instanceof DuplicateImportError) {

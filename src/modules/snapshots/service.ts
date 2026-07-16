@@ -1,33 +1,42 @@
+import { randomUUID } from "crypto"
 import { prisma, toNum } from "@/lib/prisma"
 import { getAccessibleAccountIds as getMembershipAccountIds } from "@/lib/accountAccess"
 import {
+  ensureExchangeRatesForPeriod,
+  getExchangeRates,
   getCzkRates,
+  getHistoricalExchangeRates,
   getHistoricalCzkRates,
   getHistoricalPrices,
   getLivePrices,
+  priceLookupKey,
   toCzk,
+  toDisplayCurrency,
   type HistoricalPricePoint,
 } from "@/modules/portfolio/rates/service"
-import type { AssetType, SnapshotGranularity, SnapshotSource } from "@prisma/client"
+import type { AssetType, Prisma, SnapshotGranularity, SnapshotSource } from "@prisma/client"
 
 const BANK_ACCOUNT_TYPES = new Set(["bank", "cash", "savings"])
 const LIABILITY_ACCOUNT_TYPES = new Set(["credit_card", "loan", "mortgage"])
 const INVESTMENT_ACCOUNT_TYPES = new Set(["broker", "exchange", "crypto_wallet"])
+const SNAPSHOT_FLUSH_MS = 300
+const SNAPSHOT_FLUSH_COUNT = 250
+const SNAPSHOT_ITEM_FLUSH_COUNT = 5000
 
 function bucketTimestamp(date: Date, granularity: SnapshotGranularity): Date {
   const bucket = new Date(date)
-  bucket.setSeconds(0, 0)
+  bucket.setUTCSeconds(0, 0)
 
-  if (granularity === "hour") bucket.setMinutes(0, 0, 0)
-  if (granularity === "day") bucket.setHours(0, 0, 0, 0)
+  if (granularity === "hour") bucket.setUTCMinutes(0, 0, 0)
+  if (granularity === "day") bucket.setUTCHours(0, 0, 0, 0)
   if (granularity === "week") {
-    const day = bucket.getDay() || 7
-    bucket.setDate(bucket.getDate() - day + 1)
-    bucket.setHours(0, 0, 0, 0)
+    const day = bucket.getUTCDay() || 7
+    bucket.setUTCDate(bucket.getUTCDate() - day + 1)
+    bucket.setUTCHours(0, 0, 0, 0)
   }
   if (granularity === "month") {
-    bucket.setDate(1)
-    bucket.setHours(0, 0, 0, 0)
+    bucket.setUTCDate(1)
+    bucket.setUTCHours(0, 0, 0, 0)
   }
 
   return bucket
@@ -40,10 +49,13 @@ function monthKey(date: Date): string {
 export type PortfolioHistoryRange = "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL"
 
 type PortfolioHistoryInterval = number
+type CurrencyBreakdown = Record<string, number>
 
 interface HistoricalPosition {
+  listingId: string
   symbol: string
   accountId: string
+  assetId: string | null
   assetType: AssetType
   name: string | null
   quantity: number
@@ -52,6 +64,7 @@ interface HistoricalPosition {
 }
 
 interface SnapshotPosition {
+  listingId: string
   symbol: string
   accountId: string
   assetId: string | null
@@ -64,13 +77,35 @@ interface SnapshotPosition {
 
 interface AccountLedgerSnapshot {
   positions: Record<string, SnapshotPosition>
-  cashValueCzk: number
+  cashByCurrency: CurrencyBreakdown
+  netDepositsByCurrency: CurrencyBreakdown
+  netDepositsValueCzk: number
+  realizedPnlByCurrency: CurrencyBreakdown
+  feesByCurrency: CurrencyBreakdown
+  taxesByCurrency: CurrencyBreakdown
+}
+
+interface AssetTransferValuationContext {
+  pricesBySymbol: Record<string, HistoricalPricePoint[]>
+  date: Date
+  rates: Record<string, number>
+  displayCurrency: string
+}
+
+interface AssetTransferFlow {
+  amount: number
+  currency: string
+  direction: "in" | "out"
 }
 
 interface LedgerSnapshotEvent {
   accountId: string
+  type: string
+  source: string | null
   description: string | null
   date: Date
+  realizedPnl?: unknown
+  realizedPnlCurrency?: string | null
   movements: Array<{
     kind: string
     direction: string
@@ -82,6 +117,7 @@ interface LedgerSnapshotEvent {
     sourceSymbol: string | null
     sourceAssetType: AssetType | null
     assetId: string | null
+    listingId: string | null
   }>
 }
 
@@ -102,29 +138,29 @@ interface PortfolioHistoryPoint {
 }
 
 function todayStart(date = new Date()): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 }
 
 function endOfDay(date: Date): Date {
   const end = new Date(date)
-  end.setHours(23, 59, 59, 999)
+  end.setUTCHours(23, 59, 59, 999)
   return end
 }
 
 function addDays(date: Date, days: number): Date {
   const next = new Date(date)
-  next.setDate(next.getDate() + days)
+  next.setUTCDate(next.getUTCDate() + days)
   return next
 }
 
 function rangeStart(range: PortfolioHistoryRange, firstDate: Date | null, now = new Date()): Date {
   const start = todayStart(now)
 
-  if (range === "1W") start.setDate(start.getDate() - 7)
-  if (range === "1M") start.setMonth(start.getMonth() - 1)
-  if (range === "3M") start.setMonth(start.getMonth() - 3)
-  if (range === "6M") start.setMonth(start.getMonth() - 6)
-  if (range === "1Y") start.setFullYear(start.getFullYear() - 1)
+  if (range === "1W") start.setUTCDate(start.getUTCDate() - 7)
+  if (range === "1M") start.setUTCMonth(start.getUTCMonth() - 1)
+  if (range === "3M") start.setUTCMonth(start.getUTCMonth() - 3)
+  if (range === "6M") start.setUTCMonth(start.getUTCMonth() - 6)
+  if (range === "1Y") start.setUTCFullYear(start.getUTCFullYear() - 1)
 
   if (range === "ALL") return firstDate ? todayStart(firstDate) : start
   return start
@@ -183,16 +219,317 @@ function findCloseAtOrBefore(
   return result
 }
 
-function positionKey(accountId: string, symbol: string) {
-  return `${accountId}:${symbol}`
+function listingPositionKey(accountId: string, listingId: string) {
+  return `${accountId}:${listingId}`
 }
 
-async function getCachedHistoricalCzkRates(cache: Map<string, Record<string, number>>, date: Date) {
-  const key = todayStart(date).toISOString()
+function normalizeCurrency(currency: string | null | undefined, fallback = "CZK") {
+  return (currency || fallback).toUpperCase()
+}
+
+function addCurrencyAmount(
+  breakdown: CurrencyBreakdown,
+  currency: string | null | undefined,
+  amount: number
+) {
+  const key = normalizeCurrency(currency)
+  if (!Number.isFinite(amount) || amount === 0) return
+  breakdown[key] = (breakdown[key] ?? 0) + amount
+}
+
+function mergeCurrencyBreakdowns(...breakdowns: CurrencyBreakdown[]) {
+  const merged: CurrencyBreakdown = {}
+  for (const breakdown of breakdowns) {
+    for (const [currency, amount] of Object.entries(breakdown)) {
+      addCurrencyAmount(merged, currency, amount)
+    }
+  }
+  return merged
+}
+
+function subtractCurrencyBreakdowns(
+  left: CurrencyBreakdown,
+  right: CurrencyBreakdown
+): CurrencyBreakdown {
+  const result: CurrencyBreakdown = { ...left }
+  for (const [currency, amount] of Object.entries(right)) {
+    addCurrencyAmount(result, currency, -amount)
+  }
+  return result
+}
+
+function currencyBreakdownCurrencies(...breakdowns: CurrencyBreakdown[]) {
+  return [...new Set(breakdowns.flatMap((breakdown) => Object.keys(breakdown)))]
+}
+
+function roundCurrencyBreakdown(breakdown: CurrencyBreakdown): CurrencyBreakdown {
+  return Object.fromEntries(
+    Object.entries(breakdown)
+      .filter(([, amount]) => Math.abs(amount) > 0.000001)
+      .map(([currency, amount]) => [currency, Number(amount.toFixed(6))])
+  )
+}
+
+function jsonCurrencyBreakdown(value: unknown): CurrencyBreakdown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([currency, amount]) => [currency, Number(amount)])
+      .filter(([, amount]) => Number.isFinite(amount))
+  )
+}
+
+function convertCurrencyBreakdown(
+  breakdown: CurrencyBreakdown,
+  rates: Record<string, number>,
+  displayCurrency = "CZK"
+) {
+  return Object.entries(breakdown).reduce(
+    (sum, [currency, amount]) =>
+      sum + toDisplayCurrency(amount, currency || displayCurrency, rates, displayCurrency),
+    0
+  )
+}
+
+function convertCurrencyAmount(
+  amount: number,
+  fromCurrency: string,
+  toCurrency: string,
+  rates: Record<string, number>
+) {
+  const from = normalizeCurrency(fromCurrency)
+  const to = normalizeCurrency(toCurrency)
+  if (from === to) return amount
+
+  return toDisplayCurrency(amount, from, rates, to)
+}
+
+function eventDisplayValue(
+  amount: number,
+  currency: string,
+  valuation?: Pick<AssetTransferValuationContext, "rates" | "displayCurrency">
+) {
+  if (!Number.isFinite(amount) || amount === 0) return 0
+  return valuation
+    ? toDisplayCurrency(amount, currency, valuation.rates, valuation.displayCurrency)
+    : amount
+}
+
+function snapshotExchangeRates(
+  rates: Record<string, number>,
+  currencies: string[],
+  displayCurrency = "CZK"
+) {
+  const uniqueCurrencies = new Set(currencies.map((currency) => normalizeCurrency(currency)))
+  uniqueCurrencies.delete(displayCurrency)
+
+  return Object.fromEntries(
+    [...uniqueCurrencies]
+      .map((currency) => [currency, rates[currency]])
+      .filter(([, rate]) => Number.isFinite(rate))
+  )
+}
+
+function emptyLedgerSnapshot(): AccountLedgerSnapshot {
+  return {
+    positions: {},
+    cashByCurrency: {},
+    netDepositsByCurrency: {},
+    netDepositsValueCzk: 0,
+    realizedPnlByCurrency: {},
+    feesByCurrency: {},
+    taxesByCurrency: {},
+  }
+}
+
+function cloneLedgerSnapshot(snapshot: AccountLedgerSnapshot): AccountLedgerSnapshot {
+  return {
+    positions: Object.fromEntries(
+      Object.entries(snapshot.positions).map(([key, position]) => [key, { ...position }])
+    ),
+    cashByCurrency: { ...snapshot.cashByCurrency },
+    netDepositsByCurrency: { ...snapshot.netDepositsByCurrency },
+    netDepositsValueCzk: snapshot.netDepositsValueCzk,
+    realizedPnlByCurrency: { ...snapshot.realizedPnlByCurrency },
+    feesByCurrency: { ...snapshot.feesByCurrency },
+    taxesByCurrency: { ...snapshot.taxesByCurrency },
+  }
+}
+
+function snapshotBreakdownOrDisplayValue(
+  breakdownValue: unknown,
+  displayValue: unknown,
+  displayCurrency = "CZK"
+): CurrencyBreakdown {
+  const breakdown = jsonCurrencyBreakdown(breakdownValue)
+  if (Object.keys(breakdown).length > 0) return breakdown
+
+  const amount = toNum(displayValue as never)
+  return Math.abs(amount) > 0.000001 ? { [displayCurrency]: amount } : {}
+}
+
+function snapshotNeedsLedgerRebuild(snapshot: {
+  cashValue: unknown
+  cashValueByCurrency: unknown
+  netDepositsValue: unknown
+  netDepositsByCurrency: unknown
+  realizedPnlValue: unknown
+  realizedPnlByCurrency: unknown
+  feesValue: unknown
+  feesByCurrency: unknown
+  taxesValue: unknown
+  taxesByCurrency: unknown
+  items: Array<{
+    nativeCostBasis: unknown
+    nativeCostCurrency: string | null
+  }>
+}) {
+  const hasLegacyPositions = snapshot.items.some(
+    (item) => item.nativeCostBasis == null || !item.nativeCostCurrency
+  )
+  const missingNonZeroBreakdown = [
+    [snapshot.cashValueByCurrency, snapshot.cashValue],
+    [snapshot.netDepositsByCurrency, snapshot.netDepositsValue],
+    [snapshot.realizedPnlByCurrency, snapshot.realizedPnlValue],
+    [snapshot.feesByCurrency, snapshot.feesValue],
+    [snapshot.taxesByCurrency, snapshot.taxesValue],
+  ].some(([breakdown, value]) => {
+    if (breakdown) return false
+    return Math.abs(toNum(value as never)) > 0.000001
+  })
+
+  return hasLegacyPositions || missingNonZeroBreakdown
+}
+
+function restoreLedgerSnapshotFromAccountSnapshot(snapshot: {
+  accountId: string
+  cashValue: unknown
+  cashValueByCurrency: unknown
+  netDepositsValue: unknown
+  netDepositsByCurrency: unknown
+  realizedPnlValue: unknown
+  realizedPnlByCurrency: unknown
+  feesValue: unknown
+  feesByCurrency: unknown
+  taxesValue: unknown
+  taxesByCurrency: unknown
+  items: Array<{
+    assetId: string | null
+    listingId: string
+    symbol: string
+    quantity: unknown
+    costBasis: unknown
+    costCurrency: string | null
+    nativeCostBasis: unknown
+    nativeCostCurrency: string | null
+    asset: { name: string | null; assetType: AssetType; currency: string } | null
+  }>
+}): AccountLedgerSnapshot {
+  const ledgerSnapshot: AccountLedgerSnapshot = {
+    positions: {},
+    cashByCurrency: snapshotBreakdownOrDisplayValue(
+      snapshot.cashValueByCurrency,
+      snapshot.cashValue
+    ),
+    netDepositsByCurrency: snapshotBreakdownOrDisplayValue(
+      snapshot.netDepositsByCurrency,
+      snapshot.netDepositsValue
+    ),
+    netDepositsValueCzk: toNum(snapshot.netDepositsValue as never),
+    realizedPnlByCurrency: snapshotBreakdownOrDisplayValue(
+      snapshot.realizedPnlByCurrency,
+      snapshot.realizedPnlValue
+    ),
+    feesByCurrency: snapshotBreakdownOrDisplayValue(snapshot.feesByCurrency, snapshot.feesValue),
+    taxesByCurrency: snapshotBreakdownOrDisplayValue(snapshot.taxesByCurrency, snapshot.taxesValue),
+  }
+
+  for (const item of snapshot.items) {
+    const quantity = toNum(item.quantity as never)
+    if (quantity <= 0.000001) continue
+
+    const currency = normalizeCurrency(
+      item.nativeCostCurrency ?? item.costCurrency ?? item.asset?.currency,
+      "CZK"
+    )
+    const totalCost =
+      item.nativeCostBasis != null
+        ? toNum(item.nativeCostBasis as never)
+        : toNum(item.costBasis as never)
+
+    ledgerSnapshot.positions[listingPositionKey(snapshot.accountId, item.listingId)] = {
+      listingId: item.listingId,
+      symbol: item.symbol,
+      accountId: snapshot.accountId,
+      assetId: item.assetId,
+      assetType: item.asset?.assetType ?? "stock",
+      name: item.asset?.name ?? null,
+      quantity,
+      totalCost,
+      currency,
+    }
+  }
+
+  return ledgerSnapshot
+}
+
+async function getImportSnapshotSeed(accountId: string, start: Date, displayCurrency = "CZK") {
+  const previousSnapshot = await prisma.accountSnapshot.findFirst({
+    where: {
+      accountId,
+      currency: displayCurrency,
+      granularity: "day",
+      timestamp: { lt: start },
+    },
+    include: {
+      items: {
+        include: {
+          asset: {
+            select: { name: true, assetType: true, currency: true },
+          },
+        },
+      },
+    },
+    orderBy: { timestamp: "desc" },
+  })
+
+  if (!previousSnapshot) {
+    return {
+      ledgerSnapshot: emptyLedgerSnapshot(),
+      eventCursor: null as Date | null,
+      seedSource: "empty" as const,
+    }
+  }
+
+  const eventCursor = endOfDay(previousSnapshot.timestamp)
+  const needsRebuild = snapshotNeedsLedgerRebuild(previousSnapshot)
+  const ledgerSnapshot = needsRebuild
+    ? await calculateAccountLedgerSnapshot(accountId, eventCursor, displayCurrency)
+    : restoreLedgerSnapshotFromAccountSnapshot(previousSnapshot)
+
+  return {
+    ledgerSnapshot,
+    eventCursor,
+    seedSource: needsRebuild ? ("rebuild" as const) : ("snapshot" as const),
+  }
+}
+
+async function getCachedHistoricalCzkRates(
+  cache: Map<string, Record<string, number>>,
+  date: Date,
+  currencies: string[] = [],
+  displayCurrency = "CZK"
+) {
+  const key = `${displayCurrency}:${todayStart(date).toISOString()}:${currencies.sort().join(",")}`
   const cached = cache.get(key)
   if (cached) return cached
 
-  const rates = await getHistoricalCzkRates(date)
+  const rates = await getHistoricalExchangeRates({
+    date,
+    toCurrency: displayCurrency,
+    currencies,
+  })
   cache.set(key, rates)
   return rates
 }
@@ -200,15 +537,16 @@ async function getCachedHistoricalCzkRates(cache: Map<string, Record<string, num
 function applyInvestmentEventToSnapshotPositions(
   positions: Record<string, SnapshotPosition>,
   event: LedgerSnapshotEvent,
-  czkRates: Record<string, number>
-) {
+  valuation?: AssetTransferValuationContext
+): AssetTransferFlow | null {
   const asset = event.movements.find(
     (movement) => movement.kind === "asset" && movement.sourceSymbol
   )
-  if (!asset?.sourceSymbol) return
+  if (!asset?.sourceSymbol || !asset.listingId) return null
 
-  const key = positionKey(event.accountId, asset.sourceSymbol)
+  const key = listingPositionKey(event.accountId, asset.listingId)
   positions[key] ||= {
+    listingId: asset.listingId,
     symbol: asset.sourceSymbol,
     accountId: event.accountId,
     assetId: asset.assetId,
@@ -216,65 +554,185 @@ function applyInvestmentEventToSnapshotPositions(
     name: event.description,
     quantity: 0,
     totalCost: 0,
-    currency: "CZK",
+    currency: normalizeCurrency(asset.valueCurrency ?? asset.currency, "EUR"),
   }
 
   const position = positions[key]
   const quantity = toNum(asset.quantity as never)
   const price = toNum(asset.pricePerUnit as never)
   const valueAmount = toNum(asset.valueAmount as never)
-  const cost = price > 0 ? quantity * price : valueAmount
-  const costCzk = toCzk(cost, asset.valueCurrency ?? asset.currency ?? "EUR", czkRates)
+  const explicitCost = price > 0 ? quantity * price : valueAmount
+  const transferFlow =
+    event.type === "asset_transfer" ? assetTransferFlow(asset, position, quantity, valuation) : null
+  const cost = explicitCost > 0 ? explicitCost : (transferFlow?.amount ?? 0)
 
   if (asset.direction === "in") {
+    const costCurrency = normalizeCurrency(asset.valueCurrency ?? transferFlow?.currency, "")
+    if (costCurrency && cost > 0 && position.totalCost === 0) {
+      position.currency = costCurrency
+    }
     position.quantity += quantity
-    if (costCzk > 0) position.totalCost += costCzk
-    return
+    if (cost > 0) {
+      position.totalCost += convertCurrencyAmount(
+        cost,
+        costCurrency || position.currency,
+        position.currency,
+        valuation?.rates ?? {}
+      )
+    }
+    return transferFlow
   }
 
   const avgCost = position.quantity > 0 ? position.totalCost / position.quantity : 0
   position.totalCost -= avgCost * quantity
   position.quantity -= quantity
+  return transferFlow
+}
+
+function assetTransferFlow(
+  asset: LedgerSnapshotEvent["movements"][number],
+  position: SnapshotPosition,
+  quantity: number,
+  valuation?: AssetTransferValuationContext
+): AssetTransferFlow | null {
+  if (quantity <= 0) return null
+
+  const explicitValue = toNum(asset.valueAmount as never)
+  if (explicitValue > 0 && asset.valueCurrency) {
+    return {
+      amount: explicitValue,
+      currency: normalizeCurrency(asset.valueCurrency),
+      direction: asset.direction === "in" ? "in" : "out",
+    }
+  }
+
+  if (!valuation || !asset.sourceSymbol) return null
+
+  const priceKey = priceLookupKey({
+    symbol: asset.sourceSymbol,
+    assetType: asset.sourceAssetType ?? position.assetType,
+    currency: position.currency,
+    listingId: asset.listingId,
+  })
+  const close = findCloseAtOrBefore(
+    valuation.pricesBySymbol[priceKey] ?? valuation.pricesBySymbol[asset.sourceSymbol] ?? [],
+    valuation.date
+  )
+
+  if (close && close.price > 0) {
+    return {
+      amount: close.price * quantity,
+      currency: normalizeCurrency(close.currency),
+      direction: asset.direction === "in" ? "in" : "out",
+    }
+  }
+
+  const avgCost = position.quantity > 0 ? position.totalCost / position.quantity : 0
+  if (avgCost <= 0) return null
+
+  return {
+    amount: avgCost * quantity,
+    currency: position.currency,
+    direction: asset.direction === "in" ? "in" : "out",
+  }
 }
 
 function applyInvestmentEventToLedgerSnapshot(
   snapshot: AccountLedgerSnapshot,
   event: LedgerSnapshotEvent,
-  czkRates: Record<string, number>
+  valuation?: AssetTransferValuationContext
 ) {
-  applyInvestmentEventToSnapshotPositions(snapshot.positions, event, czkRates)
+  const assetTransferFlow = applyInvestmentEventToSnapshotPositions(
+    snapshot.positions,
+    event,
+    valuation
+  )
+  if (assetTransferFlow) {
+    const signedAmount =
+      assetTransferFlow.direction === "in" ? assetTransferFlow.amount : -assetTransferFlow.amount
+    addCurrencyAmount(snapshot.netDepositsByCurrency, assetTransferFlow.currency, signedAmount)
+    snapshot.netDepositsValueCzk += eventDisplayValue(
+      signedAmount,
+      assetTransferFlow.currency,
+      valuation
+    )
+  }
+
+  if (event.realizedPnl != null) {
+    addCurrencyAmount(
+      snapshot.realizedPnlByCurrency,
+      event.realizedPnlCurrency ?? "EUR",
+      toNum(event.realizedPnl as never)
+    )
+  }
 
   for (const movement of event.movements) {
     if (!["cash", "fee", "tax"].includes(movement.kind)) continue
 
     const amount = toNum((movement.valueAmount ?? movement.quantity) as never)
     const currency = movement.valueCurrency ?? movement.currency ?? "CZK"
-    const valueCzk = toCzk(amount, currency, czkRates)
-    snapshot.cashValueCzk += movement.direction === "in" ? valueCzk : -valueCzk
+    const signedAmount = movement.direction === "in" ? amount : -amount
+    addCurrencyAmount(snapshot.cashByCurrency, currency, signedAmount)
+
+    if (
+      event.type &&
+      ["cash_deposit", "cash_withdrawal"].includes(event.type) &&
+      !isTrading212FreeShareCashDeposit(event)
+    ) {
+      addCurrencyAmount(snapshot.netDepositsByCurrency, currency, signedAmount)
+      snapshot.netDepositsValueCzk += eventDisplayValue(signedAmount, currency, valuation)
+    }
+
+    if (movement.kind === "fee") {
+      addCurrencyAmount(
+        snapshot.feesByCurrency,
+        currency,
+        movement.direction === "out" ? amount : -amount
+      )
+    }
+
+    if (movement.kind === "tax") {
+      addCurrencyAmount(
+        snapshot.taxesByCurrency,
+        currency,
+        movement.direction === "out" ? amount : -amount
+      )
+    }
   }
 }
 
-function cashMovementsValueCzk(
-  event: {
-    movements: Array<{
-      kind: string
-      direction: string
-      valueAmount: unknown
-      quantity: unknown
-      valueCurrency: string | null
-      currency: string | null
-    }>
-  },
-  czkRates: Record<string, number>
-) {
-  return event.movements
-    .filter((movement) => movement.kind === "cash")
-    .reduce((sum, movement) => {
-      const amount = toNum((movement.valueAmount ?? movement.quantity) as never)
-      const currency = movement.valueCurrency ?? movement.currency ?? "CZK"
-      const valueCzk = toCzk(amount, currency, czkRates)
-      return sum + (movement.direction === "in" ? valueCzk : -valueCzk)
-    }, 0)
+function normalizedMarkerText(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+}
+
+function isTrading212FreeShareCashDeposit(event: {
+  source?: string | null
+  type?: string | null
+  description?: string | null
+}) {
+  if (event.source !== "trading212" || event.type !== "cash_deposit") return false
+
+  const text = normalizedMarkerText(event.description)
+  return (
+    text.includes("free share") ||
+    text.includes("free shares") ||
+    text.includes("free stock") ||
+    text.includes("free stocks") ||
+    text.includes("bonus share") ||
+    text.includes("bonus shares") ||
+    text.includes("bonus stock") ||
+    text.includes("bonus stocks") ||
+    text.includes("referral share") ||
+    text.includes("referral shares") ||
+    text.includes("promo share") ||
+    text.includes("promo shares") ||
+    text.includes("promotion share") ||
+    text.includes("promotion shares") ||
+    text.includes("akcie zdarma")
+  )
 }
 
 async function getSnapshotAccountIds(userId: string) {
@@ -298,8 +756,8 @@ async function getSnapshotAccountIds(userId: string) {
   }
 }
 
-async function calculateAccountValueCzk(accountIds: string[], czkRates: Record<string, number>) {
-  if (accountIds.length === 0) return 0
+async function calculateAccountValueBreakdown(accountIds: string[]): Promise<CurrencyBreakdown> {
+  if (accountIds.length === 0) return {}
 
   const txs = await prisma.transaction.findMany({
     where: { accountId: { in: accountIds }, type: { in: ["income", "expense"] } },
@@ -312,13 +770,16 @@ async function calculateAccountValueCzk(accountIds: string[], czkRates: Record<s
     },
   })
 
-  return txs.reduce((sum, tx) => {
-    const amountCzk =
-      tx.reportingAmount && tx.reportingCurrency === "CZK"
-        ? toNum(tx.reportingAmount)
-        : toCzk(toNum(tx.amount), tx.currency, czkRates)
-    return sum + (tx.type === "income" ? amountCzk : -amountCzk)
-  }, 0)
+  const breakdown: CurrencyBreakdown = {}
+  for (const tx of txs) {
+    addCurrencyAmount(
+      breakdown,
+      tx.currency,
+      tx.type === "income" ? toNum(tx.amount) : -toNum(tx.amount)
+    )
+  }
+
+  return breakdown
 }
 
 function applyInvestmentEvent(
@@ -332,6 +793,8 @@ function applyInvestmentEvent(
       pricePerUnit: unknown
       valueAmount: unknown
       valueCurrency: string | null
+      assetId: string | null
+      listingId: string | null
       sourceSymbol: string | null
       sourceAssetType: AssetType | null
     }>
@@ -341,12 +804,14 @@ function applyInvestmentEvent(
   const asset = event.movements.find(
     (movement) => movement.kind === "asset" && movement.sourceSymbol
   )
-  if (!asset?.sourceSymbol) return
+  if (!asset?.sourceSymbol || !asset.listingId) return
 
-  const key = `${event.accountId}:${asset.sourceSymbol}`
+  const key = listingPositionKey(event.accountId, asset.listingId)
   positions[key] ||= {
+    listingId: asset.listingId,
     symbol: asset.sourceSymbol,
     accountId: event.accountId,
+    assetId: asset.assetId,
     assetType: asset.sourceAssetType ?? "stock",
     name: event.description,
     quantity: 0,
@@ -361,6 +826,10 @@ function applyInvestmentEvent(
   const cost = price > 0 ? quantity * price : valueAmount
 
   if (asset.direction === "in") {
+    const costCurrency = asset.valueCurrency ? normalizeCurrency(asset.valueCurrency) : null
+    if (costCurrency && cost > 0 && position.totalCost === 0) {
+      position.currency = costCurrency
+    }
     position.quantity += quantity
     if (cost > 0) position.totalCost += cost
     return
@@ -392,65 +861,188 @@ export async function createPortfolioSnapshot({
     include: { holdings: true },
   })
 
-  const holdings = accounts.flatMap((account) => account.holdings)
+  const ledgerByAccount = new Map<string, AccountLedgerSnapshot>()
+  for (const account of accounts) {
+    const ledgerSnapshot = await calculateAccountLedgerSnapshotFromLatestSnapshot(
+      account.id,
+      timestamp,
+      normalizeCurrency(account.currency)
+    )
+    ledgerByAccount.set(account.id, ledgerSnapshot)
+  }
+
+  const positions = [...ledgerByAccount.values()].flatMap((ledger) =>
+    Object.values(ledger.positions).filter((position) => position.quantity > 0.000001)
+  )
   const prices =
-    holdings.length > 0
+    positions.length > 0
       ? await getLivePrices(
-          holdings.map((holding) => ({
-            symbol: holding.symbol,
-            assetType: holding.assetType,
-            currency: holding.currency,
+          positions.map((position) => ({
+            symbol: position.symbol,
+            assetType: position.assetType,
+            currency: position.currency,
+            listingId: position.listingId,
           }))
         )
       : {}
-  const czkRates = await getCzkRates()
-  const ratesCache = new Map<string, Record<string, number>>()
-  const cashByAccount = new Map<string, number>()
-  for (const account of accounts) {
-    const ledgerSnapshot = await calculateAccountLedgerSnapshot(account.id, timestamp, ratesCache)
-    cashByAccount.set(account.id, ledgerSnapshot.cashValueCzk)
-  }
 
-  const items = holdings
-    .map((holding) => {
-      const price = prices[holding.symbol]
-      const quantity = toNum(holding.quantity)
-      const pricePerUnit = price?.price ?? toNum(holding.avgBuyPrice)
-      const priceCurrency = price?.currency ?? holding.currency
-      const value = toCzk(pricePerUnit * quantity, priceCurrency, czkRates)
-      const costBasis = toCzk(toNum(holding.avgBuyPrice) * quantity, holding.currency, czkRates)
+  const items = positions
+    .map((position) => {
+      const price =
+        prices[
+          priceLookupKey({
+            symbol: position.symbol,
+            assetType: position.assetType,
+            currency: position.currency,
+            listingId: position.listingId,
+          })
+        ] ?? prices[position.symbol]
+      const quantity = position.quantity
+      const avgBuyPrice = quantity > 0 ? position.totalCost / quantity : 0
+      const pricePerUnit = price?.price ?? avgBuyPrice
+      const priceCurrency = price?.currency ?? position.currency
+      const nativeValue = pricePerUnit * quantity
+      const nativeCostBasis = position.totalCost
 
       return {
-        assetId: holding.assetId,
-        symbol: holding.symbol,
-        accountId: holding.accountId,
+        assetId: position.assetId,
+        listingId: position.listingId,
+        symbol: position.symbol,
+        accountId: position.accountId,
         quantity,
         pricePerUnit,
         priceCurrency,
-        value,
-        costBasis,
-        costCurrency: "CZK",
+        nativeValue,
+        valueCurrency: priceCurrency,
+        nativeCostBasis,
+        nativeCostCurrency: position.currency,
       }
     })
-    .filter((item) => item.quantity > 0 && item.value > 0)
+    .filter((item) => item.quantity > 0 && item.nativeValue > 0)
 
-  const totalValue =
-    items.reduce((sum, item) => sum + item.value, 0) +
-    [...cashByAccount.values()].reduce((sum, cashValue) => sum + cashValue, 0)
+  const totalValueByCurrency: CurrencyBreakdown = {}
+  for (const item of items) {
+    addCurrencyAmount(totalValueByCurrency, item.valueCurrency, item.nativeValue)
+  }
+  for (const ledger of ledgerByAccount.values()) {
+    for (const [currency, amount] of Object.entries(ledger.cashByCurrency)) {
+      addCurrencyAmount(totalValueByCurrency, currency, amount)
+    }
+  }
+  const totalValueRates = await getCzkRates()
+  const totalValue = convertCurrencyBreakdown(totalValueByCurrency, totalValueRates, "CZK")
+
+  const ratesByCurrency = new Map<string, Record<string, number>>()
+  for (const account of accounts) {
+    const accountCurrency = normalizeCurrency(account.currency)
+    const ledger = ledgerByAccount.get(account.id) ?? emptyLedgerSnapshot()
+    const accountItems = items.filter((item) => item.accountId === account.id)
+    const currencies = [
+      ...accountItems.flatMap((item) => [item.valueCurrency, item.nativeCostCurrency]),
+      ...currencyBreakdownCurrencies(
+        ledger.cashByCurrency,
+        ledger.netDepositsByCurrency,
+        ledger.realizedPnlByCurrency,
+        ledger.feesByCurrency,
+        ledger.taxesByCurrency
+      ),
+    ]
+    ratesByCurrency.set(
+      account.id,
+      await getExchangeRates({ toCurrency: accountCurrency, currencies })
+    )
+  }
 
   await prisma.$transaction(async (tx) => {
     for (const account of accounts) {
-      const accountItems = items.filter((item) => item.accountId === account.id)
-      const accountValue = accountItems.reduce((sum, item) => sum + item.value, 0)
-      const accountCostBasis = accountItems.reduce((sum, item) => sum + item.costBasis, 0)
-      const accountCashValue = cashByAccount.get(account.id) ?? 0
+      const displayCurrency = normalizeCurrency(account.currency)
+      const accountRates = ratesByCurrency.get(account.id) ?? {}
+      const accountItems = items
+        .filter((item) => item.accountId === account.id)
+        .map((item) => ({
+          ...item,
+          value: toDisplayCurrency(
+            item.nativeValue,
+            item.valueCurrency,
+            accountRates,
+            displayCurrency
+          ),
+          costBasis: toDisplayCurrency(
+            item.nativeCostBasis,
+            item.nativeCostCurrency,
+            accountRates,
+            displayCurrency
+          ),
+          costCurrency: displayCurrency,
+        }))
+      const ledger = ledgerByAccount.get(account.id) ?? emptyLedgerSnapshot()
+      const investmentValueByCurrency: CurrencyBreakdown = {}
+      const investmentCostBasisByCurrency: CurrencyBreakdown = {}
+      for (const item of accountItems) {
+        addCurrencyAmount(investmentValueByCurrency, item.valueCurrency, item.nativeValue)
+        addCurrencyAmount(
+          investmentCostBasisByCurrency,
+          item.nativeCostCurrency,
+          item.nativeCostBasis
+        )
+      }
+      const unrealizedPnlByCurrency = subtractCurrencyBreakdowns(
+        investmentValueByCurrency,
+        investmentCostBasisByCurrency
+      )
+      const accountValue = convertCurrencyBreakdown(
+        investmentValueByCurrency,
+        accountRates,
+        displayCurrency
+      )
+      const accountCostBasis = convertCurrencyBreakdown(
+        investmentCostBasisByCurrency,
+        accountRates,
+        displayCurrency
+      )
+      const accountCashValue = convertCurrencyBreakdown(
+        ledger.cashByCurrency,
+        accountRates,
+        displayCurrency
+      )
       const accountTotalValue = accountCashValue + accountValue
+      const netDepositsValue = ledger.netDepositsValueCzk
+      const realizedPnlValue = convertCurrencyBreakdown(
+        ledger.realizedPnlByCurrency,
+        accountRates,
+        displayCurrency
+      )
+      const unrealizedPnlValue = accountValue - accountCostBasis
+      const feesValue = convertCurrencyBreakdown(
+        ledger.feesByCurrency,
+        accountRates,
+        displayCurrency
+      )
+      const taxesValue = convertCurrencyBreakdown(
+        ledger.taxesByCurrency,
+        accountRates,
+        displayCurrency
+      )
+      const ratesForSnapshot = snapshotExchangeRates(
+        accountRates,
+        currencyBreakdownCurrencies(
+          ledger.cashByCurrency,
+          investmentValueByCurrency,
+          investmentCostBasisByCurrency,
+          ledger.netDepositsByCurrency,
+          ledger.realizedPnlByCurrency,
+          unrealizedPnlByCurrency,
+          ledger.feesByCurrency,
+          ledger.taxesByCurrency
+        ),
+        displayCurrency
+      )
       const snapshot = await tx.accountSnapshot.upsert({
         where: {
           accountId_timestamp_currency_granularity: {
             accountId: account.id,
             timestamp: bucket,
-            currency: "CZK",
+            currency: displayCurrency,
             granularity,
           },
         },
@@ -459,7 +1051,21 @@ export async function createPortfolioSnapshot({
           cashValue: accountCashValue,
           investmentValue: accountValue,
           investmentCostBasis: accountCostBasis,
+          netDepositsValue,
+          realizedPnlValue,
+          unrealizedPnlValue,
+          feesValue,
+          taxesValue,
           totalValue: accountTotalValue,
+          cashValueByCurrency: roundCurrencyBreakdown(ledger.cashByCurrency),
+          investmentValueByCurrency: roundCurrencyBreakdown(investmentValueByCurrency),
+          investmentCostBasisByCurrency: roundCurrencyBreakdown(investmentCostBasisByCurrency),
+          netDepositsByCurrency: roundCurrencyBreakdown(ledger.netDepositsByCurrency),
+          realizedPnlByCurrency: roundCurrencyBreakdown(ledger.realizedPnlByCurrency),
+          unrealizedPnlByCurrency: roundCurrencyBreakdown(unrealizedPnlByCurrency),
+          feesByCurrency: roundCurrencyBreakdown(ledger.feesByCurrency),
+          taxesByCurrency: roundCurrencyBreakdown(ledger.taxesByCurrency),
+          exchangeRates: ratesForSnapshot,
           isRecalculated: source === "manual_recalculation",
         },
         create: {
@@ -467,12 +1073,26 @@ export async function createPortfolioSnapshot({
           timestamp: bucket,
           granularity,
           source,
-          currency: "CZK",
+          currency: displayCurrency,
           cashValue: accountCashValue,
           investmentValue: accountValue,
           investmentCostBasis: accountCostBasis,
+          netDepositsValue,
+          realizedPnlValue,
+          unrealizedPnlValue,
+          feesValue,
+          taxesValue,
           liabilitiesValue: 0,
           totalValue: accountTotalValue,
+          cashValueByCurrency: roundCurrencyBreakdown(ledger.cashByCurrency),
+          investmentValueByCurrency: roundCurrencyBreakdown(investmentValueByCurrency),
+          investmentCostBasisByCurrency: roundCurrencyBreakdown(investmentCostBasisByCurrency),
+          netDepositsByCurrency: roundCurrencyBreakdown(ledger.netDepositsByCurrency),
+          realizedPnlByCurrency: roundCurrencyBreakdown(ledger.realizedPnlByCurrency),
+          unrealizedPnlByCurrency: roundCurrencyBreakdown(unrealizedPnlByCurrency),
+          feesByCurrency: roundCurrencyBreakdown(ledger.feesByCurrency),
+          taxesByCurrency: roundCurrencyBreakdown(ledger.taxesByCurrency),
+          exchangeRates: ratesForSnapshot,
           isRecalculated: source === "manual_recalculation",
         },
       })
@@ -484,13 +1104,18 @@ export async function createPortfolioSnapshot({
           data: accountItems.map((item) => ({
             snapshotId: snapshot.id,
             assetId: item.assetId,
+            listingId: item.listingId,
             symbol: item.symbol,
             quantity: item.quantity,
             pricePerUnit: item.pricePerUnit,
             priceCurrency: item.priceCurrency,
             value: item.value,
+            nativeValue: item.nativeValue,
+            valueCurrency: item.valueCurrency,
             costBasis: item.costBasis,
             costCurrency: item.costCurrency,
+            nativeCostBasis: item.nativeCostBasis,
+            nativeCostCurrency: item.nativeCostCurrency,
             allocationPct: accountValue > 0 ? (item.value / accountValue) * 100 : 0,
           })),
         })
@@ -498,7 +1123,7 @@ export async function createPortfolioSnapshot({
     }
   })
 
-  return { totalValue }
+  return { totalValue, totalValueByCurrency: roundCurrencyBreakdown(totalValueByCurrency) }
 }
 
 export async function createNetWorthSnapshot({
@@ -509,22 +1134,49 @@ export async function createNetWorthSnapshot({
   timestamp?: Date
 }) {
   const bucket = bucketTimestamp(timestamp, "day")
+  const displayCurrency = "CZK"
   const czkRates = await getCzkRates()
   const accountIds = await getSnapshotAccountIds(userId)
-  const [cashValue, liabilitiesValue, portfolioSnapshot] = await Promise.all([
-    calculateAccountValueCzk(accountIds.cash, czkRates),
-    calculateAccountValueCzk(accountIds.liabilities, czkRates),
+  const [cashValueByCurrency, liabilitiesValueByCurrency, portfolioSnapshot] = await Promise.all([
+    calculateAccountValueBreakdown(accountIds.cash),
+    calculateAccountValueBreakdown(accountIds.liabilities),
     createPortfolioSnapshot({ userId, source: "scheduled", granularity: "day", timestamp }),
   ])
 
-  const portfolioValue = toNum(portfolioSnapshot.totalValue)
+  const portfolioValueByCurrency = portfolioSnapshot.totalValueByCurrency
+  const totalNetWorthByCurrency = subtractCurrencyBreakdowns(
+    mergeCurrencyBreakdowns(cashValueByCurrency, portfolioValueByCurrency),
+    liabilitiesValueByCurrency
+  )
+  const cashValue = convertCurrencyBreakdown(cashValueByCurrency, czkRates, displayCurrency)
+  const portfolioValue = convertCurrencyBreakdown(
+    portfolioValueByCurrency,
+    czkRates,
+    displayCurrency
+  )
+  const liabilitiesValue = convertCurrencyBreakdown(
+    liabilitiesValueByCurrency,
+    czkRates,
+    displayCurrency
+  )
+  const totalNetWorth = cashValue + portfolioValue - liabilitiesValue
+  const ratesForSnapshot = snapshotExchangeRates(
+    czkRates,
+    currencyBreakdownCurrencies(
+      cashValueByCurrency,
+      portfolioValueByCurrency,
+      liabilitiesValueByCurrency,
+      totalNetWorthByCurrency
+    ),
+    displayCurrency
+  )
 
   return prisma.netWorthSnapshot.upsert({
     where: {
       userId_timestamp_currency_granularity: {
         userId,
         timestamp: bucket,
-        currency: "CZK",
+        currency: displayCurrency,
         granularity: "day",
       },
     },
@@ -533,18 +1185,28 @@ export async function createNetWorthSnapshot({
       cashValue,
       portfolioValue,
       liabilitiesValue,
-      totalNetWorth: cashValue + portfolioValue - liabilitiesValue,
+      totalNetWorth,
+      cashValueByCurrency: roundCurrencyBreakdown(cashValueByCurrency),
+      portfolioValueByCurrency: roundCurrencyBreakdown(portfolioValueByCurrency),
+      liabilitiesValueByCurrency: roundCurrencyBreakdown(liabilitiesValueByCurrency),
+      totalNetWorthByCurrency: roundCurrencyBreakdown(totalNetWorthByCurrency),
+      exchangeRates: ratesForSnapshot,
     },
     create: {
       userId,
       timestamp: bucket,
       granularity: "day",
       source: "scheduled",
-      currency: "CZK",
+      currency: displayCurrency,
       cashValue,
       portfolioValue,
       liabilitiesValue,
-      totalNetWorth: cashValue + portfolioValue - liabilitiesValue,
+      totalNetWorth,
+      cashValueByCurrency: roundCurrencyBreakdown(cashValueByCurrency),
+      portfolioValueByCurrency: roundCurrencyBreakdown(portfolioValueByCurrency),
+      liabilitiesValueByCurrency: roundCurrencyBreakdown(liabilitiesValueByCurrency),
+      totalNetWorthByCurrency: roundCurrencyBreakdown(totalNetWorthByCurrency),
+      exchangeRates: ratesForSnapshot,
     },
   })
 }
@@ -614,17 +1276,11 @@ export async function getBackfilledPortfolioHistory({
         symbol: movement.sourceSymbol!,
         assetType: movement.sourceAssetType ?? "stock",
         currency: movement.valueCurrency ?? movement.currency,
+        listingId: movement.listingId,
       }))
   )
 
-  const [pricesBySymbol, assets] = await Promise.all([
-    getHistoricalPrices(symbolDefinitions, earliestBucket, latestBucket),
-    prisma.asset.findMany({
-      where: { symbol: { in: [...new Set(symbolDefinitions.map((item) => item.symbol))] } },
-      select: { id: true, symbol: true },
-    }),
-  ])
-  const assetIdBySymbol = new Map(assets.map((asset) => [asset.symbol, asset.id]))
+  const pricesBySymbol = await getHistoricalPrices(symbolDefinitions, earliestBucket, latestBucket)
 
   const positions: Record<string, HistoricalPosition> = {}
   const points: PortfolioHistoryPoint[] = []
@@ -640,7 +1296,16 @@ export async function getBackfilledPortfolioHistory({
     const items = Object.values(positions)
       .filter((position) => position.quantity > 0.000001)
       .map((position) => {
-        const close = findCloseAtOrBefore(pricesBySymbol[position.symbol] ?? [], bucket)
+        const priceKey = priceLookupKey({
+          symbol: position.symbol,
+          assetType: position.assetType,
+          currency: position.currency,
+          listingId: position.listingId,
+        })
+        const close = findCloseAtOrBefore(
+          pricesBySymbol[priceKey] ?? pricesBySymbol[position.symbol] ?? [],
+          bucket
+        )
         const avgPrice = position.quantity > 0 ? position.totalCost / position.quantity : 0
         const pricePerUnit = close?.price ?? avgPrice
         const priceCurrency = close?.currency ?? position.currency
@@ -648,7 +1313,8 @@ export async function getBackfilledPortfolioHistory({
         const costCzk = toCzk(position.totalCost, position.currency, czkRates)
 
         return {
-          assetId: assetIdBySymbol.get(position.symbol) ?? null,
+          assetId: position.assetId,
+          listingId: position.listingId,
           symbol: position.symbol,
           accountId: position.accountId,
           quantity: position.quantity,
@@ -722,6 +1388,7 @@ export async function getBackfilledPortfolioHistory({
             data: accountItems.map((item) => ({
               snapshotId: snapshot.id,
               assetId: item.assetId,
+              listingId: item.listingId,
               symbol: item.symbol,
               quantity: item.quantity,
               pricePerUnit: item.pricePerUnit,
@@ -789,101 +1456,6 @@ export async function getPortfolioSnapshotHistory({
   const bucketSnapshots = [...latestByAccountBucket.values()].sort(
     (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
   )
-  const accountIdsForHistory = [...new Set(bucketSnapshots.map((snapshot) => snapshot.accountId))]
-  const netDepositsBySnapshot = new Map<string, number>()
-  const realizedPnlBySnapshot = new Map<string, number>()
-
-  if (accountIdsForHistory.length > 0) {
-    const latestSnapshotDate = bucketSnapshots[bucketSnapshots.length - 1]?.timestamp
-    const [depositEvents, realizedPnlEvents] = latestSnapshotDate
-      ? await Promise.all([
-          prisma.investmentEvent.findMany({
-            where: {
-              accountId: { in: accountIdsForHistory },
-              deletedAt: null,
-              archivedAt: null,
-              type: { in: ["cash_deposit", "cash_withdrawal"] },
-              date: { lte: latestSnapshotDate },
-            },
-            include: { movements: true },
-            orderBy: { date: "asc" },
-          }),
-          prisma.investmentEvent.findMany({
-            where: {
-              accountId: { in: accountIdsForHistory },
-              deletedAt: null,
-              archivedAt: null,
-              realizedPnl: { not: null },
-              date: { lte: latestSnapshotDate },
-            },
-            select: {
-              accountId: true,
-              date: true,
-              realizedPnl: true,
-              realizedPnlCurrency: true,
-            },
-            orderBy: { date: "asc" },
-          }),
-        ])
-      : [[], []]
-    const eventsByAccount = new Map<string, typeof depositEvents>()
-    for (const event of depositEvents) {
-      const events = eventsByAccount.get(event.accountId) ?? []
-      events.push(event)
-      eventsByAccount.set(event.accountId, events)
-    }
-    const realizedEventsByAccount = new Map<string, typeof realizedPnlEvents>()
-    for (const event of realizedPnlEvents) {
-      const events = realizedEventsByAccount.get(event.accountId) ?? []
-      events.push(event)
-      realizedEventsByAccount.set(event.accountId, events)
-    }
-
-    const eventIndexes = new Map<string, number>()
-    const realizedEventIndexes = new Map<string, number>()
-    const accountNetDeposits = new Map<string, number>()
-    const accountRealizedPnl = new Map<string, number>()
-    const ratesCache = new Map<string, Record<string, number>>()
-
-    for (const snapshot of bucketSnapshots) {
-      const accountEvents = eventsByAccount.get(snapshot.accountId) ?? []
-      const realizedAccountEvents = realizedEventsByAccount.get(snapshot.accountId) ?? []
-      let eventIndex = eventIndexes.get(snapshot.accountId) ?? 0
-      let realizedEventIndex = realizedEventIndexes.get(snapshot.accountId) ?? 0
-      let netDepositsCzk = accountNetDeposits.get(snapshot.accountId) ?? 0
-      let realizedPnlCzk = accountRealizedPnl.get(snapshot.accountId) ?? 0
-
-      while (
-        eventIndex < accountEvents.length &&
-        accountEvents[eventIndex].date <= snapshot.timestamp
-      ) {
-        const event = accountEvents[eventIndex]
-        const czkRates = await getCachedHistoricalCzkRates(ratesCache, event.date)
-        netDepositsCzk += cashMovementsValueCzk(event, czkRates)
-        eventIndex += 1
-      }
-      while (
-        realizedEventIndex < realizedAccountEvents.length &&
-        realizedAccountEvents[realizedEventIndex].date <= snapshot.timestamp
-      ) {
-        const event = realizedAccountEvents[realizedEventIndex]
-        const czkRates = await getCachedHistoricalCzkRates(ratesCache, event.date)
-        realizedPnlCzk += toCzk(
-          toNum(event.realizedPnl),
-          event.realizedPnlCurrency ?? "EUR",
-          czkRates
-        )
-        realizedEventIndex += 1
-      }
-
-      eventIndexes.set(snapshot.accountId, eventIndex)
-      realizedEventIndexes.set(snapshot.accountId, realizedEventIndex)
-      accountNetDeposits.set(snapshot.accountId, netDepositsCzk)
-      accountRealizedPnl.set(snapshot.accountId, realizedPnlCzk)
-      netDepositsBySnapshot.set(snapshot.id, netDepositsCzk)
-      realizedPnlBySnapshot.set(snapshot.id, realizedPnlCzk)
-    }
-  }
 
   const grouped = new Map<
     string,
@@ -896,9 +1468,18 @@ export async function getPortfolioSnapshotHistory({
       investmentCostBasisCzk: number
       realizedPnlCzk: number
       unrealizedPnlCzk: number
+      cashByCurrency: CurrencyBreakdown
+      investmentValueByCurrency: CurrencyBreakdown
+      investmentCostBasisByCurrency: CurrencyBreakdown
+      netDepositsByCurrency: CurrencyBreakdown
+      realizedPnlByCurrency: CurrencyBreakdown
+      unrealizedPnlByCurrency: CurrencyBreakdown
+      feesByCurrency: CurrencyBreakdown
+      taxesByCurrency: CurrencyBreakdown
       allocations: { symbol: string; accountId: string; valueCzk: number; allocationPct: number }[]
       positions: {
         id: string
+        listingId: string | null
         symbol: string
         name: string | null
         assetType: AssetType
@@ -930,6 +1511,14 @@ export async function getPortfolioSnapshotHistory({
       investmentCostBasisCzk: 0,
       realizedPnlCzk: 0,
       unrealizedPnlCzk: 0,
+      cashByCurrency: {},
+      investmentValueByCurrency: {},
+      investmentCostBasisByCurrency: {},
+      netDepositsByCurrency: {},
+      realizedPnlByCurrency: {},
+      unrealizedPnlByCurrency: {},
+      feesByCurrency: {},
+      taxesByCurrency: {},
       allocations: [],
       positions: [],
     }
@@ -938,6 +1527,16 @@ export async function getPortfolioSnapshotHistory({
     const cashCzk = toNum(snapshot.cashValue)
     const investmentValueCzk = toNum(snapshot.investmentValue)
     const investmentCostBasisCzk = toNum(snapshot.investmentCostBasis)
+    const cashByCurrency = jsonCurrencyBreakdown(snapshot.cashValueByCurrency)
+    const investmentValueByCurrency = jsonCurrencyBreakdown(snapshot.investmentValueByCurrency)
+    const investmentCostBasisByCurrency = jsonCurrencyBreakdown(
+      snapshot.investmentCostBasisByCurrency
+    )
+    const netDepositsByCurrency = jsonCurrencyBreakdown(snapshot.netDepositsByCurrency)
+    const realizedPnlByCurrency = jsonCurrencyBreakdown(snapshot.realizedPnlByCurrency)
+    const unrealizedPnlByCurrency = jsonCurrencyBreakdown(snapshot.unrealizedPnlByCurrency)
+    const feesByCurrency = jsonCurrencyBreakdown(snapshot.feesByCurrency)
+    const taxesByCurrency = jsonCurrencyBreakdown(snapshot.taxesByCurrency)
     const investedCzk = snapshot.items.reduce(
       (sum, item) => sum + (item.costBasis != null ? toNum(item.costBasis) : 0),
       0
@@ -947,9 +1546,33 @@ export async function getPortfolioSnapshotHistory({
     current.cashCzk += cashCzk
     current.investmentCostBasisCzk += investmentCostBasisCzk
     current.investedCzk += investmentCostBasisCzk > 0 ? investmentCostBasisCzk : investedCzk
-    current.netDepositsCzk += netDepositsBySnapshot.get(snapshot.id) ?? 0
-    current.realizedPnlCzk += realizedPnlBySnapshot.get(snapshot.id) ?? 0
-    current.unrealizedPnlCzk += investmentValueCzk - costBasisForPnl
+    current.netDepositsCzk += toNum(snapshot.netDepositsValue)
+    current.realizedPnlCzk += toNum(snapshot.realizedPnlValue)
+    current.unrealizedPnlCzk +=
+      toNum(snapshot.unrealizedPnlValue) || investmentValueCzk - costBasisForPnl
+    current.cashByCurrency = mergeCurrencyBreakdowns(current.cashByCurrency, cashByCurrency)
+    current.investmentValueByCurrency = mergeCurrencyBreakdowns(
+      current.investmentValueByCurrency,
+      investmentValueByCurrency
+    )
+    current.investmentCostBasisByCurrency = mergeCurrencyBreakdowns(
+      current.investmentCostBasisByCurrency,
+      investmentCostBasisByCurrency
+    )
+    current.netDepositsByCurrency = mergeCurrencyBreakdowns(
+      current.netDepositsByCurrency,
+      netDepositsByCurrency
+    )
+    current.realizedPnlByCurrency = mergeCurrencyBreakdowns(
+      current.realizedPnlByCurrency,
+      realizedPnlByCurrency
+    )
+    current.unrealizedPnlByCurrency = mergeCurrencyBreakdowns(
+      current.unrealizedPnlByCurrency,
+      unrealizedPnlByCurrency
+    )
+    current.feesByCurrency = mergeCurrencyBreakdowns(current.feesByCurrency, feesByCurrency)
+    current.taxesByCurrency = mergeCurrencyBreakdowns(current.taxesByCurrency, taxesByCurrency)
     current.allocations.push(
       ...snapshot.items.map((item) => ({
         symbol: item.symbol,
@@ -964,26 +1587,35 @@ export async function getPortfolioSnapshotHistory({
           const quantity = toNum(item.quantity)
           const valueCzk = toNum(item.value)
           const costBasisCzk = item.costBasis != null ? toNum(item.costBasis) : 0
+          const nativeValue = item.nativeValue != null ? toNum(item.nativeValue) : valueCzk
+          const nativeValueCurrency = item.valueCurrency ?? item.priceCurrency ?? "CZK"
+          const nativeCostBasis =
+            item.nativeCostBasis != null ? toNum(item.nativeCostBasis) : costBasisCzk
+          const nativeCostCurrency = item.nativeCostCurrency ?? item.costCurrency ?? "CZK"
           const avgBuyPriceCzk = quantity > 0 ? costBasisCzk / quantity : 0
+          const avgBuyPrice = quantity > 0 ? nativeCostBasis / quantity : 0
           const unrealizedPnlCzk = valueCzk - costBasisCzk
+          const unrealizedPnl =
+            nativeValueCurrency === nativeCostCurrency ? nativeValue - nativeCostBasis : null
           const unrealizedPnlPct = costBasisCzk > 0 ? (unrealizedPnlCzk / costBasisCzk) * 100 : null
 
           return {
             id: `${snapshot.accountId}:${item.symbol}`,
+            listingId: item.listingId,
             symbol: item.symbol,
             name: item.asset?.name ?? null,
             assetType: item.asset?.assetType ?? "stock",
             quantity,
-            avgBuyPrice: avgBuyPriceCzk,
+            avgBuyPrice,
             avgBuyPriceCzk,
-            currency: item.costCurrency ?? "CZK",
+            currency: nativeCostCurrency,
             accountId: snapshot.accountId,
             accountName: snapshot.account.name,
             currentPrice: toNum(item.pricePerUnit),
-            currentPriceCurrency: item.priceCurrency ?? "CZK",
-            currentValue: valueCzk,
+            currentPriceCurrency: item.priceCurrency ?? nativeValueCurrency,
+            currentValue: nativeValue,
             currentValueCzk: valueCzk,
-            unrealizedPnl: null,
+            unrealizedPnl,
             unrealizedPnlCzk,
             unrealizedPnlPct,
           }
@@ -1007,6 +1639,14 @@ export async function getPortfolioSnapshotHistory({
     investmentCostBasisCzk: Math.round(snapshot.investmentCostBasisCzk),
     realizedPnlCzk: Math.round(snapshot.realizedPnlCzk),
     unrealizedPnlCzk: Math.round(snapshot.unrealizedPnlCzk),
+    cashByCurrency: roundCurrencyBreakdown(snapshot.cashByCurrency),
+    investmentValueByCurrency: roundCurrencyBreakdown(snapshot.investmentValueByCurrency),
+    investmentCostBasisByCurrency: roundCurrencyBreakdown(snapshot.investmentCostBasisByCurrency),
+    netDepositsByCurrency: roundCurrencyBreakdown(snapshot.netDepositsByCurrency),
+    realizedPnlByCurrency: roundCurrencyBreakdown(snapshot.realizedPnlByCurrency),
+    unrealizedPnlByCurrency: roundCurrencyBreakdown(snapshot.unrealizedPnlByCurrency),
+    feesByCurrency: roundCurrencyBreakdown(snapshot.feesByCurrency),
+    taxesByCurrency: roundCurrencyBreakdown(snapshot.taxesByCurrency),
     netWorthCzk: Math.round(snapshot.valueCzk),
     allocations: snapshot.allocations.map((item) => ({
       ...item,
@@ -1055,7 +1695,7 @@ export async function getNetWorthSnapshotHistory({
 async function calculateAccountLedgerSnapshot(
   accountId: string,
   until: Date,
-  ratesCache = new Map<string, Record<string, number>>()
+  displayCurrency = "CZK"
 ): Promise<AccountLedgerSnapshot> {
   const events = await prisma.investmentEvent.findMany({
     where: {
@@ -1068,11 +1708,99 @@ async function calculateAccountLedgerSnapshot(
     orderBy: { date: "asc" },
   })
 
-  const snapshot: AccountLedgerSnapshot = { positions: {}, cashValueCzk: 0 }
+  const snapshot = emptyLedgerSnapshot()
 
   for (const event of events) {
-    const czkRates = await getCachedHistoricalCzkRates(ratesCache, event.date)
-    applyInvestmentEventToLedgerSnapshot(snapshot, event, czkRates)
+    const currencies = [
+      event.realizedPnlCurrency,
+      ...event.movements.flatMap((movement) => [movement.valueCurrency, movement.currency]),
+      ...Object.values(snapshot.positions).map((position) => position.currency),
+    ].filter((currency): currency is string => Boolean(currency))
+    const rates = await getHistoricalExchangeRates({
+      date: event.date,
+      toCurrency: displayCurrency,
+      currencies,
+    })
+    applyInvestmentEventToLedgerSnapshot(snapshot, event, {
+      pricesBySymbol: {},
+      date: event.date,
+      rates,
+      displayCurrency,
+    })
+  }
+
+  return snapshot
+}
+
+async function calculateAccountLedgerSnapshotFromLatestSnapshot(
+  accountId: string,
+  until: Date,
+  displayCurrency = "CZK"
+): Promise<AccountLedgerSnapshot> {
+  const seed = await getImportSnapshotSeed(accountId, todayStart(until), displayCurrency)
+  const snapshot = cloneLedgerSnapshot(seed.ledgerSnapshot)
+
+  const events: LedgerSnapshotEvent[] = await prisma.investmentEvent.findMany({
+    where: {
+      accountId,
+      deletedAt: null,
+      archivedAt: null,
+      date: {
+        ...(seed.eventCursor ? { gt: seed.eventCursor } : {}),
+        lte: until,
+      },
+    },
+    include: { movements: true },
+    orderBy: { date: "asc" },
+  })
+
+  const assetMovements = events.flatMap((event) =>
+    event.movements
+      .filter((movement) => movement.kind === "asset" && movement.sourceSymbol)
+      .map((movement) => ({
+        symbol: movement.sourceSymbol!,
+        assetType: movement.sourceAssetType ?? "stock",
+        currency: movement.valueCurrency ?? movement.currency ?? "EUR",
+        listingId: movement.listingId,
+      }))
+  )
+  const seedPositions = Object.values(snapshot.positions).map((position) => ({
+    symbol: position.symbol,
+    assetType: position.assetType,
+    currency: position.currency,
+    listingId: position.listingId,
+  }))
+  const priceDefinitions = [...assetMovements, ...seedPositions].filter(
+    (definition, index, all) =>
+      all.findIndex((item) => priceLookupKey(item) === priceLookupKey(definition)) === index
+  )
+  const pricesBySymbol =
+    priceDefinitions.length > 0
+      ? await getHistoricalPrices(priceDefinitions, seed.eventCursor ?? until, until)
+      : {}
+
+  for (const event of events) {
+    const currencies = [
+      event.realizedPnlCurrency,
+      ...event.movements.flatMap((movement) => [
+        movement.valueCurrency,
+        movement.currency,
+        movement.kind === "asset" ? (movement.valueCurrency ?? movement.currency) : null,
+      ]),
+      ...Object.values(snapshot.positions).map((position) => position.currency),
+    ].filter((currency): currency is string => Boolean(currency))
+    const eventRates = await getHistoricalExchangeRates({
+      date: event.date,
+      toCurrency: displayCurrency,
+      currencies,
+    })
+
+    applyInvestmentEventToLedgerSnapshot(snapshot, event, {
+      pricesBySymbol,
+      date: event.date,
+      rates: eventRates,
+      displayCurrency,
+    })
   }
 
   return snapshot
@@ -1080,21 +1808,56 @@ async function calculateAccountLedgerSnapshot(
 
 function positionsValue(
   positions: Record<string, SnapshotPosition>,
-  czkRates: Record<string, number>
+  rates: Record<string, number>,
+  displayCurrency = "CZK"
 ) {
   return Object.values(positions)
     .filter((position) => position.quantity > 0.000001)
-    .reduce((sum, position) => sum + toCzk(position.totalCost, position.currency, czkRates), 0)
+    .reduce(
+      (sum, position) =>
+        sum + toDisplayCurrency(position.totalCost, position.currency, rates, displayCurrency),
+      0
+    )
 }
 
 async function writeImportLog(
-  importBatchId: string,
+  importBatchId: string | null | undefined,
   level: "info" | "warning" | "error",
   event: "snapshots_recalculated" | "snapshot_validation_failed" | "failed",
   message: string
 ) {
+  if (!importBatchId) return
+
   await prisma.importLog.create({
     data: { importBatchId, level, event, message },
+  })
+}
+
+async function flushAccountSnapshotChunk({
+  accountId,
+  snapshots,
+  items,
+}: {
+  accountId: string
+  snapshots: Prisma.AccountSnapshotCreateManyInput[]
+  items: Prisma.AccountSnapshotItemCreateManyInput[]
+}) {
+  if (snapshots.length === 0) return
+
+  const timestamps = snapshots.map((snapshot) => snapshot.timestamp as Date)
+  await prisma.$transaction(async (tx) => {
+    await tx.accountSnapshot.deleteMany({
+      where: {
+        accountId,
+        currency: "CZK",
+        granularity: "day",
+        timestamp: { in: timestamps },
+      },
+    })
+    await tx.accountSnapshot.createMany({ data: snapshots })
+    if (items.length > 0) {
+      await tx.accountSnapshotItem.createMany({ data: items })
+    }
   })
 }
 
@@ -1105,12 +1868,19 @@ export async function createDailyAccountSnapshotsFromImport({
   validationInterval = 0,
 }: {
   accountId: string
-  importBatchId: string
+  importBatchId?: string | null
   importStartDate?: Date | null
   validationInterval?: number
 }) {
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { currency: true },
+  })
+  const displayCurrency = normalizeCurrency(account?.currency, "CZK")
   const firstImportedEvent = await prisma.investmentEvent.findFirst({
-    where: { accountId, importBatchId },
+    where: importBatchId
+      ? { accountId, importBatchId }
+      : { accountId, deletedAt: null, archivedAt: null },
     orderBy: { date: "asc" },
     select: { date: true },
   })
@@ -1124,6 +1894,7 @@ export async function createDailyAccountSnapshotsFromImport({
   let snapshots = 0
   let validations = 0
   const ratesCache = new Map<string, Record<string, number>>()
+  const seed = await getImportSnapshotSeed(accountId, start, displayCurrency)
 
   const accountMovements = await prisma.investmentMovement.findMany({
     where: {
@@ -1131,49 +1902,136 @@ export async function createDailyAccountSnapshotsFromImport({
       kind: "asset",
       sourceSymbol: { not: null },
     },
-    select: { sourceSymbol: true, sourceAssetType: true, valueCurrency: true, currency: true },
+    select: {
+      sourceSymbol: true,
+      sourceAssetType: true,
+      valueCurrency: true,
+      currency: true,
+      listingId: true,
+    },
   })
-  const symbolMap = new Map<string, { assetType: string; currency: string }>()
+  const symbolMap = new Map<
+    string,
+    { symbol: string; assetType: string; currency: string; listingId: string | null }
+  >()
   for (const m of accountMovements) {
-    if (m.sourceSymbol && !symbolMap.has(m.sourceSymbol)) {
-      symbolMap.set(m.sourceSymbol, {
+    const key = m.listingId ?? m.sourceSymbol
+    if (m.sourceSymbol && key && !symbolMap.has(key)) {
+      symbolMap.set(key, {
+        symbol: m.sourceSymbol,
         assetType: m.sourceAssetType ?? "stock",
         currency: m.valueCurrency ?? m.currency ?? "EUR",
+        listingId: m.listingId,
       })
     }
   }
-  const symbolDefinitions = [...symbolMap.entries()].map(([symbol, def]) => ({
-    symbol,
+  for (const position of Object.values(seed.ledgerSnapshot.positions)) {
+    const key = position.listingId
+    if (!symbolMap.has(key)) {
+      symbolMap.set(key, {
+        symbol: position.symbol,
+        assetType: position.assetType,
+        currency: position.currency,
+        listingId: position.listingId,
+      })
+    }
+  }
+  const symbolDefinitions = [...symbolMap.values()].map((def) => ({
+    symbol: def.symbol,
     assetType: def.assetType,
     currency: def.currency,
+    listingId: def.listingId,
   }))
-  const [pricesBySymbol, events]: [Record<string, HistoricalPricePoint[]>, LedgerSnapshotEvent[]] =
-    await Promise.all([
-      symbolDefinitions.length > 0
-        ? getHistoricalPrices(symbolDefinitions, firstDate, endOfDay(today))
-        : Promise.resolve({}),
-      prisma.investmentEvent.findMany({
-        where: {
-          accountId,
-          deletedAt: null,
-          archivedAt: null,
-          date: { lte: endOfDay(today) },
-        },
-        include: { movements: true },
-        orderBy: { date: "asc" },
-      }),
-    ])
+  const events: LedgerSnapshotEvent[] = await prisma.investmentEvent.findMany({
+    where: {
+      accountId,
+      deletedAt: null,
+      archivedAt: null,
+      date: {
+        ...(seed.eventCursor ? { gt: seed.eventCursor } : {}),
+        lte: endOfDay(today),
+      },
+    },
+    include: { movements: true },
+    orderBy: { date: "asc" },
+  })
+  const eventCurrencies = events.flatMap((event) => [
+    event.realizedPnlCurrency,
+    ...event.movements.flatMap((movement) => [
+      movement.valueCurrency,
+      movement.kind === "asset" ? null : movement.currency,
+    ]),
+  ])
+  const rateCurrencies = [
+    ...symbolDefinitions.map((symbol) => symbol.currency),
+    ...eventCurrencies,
+    ...currencyBreakdownCurrencies(
+      seed.ledgerSnapshot.cashByCurrency,
+      seed.ledgerSnapshot.netDepositsByCurrency,
+      seed.ledgerSnapshot.realizedPnlByCurrency,
+      seed.ledgerSnapshot.feesByCurrency,
+      seed.ledgerSnapshot.taxesByCurrency
+    ),
+    ...Object.values(seed.ledgerSnapshot.positions).map((position) => position.currency),
+  ].filter((currency): currency is string => Boolean(currency))
 
-  const ledgerSnapshot: AccountLedgerSnapshot = { positions: {}, cashValueCzk: 0 }
+  await ensureExchangeRatesForPeriod({
+    currencies: rateCurrencies,
+    toCurrency: displayCurrency,
+    start: firstDate,
+    end: today,
+  })
+
+  const pricesBySymbol =
+    symbolDefinitions.length > 0
+      ? await getHistoricalPrices(symbolDefinitions, firstDate, endOfDay(today))
+      : {}
+  const priceCurrencies = Object.values(pricesBySymbol).flatMap((prices) =>
+    prices.map((price) => price.currency)
+  )
+  const allRateCurrencies = [...new Set([...rateCurrencies, ...priceCurrencies])]
+  if (priceCurrencies.length > 0) {
+    await ensureExchangeRatesForPeriod({
+      currencies: allRateCurrencies,
+      toCurrency: displayCurrency,
+      start: firstDate,
+      end: today,
+    })
+  }
+
+  const ledgerSnapshot = seed.ledgerSnapshot
   let eventIndex = 0
+  let pendingSnapshots: Prisma.AccountSnapshotCreateManyInput[] = []
+  let pendingItems: Prisma.AccountSnapshotItemCreateManyInput[] = []
+  let lastFlushAt = Date.now()
+
+  const flushPendingSnapshots = async () => {
+    await flushAccountSnapshotChunk({
+      accountId,
+      snapshots: pendingSnapshots,
+      items: pendingItems,
+    })
+    pendingSnapshots = []
+    pendingItems = []
+    lastFlushAt = Date.now()
+  }
 
   for (let day = start, dayIndex = 1; day <= today; day = addDays(day, 1), dayIndex += 1) {
     const dayEnd = endOfDay(day)
-    const czkRates = await getCachedHistoricalCzkRates(ratesCache, day)
+    const rates = await getCachedHistoricalCzkRates(
+      ratesCache,
+      day,
+      allRateCurrencies,
+      displayCurrency
+    )
 
     while (eventIndex < events.length && events[eventIndex].date <= dayEnd) {
-      const eventRates = await getCachedHistoricalCzkRates(ratesCache, events[eventIndex].date)
-      applyInvestmentEventToLedgerSnapshot(ledgerSnapshot, events[eventIndex], eventRates)
+      applyInvestmentEventToLedgerSnapshot(ledgerSnapshot, events[eventIndex], {
+        pricesBySymbol,
+        date: day,
+        rates,
+        displayCurrency,
+      })
       eventIndex += 1
     }
 
@@ -1181,9 +2039,9 @@ export async function createDailyAccountSnapshotsFromImport({
 
     if (validationInterval > 0 && dayIndex % validationInterval === 0) {
       validations += 1
-      const expected = positionsValue(positions, czkRates)
-      const actualSnapshot = await calculateAccountLedgerSnapshot(accountId, dayEnd, ratesCache)
-      const actual = positionsValue(actualSnapshot.positions, czkRates)
+      const expected = positionsValue(positions, rates, displayCurrency)
+      const actualSnapshot = await calculateAccountLedgerSnapshot(accountId, dayEnd)
+      const actual = positionsValue(actualSnapshot.positions, rates, displayCurrency)
       if (Math.abs(expected - actual) > 0.01) {
         const message = `Snapshot validation failed for ${accountId} at ${day.toISOString()}: expected ${expected}, actual ${actual}.`
         await writeImportLog(importBatchId, "error", "snapshot_validation_failed", message)
@@ -1195,83 +2053,167 @@ export async function createDailyAccountSnapshotsFromImport({
       (position) => position.quantity > 0.000001
     )
     const items = activePositions.map((position) => {
-      const close = findCloseAtOrBefore(pricesBySymbol[position.symbol] ?? [], day)
-      const costBasisCzk = position.totalCost
-      const avgCostPerUnit = position.quantity > 0 ? costBasisCzk / position.quantity : 0
+      const priceKey = priceLookupKey({
+        symbol: position.symbol,
+        assetType: position.assetType,
+        currency: position.currency,
+        listingId: position.listingId,
+      })
+      const close = findCloseAtOrBefore(
+        pricesBySymbol[priceKey] ?? pricesBySymbol[position.symbol] ?? [],
+        day
+      )
+      const nativeCostBasis = position.totalCost
+      const avgCostPerUnit = position.quantity > 0 ? nativeCostBasis / position.quantity : 0
       const pricePerUnit = close?.price ?? avgCostPerUnit
-      const priceCurrency = close?.currency ?? "CZK"
-      const valueCzk = toCzk(pricePerUnit * position.quantity, priceCurrency, czkRates)
+      const priceCurrency = normalizeCurrency(close?.currency ?? position.currency)
+      const nativeValue = pricePerUnit * position.quantity
+      const value = toDisplayCurrency(nativeValue, priceCurrency, rates, displayCurrency)
+      const costBasis = toDisplayCurrency(
+        nativeCostBasis,
+        position.currency,
+        rates,
+        displayCurrency
+      )
       return {
         ...position,
-        valueCzk,
-        costBasisCzk,
-        pricePerUnitCzk: position.quantity > 0 ? valueCzk / position.quantity : 0,
+        valueCzk: value,
+        nativeValue,
+        valueCurrency: priceCurrency,
+        costBasisCzk: costBasis,
+        nativeCostBasis,
+        nativeCostCurrency: position.currency,
+        pricePerUnit,
       }
     })
-    const investmentValue = items.reduce((sum, item) => sum + item.valueCzk, 0)
-    const investmentCostBasis = items.reduce((sum, item) => sum + item.costBasisCzk, 0)
-    const cashValue = ledgerSnapshot.cashValueCzk
+    const investmentValueByCurrency: CurrencyBreakdown = {}
+    const investmentCostBasisByCurrency: CurrencyBreakdown = {}
+    for (const item of items) {
+      addCurrencyAmount(investmentValueByCurrency, item.valueCurrency, item.nativeValue)
+      addCurrencyAmount(
+        investmentCostBasisByCurrency,
+        item.nativeCostCurrency,
+        item.nativeCostBasis
+      )
+    }
+    const unrealizedPnlByCurrency = subtractCurrencyBreakdowns(
+      investmentValueByCurrency,
+      investmentCostBasisByCurrency
+    )
+    const investmentValue = convertCurrencyBreakdown(
+      investmentValueByCurrency,
+      rates,
+      displayCurrency
+    )
+    const investmentCostBasis = convertCurrencyBreakdown(
+      investmentCostBasisByCurrency,
+      rates,
+      displayCurrency
+    )
+    const cashValue = convertCurrencyBreakdown(
+      ledgerSnapshot.cashByCurrency,
+      rates,
+      displayCurrency
+    )
+    const netDepositsValue = ledgerSnapshot.netDepositsValueCzk
+    const realizedPnlValue = convertCurrencyBreakdown(
+      ledgerSnapshot.realizedPnlByCurrency,
+      rates,
+      displayCurrency
+    )
+    const unrealizedPnlValue = investmentValue - investmentCostBasis
+    const feesValue = convertCurrencyBreakdown(
+      ledgerSnapshot.feesByCurrency,
+      rates,
+      displayCurrency
+    )
+    const taxesValue = convertCurrencyBreakdown(
+      ledgerSnapshot.taxesByCurrency,
+      rates,
+      displayCurrency
+    )
     const totalValue = investmentValue + cashValue
+    const ratesForSnapshot = snapshotExchangeRates(
+      rates,
+      currencyBreakdownCurrencies(
+        ledgerSnapshot.cashByCurrency,
+        investmentValueByCurrency,
+        investmentCostBasisByCurrency,
+        ledgerSnapshot.netDepositsByCurrency,
+        ledgerSnapshot.realizedPnlByCurrency,
+        unrealizedPnlByCurrency,
+        ledgerSnapshot.feesByCurrency,
+        ledgerSnapshot.taxesByCurrency
+      ),
+      displayCurrency
+    )
 
-    await prisma.$transaction(async (tx) => {
-      const snapshot = await tx.accountSnapshot.upsert({
-        where: {
-          accountId_timestamp_currency_granularity: {
-            accountId,
-            timestamp: day,
-            currency: "CZK",
-            granularity: "day",
-          },
-        },
-        update: {
-          source: "import_event",
-          cashValue,
-          investmentValue,
-          investmentCostBasis,
-          totalValue,
-          isRecalculated: true,
-        },
-        create: {
-          accountId,
-          timestamp: day,
-          granularity: "day",
-          source: "import_event",
-          currency: "CZK",
-          cashValue,
-          investmentValue,
-          investmentCostBasis,
-          liabilitiesValue: 0,
-          totalValue,
-          isRecalculated: true,
-        },
-      })
-
-      await tx.accountSnapshotItem.deleteMany({ where: { snapshotId: snapshot.id } })
-      if (items.length > 0) {
-        await tx.accountSnapshotItem.createMany({
-          data: items.map((position) => ({
-            snapshotId: snapshot.id,
-            assetId: position.assetId,
-            symbol: position.symbol,
-            quantity: position.quantity,
-            pricePerUnit: position.pricePerUnitCzk,
-            priceCurrency: "CZK",
-            value: position.valueCzk,
-            costBasis: position.costBasisCzk,
-            costCurrency: "CZK",
-            allocationPct: investmentValue > 0 ? (position.valueCzk / investmentValue) * 100 : 0,
-          })),
-        })
-      }
+    const snapshotId = randomUUID()
+    pendingSnapshots.push({
+      id: snapshotId,
+      accountId,
+      timestamp: day,
+      granularity: "day",
+      source: "import_event",
+      currency: displayCurrency,
+      cashValue,
+      investmentValue,
+      investmentCostBasis,
+      netDepositsValue,
+      realizedPnlValue,
+      unrealizedPnlValue,
+      feesValue,
+      taxesValue,
+      liabilitiesValue: 0,
+      totalValue,
+      cashValueByCurrency: roundCurrencyBreakdown(ledgerSnapshot.cashByCurrency),
+      investmentValueByCurrency: roundCurrencyBreakdown(investmentValueByCurrency),
+      investmentCostBasisByCurrency: roundCurrencyBreakdown(investmentCostBasisByCurrency),
+      netDepositsByCurrency: roundCurrencyBreakdown(ledgerSnapshot.netDepositsByCurrency),
+      realizedPnlByCurrency: roundCurrencyBreakdown(ledgerSnapshot.realizedPnlByCurrency),
+      unrealizedPnlByCurrency: roundCurrencyBreakdown(unrealizedPnlByCurrency),
+      feesByCurrency: roundCurrencyBreakdown(ledgerSnapshot.feesByCurrency),
+      taxesByCurrency: roundCurrencyBreakdown(ledgerSnapshot.taxesByCurrency),
+      exchangeRates: ratesForSnapshot,
+      isRecalculated: true,
     })
+    pendingItems.push(
+      ...items.map((position) => ({
+        snapshotId,
+        assetId: position.assetId,
+        listingId: position.listingId,
+        symbol: position.symbol,
+        quantity: position.quantity,
+        pricePerUnit: position.pricePerUnit,
+        priceCurrency: position.valueCurrency,
+        value: position.valueCzk,
+        nativeValue: position.nativeValue,
+        valueCurrency: position.valueCurrency,
+        costBasis: position.costBasisCzk,
+        costCurrency: displayCurrency,
+        nativeCostBasis: position.nativeCostBasis,
+        nativeCostCurrency: position.nativeCostCurrency,
+        allocationPct: investmentValue > 0 ? (position.valueCzk / investmentValue) * 100 : 0,
+      }))
+    )
     snapshots += 1
+
+    if (
+      Date.now() - lastFlushAt >= SNAPSHOT_FLUSH_MS ||
+      pendingSnapshots.length >= SNAPSHOT_FLUSH_COUNT ||
+      pendingItems.length >= SNAPSHOT_ITEM_FLUSH_COUNT
+    ) {
+      await flushPendingSnapshots()
+    }
   }
+
+  await flushPendingSnapshots()
 
   await writeImportLog(
     importBatchId,
     "info",
     "snapshots_recalculated",
-    `Created or updated ${snapshots} daily account snapshots for ${accountId}; validations: ${validations}.`
+    `Created or updated ${snapshots} daily account snapshots for ${accountId}; validations: ${validations}; seed: ${seed.seedSource}.`
   )
 
   return { snapshots, validations }

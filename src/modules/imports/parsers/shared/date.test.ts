@@ -4,6 +4,7 @@ import { latestDate, parseCzechDate, parseIsoDate } from "./date"
 describe("parseIsoDate", () => {
   it("parses valid ISO-like dates", () => {
     expect(parseIsoDate("2026-06-14T10:30:00.000Z")?.toISOString()).toBe("2026-06-14T10:30:00.000Z")
+    expect(parseIsoDate("2026-01-01 02:03:12+00:00")?.toISOString()).toBe("2026-01-01T02:03:12.000Z")
   })
 
   it("returns null for missing or invalid dates", () => {

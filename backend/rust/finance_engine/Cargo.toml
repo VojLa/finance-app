@@ -1,0 +1,10 @@
+[package]
+name = "finance_engine"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic calculation engine for finance-app."
+
+[lib]
+name = "finance_engine"
+path = "src/lib.rs"
+

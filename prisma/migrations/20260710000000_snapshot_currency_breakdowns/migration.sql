@@ -1,0 +1,30 @@
+ALTER TYPE "ExchangeRateSource" ADD VALUE IF NOT EXISTS 'yahoo_finance';
+
+ALTER TABLE "NetWorthSnapshot"
+  ADD COLUMN IF NOT EXISTS "cashValueByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "portfolioValueByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "liabilitiesValueByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "totalNetWorthByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "exchangeRates" JSONB;
+
+ALTER TABLE "AccountSnapshot"
+  ADD COLUMN IF NOT EXISTS "netDepositsValue" DECIMAL(18, 6) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "realizedPnlValue" DECIMAL(18, 6) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "unrealizedPnlValue" DECIMAL(18, 6) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "feesValue" DECIMAL(18, 6) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "taxesValue" DECIMAL(18, 6) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "cashValueByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "investmentValueByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "investmentCostBasisByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "netDepositsByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "realizedPnlByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "unrealizedPnlByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "feesByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "taxesByCurrency" JSONB,
+  ADD COLUMN IF NOT EXISTS "exchangeRates" JSONB;
+
+ALTER TABLE "AccountSnapshotItem"
+  ADD COLUMN IF NOT EXISTS "nativeValue" DECIMAL(28, 10),
+  ADD COLUMN IF NOT EXISTS "valueCurrency" TEXT,
+  ADD COLUMN IF NOT EXISTS "nativeCostBasis" DECIMAL(28, 10),
+  ADD COLUMN IF NOT EXISTS "nativeCostCurrency" TEXT;

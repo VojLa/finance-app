@@ -2,3 +2,7 @@ node_modules
 .next
 .env
 dist
+.venv
+__pycache__
+.pytest_cache
+target

@@ -115,17 +115,52 @@ function classifyRow(row: ParsedRow): InvestmentMovementClassification {
   }
 }
 
+function groupSummary(rows: ParsedRow[]) {
+  if (rows.length === 0) return "none"
+  return rows
+    .map((row) => `${row.type || "unknown"} ${row.amount ?? "?"} ${row.currency ?? "?"}`)
+    .join(", ")
+}
+
+function isFullyRefundedOrder(rows: GroupedInvestmentRows<ParsedRow>) {
+  const payments = rowsFromBucket(rows, "payments")
+  const fills = rowsFromBucket(rows, "fills")
+  const refunds = rowsFromBucket(rows, "refunds")
+  const allRows = [...payments, ...refunds]
+  if (payments.length === 0 || refunds.length === 0 || fills.length > 0) return false
+
+  const currencies = new Set(allRows.map((row) => row.currency).filter(Boolean))
+  for (const currency of currencies) {
+    const net = sumAmounts(allRows.filter((row) => row.currency === currency))
+    if (Math.abs(net) > 0.00000001) return false
+  }
+
+  return true
+}
+
 const PARSER: GroupedInvestmentParserDefinition<ParsedRow> = {
   parserName: "Anycoin",
   parseRow,
   classifyRow,
   buildGroupedTransaction: buildTrade,
   buildStandaloneTransaction: buildStandalone,
-  incompleteGroupIssue: (orderId) => ({
-    severity: "warning",
-    code: "incomplete_order",
-    message: `Anycoin order ${orderId} could not be converted to an investment transaction.`,
-  }),
+  incompleteGroupIssue: (orderId, rows) => {
+    if (isFullyRefundedOrder(rows)) return null
+
+    return {
+      severity: "warning",
+      code: "incomplete_order",
+      message:
+        `Anycoin order ${orderId} could not be converted to an investment transaction. ` +
+        `Payments: ${groupSummary(rowsFromBucket(rows, "payments"))}. ` +
+        `Fills: ${groupSummary(rowsFromBucket(rows, "fills"))}. ` +
+        `Refunds: ${groupSummary(rowsFromBucket(rows, "refunds"))}.`,
+      raw:
+        rowsFromBucket(rows, "payments")[0]?.raw ??
+        rowsFromBucket(rows, "fills")[0]?.raw ??
+        rowsFromBucket(rows, "refunds")[0]?.raw,
+    }
+  },
 }
 
 export function parseAnycoinResult(

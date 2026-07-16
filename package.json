@@ -17,10 +17,12 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "docker:up": "docker compose up --build",
+    "docker:api": "docker compose up api --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "seed": "tsx prisma/seed.ts",
-    "prices:backfill": "tsx scripts/backfill-prices.ts"
+    "prices:backfill": "tsx scripts/backfill-prices.ts",
+    "api:compare:portfolio": "tsx scripts/compare-portfolio-api.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

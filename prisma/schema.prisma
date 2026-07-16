@@ -418,7 +418,7 @@ enum BudgetAlertType {
 
 model Asset {
   id                   String                @id @default(cuid())
-  symbol               String                @unique
+  symbol               String
   isin                 String?
   name                 String?
   assetType            AssetType
@@ -432,14 +432,15 @@ model Asset {
   investmentMovements  InvestmentMovement[]
   accountSnapshotItems AccountSnapshotItem[]
 
+  @@index([symbol])
   @@index([isin])
   @@index([assetType])
 }
 
 model AssetListing {
-  id             String          @id @default(cuid())
+  id             String                @id @default(cuid())
   assetId        String
-  asset          Asset           @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  asset          Asset                 @relation(fields: [assetId], references: [id], onDelete: Cascade)
   symbol         String
   exchange       String?
   mic            String?
@@ -447,12 +448,17 @@ model AssetListing {
   country        String?
   provider       PriceSource?
   providerSymbol String?
-  isPrimary      Boolean         @default(false)
+  isPrimary      Boolean               @default(false)
   priceSnapshots PriceSnapshot[]
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  holdings       Holding[]
+  movements      InvestmentMovement[]
+  snapshotItems  AccountSnapshotItem[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
 
   @@unique([assetId, symbol, exchange, currency])
+  @@unique([symbol, exchange, currency])
+  @@unique([provider, providerSymbol, currency])
   @@index([assetId])
   @@index([symbol])
   @@index([provider, providerSymbol])
@@ -479,18 +485,18 @@ enum AssetAliasProvider {
 }
 
 model PriceSnapshot {
-  id        String        @id @default(cuid())
+  id        String       @id @default(cuid())
   assetId   String
-  asset     Asset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  listingId String?
-  listing   AssetListing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
-  price     Decimal       @db.Decimal(28, 10)
+  asset     Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   AssetListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  price     Decimal      @db.Decimal(28, 10)
   currency  String
   source    PriceSource
   timestamp DateTime
-  createdAt DateTime      @default(now())
+  createdAt DateTime     @default(now())
 
-  @@unique([assetId, timestamp, source])
+  @@unique([listingId, timestamp, source])
   @@index([assetId, timestamp])
   @@index([listingId, timestamp])
   @@index([source, timestamp])
@@ -539,6 +545,8 @@ model InvestmentMovement {
   account         Account                @relation(fields: [accountId], references: [id])
   assetId         String?
   asset           Asset?                 @relation(fields: [assetId], references: [id])
+  listingId       String?
+  listing         AssetListing?          @relation(fields: [listingId], references: [id])
   kind            InvestmentMovementKind
   direction       MovementDirection
   quantity        Decimal                @db.Decimal(28, 10)
@@ -555,6 +563,7 @@ model InvestmentMovement {
   @@index([eventId])
   @@index([accountId, createdAt])
   @@index([assetId])
+  @@index([listingId])
   @@index([kind])
 }
 
@@ -595,27 +604,30 @@ enum AssetType {
 }
 
 model Holding {
-  id            String    @id @default(cuid())
+  id            String       @id @default(cuid())
   symbol        String
   name          String?
   assetType     AssetType
-  quantity      Decimal   @db.Decimal(28, 10)
-  avgBuyPrice   Decimal   @db.Decimal(28, 10)
+  quantity      Decimal      @db.Decimal(28, 10)
+  avgBuyPrice   Decimal      @db.Decimal(28, 10)
   currency      String
-  currentPrice  Decimal?  @db.Decimal(28, 10)
-  currentValue  Decimal?  @db.Decimal(28, 10)
-  unrealizedPnl Decimal?  @db.Decimal(28, 10)
-  realizedPnl   Decimal?  @db.Decimal(28, 10)
+  currentPrice  Decimal?     @db.Decimal(28, 10)
+  currentValue  Decimal?     @db.Decimal(28, 10)
+  unrealizedPnl Decimal?     @db.Decimal(28, 10)
+  realizedPnl   Decimal?     @db.Decimal(28, 10)
   assetId       String?
-  asset         Asset?    @relation(fields: [assetId], references: [id])
+  asset         Asset?       @relation(fields: [assetId], references: [id])
+  listingId     String
+  listing       AssetListing @relation(fields: [listingId], references: [id])
   accountId     String
-  account       Account   @relation(fields: [accountId], references: [id])
-  calculatedAt  DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  account       Account      @relation(fields: [accountId], references: [id])
+  calculatedAt  DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  @@unique([symbol, accountId])
+  @@unique([accountId, listingId])
   @@index([accountId])
   @@index([assetId])
+  @@index([listingId])
 }
 
 // ─── Market Data ──────────────────────────────────────────────────────────────
@@ -637,6 +649,7 @@ model ExchangeRate {
 enum ExchangeRateSource {
   cnb
   ecb
+  yahoo_finance
   manual
   broker
   exchange
@@ -753,21 +766,26 @@ enum ImportLogEvent {
 // ─── Snapshot Domain ──────────────────────────────────────────────────────────
 
 model NetWorthSnapshot {
-  id                 String              @id @default(cuid())
-  userId             String
-  user               User                @relation(fields: [userId], references: [id])
-  timestamp          DateTime
-  granularity        SnapshotGranularity
-  source             SnapshotSource
-  currency           String              @default("CZK")
-  cashValue          Decimal             @db.Decimal(18, 6)
-  portfolioValue     Decimal             @db.Decimal(18, 6)
-  liabilitiesValue   Decimal             @db.Decimal(18, 6)
-  totalNetWorth      Decimal             @db.Decimal(18, 6)
-  isRecalculated     Boolean             @default(false)
-  calculatedAt       DateTime            @default(now())
-  calculationVersion Int                 @default(1)
-  createdAt          DateTime            @default(now())
+  id                         String              @id @default(cuid())
+  userId                     String
+  user                       User                @relation(fields: [userId], references: [id])
+  timestamp                  DateTime
+  granularity                SnapshotGranularity
+  source                     SnapshotSource
+  currency                   String              @default("CZK")
+  cashValue                  Decimal             @db.Decimal(18, 6)
+  portfolioValue             Decimal             @db.Decimal(18, 6)
+  liabilitiesValue           Decimal             @db.Decimal(18, 6)
+  totalNetWorth              Decimal             @db.Decimal(18, 6)
+  cashValueByCurrency        Json?
+  portfolioValueByCurrency   Json?
+  liabilitiesValueByCurrency Json?
+  totalNetWorthByCurrency    Json?
+  exchangeRates              Json?
+  isRecalculated             Boolean             @default(false)
+  calculatedAt               DateTime            @default(now())
+  calculationVersion         Int                 @default(1)
+  createdAt                  DateTime            @default(now())
 
   @@unique([userId, timestamp, currency, granularity])
   @@index([userId, granularity, timestamp])
@@ -791,23 +809,37 @@ enum SnapshotSource {
 }
 
 model AccountSnapshot {
-  id                  String                @id @default(cuid())
-  accountId           String
-  account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  timestamp           DateTime
-  granularity         SnapshotGranularity
-  source              SnapshotSource
-  currency            String                @default("CZK")
-  cashValue           Decimal               @db.Decimal(18, 6)
-  investmentValue     Decimal               @db.Decimal(18, 6)
-  investmentCostBasis Decimal               @default(0) @db.Decimal(18, 6)
-  liabilitiesValue    Decimal               @db.Decimal(18, 6)
-  totalValue          Decimal               @db.Decimal(18, 6)
-  isRecalculated      Boolean               @default(false)
-  calculatedAt        DateTime              @default(now())
-  calculationVersion  Int                   @default(1)
-  items               AccountSnapshotItem[]
-  createdAt           DateTime              @default(now())
+  id                            String                @id @default(cuid())
+  accountId                     String
+  account                       Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  timestamp                     DateTime
+  granularity                   SnapshotGranularity
+  source                        SnapshotSource
+  currency                      String                @default("CZK")
+  cashValue                     Decimal               @db.Decimal(18, 6)
+  investmentValue               Decimal               @db.Decimal(18, 6)
+  investmentCostBasis           Decimal               @default(0) @db.Decimal(18, 6)
+  netDepositsValue              Decimal               @default(0) @db.Decimal(18, 6)
+  realizedPnlValue              Decimal               @default(0) @db.Decimal(18, 6)
+  unrealizedPnlValue            Decimal               @default(0) @db.Decimal(18, 6)
+  feesValue                     Decimal               @default(0) @db.Decimal(18, 6)
+  taxesValue                    Decimal               @default(0) @db.Decimal(18, 6)
+  liabilitiesValue              Decimal               @db.Decimal(18, 6)
+  totalValue                    Decimal               @db.Decimal(18, 6)
+  cashValueByCurrency           Json?
+  investmentValueByCurrency     Json?
+  investmentCostBasisByCurrency Json?
+  netDepositsByCurrency         Json?
+  realizedPnlByCurrency         Json?
+  unrealizedPnlByCurrency       Json?
+  feesByCurrency                Json?
+  taxesByCurrency               Json?
+  exchangeRates                 Json?
+  isRecalculated                Boolean               @default(false)
+  calculatedAt                  DateTime              @default(now())
+  calculationVersion            Int                   @default(1)
+  items                         AccountSnapshotItem[]
+  createdAt                     DateTime              @default(now())
 
   @@unique([accountId, timestamp, currency, granularity])
   @@index([accountId, granularity, timestamp])
@@ -815,23 +847,30 @@ model AccountSnapshot {
 }
 
 model AccountSnapshotItem {
-  id             String          @id @default(cuid())
-  snapshotId     String
-  snapshot       AccountSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  assetId        String?
-  asset          Asset?          @relation(fields: [assetId], references: [id])
-  symbol         String
-  quantity       Decimal         @db.Decimal(28, 10)
-  pricePerUnit   Decimal         @db.Decimal(28, 10)
-  priceCurrency  String?
-  priceSource    PriceSource?
-  priceTimestamp DateTime?
-  value          Decimal         @db.Decimal(18, 6)
-  costBasis      Decimal?        @db.Decimal(28, 10)
-  costCurrency   String?
-  allocationPct  Decimal         @db.Decimal(8, 4)
-  createdAt      DateTime        @default(now())
+  id                 String          @id @default(cuid())
+  snapshotId         String
+  snapshot           AccountSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  assetId            String?
+  asset              Asset?          @relation(fields: [assetId], references: [id])
+  listingId          String
+  listing            AssetListing    @relation(fields: [listingId], references: [id])
+  symbol             String
+  quantity           Decimal         @db.Decimal(28, 10)
+  pricePerUnit       Decimal         @db.Decimal(28, 10)
+  priceCurrency      String?
+  priceSource        PriceSource?
+  priceTimestamp     DateTime?
+  value              Decimal         @db.Decimal(18, 6)
+  nativeValue        Decimal?        @db.Decimal(28, 10)
+  valueCurrency      String?
+  costBasis          Decimal?        @db.Decimal(28, 10)
+  costCurrency       String?
+  nativeCostBasis    Decimal?        @db.Decimal(28, 10)
+  nativeCostCurrency String?
+  allocationPct      Decimal         @db.Decimal(8, 4)
+  createdAt          DateTime        @default(now())
 
-  @@unique([snapshotId, symbol])
+  @@unique([snapshotId, listingId])
   @@index([assetId])
+  @@index([listingId])
 }

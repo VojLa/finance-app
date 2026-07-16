@@ -3,7 +3,12 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 import { authOptions } from "@/lib/auth"
 import { prisma, toNum } from "@/lib/prisma"
-import { getLivePrices, getCzkRates, toCzk } from "@/modules/portfolio/rates/service"
+import {
+  getLivePrices,
+  getCzkRates,
+  priceLookupKey,
+  toCzk,
+} from "@/modules/portfolio/rates/service"
 import { getAccessibleAccountIds } from "@/lib/accountAccess"
 import type { HoldingWithPrice, PortfolioSummary } from "@/types"
 
@@ -66,6 +71,7 @@ export async function GET(req: NextRequest) {
     symbol: h.symbol,
     assetType: h.assetType,
     currency: h.currency,
+    listingId: h.listingId,
   }))
   const prices = await getLivePrices(symbols)
 
@@ -74,7 +80,15 @@ export async function GET(req: NextRequest) {
   const missingPriceWarnings: { symbol: string; issue: string }[] = []
 
   const holdings: HoldingWithPrice[] = allHoldings.map((h) => {
-    const liveData = prices[h.symbol]
+    const liveData =
+      prices[
+        priceLookupKey({
+          symbol: h.symbol,
+          assetType: h.assetType,
+          currency: h.currency,
+          listingId: h.listingId,
+        })
+      ] ?? prices[h.symbol]
     const currentPrice = liveData?.price ?? null
     const priceCurrency = liveData?.currency ?? null
 
@@ -118,6 +132,7 @@ export async function GET(req: NextRequest) {
       avgBuyPrice: avgBuy,
       avgBuyPriceCzk,
       currency: h.currency,
+      listingId: h.listingId,
       accountId: h.accountId,
       accountName: accountNameMap[h.accountId] ?? null,
       currentPrice,

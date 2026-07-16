@@ -11,6 +11,7 @@ type ImportContext =
   | {
       ok: true
       file: File
+      files: File[]
       accountId: string
       userId: string
     }
@@ -29,10 +30,11 @@ export async function getImportContext(req: NextRequest): Promise<ImportContext>
   }
 
   const formData = await req.formData()
-  const file = formData.get("file")
+  const files = formData.getAll("file").filter((file): file is File => file instanceof File)
+  const file = files[0]
   const accountId = formData.get("accountId")
 
-  if (!(file instanceof File)) {
+  if (!file) {
     return {
       ok: false,
       response: NextResponse.json({ error: "Missing import file" }, { status: 400 }),
@@ -57,6 +59,7 @@ export async function getImportContext(req: NextRequest): Promise<ImportContext>
   return {
     ok: true,
     file,
+    files,
     accountId,
     userId: session.user.id,
   }
@@ -64,7 +67,8 @@ export async function getImportContext(req: NextRequest): Promise<ImportContext>
 
 export function handleImportError(error: unknown, message: string): NextResponse {
   console.error(message, error)
-  return NextResponse.json({ error: message }, { status: 500 })
+  const detail = error instanceof Error ? error.message : String(error)
+  return NextResponse.json({ error: message, detail }, { status: 500 })
 }
 
 export async function writeImportLog({

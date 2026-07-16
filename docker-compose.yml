@@ -36,6 +36,22 @@ services:
       db:
         condition: service_healthy
 
+  api:
+    build:
+      context: .
+      dockerfile: backend/python/Dockerfile
+    container_name: finance-app-api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./backend/python:/app/backend/python
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   node_modules:

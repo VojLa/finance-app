@@ -65,6 +65,7 @@ export interface InvestmentFieldKeys {
   totalCurrency?: string[]
   fee?: string[]
   feeCurrency?: string[]
+  note?: string[]
   conversionFromAmount?: string[]
   conversionFromCurrency?: string[]
   conversionToAmount?: string[]
@@ -166,6 +167,10 @@ const DEFAULT_ACTION_MAP: Record<string, ParsedInvestmentAction> = {
   airdrop: "airdrop",
   fork: "airdrop",
   "token distribution": "airdrop",
+  "free share": "airdrop",
+  "free shares": "airdrop",
+  "free stock": "airdrop",
+  "free stocks": "airdrop",
 }
 
 const DEFAULT_FEE_FIELDS = [
@@ -379,7 +384,7 @@ export function parseInvestmentRow(
     parserName,
     accountId,
     keys,
-    actionMap = DEFAULT_ACTION_MAP,
+    actionMap = {},
     feeFields = DEFAULT_FEE_FIELDS,
     requiredFields = [],
     requireQuantityForTypes = DEFAULT_QUANTITY_TYPES,
@@ -395,7 +400,7 @@ export function parseInvestmentRow(
     }
   }
 
-  const type = mapAction(actionRaw, actionMap)
+  const type = mapAction(actionRaw, { ...DEFAULT_ACTION_MAP, ...actionMap })
   if (!type) {
     return {
       row: null,
@@ -475,6 +480,7 @@ export function parseInvestmentRow(
   const priceCurrency = getValue(row, keys.priceCurrency) || null
   const totalCurrency = getValue(row, keys.totalCurrency) || null
   const feeCurrency = getValue(row, keys.feeCurrency) || null
+  const note = getValue(row, keys.note) || null
   const conversionFromCurrency = getValue(row, keys.conversionFromCurrency) || null
   const conversionToCurrency = getValue(row, keys.conversionToCurrency) || null
   const realizedPnlCurrency = getValue(row, keys.realizedPnlCurrency) || null
@@ -533,6 +539,8 @@ export function parseInvestmentRow(
       totalCurrency,
       fee,
       feeCurrency,
+      note,
+      rawAction: actionRaw,
       conversionFromAmount,
       conversionFromCurrency,
       conversionToAmount,
