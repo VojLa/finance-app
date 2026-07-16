@@ -54,7 +54,7 @@ Hlavni rizika:
 
 ---
 
-### 0.1 - Internal Architecture MVP
+### 0.1 - Architecture Locked
 
 Ucel:
 Overit cilovou architekturu a dokoncit hlavni backendovy prechod pro MVP do `Python API`.
@@ -78,7 +78,7 @@ Hlavni rizika:
 
 ---
 
-### 0.2 - Data Correctness MVP
+### 0.2 - Data Trusted
 
 Ucel:
 Uzamknout spravnost cisel a datovych pravidel.
@@ -103,7 +103,7 @@ Hlavni rizika:
 
 ---
 
-### 0.3 - Usable Internal Product
+### 0.3 - Internal Product
 
 Ucel:
 Udelat z technicky spravne aplikace realne pouzitelny interni nastroj.
@@ -130,7 +130,7 @@ Hlavni rizika:
 
 ---
 
-### 0.4 - Private Beta MVP
+### 0.4 - Beta Ready
 
 Ucel:
 Pripravit aplikaci na prvni skutecne uzivatele mimo uzky vyvojovy kruh.
@@ -155,7 +155,7 @@ Hlavni rizika:
 
 ---
 
-### 0.5 - Production MVP
+### 0.5 - Production Ready
 
 Ucel:
 Dodat prvni produkcne pouzitelne MVP v jasne ohranicenem scope.
