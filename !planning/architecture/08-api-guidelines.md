@@ -12,6 +12,21 @@ Tento dokument sjednocuje pravidla pro API navrh, aby backend po case nevypadal 
 - response shape musi byt konzistentni
 - chyby musi byt strukturovane
 - autentizace a autorizace musi byt jednotna
+- `Python API` je source of truth pro HTTP API kontrakt
+- frontendove typy a klient se generuji z OpenAPI, neudrzuji se rucne jako druha definice
+
+---
+
+## Vlastnictvi API kontraktu
+
+- FastAPI endpointy a jejich Pydantic schema vlastni API kontrakt
+- OpenAPI schema se generuje automaticky z Python API
+- generovane OpenAPI schema se validuje v CI
+- TypeScript klient a typy se generuji z OpenAPI do frontendove generovane vrstvy
+- generovane TypeScript soubory se neupravuji rucne
+- breaking change musi byt vedomy, zdokumentovany a pokryty contract testy
+- stabilni datove formaty mimo HTTP API, například custom CSV kontrakt, mohou byt definovany samostatnym JSON Schema
+- business pravidla nesmi byt vlozena do generacni vrstvy ani do schema souboru
 
 ---
 
@@ -98,6 +113,9 @@ Pravidla:
 - nepridavat verze zbytecne brzy
 - ale drzet kontrakty tak, aby byly rozsiritelne
 - pokud dojde ke skutecnemu breaking change, verze musi byt explicitni
+- prejmenovani nebo odstraneni pole je breaking change
+- pridani povinneho request pole je breaking change
+- pridani volitelneho response pole nema byt breaking change, pokud klienti ignoruji nezname hodnoty
 
 ---
 
@@ -170,6 +188,18 @@ Preferovane stavy:
 - `issues` zustavaji i u uspesne dokoncene operace
 - warning stav se nesmi modelovat jako hard failure
 - import parse issues musi byt vratitelne i kdyz batch celkove uspel
+
+---
+
+## Contract testing
+
+CI musi overovat minimalne:
+
+- OpenAPI schema lze uspesne vygenerovat
+- generovany TypeScript klient odpovida aktualnimu OpenAPI schematu
+- zmena kontraktu nezanechala necommitnute generovane rozdily, pokud jsou generovane soubory verzovane
+- hlavni frontend-backend workflow prochazi contract nebo integration testem
+- breaking zmena ma odpovidajici rozhodnuti, migracni plan nebo explicitni verzi
 
 ---
 
