@@ -12,6 +12,8 @@ Tento dokument popisuje cilovou strukturu repozitare a umisteni hlavni logiky. C
 - hlavni backend logika se presouva do `Pythonu`
 - vykonove tezke jadro muze pozdeji jit do `Rustu`
 - dokumentace a planning zustavaji oddelene od implementace
+- `Python API` je source of truth pro verejny API kontrakt
+- frontendove TypeScript typy se generuji z OpenAPI, neudrzuji se rucne jako druha kopie
 
 ---
 
@@ -24,6 +26,8 @@ frontend/
     lib/
     hooks/
     features/
+    generated/
+        api/
 
 backend/
     app/
@@ -47,13 +51,12 @@ backend/
         shared/
         config/
         db/
-        schemas/
         tests/
 
-shared_contracts/
-    api/
+contracts/
+    openapi/
+    json_schema/
     import_formats/
-    read_models/
 
 engine/
     rust/
@@ -62,7 +65,8 @@ engine/
             snapshot_builder/
             fx_math/
 
-prisma/
+prisma/                     # docasne po dobu hybridni migrace
+
 docs/
 !planning/
 ```
@@ -71,45 +75,97 @@ docs/
 
 ## Pravidla struktury
 
-- kazdy backend modul ma mit vlastni service boundary
+- kazdy backend modul ma vlastni verejnou boundary
 - `shared/` nesmi obsahovat business logiku
-- `shared_contracts/` je samostatna vrstva vedle `frontend/` a `backend/`, ne uvnitr backend shared
-- `api/` ma byt tenka vrstva nad moduly
+- `api/` je tenka transportni vrstva nad aplikacnimi use-cases
 - `jobs/` orchestruje, ale nevlastni business pravidla
-- `schemas/` drzi Pydantic kontrakty
-- `db/` drzi DB integraci, ne domenove rozhodovani
+- `db/` drzi sdilenou DB infrastrukturu, ne domenove rozhodovani
+- domenove a API schema patri primarne do modulu, ktery je vlastni
+- globalni `schemas/` se nevytvari jako odkladiste nahodnych Pydantic modelu
 
-Pravidla pro `shared_contracts/`:
+### Pravidla pro kontrakty
 
-- drzi pouze stabilni kontrakty mezi frontendem a backendem
-- nesmi drzet business logiku
-- nesmi se zmenit nahodne bez kontroly dopadu na obe strany
-- patri sem jen to, co opravdu potrebuji obe vrstvy
+- `Python API` je source of truth pro HTTP API kontrakt
+- OpenAPI schema se generuje z FastAPI aplikace
+- TypeScript klient a typy se generuji z OpenAPI do `frontend/generated/api/`
+- generovane soubory se neupravuji rucne
+- zmena API kontraktu musi projit contract testy a kontrolou dopadu na frontend
+- `contracts/json_schema/` obsahuje pouze formaty, ktere nejsou prirozene vlastnene OpenAPI, například stabilni importni formaty
+- `contracts/import_formats/` muze drzet verejne custom CSV nebo jine datove specifikace
+- kontrakty nesmi obsahovat business logiku
 
 ---
 
 ## Modulovy template pro backend
 
-Kazdy modul by mel mit podobnou strukturu:
+Struktura modulu se ma prizpusobit jeho velikosti. Male moduly nemaji vytvaret prazdne vrstvy jen kvuli sablone. Vetsi moduly se ale nesmi sloucit do jednoho obriho `service.py`.
+
+### Minimalni modul
+
+```text
+modules/
+    notifications/
+        service.py
+        contracts.py
+        repository.py
+        tests/
+```
+
+### Vetsi domenovy modul
 
 ```text
 modules/
     imports/
-        service.py
-        repository.py
-        models.py
+        api/
+            routes.py
+            schemas.py
+        application/
+            commands.py
+            queries.py
+            services.py
+        domain/
+            entities.py
+            value_objects.py
+            rules.py
+            exceptions.py
+        infrastructure/
+            repository.py
+            db_models.py
         contracts.py
-        validators.py
         tests/
 ```
 
-Minimalni pravidla:
+### Odpovednost vrstev
 
-- `service.py` drzi use-cases
-- `repository.py` drzi persistence pristup
-- `models.py` drzi internI domenove modely
-- `contracts.py` drzi verejne modulove kontrakty
-- `validators.py` drzi vstupni pravidla, pokud jsou potreba
+- `api/` prevadi HTTP vstup a vystup, ale nevlastni use-case logiku
+- `application/` orchestruje use-cases a transakce mezi domenou a infrastrukturou
+- `domain/` obsahuje entity, value objects, invarianty a cistou business logiku
+- `infrastructure/` obsahuje persistence adaptery a integrace
+- `contracts.py` definuje verejnou modulovou boundary pro ostatni backend moduly
+- `api/schemas.py` obsahuje Pydantic HTTP schema konkretniho modulu
+- `tests/` obsahuje testy daneho modulu; sdilene testovaci helpery patri do backendove testovaci infrastruktury
+
+Modul se deli do podadresaru az ve chvili, kdy jednodussi struktura prestava byt prehledna. Cilem neni maximalni pocet vrstev, ale jasne vlastnictvi odpovednosti.
+
+---
+
+## Databazove schema a migrace
+
+Cilovy stav:
+
+- PostgreSQL je persistence vrstva
+- SQLAlchemy modely popisuji Python persistence mapovani
+- Alembic je jediny vlastnik databazovych migraci po dokonceni backendove migrace
+- domenove entity nesmi byt automaticky totozne s ORM modely jen kvuli pohodli
+
+Prechodny stav:
+
+- `prisma/` je docasna soucast hybridni migrace ze soucasneho TypeScript backendu
+- existujici Prisma schema muze byt po omezenou dobu referenci pro soucasny fyzicky DB model
+- nove tabulky nebo zmeny vlastnene Python backendem se musi ridit explicitnim migracnim planem
+- Prisma a Alembic nesmi dlouhodobe soucasne spravovat stejne tabulky
+- pred prevzetim tabulky Alembicem musi byt jasne zaznamenano, ktery migracni system ji vlastni
+- po uplnem prevzeti databazoveho schematu Python backendem bude `prisma/` odstraneno
 
 ---
 
@@ -117,6 +173,8 @@ Minimalni pravidla:
 
 Dokud projekt bezi hybridne:
 
-- nova business logika patri uz do budoucich backend modulu, ne do novych `Next.js` route handleru
+- nova business logika patri do budouciho Python backend modulu, ne do novych `Next.js` route handleru
 - `Next.js` route muze byt docasny adapter, ale ne dlouhodoby vlastnik logiky
-- pokud frontend a backend sdili DTO nebo read model shape, ma jit jejich stabilni definice do `shared_contracts/`, ne do nahodne utility slozky
+- nove API kontrakty vznikaji v Python API a frontend z nich generuje klienta a TypeScript typy
+- existujici TypeScript kontrakty se pri migraci postupne nahrazuji generovanymi kontrakty
+- kazdy presun DB ownershipu z Prisma do Alembicu musi byt explicitni a nesmi vzniknout dvojite rizeni migraci
