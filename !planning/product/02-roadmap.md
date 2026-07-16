@@ -13,6 +13,27 @@ Cilem je dostat aplikaci od planovaciho zakladu pres interni architektonicke MVP
 
 ---
 
+## Vlastnictvi roadmapy a scope
+
+Roadmapa urcuje:
+
+- poradi fazi,
+- ucel jednotlivych fazi,
+- jejich hlavni zavislosti,
+- exit podminky a hlavni rizika.
+
+Detailni funkcni a technicky obsah verze vlastni odpovidajici soubor ve `../scope/`.
+
+Pokud se roadmapa a scope dostanou do rozporu:
+
+1. detailni obsah verze se ridi scope souborem,
+2. poradi a zavislosti se ridi roadmapou,
+3. rozpor se musi odstranit aktualizaci obou dokumentu pred implementaci.
+
+Roadmapa nema duplikovat kompletni checklist scope. Ma shrnout pouze podminky, ktere rozhoduji o postupu do dalsi faze.
+
+---
+
 ## Roadmap principy
 
 - Nejdriv planovaci a rozhodovaci zaklad.
@@ -57,6 +78,11 @@ Hlavni rizika:
 - scope bez priorit,
 - implementace pred rozhodnutim zakladnich pravidel.
 
+Exit podminka:
+
+- dokumenty si vzajemne neodporuji v technologickem smeru, vlastnictvi dat ani scope prvni implementacni faze,
+- otevrena dlouhodoba rozhodnuti jsou zaznamenana jako ADR nebo explicitni otazka.
+
 ---
 
 ## Definition of Ready pro implementaci
@@ -76,10 +102,12 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
+Detailni scope: [`../scope/0.1 - Architecture Locked.md`](../scope/0.1%20-%20Architecture%20Locked.md)
+
 Ucel:
 Overit cilovou architekturu a dokoncit hlavni backendovy prechod pro MVP do `Python API`.
 
-Co musi byt hotove:
+Co musi byt hotove pro postup dal:
 
 - `Next.js` zustava frontend vrstva.
 - `Python API` je hlavni backend pro import, portfolio, dashboard a snapshots.
@@ -100,10 +128,12 @@ Hlavni rizika:
 
 ### 0.2 - Data Trusted
 
+Detailni scope: [`../scope/0.2 - Data Trusted.md`](../scope/0.2%20-%20Data%20Trusted.md)
+
 Ucel:
 Uzamknout spravnost cisel a datovych pravidel.
 
-Co musi byt hotove:
+Co musi byt hotove pro postup dal:
 
 - parsery pro hlavni zdroje jsou stabilni nad realnymi exporty,
 - ledger, holdings, cash, FX a snapshots jsou konzistentni,
@@ -125,10 +155,12 @@ Hlavni rizika:
 
 ### 0.3 - Internal Product
 
+Detailni scope: [`../scope/0.3 - Internal Product.md`](../scope/0.3%20-%20Internal%20Product.md)
+
 Ucel:
 Udelat z technicky spravne aplikace realne pouzitelny interni nastroj.
 
-Co musi byt hotove:
+Co musi byt hotove pro postup dal:
 
 - import workflow je srozumitelny a asynchronni,
 - portfolio a dashboard jsou citelne a ergonomicke,
@@ -152,10 +184,12 @@ Hlavni rizika:
 
 ### 0.4 - Beta Ready
 
+Detailni scope: [`../scope/0.4 - Beta Ready.md`](../scope/0.4%20-%20Beta%20Ready.md)
+
 Ucel:
 Pripravit aplikaci na prvni skutecne uzivatele mimo uzky vyvojovy kruh.
 
-Co musi byt hotove:
+Co musi byt hotove pro postup dal:
 
 - stabilni auth/session hranice mezi frontendem a `Python API`,
 - account isolation a user boundary jsou spolehlive,
@@ -176,6 +210,8 @@ Hlavni rizika:
 ---
 
 ### 0.5 - Production Ready
+
+Detailni scope: [`../scope/0.5 - Production Ready.md`](../scope/0.5%20-%20Production%20Ready.md)
 
 Ucel:
 Dodat prvni produkcne pouzitelne MVP v jasne ohranicenem scope.
@@ -207,19 +243,19 @@ Hlavni rizika:
 
 - Uzamknout `0.0`.
 - Dokoncit planning dokumenty a hlavni rozhodnuti.
-- Dokoncit `0.1`.
+- Dokoncit `0.1` podle jeho scope.
 - Ujasnit vsechny hlavni backend kontrakty mezi frontendem a `Python API`.
 - Dokoncit hlavni import -> snapshot -> portfolio tok bez zavislosti na stare `Next.js` logice.
 
 ### Vlna 2
 
-- Dokoncit `0.2`.
+- Dokoncit `0.2` podle jeho scope.
 - Vytvorit fixture datasety a parity testy.
 - Sjednotit portfolio, dashboard a snapshot pravidla.
 
 ### Vlna 3
 
-- Dokoncit `0.3`.
+- Dokoncit `0.3` podle jeho scope.
 - Pokryt hlavni instituce cilove skupiny.
 - Navrhnout a zdokumentovat `custom CSV` fallback.
 - Dodat navody pro exporty z podporovanych instituci.
@@ -228,14 +264,14 @@ Hlavni rizika:
 
 ### Vlna 4
 
-- Dokoncit `0.4`.
+- Dokoncit `0.4` podle jeho scope.
 - Stabilizovat auth/session hranici.
 - Dodat monitoring, logovani a beta support minimum.
 - Ujasnit retention, recovery a provozni procesy.
 
 ### Vlna 5
 
-- Dokoncit `0.5`.
+- Dokoncit `0.5` podle jeho scope.
 - Uzavrit podporovany produkcni scope.
 - Dotahnout produkcni spolehlivost a release readiness.
 
@@ -274,6 +310,7 @@ Tyto oblasti maji prijit az po stabilnim `0.5` nebo jako samostatne navazujici r
 - prilis brzke reseni `Rustu`
 - neustale prepisovani architektury
 - pridavani novych funkci bez uzavreni predchozi faze
+- udrzovani rozdilnych pozadavku v roadmap a scope souborech
 
 Tato sekce neni formalita. Je to seznam veci, ktere maji byt pravidelne pripominane pri kazde vetsi prioritizaci.
 
@@ -285,5 +322,6 @@ Roadmapa je naplnovana spravne ve chvili, kdy:
 
 - dalsi faze nikdy nestoji na neoverenem zakladu,
 - scope kazde verze je jasne odlisena,
+- roadmapa a scope soubory si vzajemne neodporuji,
 - produktove a technicke priority se nerozjizdeji proti sobe,
 - aplikace se krok za krokem posouva od architektonickeho MVP k realne nasaditelnemu produktu.
