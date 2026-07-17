@@ -55,6 +55,6 @@ jobs:
           cp /tmp/report.txt backend/python/3f-lifecycle-report.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/python/3f-lifecycle-report.txt
+          git add -f backend/python/3f-lifecycle-report.txt
           git commit -m "chore: record isolated 3F diagnostics"
           git push origin HEAD:feat/alembic-account-notes
