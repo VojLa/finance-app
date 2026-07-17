@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import Any
+from time import perf_counter
 
+import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.shared.errors import ApplicationError, ErrorDetail, ErrorResponse
-
-ExceptionHandler = Callable[[Request, Exception], Awaitable[JSONResponse]]
+from app.shared.request_context import REQUEST_ID_HEADER
 
 
 def _request_id(request: Request) -> str | None:
@@ -19,14 +18,20 @@ def _request_id(request: Request) -> str | None:
 
 
 def _response(*, request: Request, status_code: int, code: str, message: str) -> JSONResponse:
+    request_id = _request_id(request)
     payload = ErrorResponse(
         error=ErrorDetail(
             code=code,
             message=message,
-            request_id=_request_id(request),
+            request_id=request_id,
         )
     )
-    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
+    headers = {REQUEST_ID_HEADER: request_id} if request_id else None
+    return JSONResponse(
+        status_code=status_code,
+        content=payload.model_dump(mode="json"),
+        headers=headers,
+    )
 
 
 async def application_error_handler(request: Request, error: ApplicationError) -> JSONResponse:
@@ -67,7 +72,22 @@ async def http_error_handler(request: Request, error: StarletteHTTPException) ->
     )
 
 
-async def unexpected_error_handler(request: Request, _error: Exception) -> JSONResponse:
+async def unexpected_error_handler(request: Request, error: Exception) -> JSONResponse:
+    started_at = getattr(request.state, "request_started_at", None)
+    duration_ms = (
+        round((perf_counter() - started_at) * 1000, 2)
+        if isinstance(started_at, (int, float))
+        else None
+    )
+    structlog.get_logger("app.errors").error(
+        "request_failed",
+        request_id=_request_id(request),
+        method=request.method,
+        path=request.url.path,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        duration_ms=duration_ms,
+        exc_info=error,
+    )
     return _response(
         request=request,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -77,7 +97,7 @@ async def unexpected_error_handler(request: Request, _error: Exception) -> JSONR
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(ApplicationError, application_error_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(StarletteHTTPException, http_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ApplicationError, application_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.add_exception_handler(StarletteHTTPException, http_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)
