@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app.api.router import api_router
+from app.api.router import api_router, legacy_router
 from app.config.settings import get_settings
 from app.lifespan import lifespan
 
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(api_router)
+    app.include_router(legacy_router)
 
     @app.get("/", response_model=RootResponse)
     def root() -> RootResponse:
