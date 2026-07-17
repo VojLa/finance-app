@@ -6,6 +6,12 @@ on:
       - feat/alembic-account-notes
     paths:
       - ".github/workflows/implement-3f.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/implement-3f.yml"
+      - "backend/python/scripts/implement_3f_temp.py"
 
 permissions:
   contents: write
