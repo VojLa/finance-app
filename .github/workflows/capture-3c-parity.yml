@@ -76,4 +76,4 @@ jobs:
           git pull --rebase origin build/sqlalchemy-schema-parity
           git push
 
-# rerun after CLI bootstrap fix
+# rerun after unique and foreign-key normalization
