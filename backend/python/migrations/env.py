@@ -39,8 +39,7 @@ def normalize_unique_indexes(table: Table) -> None:
 
         columns = [table.c[column.name] for column in constraint.columns]
         name = str(
-            constraint.name
-            or f"{table.name}_{'_'.join(column.name for column in columns)}_key"
+            constraint.name or f"{table.name}_{'_'.join(column.name for column in columns)}_key"
         )
         table.constraints.remove(constraint)
         if not any(index.name == name for index in table.indexes):
