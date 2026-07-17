@@ -29,7 +29,7 @@ class NetWorthSnapshotModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
         "userId",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="RESTRICT"),
         nullable=False,
     )
     timestamp: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
@@ -238,11 +238,11 @@ class AccountSnapshotItemModel(Base):
     )
     asset_id: Mapped[str | None] = mapped_column(
         "assetId",
-        ForeignKey("public.Asset.id"),
+        ForeignKey("public.Asset.id", ondelete="SET NULL"),
     )
     listing_id: Mapped[str] = mapped_column(
         "listingId",
-        ForeignKey("public.AssetListing.id"),
+        ForeignKey("public.AssetListing.id", ondelete="RESTRICT"),
         nullable=False,
     )
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
