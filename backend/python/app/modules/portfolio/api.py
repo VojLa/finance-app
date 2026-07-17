@@ -18,4 +18,3 @@ async def get_portfolio(
 ) -> PortfolioSummary:
     service = PortfolioService(PortfolioRepository(connection))
     return await service.get_portfolio(user_id=user_id, account_id=account_id)
-
