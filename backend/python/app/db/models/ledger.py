@@ -33,7 +33,7 @@ class InvestmentEventModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
         "accountId",
-        ForeignKey("public.Account.id"),
+        ForeignKey("public.Account.id", ondelete="RESTRICT"),
         nullable=False,
     )
     type: Mapped[InvestmentEventType] = mapped_column(
@@ -49,7 +49,7 @@ class InvestmentEventModel(Base):
     realized_pnl_currency: Mapped[str | None] = mapped_column("realizedPnlCurrency", Text)
     import_batch_id: Mapped[str | None] = mapped_column(
         "importBatchId",
-        ForeignKey("public.ImportBatch.id"),
+        ForeignKey("public.ImportBatch.id", ondelete="SET NULL"),
     )
     archived_at: Mapped[datetime | None] = mapped_column("archivedAt", TIMESTAMP)
     deleted_at: Mapped[datetime | None] = mapped_column("deletedAt", TIMESTAMP)
@@ -81,16 +81,16 @@ class InvestmentMovementModel(Base):
     )
     account_id: Mapped[str] = mapped_column(
         "accountId",
-        ForeignKey("public.Account.id"),
+        ForeignKey("public.Account.id", ondelete="RESTRICT"),
         nullable=False,
     )
     asset_id: Mapped[str | None] = mapped_column(
         "assetId",
-        ForeignKey("public.Asset.id"),
+        ForeignKey("public.Asset.id", ondelete="SET NULL"),
     )
     listing_id: Mapped[str | None] = mapped_column(
         "listingId",
-        ForeignKey("public.AssetListing.id"),
+        ForeignKey("public.AssetListing.id", ondelete="SET NULL"),
     )
     kind: Mapped[InvestmentMovementKind] = mapped_column(
         INVESTMENT_MOVEMENT_KIND_DB,
