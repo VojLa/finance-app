@@ -6,13 +6,19 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "backend/python/alembic.ini"
+      - "backend/python/migrations/**"
       - "backend/python/app/db/**"
       - "backend/python/app/lifespan.py"
       - "backend/python/app/modules/portfolio/**"
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
+      - "backend/python/scripts/alembic_baseline.py"
       - "backend/python/scripts/database_schema.py"
       - "backend/python/scripts/sqlalchemy_schema.py"
+      - "backend/python/tests/test_alembic_configuration.py"
+      - "backend/python/tests/test_alembic_baseline.py"
+      - "backend/python/tests/test_alembic_integration.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
@@ -28,13 +34,19 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "backend/python/alembic.ini"
+      - "backend/python/migrations/**"
       - "backend/python/app/db/**"
       - "backend/python/app/lifespan.py"
       - "backend/python/app/modules/portfolio/**"
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
+      - "backend/python/scripts/alembic_baseline.py"
       - "backend/python/scripts/database_schema.py"
       - "backend/python/scripts/sqlalchemy_schema.py"
+      - "backend/python/tests/test_alembic_configuration.py"
+      - "backend/python/tests/test_alembic_baseline.py"
+      - "backend/python/tests/test_alembic_integration.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
@@ -49,7 +61,7 @@ permissions:
 
 jobs:
   verify-schema:
-    name: Verify Prisma schema baseline
+    name: Verify Prisma and Alembic baseline
     runs-on: ubuntu-24.04
 
     services:
@@ -69,6 +81,7 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
+      PGPASSWORD: postgres
 
     steps:
       - name: Check out repository
@@ -110,7 +123,7 @@ jobs:
         working-directory: backend/python
         run: uv run python scripts/database_schema.py --check
 
-      - name: Validate ownership and complete SQLAlchemy metadata
+      - name: Validate ownership, SQLAlchemy metadata, and Alembic graph
         working-directory: backend/python
         run: >-
           uv run pytest
@@ -118,19 +131,55 @@ jobs:
           tests/test_database_models.py
           tests/test_database_url.py
           tests/test_sqlalchemy_schema.py
+          tests/test_alembic_configuration.py
+          tests/test_alembic_baseline.py
 
       - name: Compare SQLAlchemy metadata with migrated PostgreSQL
         working-directory: backend/python
         run: uv run python scripts/sqlalchemy_schema.py --check
 
-      - name: Run SQLAlchemy integration tests
+      - name: Verify database is safe to stamp
+        working-directory: backend/python
+        run: uv run python scripts/alembic_baseline.py --verify
+
+      - name: Run persistence, parity, and Alembic integration tests
         working-directory: backend/python
         run: >-
           uv run pytest
           tests/test_sqlalchemy_schema_parity.py
           tests/test_sqlalchemy_persistence.py
+          tests/test_alembic_integration.py
           -v
 
-      - name: Verify canonical schema baseline after metadata checks
+      - name: Verify stamped database is at Alembic head
         working-directory: backend/python
-        run: uv run python scripts/database_schema.py --check
+        run: |
+          uv run alembic -c alembic.ini current --check-heads
+          uv run alembic -c alembic.ini check
+          uv run alembic -c alembic.ini upgrade head
+          uv run python scripts/alembic_baseline.py --verify
+
+      - name: Verify canonical baseline after Alembic checks
+        working-directory: backend/python
+        run: |
+          uv run python scripts/database_schema.py --check
+          uv run python scripts/sqlalchemy_schema.py --check
+
+      - name: Verify Prisma-free canonical bootstrap
+        working-directory: backend/python
+        env:
+          BOOTSTRAP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_canonical_bootstrap
+        run: |
+          createdb --host localhost --username postgres finance_app_canonical_bootstrap
+          psql --host localhost --username postgres --dbname finance_app_canonical_bootstrap \
+            --command 'DROP SCHEMA public CASCADE'
+          psql --host localhost --username postgres --dbname finance_app_canonical_bootstrap \
+            --file database/baseline/schema.sql
+          export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
+          uv run python scripts/alembic_baseline.py --verify
+          uv run alembic -c alembic.ini stamp 3d0001base
+          uv run alembic -c alembic.ini current --check-heads
+          uv run alembic -c alembic.ini check
+          uv run alembic -c alembic.ini upgrade head
+          uv run python scripts/database_schema.py --check
+          uv run python scripts/sqlalchemy_schema.py --check
