@@ -1,137 +1,231 @@
-from typing import cast
-
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM
 
+from app.db import models as database_models  # noqa: F401
 from app.db.base import Base
-from app.db.models import ExchangeRateModel, HoldingModel
+from app.db.models import MovementDirection
 
-EXPECTED_COLUMNS = {
-    "User": {
-        "id",
-        "email",
-        "name",
-        "passwordHash",
-        "baseCurrency",
-        "createdAt",
-        "updatedAt",
-    },
-    "Account": {
-        "id",
-        "name",
-        "type",
-        "currency",
-        "color",
-        "isArchived",
-        "archivedAt",
-        "createdAt",
-        "updatedAt",
-    },
-    "AccountMember": {
-        "id",
-        "accountId",
-        "userId",
-        "role",
-        "relationType",
-        "invitedById",
-        "acceptedAt",
-        "createdAt",
-        "updatedAt",
-    },
-    "Asset": {
-        "id",
-        "symbol",
-        "isin",
-        "name",
-        "assetType",
-        "currency",
-        "createdAt",
-        "updatedAt",
-    },
-    "AssetListing": {
-        "id",
-        "assetId",
-        "symbol",
+EXPECTED_TABLES = {
+    "Account",
+    "AccountInvite",
+    "AccountMember",
+    "AccountSnapshot",
+    "AccountSnapshotItem",
+    "Asset",
+    "AssetAlias",
+    "AssetListing",
+    "Budget",
+    "BudgetAccount",
+    "BudgetAlert",
+    "BudgetItem",
+    "BudgetItemCategory",
+    "Category",
+    "CategoryRule",
+    "Counterparty",
+    "CounterpartyAlias",
+    "ExchangeRate",
+    "Holding",
+    "ImportBatch",
+    "ImportLog",
+    "ImportRow",
+    "InvestmentEvent",
+    "InvestmentMovement",
+    "NetWorthSnapshot",
+    "PriceSnapshot",
+    "Transaction",
+    "TransactionPair",
+    "TransactionSplit",
+    "User",
+}
+
+EXPECTED_ENUMS = {
+    "AccountInviteStatus": ["pending", "accepted", "revoked", "expired"],
+    "AccountMemberRole": ["owner", "admin", "viewer", "editor"],
+    "AccountRelationType": [
+        "owner",
+        "joint_owner",
+        "manager",
+        "beneficiary",
+        "collaborator",
+    ],
+    "AccountType": [
+        "bank",
+        "cash",
+        "savings",
+        "broker",
         "exchange",
-        "mic",
-        "currency",
-        "country",
-        "provider",
-        "providerSymbol",
-        "isPrimary",
-        "createdAt",
-        "updatedAt",
-    },
-    "Holding": {
-        "id",
-        "symbol",
-        "name",
-        "assetType",
-        "quantity",
-        "avgBuyPrice",
-        "currency",
-        "currentPrice",
-        "currentValue",
-        "unrealizedPnl",
-        "realizedPnl",
-        "assetId",
-        "listingId",
-        "accountId",
-        "calculatedAt",
-        "updatedAt",
-    },
-    "ExchangeRate": {
-        "id",
-        "fromCurrency",
-        "toCurrency",
-        "rate",
-        "date",
-        "source",
-        "createdAt",
-    },
+        "crypto_wallet",
+        "credit_card",
+        "loan",
+        "mortgage",
+    ],
+    "AliasMatchType": ["exact", "contains", "starts_with", "ends_with"],
+    "AssetAliasProvider": ["coingecko", "yahoo_finance", "stooq", "broker", "exchange"],
+    "AssetType": ["stock", "etf", "crypto", "commodity", "cash", "bond", "other"],
+    "BudgetAlertType": ["approaching_limit", "exceeded", "reset"],
+    "BudgetPeriodType": ["monthly", "weekly", "yearly", "custom"],
+    "CategoryType": ["expense", "income", "both"],
+    "CounterpartyType": [
+        "merchant",
+        "family",
+        "partner",
+        "friend",
+        "employer",
+        "broker",
+        "exchange",
+        "bank",
+        "service_provider",
+        "other",
+    ],
+    "ExchangeRateSource": [
+        "cnb",
+        "ecb",
+        "manual",
+        "broker",
+        "exchange",
+        "yahoo_finance",
+    ],
+    "ImportLogEvent": [
+        "started",
+        "parse_error",
+        "validation_failed",
+        "dedup_skipped",
+        "holdings_recalculated",
+        "snapshots_recalculated",
+        "snapshot_validation_failed",
+        "completed",
+        "failed",
+    ],
+    "ImportLogLevel": ["info", "warning", "error"],
+    "ImportRowStatus": [
+        "pending",
+        "imported",
+        "skipped",
+        "duplicate",
+        "failed",
+        "needs_review",
+    ],
+    "ImportSource": ["raiffeisenbank", "trading212", "anycoin", "manual"],
+    "ImportStatus": [
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+        "partially_completed",
+        "cancelled",
+    ],
+    "InvestmentEventType": [
+        "trade",
+        "cash_deposit",
+        "cash_withdrawal",
+        "dividend",
+        "interest",
+        "currency_conversion",
+        "asset_transfer",
+        "fee",
+        "staking_reward",
+        "airdrop",
+        "adjustment",
+    ],
+    "InvestmentMovementKind": ["asset", "cash", "fee", "tax"],
+    "MovementDirection": ["in", "out"],
+    "PriceSource": [
+        "coingecko",
+        "yahoo_finance",
+        "stooq",
+        "manual",
+        "broker",
+        "exchange",
+    ],
+    "RuleField": ["description", "counterparty"],
+    "RuleOperator": [
+        "contains",
+        "equals",
+        "starts_with",
+        "ends_with",
+        "greater_than",
+        "less_than",
+    ],
+    "SnapshotGranularity": ["minute", "hour", "day", "week", "month"],
+    "SnapshotSource": [
+        "import_event",
+        "price_refresh",
+        "holdings_recalculation",
+        "scheduled",
+        "manual_recalculation",
+    ],
+    "TransactionClassification": [
+        "real_income",
+        "real_expense",
+        "internal_transfer",
+        "investment_transfer",
+        "loan_given",
+        "loan_received",
+        "loan_repayment",
+        "refund",
+        "cash_exchange",
+        "credit_card_payment",
+        "ignored",
+        "needs_review",
+    ],
+    "TransactionType": ["income", "expense", "transfer"],
 }
 
 
-def test_first_persistence_slice_maps_all_expected_columns() -> None:
+def mapped_enums() -> dict[str, ENUM]:
+    enums: dict[str, ENUM] = {}
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, ENUM) and column.type.name is not None:
+                enums[column.type.name] = column.type
+    return enums
+
+
+def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
-    assert set(tables) == set(EXPECTED_COLUMNS)
-    for table_name, expected_columns in EXPECTED_COLUMNS.items():
-        assert set(tables[table_name].columns.keys()) == expected_columns
-        assert tables[table_name].schema == "public"
+    assert set(tables) == EXPECTED_TABLES
+    assert len(tables) == 30
+    assert all(table.schema == "public" for table in tables.values())
+    assert all(
+        [column.name for column in table.primary_key.columns] == ["id"]
+        for table in tables.values()
+    )
 
 
-def test_financial_numeric_precision_matches_prisma_schema() -> None:
-    quantity = HoldingModel.__table__.c.quantity.type
-    average_price = HoldingModel.__table__.c.avgBuyPrice.type
-    exchange_rate = ExchangeRateModel.__table__.c.rate.type
+def test_all_foreign_keys_target_mapped_tables() -> None:
+    mapped_keys = set(Base.metadata.tables)
 
-    assert isinstance(quantity, Numeric)
-    assert (quantity.precision, quantity.scale) == (28, 10)
-    assert isinstance(average_price, Numeric)
-    assert (average_price.precision, average_price.scale) == (28, 10)
-    assert isinstance(exchange_rate, Numeric)
-    assert (exchange_rate.precision, exchange_rate.scale) == (18, 8)
+    for table in Base.metadata.tables.values():
+        for foreign_key in table.foreign_keys:
+            assert foreign_key.column.table.fullname in mapped_keys
 
 
-def test_postgresql_enums_reuse_existing_types() -> None:
-    enum_columns = [
-        Base.metadata.tables["public.Account"].c.type,
-        Base.metadata.tables["public.AccountMember"].c.role,
-        Base.metadata.tables["public.AccountMember"].c.relationType,
-        Base.metadata.tables["public.Asset"].c.assetType,
-        Base.metadata.tables["public.AssetListing"].c.provider,
-        Base.metadata.tables["public.ExchangeRate"].c.source,
-    ]
-    enum_types = [cast(ENUM, column.type) for column in enum_columns]
+def test_complete_schema_mirror_reuses_all_postgresql_enums() -> None:
+    enums = mapped_enums()
 
-    assert all(isinstance(enum_type, ENUM) for enum_type in enum_types)
-    assert {enum_type.name for enum_type in enum_types} == {
-        "AccountType",
-        "AccountMemberRole",
-        "AccountRelationType",
-        "AssetType",
-        "PriceSource",
-        "ExchangeRateSource",
+    assert len(enums) == 27
+    assert {name: enum.enums for name, enum in enums.items()} == EXPECTED_ENUMS
+    assert all(enum.create_type is False for enum in enums.values())
+
+
+def test_financial_numeric_precision_matches_postgresql_schema() -> None:
+    expected = {
+        ("Holding", "quantity"): (28, 10),
+        ("Holding", "avgBuyPrice"): (28, 10),
+        ("ExchangeRate", "rate"): (18, 8),
+        ("BudgetAlert", "threshold"): (5, 4),
+        ("AccountSnapshotItem", "allocationPct"): (8, 4),
+        ("AccountSnapshotItem", "value"): (18, 6),
+        ("InvestmentMovement", "pricePerUnit"): (28, 10),
     }
-    assert all(enum_type.create_type is False for enum_type in enum_types)
+
+    for (table_name, column_name), precision in expected.items():
+        column_type = Base.metadata.tables[f"public.{table_name}"].c[column_name].type
+        assert isinstance(column_type, Numeric)
+        assert (column_type.precision, column_type.scale) == precision
+
+
+def test_python_safe_enum_names_preserve_database_values() -> None:
+    assert MovementDirection.incoming.value == "in"
+    assert MovementDirection.outgoing.value == "out"
