@@ -1,0 +1,46 @@
+name: Capture Mypy Report
+
+on:
+  push:
+    branches:
+      - build/sqlalchemy-persistence-foundation
+    paths:
+      - ".github/workflows/capture-mypy.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    name: Capture mypy findings
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/python
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Capture mypy output
+        run: uv run mypy app scripts tests > ../../.mypy-report.txt || true
+
+      - name: Commit report
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .mypy-report.txt
+          git commit -m "ci(backend): capture mypy report"
+          git push
