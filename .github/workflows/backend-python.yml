@@ -42,7 +42,21 @@ jobs:
         run: uv sync --extra dev
 
       - name: Ruff lint
-        run: uv run ruff check .
+        shell: bash
+        run: |
+          set +e
+          uv run ruff check . --output-format=json > ruff-results.json
+          status=$?
+          cat ruff-results.json
+          exit $status
+
+      - name: Upload Ruff report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruff-results
+          path: backend/python/ruff-results.json
+          if-no-files-found: error
 
       - name: Ruff format
         run: uv run ruff format --check .
