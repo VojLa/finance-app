@@ -48,11 +48,8 @@ Write-Host "Installing backend dependencies"
 & $venvPython -m pip install -e "$scriptDir[dev]"
 
 if ($RunChecks) {
-    Write-Host "Running tests"
-    & $venvPython -m pytest
-
-    Write-Host "Running lint"
-    & $venvPython -m ruff check $scriptDir
+    Write-Host "Running backend quality checks"
+    & $venvPython (Join-Path $scriptDir "scripts\check.py")
 }
 
 Write-Host ""
