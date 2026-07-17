@@ -25,9 +25,9 @@ Prisma schema loaded from prisma/schema.prisma
 │    npm i --save-dev prisma@latest                       │
 │    npm i @prisma/client@latest                          │
 └─────────────────────────────────────────────────────────┘
-Formatted prisma/schema.prisma in 58ms 🚀
+Formatted prisma/schema.prisma in 51ms 🚀
 + npx prettier --write .github/workflows/database-schema.yml
-[90m.github/workflows/database-schema.yml[39m 32ms (unchanged)
+[90m.github/workflows/database-schema.yml[39m 34ms (unchanged)
 + cd /home/runner/work/finance-app/finance-app/backend/python
 + python -
 + psql --set=ON_ERROR_STOP=1 --dbname=postgresql://postgres:postgres@localhost:5432/finance_app --file=.bootstrap-3f.sql
