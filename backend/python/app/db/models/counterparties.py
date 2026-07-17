@@ -24,7 +24,7 @@ class CounterpartyModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
         "userId",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="RESTRICT"),
         nullable=False,
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
