@@ -214,7 +214,9 @@ def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
     if scripts.get("db:migrate") != "node scripts/prisma-migrations-frozen.mjs":
         raise RuntimeError("db:migrate must fail closed after the Prisma migration freeze.")
     if scripts.get("db:deploy") != "prisma migrate deploy":
-        raise RuntimeError("Step 3E-A must preserve the existing deployment alias until activation.")
+        raise RuntimeError(
+            "Step 3E-A must preserve the existing deployment alias until activation."
+        )
     if scripts.get("db:prisma:deploy:legacy") != "prisma migrate deploy":
         raise RuntimeError("Frozen Prisma archive verification command is missing.")
 
@@ -235,7 +237,9 @@ def verify_runtime_ddl(app_root: Path | None = None) -> None:
         for pattern in FORBIDDEN_RUNTIME_PATTERNS:
             if pattern in source:
                 relative = path.relative_to(REPOSITORY_ROOT)
-                raise RuntimeError(f"Forbidden runtime migration operation {pattern} in {relative}.")
+                raise RuntimeError(
+                    f"Forbidden runtime migration operation {pattern} in {relative}."
+                )
 
 
 def verify_workflow_policy(workflows_root: Path | None = None) -> None:

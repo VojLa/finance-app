@@ -28,7 +28,9 @@ def test_revision_state_accepts_prepared_baseline_head() -> None:
     verify_revision_state(DatabaseState(30, 27, (BASELINE_REVISION,)), require_head=True)
 
 
-def test_alembic_runner_uses_python_module_and_local_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_alembic_runner_uses_python_module_and_local_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_run_command(
