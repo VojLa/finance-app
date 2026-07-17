@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.db.url import normalize_database_url
+from scripts import database_migrate
 from scripts.database_migrate import DEFAULT_ADVISORY_LOCK_KEY
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -64,3 +65,37 @@ async def test_prepared_migration_runner_refuses_concurrent_upgrade() -> None:
 
     assert result.returncode == 1
     assert "advisory lock is already held" in result.stderr
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
+async def test_prepared_migration_runner_releases_lock_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert DATABASE_URL is not None
+
+    def fail_upgrade(*_arguments: str) -> None:
+        raise RuntimeError("simulated Alembic failure")
+
+    monkeypatch.setattr(database_migrate, "run_alembic", fail_upgrade)
+
+    with pytest.raises(RuntimeError, match="simulated Alembic failure"):
+        await database_migrate.upgrade_with_lock(
+            DATABASE_URL,
+            DEFAULT_ADVISORY_LOCK_KEY,
+        )
+
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    try:
+        async with engine.connect() as connection:
+            locked = await connection.scalar(
+                text("SELECT pg_try_advisory_lock(:lock_key)"),
+                {"lock_key": DEFAULT_ADVISORY_LOCK_KEY},
+            )
+            assert locked is True
+            await connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": DEFAULT_ADVISORY_LOCK_KEY},
+            )
+    finally:
+        await engine.dispose()
