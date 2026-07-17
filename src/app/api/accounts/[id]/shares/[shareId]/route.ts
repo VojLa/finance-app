@@ -25,7 +25,10 @@ export async function DELETE(
       where: { accountId: params.id, role: "owner" },
     })
     if (ownerCount <= 1) {
-      return NextResponse.json({ error: "Ucet musi mit alespon jednoho vlastnika" }, { status: 400 })
+      return NextResponse.json(
+        { error: "Ucet musi mit alespon jednoho vlastnika" },
+        { status: 400 }
+      )
     }
   }
 

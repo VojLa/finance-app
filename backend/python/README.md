@@ -151,13 +151,13 @@ and validates the ownership manifest.
 
 ## Environment variables
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ENVIRONMENT` | `development` | `development`, `test`, or `production` |
-| `DATABASE_URL` | unset | PostgreSQL connection string |
-| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
-| `LOG_JSON` | `false` | Emit machine-readable JSON logs |
-| `DOCS_ENABLED` | `true` | Enable `/docs` and `/openapi.json` |
+| Variable       | Default       | Purpose                                |
+| -------------- | ------------- | -------------------------------------- |
+| `ENVIRONMENT`  | `development` | `development`, `test`, or `production` |
+| `DATABASE_URL` | unset         | PostgreSQL connection string           |
+| `LOG_LEVEL`    | `INFO`        | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `LOG_JSON`     | `false`       | Emit machine-readable JSON logs        |
+| `DOCS_ENABLED` | `true`        | Enable `/docs` and `/openapi.json`     |
 
 Production startup requires:
 

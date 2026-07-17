@@ -8,4 +8,3 @@ Security topics to document:
 - GDPR deletion/anonymization
 - API access between Next.js and Python backend
 - Secrets and environment variables
-

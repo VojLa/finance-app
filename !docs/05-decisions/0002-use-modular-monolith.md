@@ -13,4 +13,3 @@ Use a modular monolith structure before splitting into separate services.
 - Domains should be separated by modules.
 - Shared database access must stay controlled.
 - Rust calculation engines can be introduced behind explicit interfaces.
-

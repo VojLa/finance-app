@@ -54,13 +54,13 @@ Superseded by: none
 
 ## Index
 
-| ADR | Nazev | Status |
-| --- | --- | --- |
-| [`0001-python-backend.md`](0001-python-backend.md) | Python jako primarni backend | Accepted |
-| [`0002-postgresql.md`](0002-postgresql.md) | PostgreSQL jako hlavni databaze | Accepted |
-| [`0003-modular-monolith.md`](0003-modular-monolith.md) | Modularni monolit jako vychozi backendova architektura | Accepted |
-| [`0004-read-models.md`](0004-read-models.md) | Oddeleni read modelu od canonical historie | Accepted |
-| [`0005-api-contract-generation.md`](0005-api-contract-generation.md) | Generovani API kontraktu z OpenAPI | Accepted |
-| [`0006-database-schema-migration.md`](0006-database-schema-migration.md) | Prevod vlastnictvi DB schema z Prisma na Alembic | Accepted |
+| ADR                                                                      | Nazev                                                  | Status   |
+| ------------------------------------------------------------------------ | ------------------------------------------------------ | -------- |
+| [`0001-python-backend.md`](0001-python-backend.md)                       | Python jako primarni backend                           | Accepted |
+| [`0002-postgresql.md`](0002-postgresql.md)                               | PostgreSQL jako hlavni databaze                        | Accepted |
+| [`0003-modular-monolith.md`](0003-modular-monolith.md)                   | Modularni monolit jako vychozi backendova architektura | Accepted |
+| [`0004-read-models.md`](0004-read-models.md)                             | Oddeleni read modelu od canonical historie             | Accepted |
+| [`0005-api-contract-generation.md`](0005-api-contract-generation.md)     | Generovani API kontraktu z OpenAPI                     | Accepted |
+| [`0006-database-schema-migration.md`](0006-database-schema-migration.md) | Prevod vlastnictvi DB schema z Prisma na Alembic       | Accepted |
 
 Status v tomto indexu se musi aktualizovat spolu se zmenou konkretniho ADR.

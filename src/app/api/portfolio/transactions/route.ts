@@ -47,7 +47,11 @@ function serializeInvestmentEvent(event: InvestmentEventWithMovements) {
     quantity: asset ? toNum(asset.quantity) : null,
     pricePerUnit: asset?.pricePerUnit != null ? toNum(asset.pricePerUnit) : null,
     priceCurrency: asset?.valueCurrency ?? cash?.currency ?? null,
-    totalAmount: cash ? toNum(cash.quantity) : asset?.valueAmount != null ? toNum(asset.valueAmount) : null,
+    totalAmount: cash
+      ? toNum(cash.quantity)
+      : asset?.valueAmount != null
+        ? toNum(asset.valueAmount)
+        : null,
     totalCurrency: cash?.currency ?? asset?.valueCurrency ?? null,
     fee: fee ? toNum(fee.quantity) : null,
     feeCurrency: fee?.currency ?? null,

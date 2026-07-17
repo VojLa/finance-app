@@ -11,4 +11,3 @@ Main application modules:
 - Snapshots
 - Rates and prices
 - Dashboard and reporting
-
