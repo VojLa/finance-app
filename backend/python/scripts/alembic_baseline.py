@@ -59,12 +59,20 @@ def verify_revision_graph() -> None:
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 4:
-        raise RuntimeError("Ownership manifest schema_version must be 4 for step 3D.")
+    if manifest.get("schema_version") != 5:
+        raise RuntimeError("Ownership manifest schema_version must be 5 for step 3E-A.")
     if manifest.get("current_migration_owner") != "prisma":
-        raise RuntimeError("Prisma must remain the current migration owner during step 3D.")
-    if manifest.get("cutover_status") != "not_started":
-        raise RuntimeError("Migration ownership cutover must remain not_started during step 3D.")
+        raise RuntimeError("Prisma remains the current migration owner during step 3E-A.")
+    if manifest.get("cutover_status") != "ready":
+        raise RuntimeError("Migration ownership cutover must be ready but not activated in 3E-A.")
+
+    cutover = manifest.get("cutover")
+    if not isinstance(cutover, dict):
+        raise RuntimeError("Ownership manifest is missing the cutover preparation section.")
+    if cutover.get("phase") != "prepared":
+        raise RuntimeError("Cutover phase must be prepared during step 3E-A.")
+    if cutover.get("production_activation_allowed") is not False:
+        raise RuntimeError("Production activation must remain blocked during step 3E-A.")
 
     excluded = set(manifest.get("excluded_database_objects", []))
     if excluded != {"_prisma_migrations", "alembic_version"}:
