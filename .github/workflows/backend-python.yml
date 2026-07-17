@@ -45,28 +45,24 @@ jobs:
         run: uv run ruff check .
 
       - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy
         shell: bash
         run: |
           set +e
-          uv run ruff format --check .
+          uv run mypy app tests --no-color-output > mypy-results.txt 2>&1
           status=$?
-          if [ $status -ne 0 ]; then
-            uv run ruff format .
-            git diff -- . > ruff-format.patch
-            cat ruff-format.patch
-          fi
+          cat mypy-results.txt
           exit $status
 
-      - name: Upload Ruff format patch
+      - name: Upload mypy report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ruff-format-patch
-          path: backend/python/ruff-format.patch
+          name: mypy-results
+          path: backend/python/mypy-results.txt
           if-no-files-found: error
-
-      - name: Mypy
-        run: uv run mypy app tests
 
       - name: Pytest
         run: uv run pytest --cov=app --cov-report=term-missing
