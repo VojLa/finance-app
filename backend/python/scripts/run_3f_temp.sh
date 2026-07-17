@@ -25,7 +25,9 @@ preserve_failure_trace() {
   git push origin HEAD:feat/alembic-account-notes
   exit "$status"
 }
-trap preserve_failure_trace EXIT
+if [[ "${DISABLE_FAILURE_TRACE:-0}" != "1" ]]; then
+  trap preserve_failure_trace EXIT
+fi
 
 cd "$BACKEND_ROOT"
 uv run python scripts/fix_implement_3f_temp.py
