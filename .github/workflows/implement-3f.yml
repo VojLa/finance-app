@@ -1,4 +1,4 @@
-name: Implement 3F
+name: Diagnose 3F lifecycle
 
 on:
   pull_request:
@@ -6,13 +6,12 @@ on:
       - main
     paths:
       - ".github/workflows/implement-3f.yml"
-      - "backend/python/app/db/models/accounts.py"
 
 permissions:
   contents: write
 
 jobs:
-  implement-and-verify:
+  diagnose:
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -45,9 +44,6 @@ jobs:
         with:
           python-version-file: backend/python/.python-version
       - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: backend/python/uv.lock
       - name: Install backend dependencies
         working-directory: backend/python
         run: uv sync --frozen --extra dev
@@ -55,5 +51,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
-      - name: Implement and verify Step 3F
-        run: bash backend/python/scripts/run_3f_temp.sh
+      - name: Capture lifecycle output
+        shell: bash
+        run: |
+          set +e
+          bash -x backend/python/scripts/run_3f_temp.sh > /tmp/3f-lifecycle-report.txt 2>&1
+          echo "exit_status=$?" >> /tmp/3f-lifecycle-report.txt
+          git reset --hard HEAD
+          cp /tmp/3f-lifecycle-report.txt backend/python/3f-lifecycle-report.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/python/3f-lifecycle-report.txt
+          git commit -m "chore: capture next 3F lifecycle failure"
+          git push origin HEAD:feat/alembic-account-notes
