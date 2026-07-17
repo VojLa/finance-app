@@ -1,0 +1,14 @@
+scripts/sqlalchemy_schema.py:69: error: "FetchedValue" has no attribute "arg" 
+[attr-defined]
+                    column.server_default.arg if column.server_default is ...
+                    ^~~~~~~~~~~~~~~~~~~~~~~~~
+scripts/sqlalchemy_schema.py:161: error: Argument 1 to "_sorted_columns" has
+incompatible type "list[str | None]"; expected "Sequence[str] | None" 
+[arg-type]
+                "columns": _sorted_columns(index.get("column_names")),
+                                           ^~~~~~~~~~~~~~~~~~~~~~~~~
+scripts/sqlalchemy_schema.py:190: error: "Inspector" has no attribute
+"get_enums"  [attr-defined]
+    ... {enum["name"]: list(enum["labels"]) for enum in inspector.get_enums(s...
+                                                        ^~~~~~~~~~~~~~~~~~~
+Found 3 errors in 1 file (checked 62 source files)
