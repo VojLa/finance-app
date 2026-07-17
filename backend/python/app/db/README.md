@@ -10,6 +10,9 @@ read-only SQLAlchemy mirror of the Prisma-managed PostgreSQL schema.
 - `health.py` checks PostgreSQL connectivity through the SQLAlchemy engine.
 - `url.py` converts Prisma-style PostgreSQL URLs to the `postgresql+asyncpg` dialect.
 
+FastAPI startup never runs Alembic commands, stamps revisions, or changes the physical
+schema.
+
 ## Mirrored schema
 
 The metadata mirror contains all 30 application tables and all 27 PostgreSQL enum types.
@@ -37,8 +40,9 @@ python scripts/sqlalchemy_schema.py --check
 ```
 
 The checker covers columns, types, nullability, defaults, primary keys, foreign keys,
-`ON DELETE`, unique constraints, indexes, and enum labels. `_prisma_migrations` is excluded
-because it belongs to the Prisma migration system rather than the application schema.
+`ON DELETE`, unique constraints, indexes, and enum labels. `_prisma_migrations` and
+`alembic_version` are excluded because they belong to migration systems rather than the
+application schema.
 
 ## Ownership boundary
 
@@ -52,5 +56,6 @@ Base.metadata.create_all(...)
 Base.metadata.drop_all(...)
 ```
 
-This package does not contain Alembic configuration or revisions. Alembic baseline readiness
-and migration ownership cutover remain separate, explicitly approved steps.
+Alembic configuration and the no-op baseline live at the backend root. They establish
+baseline readiness only; no application table or enum becomes Alembic-owned until the
+separate step 3E cutover is explicitly approved.
