@@ -1,5 +1,5 @@
 param(
-    [string]$PythonPath = "C:\Users\lacin\AppData\Local\Programs\Python\Python312\python.exe",
+    [string]$PythonPath = "",
     [switch]$RunChecks
 )
 
@@ -9,8 +9,28 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvPath = Join-Path $scriptDir ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
-if (-not (Test-Path $PythonPath)) {
-    throw "Python interpreter not found at '$PythonPath'. Pass -PythonPath or install Python 3.12.x."
+$pythonCommand = $null
+$pythonArguments = @()
+
+if ($PythonPath) {
+    if (-not (Test-Path $PythonPath)) {
+        throw "Python interpreter not found at '$PythonPath'."
+    }
+    $pythonCommand = $PythonPath
+} elseif (Get-Command py -ErrorAction SilentlyContinue) {
+    $pythonCommand = (Get-Command py).Source
+    $pythonArguments = @("-3.12")
+} elseif (Get-Command python3.12 -ErrorAction SilentlyContinue) {
+    $pythonCommand = (Get-Command python3.12).Source
+} elseif (Get-Command python -ErrorAction SilentlyContinue) {
+    $pythonCommand = (Get-Command python).Source
+} else {
+    throw "Python 3.12 was not found. Install it or pass -PythonPath."
+}
+
+$pythonVersion = & $pythonCommand @pythonArguments -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne "3.12") {
+    throw "Expected Python 3.12, but '$pythonCommand' reported '$pythonVersion'."
 }
 
 if (Test-Path $venvPath) {
@@ -19,7 +39,7 @@ if (Test-Path $venvPath) {
 }
 
 Write-Host "Creating virtual environment at $venvPath"
-& $PythonPath -m venv $venvPath
+& $pythonCommand @pythonArguments -m venv $venvPath
 
 Write-Host "Upgrading pip"
 & $venvPython -m pip install --upgrade pip
