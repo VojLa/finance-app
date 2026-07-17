@@ -1,0 +1,45 @@
+name: Backend Python
+
+on:
+  pull_request:
+    paths:
+      - "backend/python/**"
+      - ".github/workflows/backend-python.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/python/**"
+      - ".github/workflows/backend-python.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/python
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/python/pyproject.toml
+
+      - name: Install backend dependencies
+        run: uv sync --extra dev
+
+      - name: Run backend checks
+        run: uv run python scripts/check.py
