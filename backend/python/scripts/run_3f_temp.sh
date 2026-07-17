@@ -3,8 +3,31 @@ set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BACKEND_ROOT="$REPOSITORY_ROOT/backend/python"
-cd "$BACKEND_ROOT"
+TRACE_FILE="/tmp/3f-lifecycle-report.txt"
 
+exec > >(tee "$TRACE_FILE") 2>&1
+set -x
+
+preserve_failure_trace() {
+  local status=$?
+  if [[ $status -eq 0 ]]; then
+    return
+  fi
+  set +e
+  cd "$REPOSITORY_ROOT"
+  git reset --hard HEAD
+  cp "$TRACE_FILE" backend/python/3f-lifecycle-report.txt
+  printf '\nexit_status=%s\n' "$status" >> backend/python/3f-lifecycle-report.txt
+  git config user.name "github-actions[bot]"
+  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+  git add backend/python/3f-lifecycle-report.txt
+  git commit -m "chore: capture 3F lifecycle failure"
+  git push origin HEAD:feat/alembic-account-notes
+  exit "$status"
+}
+trap preserve_failure_trace EXIT
+
+cd "$BACKEND_ROOT"
 uv run python scripts/fix_implement_3f_temp.py
 uv run python scripts/implement_3f_temp.py
 uv run ruff check . --fix
