@@ -1,7 +1,7 @@
 Step 3F source changes staged.
 patch_status=0
 error: Failed to parse scripts/migration_policy.py:367:39: missing closing quote in string literal
-5 files reformatted, 70 files left unchanged
+5 files reformatted, 71 files left unchanged
 ruff_format_status=2
 Loaded Prisma config from prisma.config.ts.
 
@@ -16,7 +16,7 @@ Prisma schema loaded from prisma/schema.prisma
 │    npm i --save-dev prisma@latest                       │
 │    npm i @prisma/client@latest                          │
 └─────────────────────────────────────────────────────────┘
-Formatted prisma/schema.prisma in 56ms 🚀
+Formatted prisma/schema.prisma in 54ms 🚀
 prisma_format_status=0
 [90m.github/workflows/database-schema.yml[39m 34ms (unchanged)
 prettier_status=0
