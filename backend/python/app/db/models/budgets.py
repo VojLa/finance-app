@@ -44,7 +44,7 @@ class BudgetModel(Base):
     )
     user_id: Mapped[str] = mapped_column(
         "userId",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="RESTRICT"),
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -151,7 +151,7 @@ class BudgetAlertModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
         "userId",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="RESTRICT"),
         nullable=False,
     )
     budget_item_id: Mapped[str] = mapped_column(
