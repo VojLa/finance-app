@@ -8,7 +8,8 @@ import os
 import re
 import sys
 from collections.abc import Sequence
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from sqlalchemy import Boolean, Integer, Numeric, Text, UniqueConstraint, inspect
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, TIMESTAMP
@@ -16,9 +17,13 @@ from sqlalchemy.engine import Inspector
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.schema import Column, Table
 
-from app.db import models as database_models  # noqa: F401
-from app.db.base import Base
-from app.db.url import normalize_database_url
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.db import models as database_models  # noqa: E402,F401
+from app.db.base import Base  # noqa: E402
+from app.db.url import normalize_database_url  # noqa: E402
 
 EXCLUDED_TABLES = {"_prisma_migrations"}
 
@@ -191,8 +196,11 @@ def reflected_snapshot(inspector: Inspector) -> dict[str, Any]:
     tables = {
         table_name: reflected_table_snapshot(inspector, table_name) for table_name in table_names
     }
-    get_enums = inspector.get_enums
-    enums = {enum["name"]: list(enum["labels"]) for enum in get_enums(schema="public")}
+    postgresql_inspector = cast(Any, inspector)
+    enums = {
+        enum["name"]: list(enum["labels"])
+        for enum in postgresql_inspector.get_enums(schema="public")
+    }
     return {"tables": tables, "enums": dict(sorted(enums.items()))}
 
 
