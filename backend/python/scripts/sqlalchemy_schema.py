@@ -14,7 +14,7 @@ from sqlalchemy import Boolean, Integer, Numeric, Text, UniqueConstraint, inspec
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, TIMESTAMP
 from sqlalchemy.engine import Inspector
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.schema import Table
+from sqlalchemy.schema import Column, Table
 
 from app.db import models as database_models  # noqa: F401
 from app.db.base import Base
@@ -28,7 +28,7 @@ def normalize_default(value: object | None) -> str | None:
         return None
 
     normalized = " ".join(str(value).strip().split()).lower()
-    normalized = normalized.replace('"public".', "")
+    normalized = normalized.replace('"public".', "").replace("public.", "")
     normalized = re.sub(r'::"([^"]+)"', r"::\1", normalized)
     normalized = normalized.replace("now()", "current_timestamp")
     while normalized.startswith("(") and normalized.endswith(")"):
@@ -48,15 +48,21 @@ def type_signature(column_type: object) -> str:
         return "jsonb"
     if isinstance(column_type, Text):
         return "text"
-    if isinstance(column_type, Integer):
-        return "integer"
     if isinstance(column_type, Boolean):
         return "boolean"
+    if isinstance(column_type, Integer):
+        return "integer"
     return str(column_type).lower()
 
 
-def _sorted_columns(columns: Sequence[str] | None) -> list[str]:
-    return list(columns or [])
+def _sorted_columns(columns: Sequence[str | None] | None) -> list[str]:
+    return [column for column in columns or [] if column is not None]
+
+
+def _server_default(column: Column[Any]) -> object | None:
+    if column.server_default is None:
+        return None
+    return getattr(column.server_default, "arg", column.server_default)
 
 
 def local_table_snapshot(table: Table) -> dict[str, Any]:
@@ -65,9 +71,7 @@ def local_table_snapshot(table: Table) -> dict[str, Any]:
             "name": column.name,
             "type": type_signature(column.type),
             "nullable": column.nullable,
-            "default": normalize_default(
-                column.server_default.arg if column.server_default is not None else None
-            ),
+            "default": normalize_default(_server_default(column)),
         }
         for column in table.columns
     ]
@@ -187,7 +191,8 @@ def reflected_snapshot(inspector: Inspector) -> dict[str, Any]:
     tables = {
         table_name: reflected_table_snapshot(inspector, table_name) for table_name in table_names
     }
-    enums = {enum["name"]: list(enum["labels"]) for enum in inspector.get_enums(schema="public")}
+    get_enums = getattr(inspector, "get_enums")
+    enums = {enum["name"]: list(enum["labels"]) for enum in get_enums(schema="public")}
     return {"tables": tables, "enums": dict(sorted(enums.items()))}
 
 
