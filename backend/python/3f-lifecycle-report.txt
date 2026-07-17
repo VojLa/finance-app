@@ -8,6 +8,8 @@
 + uv run python scripts/fix_implement_3f_temp.py
 + uv run python scripts/implement_3f_temp.py
 Step 3F source changes staged.
++ uv run ruff check . --fix
+Found 2 errors (2 fixed, 0 remaining).
 + uv run ruff format .
 6 files reformatted, 71 files left unchanged
 + cd /home/runner/work/finance-app/finance-app
@@ -25,9 +27,9 @@ Prisma schema loaded from prisma/schema.prisma
 │    npm i --save-dev prisma@latest                       │
 │    npm i @prisma/client@latest                          │
 └─────────────────────────────────────────────────────────┘
-Formatted prisma/schema.prisma in 51ms 🚀
+Formatted prisma/schema.prisma in 54ms 🚀
 + npx prettier --write .github/workflows/database-schema.yml
-[90m.github/workflows/database-schema.yml[39m 34ms (unchanged)
+[90m.github/workflows/database-schema.yml[39m 31ms (unchanged)
 + cd /home/runner/work/finance-app/finance-app/backend/python
 + python -
 + psql --set=ON_ERROR_STOP=1 --dbname=postgresql://postgres:postgres@localhost:5432/finance_app --file=.bootstrap-3f.sql
@@ -312,44 +314,14 @@ migrations/
 All migrations have been successfully applied.
 + cd /home/runner/work/finance-app/finance-app/backend/python
 + uv run ruff check .
-I001 [*] Import block is un-sorted or un-formatted
- --> migrations/versions/3f0001acctnote_add_account_notes.py:3:1
-  |
-1 |   """Add optional account notes as the first Alembic-owned schema change."""
-2 |
-3 | / from collections.abc import Sequence
-4 | |
-5 | | from alembic import op
-6 | | import sqlalchemy as sa
-  | |_______________________^
-7 |
-8 |   revision: str = "3f0001acctnote"
-  |
-help: Organize imports
-
-I001 [*] Import block is un-sorted or un-formatted
-  --> tests/test_database_migrate.py:1:1
-   |
- 1 | / from __future__ import annotations
- 2 | |
- 3 | | import subprocess
- 4 | | from pathlib import Path
- 5 | |
- 6 | | import pytest
- 7 | |
- 8 | | from scripts.alembic_baseline import DatabaseState
- 9 | | from scripts.database_migrate import (
-10 | |     BASELINE_REVISION,
-11 | |     CUTOVER_REVISION,
-12 | |     HEAD_REVISION,
-13 | |     DEFAULT_ADVISORY_LOCK_KEY,
-14 | |     run_alembic,
-15 | |     verify_revision_state,
-16 | | )
-   | |_^
-   |
-help: Organize imports
-
-Found 2 errors.
-[*] 2 fixable with the `--fix` option.
+All checks passed!
++ uv run ruff format --check .
+77 files already formatted
++ uv run mypy app scripts tests
+Success: no issues found in 73 source files
++ uv run python scripts/migration_policy.py --check
+Traceback (most recent call last):
+  File "/home/runner/work/finance-app/finance-app/backend/python/scripts/migration_policy.py", line 16, in <module>
+    from scripts import database_schema
+ModuleNotFoundError: No module named 'scripts'
 exit_status=1
