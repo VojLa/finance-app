@@ -1,7 +1,7 @@
-# SQLAlchemy persistence foundation
+# SQLAlchemy schema mirror
 
-This package contains the Python backend's runtime database infrastructure and read-only
-SQLAlchemy mirror of the first Prisma persistence slice.
+This package contains the Python backend's runtime database infrastructure and the complete
+read-only SQLAlchemy mirror of the Prisma-managed PostgreSQL schema.
 
 ## Runtime
 
@@ -12,25 +12,38 @@ SQLAlchemy mirror of the first Prisma persistence slice.
 
 ## Mirrored schema
 
-The first read-only mirror contains:
+The metadata mirror contains all 30 application tables and all 27 PostgreSQL enum types.
+Models are split by domain under `models/` and preserve:
 
-- `User`
-- `Account`
-- `AccountMember`
-- `Asset`
-- `AssetListing`
-- `Holding`
-- `ExchangeRate`
+- physical Prisma table and column names,
+- PostgreSQL data types and numeric precision,
+- nullability and server defaults,
+- primary keys and foreign keys,
+- unique constraints and indexes,
+- enum names, values, and ordering.
 
-The mappings use the existing PostgreSQL enum types and preserve Prisma column names,
-nullability, numeric precision, and foreign keys. ORM relationships are intentionally not
-introduced in this step, so repository queries remain explicit and do not trigger hidden
-async lazy loads.
+The mappings reuse existing PostgreSQL enum types with `create_type=False`. ORM relationships
+are intentionally not introduced, so repository queries remain explicit and cannot trigger
+hidden async lazy loads.
+
+## Parity verification
+
+`../../scripts/sqlalchemy_schema.py` compares `Base.metadata` with SQLAlchemy reflection of a
+PostgreSQL database created by the committed Prisma migrations.
+
+```bash
+python scripts/sqlalchemy_schema.py --print
+python scripts/sqlalchemy_schema.py --check
+```
+
+The checker covers columns, types, nullability, defaults, primary keys, foreign keys,
+`ON DELETE`, unique constraints, indexes, and enum labels. `_prisma_migrations` is excluded
+because it belongs to the Prisma migration system rather than the application schema.
 
 ## Ownership boundary
 
-Prisma remains the only migration owner. SQLAlchemy metadata is a runtime mapping, not a
-schema creation mechanism.
+Prisma remains the only migration owner. Complete SQLAlchemy metadata is a runtime and
+verification mirror, not a schema creation mechanism.
 
 Do not call:
 
@@ -39,5 +52,5 @@ Base.metadata.create_all(...)
 Base.metadata.drop_all(...)
 ```
 
-This package does not contain Alembic configuration or revisions. A future ownership
-cutover requires its own baseline, verification, and explicit approval.
+This package does not contain Alembic configuration or revisions. Alembic baseline readiness
+and migration ownership cutover remain separate, explicitly approved steps.
