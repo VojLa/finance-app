@@ -12,10 +12,13 @@ on:
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/scripts/sqlalchemy_schema.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
       - "backend/python/tests/test_sqlalchemy_persistence.py"
+      - "backend/python/tests/test_sqlalchemy_schema.py"
+      - "backend/python/tests/test_sqlalchemy_schema_parity.py"
       - "backend/python/uv.lock"
       - ".github/workflows/database-schema.yml"
   push:
@@ -31,10 +34,13 @@ on:
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/scripts/sqlalchemy_schema.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
       - "backend/python/tests/test_sqlalchemy_persistence.py"
+      - "backend/python/tests/test_sqlalchemy_schema.py"
+      - "backend/python/tests/test_sqlalchemy_schema_parity.py"
       - "backend/python/uv.lock"
       - ".github/workflows/database-schema.yml"
 
@@ -100,18 +106,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
-      - name: Verify canonical schema baseline
+      - name: Verify canonical schema baseline before metadata checks
         working-directory: backend/python
         run: uv run python scripts/database_schema.py --check
 
-      - name: Validate ownership and SQLAlchemy metadata
+      - name: Validate ownership and complete SQLAlchemy metadata
         working-directory: backend/python
         run: >-
           uv run pytest
           tests/test_database_schema.py
           tests/test_database_models.py
           tests/test_database_url.py
+          tests/test_sqlalchemy_schema.py
 
-      - name: Verify SQLAlchemy repository against migrated schema
+      - name: Compare SQLAlchemy metadata with migrated PostgreSQL
         working-directory: backend/python
-        run: uv run pytest tests/test_sqlalchemy_persistence.py -v
+        run: uv run python scripts/sqlalchemy_schema.py --check
+
+      - name: Run SQLAlchemy integration tests
+        working-directory: backend/python
+        run: >-
+          uv run pytest
+          tests/test_sqlalchemy_schema_parity.py
+          tests/test_sqlalchemy_persistence.py
+          -v
+
+      - name: Verify canonical schema baseline after metadata checks
+        working-directory: backend/python
+        run: uv run python scripts/database_schema.py --check

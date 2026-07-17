@@ -4,8 +4,8 @@ This directory records the physical PostgreSQL schema during the hybrid migratio
 Prisma to SQLAlchemy and Alembic.
 
 The governing decision is ADR 0006 in `!planning/decisions`. Prisma remains the migration
-owner until an explicit cutover is approved. Adding SQLAlchemy mappings does not transfer
-migration ownership by itself.
+owner until an explicit cutover is approved. Adding or completing SQLAlchemy mappings does
+not transfer migration ownership by itself.
 
 ## Current state
 
@@ -13,7 +13,7 @@ migration ownership by itself.
 - target migration owner: Alembic
 - cutover status: not started
 - production schema changes: still created by Prisma migrations
-- SQLAlchemy mirror: first portfolio read slice implemented
+- SQLAlchemy mirror: complete for all 30 application tables and 27 enum types
 - Alembic revisions: not introduced
 
 ## Files
@@ -28,8 +28,8 @@ database/
 ```
 
 `baseline/schema.sql` is generated from a clean PostgreSQL 16 database after applying all
-committed Prisma migrations. It is not handwritten. `_prisma_migrations` is excluded
-because it is migration-system metadata rather than an application schema object.
+committed Prisma migrations. It is not handwritten. `_prisma_migrations` is excluded because
+it is migration-system metadata rather than an application schema object.
 
 `schema_ownership.toml` records independently migratable application objects. Ownership is
 tracked for tables and PostgreSQL enum types. Indexes, unique constraints, foreign keys,
@@ -50,23 +50,51 @@ still modify it.
 
 1. Start from a schema produced by committed Prisma migrations on a clean database.
 2. Keep the generated baseline and ownership manifest synchronized with that schema.
-3. Add SQLAlchemy mappings without changing migration ownership.
+3. Complete SQLAlchemy mappings without changing migration ownership.
 4. Verify the future Alembic baseline on both a clean database and a copy of an existing
    database.
 5. Record the cutover commit and affected objects explicitly.
 6. After cutover, create new production schema changes only in Alembic.
 7. Never rewrite existing Prisma migration history merely to make the baseline cleaner.
 
-## First SQLAlchemy persistence slice
+## SQLAlchemy metadata parity
 
-The portfolio read path directly uses:
+The complete SQLAlchemy mirror covers every object recorded in the ownership manifest:
+
+- 30 application tables,
+- 27 PostgreSQL enum types,
+- columns and physical names,
+- data types, nullability, and server defaults,
+- primary keys, foreign keys, and `ON DELETE` behavior,
+- unique constraints and indexes,
+- enum values and ordering.
+
+The live parity check reflects a PostgreSQL 16 database created by the committed Prisma
+migrations and compares it with `Base.metadata`:
+
+```bash
+python scripts/sqlalchemy_schema.py --check
+```
+
+For diagnostics without connecting to PostgreSQL:
+
+```bash
+python scripts/sqlalchemy_schema.py --print
+```
+
+The parity checker performs no schema DDL. CI runs the canonical baseline check before and
+after metadata validation to prove that verification did not mutate the database schema.
+
+## Runtime persistence slice
+
+The portfolio read path currently uses:
 
 - `Account`
 - `AccountMember`
 - `Holding`
 - `ExchangeRate`
 
-Its mapped transitive dependencies are:
+Its transitive mappings are:
 
 - `User`
 - `Asset`
@@ -78,11 +106,10 @@ Its mapped transitive dependencies are:
 - `PriceSource`
 - `ExchangeRateSource`
 
-These objects are recorded as `mirrored_in_sqlalchemy` in the manifest while their current
-migration owner remains Prisma. The Python application uses explicit read queries and does
-not run schema DDL.
+The remaining SQLAlchemy mappings establish complete metadata parity for future Python
+persistence work. They do not introduce new application reads or writes by themselves.
 
-## Generate or verify the baseline
+## Generate or verify the canonical baseline
 
 Requirements:
 
@@ -100,6 +127,5 @@ python scripts/database_schema.py --check
 `--write` is an explicit maintenance command. CI uses `--check` and fails when the live
 schema differs from the committed baseline or when the checksum is invalid.
 
-The database workflow also runs the SQLAlchemy metadata tests and reads fixture data through
-the portfolio repository against a clean PostgreSQL database created by the committed Prisma
-migrations.
+The next migration step may add Alembic baseline infrastructure, but ownership must remain
+with Prisma until a separate cutover is explicitly approved and verified.

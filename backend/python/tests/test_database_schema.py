@@ -92,7 +92,7 @@ def test_baseline_matches_ownership_manifest() -> None:
 def test_all_objects_remain_prisma_owned_before_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["current_migration_owner"] == "prisma"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "not_started"
@@ -128,19 +128,32 @@ def test_python_persistence_slice_is_explicit() -> None:
     }
 
 
-def test_sqlalchemy_mirror_matches_declared_metadata() -> None:
-    mirror = load_manifest()["sqlalchemy_mirror"]
+def test_sqlalchemy_mirror_has_complete_schema_coverage() -> None:
+    manifest = load_manifest()
+    mirror = manifest["sqlalchemy_mirror"]
     mapped_tables, mapped_enums = sqlalchemy_objects()
     manifest_tables, manifest_enums = manifest_objects()
     baseline_tables, baseline_enums = baseline_objects()
 
     assert mirror["state"] == "mirrored_in_sqlalchemy"
-    assert set(mirror["tables"]) == mapped_tables
-    assert set(mirror["enums"]) == mapped_enums
-    assert mapped_tables <= set(manifest_tables)
-    assert mapped_enums <= set(manifest_enums)
-    assert mapped_tables <= baseline_tables
-    assert mapped_enums <= baseline_enums
+    assert mirror["coverage"] == "complete"
+    assert set(mirror["tables"]) == mapped_tables == set(manifest_tables) == baseline_tables
+    assert set(mirror["enums"]) == mapped_enums == set(manifest_enums) == baseline_enums
+
+
+def test_sqlalchemy_parity_policy_is_explicit() -> None:
+    parity = load_manifest()["sqlalchemy_parity"]
+
+    assert parity == {
+        "columns": True,
+        "primary_keys": True,
+        "foreign_keys": True,
+        "unique_constraints": True,
+        "indexes": True,
+        "server_defaults": True,
+        "enum_values": True,
+        "verified_against": "prisma_migrated_postgresql_16",
+    }
 
 
 def test_baseline_checksum_is_valid() -> None:

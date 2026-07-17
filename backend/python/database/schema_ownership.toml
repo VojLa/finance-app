@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 current_migration_owner = "prisma"
 target_migration_owner = "alembic"
 cutover_status = "not_started"
@@ -45,5 +45,75 @@ transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountTyp
 
 [sqlalchemy_mirror]
 state = "mirrored_in_sqlalchemy"
-tables = ["User", "Account", "AccountMember", "Asset", "AssetListing", "Holding", "ExchangeRate"]
-enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "AssetType", "PriceSource", "ExchangeRateSource"]
+coverage = "complete"
+tables = [
+  "User",
+  "Account",
+  "AccountMember",
+  "AccountInvite",
+  "Transaction",
+  "TransactionPair",
+  "TransactionSplit",
+  "Counterparty",
+  "CounterpartyAlias",
+  "Category",
+  "CategoryRule",
+  "Budget",
+  "BudgetItem",
+  "BudgetItemCategory",
+  "BudgetAccount",
+  "BudgetAlert",
+  "Asset",
+  "AssetListing",
+  "AssetAlias",
+  "PriceSnapshot",
+  "ExchangeRate",
+  "InvestmentEvent",
+  "InvestmentMovement",
+  "Holding",
+  "ImportBatch",
+  "ImportRow",
+  "ImportLog",
+  "NetWorthSnapshot",
+  "AccountSnapshot",
+  "AccountSnapshotItem",
+]
+enums = [
+  "AccountMemberRole",
+  "AccountRelationType",
+  "AccountInviteStatus",
+  "AccountType",
+  "TransactionType",
+  "TransactionClassification",
+  "CounterpartyType",
+  "AliasMatchType",
+  "CategoryType",
+  "RuleField",
+  "RuleOperator",
+  "BudgetPeriodType",
+  "BudgetAlertType",
+  "AssetAliasProvider",
+  "AssetType",
+  "PriceSource",
+  "ExchangeRateSource",
+  "InvestmentEventType",
+  "InvestmentMovementKind",
+  "MovementDirection",
+  "ImportSource",
+  "ImportStatus",
+  "ImportRowStatus",
+  "ImportLogLevel",
+  "ImportLogEvent",
+  "SnapshotGranularity",
+  "SnapshotSource",
+]
+
+[sqlalchemy_parity]
+columns = true
+primary_keys = true
+foreign_keys = true
+unique_constraints = true
+indexes = true
+server_defaults = true
+enum_values = true
+verified_against = "prisma_migrated_postgresql_16"
