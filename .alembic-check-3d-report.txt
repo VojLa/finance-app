@@ -1,0 +1,99 @@
+Traceback (most recent call last):
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/bin/alembic", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/config.py", line 1047, in main
+    CommandLine(prog=prog).main(argv=argv)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/config.py", line 1037, in main
+    self.run_cmd(cfg, options)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/config.py", line 971, in run_cmd
+    fn(
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/command.py", line 363, in check
+    script_directory.run_env()
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/script/base.py", line 556, in run_env
+    util.load_python_file(self.dir, "env.py")
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/util/pyfiles.py", line 116, in load_python_file
+    module = load_module_py(module_id, path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/util/pyfiles.py", line 136, in load_module_py
+    spec.loader.exec_module(module)  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap_external>", line 999, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/runner/work/finance-app/finance-app/backend/python/migrations/env.py", line 136, in <module>
+    run_migrations_online()
+  File "/home/runner/work/finance-app/finance-app/backend/python/migrations/env.py", line 130, in run_migrations_online
+    asyncio.run(run_async_migrations())
+  File "/opt/hostedtoolcache/Python/3.12.10/x64/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.10/x64/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.10/x64/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/migrations/env.py", line 124, in run_async_migrations
+    await connection.run_sync(do_run_migrations)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/engine.py", line 888, in run_sync
+    return await greenlet_spawn(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/migrations/env.py", line 111, in do_run_migrations
+    context.run_migrations()
+  File "<string>", line 8, in run_migrations
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/runtime/environment.py", line 969, in run_migrations
+    self.get_context().run_migrations(**kw)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/runtime/migration.py", line 614, in run_migrations
+    for step in self._migrations_fn(heads, self):
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/command.py", line 352, in retrieve_migrations
+    revision_context.run_autogenerate(rev, context)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/api.py", line 587, in run_autogenerate
+    self._run_environment(rev, migration_context, True)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/api.py", line 634, in _run_environment
+    compare._populate_migration_script(
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/compare/__init__.py", line 39, in _populate_migration_script
+    _produce_net_changes(autogen_context, upgrade_ops)
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/compare/__init__.py", line 48, in _produce_net_changes
+    autogen_context.comparators.dispatch(
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/util/langhelpers.py", line 420, in go
+    result = fn(*arg, **kw)
+             ^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/compare/schema.py", line 51, in _produce_net_changes
+    autogen_context.comparators.dispatch(
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/util/langhelpers.py", line 420, in go
+    result = fn(*arg, **kw)
+             ^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/compare/tables.py", line 72, in _autogen_for_tables
+    [(table.schema, table.name) for table in autogen_context.sorted_tables]
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 1122, in __get__
+    obj.__dict__[self.__name__] = result = self.fget(obj)
+                                           ^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/alembic/autogenerate/api.py", line 499, in sorted_tables
+    result.extend(m.sorted_tables)
+                  ^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 5684, in sorted_tables
+    return ddl.sort_tables(
+           ^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 1319, in sort_tables
+    for (t, fkcs) in sort_tables_and_constraints(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/ddl.py", line 1395, in sort_tables_and_constraints
+    dependent_on = fkc.referred_table
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 4798, in referred_table
+    return self.elements[0].column.table
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 1122, in __get__
+    obj.__dict__[self.__name__] = result = self.fget(obj)
+                                           ^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 3198, in column
+    return self._resolve_column()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/finance-app/finance-app/backend/python/.venv/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 3221, in _resolve_column
+    raise exc.NoReferencedTableError(
+sqlalchemy.exc.NoReferencedTableError: Foreign key associated with column 'AccountInvite.acceptedById' could not find table 'public.User' with which to generate a foreign key to target column 'id'
