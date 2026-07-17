@@ -27,8 +27,14 @@ _VOLATILE_LINES = {
 def normalize_database_url(database_url: str) -> str:
     """Remove Prisma-only URI parameters that libpq does not understand."""
     parsed = urlsplit(database_url)
-    query = [(key, value) for key, value in parse_qsl(parsed.query) if key != "schema"]
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query)
+        if key != "schema"
+    ]
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
 
 
 def normalize_schema_dump(raw_dump: str) -> str:
@@ -120,7 +126,11 @@ def parse_args() -> argparse.Namespace:
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true", help="Write schema.sql and checksum.")
-    mode.add_argument("--check", action="store_true", help="Compare the live schema to baseline.")
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Compare the live schema to baseline.",
+    )
     parser.add_argument(
         "--database-url",
         default=os.getenv("DATABASE_URL"),
