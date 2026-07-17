@@ -10,6 +10,7 @@ from sqlalchemy import MetaData, pool
 from sqlalchemy.dialects.postgresql import ENUM
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.schema import BLANK_SCHEMA
 
 from app.db import models as database_models  # noqa: F401
 from app.db.base import Base
@@ -20,11 +21,25 @@ config = context.config
 EXCLUDED_TABLES = {"_prisma_migrations", "alembic_version"}
 
 
+def blank_referred_schema(
+    table: Any,
+    target_schema: str | None,
+    constraint: Any,
+    referred_schema: str | None,
+) -> Any:
+    del table, target_schema, constraint, referred_schema
+    return BLANK_SCHEMA
+
+
 def build_target_metadata() -> MetaData:
     """Copy the default public schema into Alembic's unqualified comparison namespace."""
     metadata = MetaData(naming_convention=Base.metadata.naming_convention)
     for table in Base.metadata.sorted_tables:
-        table.to_metadata(metadata, schema=None)
+        table.to_metadata(
+            metadata,
+            schema=None,
+            referred_schema_fn=blank_referred_schema,
+        )
 
     for table in metadata.tables.values():
         for foreign_key in table.foreign_key_constraints:
