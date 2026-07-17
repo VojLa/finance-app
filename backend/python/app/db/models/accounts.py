@@ -30,7 +30,6 @@ class AccountModel(Base):
     type: Mapped[AccountType] = mapped_column(ACCOUNT_TYPE_DB, nullable=False)
     currency: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str | None] = mapped_column(Text)
-    notes: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(
         "isArchived",
         nullable=False,
@@ -44,6 +43,7 @@ class AccountModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
 
 
 class AccountMemberModel(Base):
