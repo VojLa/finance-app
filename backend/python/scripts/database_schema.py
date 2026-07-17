@@ -84,9 +84,7 @@ def write_baseline(schema: str, baseline_path: Path, checksum_path: Path) -> Non
 
 def check_baseline(schema: str, baseline_path: Path, checksum_path: Path) -> int:
     if not baseline_path.exists() or not checksum_path.exists():
-        print(
-            "Database baseline is missing. Generate it with --write.", file=sys.stderr
-        )
+        print("Database baseline is missing. Generate it with --write.", file=sys.stderr)
         return 1
 
     expected = baseline_path.read_text(encoding="utf-8")
@@ -123,9 +121,7 @@ def parse_args() -> argparse.Namespace:
         description="Generate or verify the canonical PostgreSQL schema baseline."
     )
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--write", action="store_true", help="Write schema.sql and checksum."
-    )
+    mode.add_argument("--write", action="store_true", help="Write schema.sql and checksum.")
     mode.add_argument(
         "--check",
         action="store_true",
