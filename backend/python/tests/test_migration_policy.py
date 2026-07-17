@@ -116,7 +116,7 @@ def test_runtime_ddl_policy_rejects_automatic_migrations(tmp_path: Path) -> None
     verify_runtime_ddl(app)
 
     (app / "unsafe.py").write_text("Base.metadata.create_all(engine)\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="metadata.create_all"):
+    with pytest.raises(RuntimeError, match=r"metadata\.create_all"):
         verify_runtime_ddl(app)
 
 
