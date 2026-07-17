@@ -19,7 +19,7 @@ Architectural decisions and milestone scope are documented in [`!planning`](../.
 From `backend/python`:
 
 ```bash
-uv sync --extra dev
+uv sync --frozen --extra dev
 ```
 
 ### Windows recovery bootstrap
@@ -155,8 +155,8 @@ instead of the application error envelope.
 ## Continuous integration
 
 `.github/workflows/backend-python.yml` runs when backend files or the workflow itself
-change. It installs dependencies with `uv` and executes the same `scripts/check.py`
-quality gate used locally.
+change. It installs the locked dependencies with `uv sync --frozen` and runs the same
+Ruff, mypy, and pytest quality checks as the local quality gate.
 
 ## Project structure
 
@@ -171,7 +171,7 @@ app/
     main.py              FastAPI application factory
 
 scripts/
-    check.py              shared local and CI quality gate
+    check.py              local quality gate
 
 tests/                   application and API regression tests
 ```
