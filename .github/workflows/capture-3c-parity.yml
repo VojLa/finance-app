@@ -75,3 +75,5 @@ jobs:
           git commit -m "ci(db): capture 3C parity report"
           git pull --rebase origin build/sqlalchemy-schema-parity
           git push
+
+# rerun after CLI bootstrap fix
