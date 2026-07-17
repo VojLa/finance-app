@@ -11,9 +11,7 @@ ownership_cutover = True
 previous_migration_owner = "prisma"
 new_migration_owner = "alembic"
 baseline_revision = "3d0001base"
-prisma_archive_sha256 = (
-    "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
-)
+prisma_archive_sha256 = "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
 prisma_schema_impact = "none"
 
 

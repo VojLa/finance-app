@@ -164,12 +164,16 @@ def verify_environment_inventory(path: Path = ENVIRONMENT_INVENTORY) -> None:
     if inventory.get("remote_databases_exist") is not False:
         raise RuntimeError("This direct cutover requires remote_databases_exist = false.")
     if inventory.get("required_environment_count") != 0:
-        raise RuntimeError("No persistent remote databases means required_environment_count must be 0.")
+        raise RuntimeError(
+            "No persistent remote databases means required_environment_count must be 0."
+        )
     reason = inventory.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise RuntimeError("The no-remote-database inventory requires an explicit reason.")
     if inventory.get("environments"):
-        raise RuntimeError("No environment entries are allowed when remote_databases_exist is false.")
+        raise RuntimeError(
+            "No environment entries are allowed when remote_databases_exist is false."
+        )
 
 
 def verify_ownership_manifest(
@@ -331,7 +335,9 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
         source = path.read_text(encoding="utf-8")
         for command in forbidden:
             if command in source:
-                raise RuntimeError(f"Forbidden Prisma migration command {command} in {display_path(path)}.")
+                raise RuntimeError(
+                    f"Forbidden Prisma migration command {command} in {display_path(path)}."
+                )
     database_workflow = root / "database-schema.yml"
     if database_workflow.is_file():
         source = database_workflow.read_text(encoding="utf-8")
