@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import MutableMapping
+from typing import Any, Literal, cast
 
 from alembic import context
 from sqlalchemy import Index, MetaData, UniqueConstraint, pool
@@ -52,7 +52,7 @@ def build_target_metadata() -> MetaData:
     for table in Base.metadata.sorted_tables:
         table.to_metadata(
             metadata,
-            schema=None,
+            schema=cast(str, None),
             referred_schema_fn=blank_referred_schema,
         )
 
@@ -77,8 +77,18 @@ def database_url() -> str:
 
 def include_name(
     name: str | None,
-    type_: str,
-    parent_names: Mapping[str, str | None],
+    type_: Literal[
+        "schema",
+        "table",
+        "column",
+        "index",
+        "unique_constraint",
+        "foreign_key_constraint",
+    ],
+    parent_names: MutableMapping[
+        Literal["schema_name", "table_name", "schema_qualified_table_name"],
+        str | None,
+    ],
 ) -> bool:
     del parent_names
     if type_ == "table":
