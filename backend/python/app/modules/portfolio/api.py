@@ -1,7 +1,7 @@
-import asyncpg
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.connection import get_db
+from app.db.connection import get_db_session
 from app.modules.portfolio.models import PortfolioSummary
 from app.modules.portfolio.repository import PortfolioRepository
 from app.modules.portfolio.service import PortfolioService
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 async def get_portfolio(
     user_id: str = Query(..., description="Temporary migration parameter until auth is shared."),
     account_id: str | None = Query(default=None),
-    connection: asyncpg.Connection = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
 ) -> PortfolioSummary:
-    service = PortfolioService(PortfolioRepository(connection))
+    service = PortfolioService(PortfolioRepository(session))
     return await service.get_portfolio(user_id=user_id, account_id=account_id)

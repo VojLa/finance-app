@@ -1,29 +1,49 @@
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
-import asyncpg
 from fastapi import HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config.settings import Settings
+from app.db.url import normalize_database_url
 
 
-async def connect_database(settings: Settings) -> asyncpg.Pool | None:
+@dataclass(frozen=True, slots=True)
+class Database:
+    engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
+
+
+def create_database(settings: Settings) -> Database | None:
     if not settings.database_url:
         return None
-    return await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+
+    engine = create_async_engine(
+        normalize_database_url(settings.database_url),
+        pool_size=5,
+        max_overflow=0,
+        pool_pre_ping=True,
+    )
+    session_factory = async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    return Database(engine=engine, session_factory=session_factory)
 
 
-async def close_database(pool: asyncpg.Pool | None) -> None:
-    if pool is not None:
-        await pool.close()
+async def close_database(database: Database | None) -> None:
+    if database is not None:
+        await database.engine.dispose()
 
 
-async def get_db(request: Request) -> AsyncIterator[asyncpg.Connection]:
-    pool: asyncpg.Pool | None = getattr(request.app.state, "db_pool", None)
-    if pool is None:
+async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
+    database: Database | None = getattr(request.app.state, "database", None)
+    if database is None:
         raise HTTPException(
             status_code=503,
             detail="Database is not configured. Set DATABASE_URL for the Python backend.",
         )
 
-    async with pool.acquire() as connection:
-        yield connection
+    async with database.session_factory() as session:
+        yield session

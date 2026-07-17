@@ -45,8 +45,8 @@ def liveness() -> LivenessResponse:
     responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ReadinessResponse}},
 )
 async def readiness(request: Request) -> ReadinessResponse | JSONResponse:
-    pool = getattr(request.app.state, "db_pool", None)
-    if await check_database(pool):
+    database = getattr(request.app.state, "database", None)
+    if await check_database(database):
         return ReadinessResponse(
             status="ready",
             dependencies=ReadinessDependencies(database="available"),
