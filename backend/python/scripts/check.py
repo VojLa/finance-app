@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECKS: tuple[tuple[str, list[str]], ...] = (
     ("Ruff lint", [sys.executable, "-m", "ruff", "check", "."]),
     ("Ruff format", [sys.executable, "-m", "ruff", "format", "--check", "."]),
-    ("Mypy", [sys.executable, "-m", "mypy", "app", "tests"]),
+    ("Mypy", [sys.executable, "-m", "mypy", "app", "scripts", "tests"]),
     (
         "Pytest",
         [
