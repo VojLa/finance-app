@@ -110,16 +110,6 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Apply frozen Prisma archive for historical verification
-        env:
-          ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY: "1"
-        run: npm run db:prisma:archive:verify
-
-      - name: Verify Prisma runtime compatibility tooling
-        run: |
-          npm run db:prisma:validate
-          npm run db:prisma:generate
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -139,6 +129,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
+
+      - name: Apply frozen Prisma archive for historical verification
+        env:
+          ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY: "1"
+        run: npm run db:prisma:archive:verify
+
+      - name: Verify Prisma runtime compatibility tooling
+        run: |
+          npm run db:prisma:validate
+          npm run db:prisma:generate
 
       - name: Enforce frozen Prisma archive and completed Alembic ownership policy
         working-directory: backend/python
