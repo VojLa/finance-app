@@ -23,7 +23,12 @@ function monthLabel(date: Date) {
 }
 
 function transactionAmountCzk(
-  tx: { amount: unknown; reportingAmount: unknown; reportingCurrency: string | null; currency: string },
+  tx: {
+    amount: unknown
+    reportingAmount: unknown
+    reportingCurrency: string | null
+    currency: string
+  },
   czkRates: Record<string, number>
 ) {
   const converted = toNum(tx.reportingAmount as never)

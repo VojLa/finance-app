@@ -1,3 +1,5 @@
+* text=auto eol=lf
+
 backend/python/database/baseline/schema.sql text eol=lf
 backend/python/database/baseline/schema.sha256 text eol=lf
 backend/python/database/schema_ownership.toml text eol=lf

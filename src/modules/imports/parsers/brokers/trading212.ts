@@ -106,9 +106,7 @@ function normalizeCardExpenseRow(row: ParsedInvestmentEvent): ParsedInvestmentEv
     type: "withdrawal",
     totalAmount: amount,
     linkedTransactionType: "expense",
-    linkedTransactionDescription: counterparty
-      ? `${action}: ${counterparty}`
-      : action,
+    linkedTransactionDescription: counterparty ? `${action}: ${counterparty}` : action,
     linkedTransactionCounterparty: counterparty,
     linkedTransactionNote: category,
   }

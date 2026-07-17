@@ -20,4 +20,3 @@ Run tests:
 cd backend/rust
 cargo test
 ```
-
