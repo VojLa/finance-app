@@ -1,10 +1,10 @@
-schema_version = 3
+schema_version = 4
 current_migration_owner = "prisma"
 target_migration_owner = "alembic"
 cutover_status = "not_started"
 ownership_granularity = "table_and_enum"
 child_object_policy = "indexes_constraints_and_foreign_keys_inherit_table_owner"
-excluded_database_objects = ["_prisma_migrations"]
+excluded_database_objects = ["_prisma_migrations", "alembic_version"]
 
 [defaults]
 current_owner = "prisma"
@@ -117,3 +117,23 @@ indexes = true
 server_defaults = true
 enum_values = true
 verified_against = "prisma_migrated_postgresql_16"
+
+[alembic_baseline]
+state = "verified_not_owner"
+revision = "3d0001base"
+revision_count = 1
+head_count = 1
+upgrade_is_noop = true
+downgrade_supported = false
+version_table = "alembic_version"
+version_table_schema = "public"
+requires_schema_verification_before_stamp = true
+source = "canonical_postgresql_baseline"
+
+[alembic_baseline.verification]
+clean_prisma_database = true
+existing_database_copy = true
+canonical_sql_bootstrap = true
+sqlalchemy_parity = true
+data_preservation = true
+alembic_check = true
