@@ -90,24 +90,31 @@ def test_baseline_matches_ownership_manifest() -> None:
     assert "alembic_version" not in baseline_tables
 
 
-def test_all_objects_remain_prisma_owned_during_cutover_preparation() -> None:
+def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 5
-    assert manifest["current_migration_owner"] == "prisma"
+    assert manifest["schema_version"] == 6
+    assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
-    assert manifest["cutover_status"] == "ready"
+    assert manifest["cutover_status"] == "completed"
     assert set(manifest["excluded_database_objects"]) == {
         "_prisma_migrations",
         "alembic_version",
     }
     assert manifest["defaults"] == {
-        "current_owner": "prisma",
+        "current_owner": "alembic",
         "target_owner": "alembic",
-        "cutover_status": "prisma_owned",
+        "cutover_status": "alembic_owned",
     }
-    assert manifest["cutover"]["phase"] == "prepared"
-    assert manifest["cutover"]["production_activation_allowed"] is False
+    assert manifest["cutover"]["phase"] == "completed"
+    assert manifest["cutover"]["remote_databases_exist"] is False
+    assert manifest["alembic"] == {
+        "state": "sole_migration_owner",
+        "baseline_revision": "3d0001base",
+        "cutover_revision": "3e0001cutover",
+        "revision_count": 2,
+        "head_count": 1,
+    }
     assert manifest["prisma_runtime"] == {
         "state": "compatibility_mirror",
         "client_enabled": True,

@@ -5,7 +5,9 @@ import asyncio
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -23,6 +25,7 @@ from scripts.database_schema import normalize_database_url as normalize_libpq_ur
 ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 CANONICAL_BASELINE = PROJECT_ROOT / "database" / "baseline" / "schema.sql"
 BASELINE_REVISION = "3d0001base"
+CUTOVER_REVISION = "3e0001cutover"
 DEFAULT_ADVISORY_LOCK_KEY = 731845204311764461
 
 
@@ -61,7 +64,7 @@ def verify_revision_state(state: alembic_baseline.DatabaseState, *, require_head
     if not state.version_revisions:
         raise RuntimeError(
             "Database is not stamped. Run the guarded baseline verification and explicit "
-            f"alembic stamp {BASELINE_REVISION} before using the prepared migration runner."
+            f"alembic stamp {BASELINE_REVISION} before using the migration runner."
         )
     unknown = set(state.version_revisions) - revisions
     if unknown:
@@ -114,10 +117,26 @@ async def upgrade_with_lock(database_url: str, lock_key: int) -> None:
         await engine.dispose()
 
 
+def database_identifier(database_url: str) -> str:
+    database = urlsplit(database_url).path.lstrip("/")
+    return database or "unknown"
+
+
 def run_upgrade(database_url: str, pg_dump: str, lock_key: int) -> None:
+    before = asyncio.run(alembic_baseline.inspect_database(database_url))
     verify_prepared_database(database_url, pg_dump, require_head=False)
     asyncio.run(upgrade_with_lock(database_url, lock_key))
     run_check(database_url, pg_dump)
+    after = asyncio.run(alembic_baseline.inspect_database(database_url))
+    print(
+        "Migration audit: "
+        f"database={database_identifier(database_url)} "
+        f"previous={before.version_revisions} "
+        f"current={after.version_revisions} "
+        f"target={CUTOVER_REVISION} "
+        "owner=alembic "
+        f"verified_at={datetime.now(UTC).isoformat()}"
+    )
 
 
 async def public_schema_is_empty(database_url: str) -> bool:
@@ -147,6 +166,14 @@ async def public_schema_is_empty(database_url: str) -> bool:
             return int(object_count or 0) == 0
     finally:
         await engine.dispose()
+
+
+def run_archive_target_check(database_url: str) -> None:
+    if os.getenv("CI") != "true" or os.getenv("ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY") != "1":
+        raise RuntimeError("Frozen Prisma archive deployment is restricted to explicit CI use.")
+    migration_policy.verify_policy()
+    if not asyncio.run(public_schema_is_empty(database_url)):
+        raise RuntimeError("Frozen Prisma archive verification requires an empty public schema.")
 
 
 def load_canonical_baseline(database_url: str, psql: str) -> None:
@@ -189,9 +216,12 @@ def run_bootstrap(database_url: str, pg_dump: str, psql: str, lock_key: int) -> 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepared Alembic migration runner for the Prisma-to-Alembic cutover."
+        description="Alembic migration runner after the Prisma-to-Alembic ownership cutover."
     )
-    parser.add_argument("command", choices=("check", "upgrade", "bootstrap"))
+    parser.add_argument(
+        "command",
+        choices=("check", "upgrade", "bootstrap", "archive-target-check"),
+    )
     parser.add_argument(
         "--database-url",
         default=os.getenv("DATABASE_URL"),
@@ -227,8 +257,10 @@ def main() -> int:
             run_check(args.database_url, args.pg_dump)
         elif args.command == "upgrade":
             run_upgrade(args.database_url, args.pg_dump, args.lock_key)
-        else:
+        elif args.command == "bootstrap":
             run_bootstrap(args.database_url, args.pg_dump, args.psql, args.lock_key)
+        else:
+            run_archive_target_check(args.database_url)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"Database migration {args.command} failed: {error}", file=sys.stderr)
         return 1

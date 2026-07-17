@@ -24,6 +24,7 @@ from scripts import database_schema, sqlalchemy_schema  # noqa: E402
 ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 OWNERSHIP_MANIFEST = PROJECT_ROOT / "database" / "schema_ownership.toml"
 BASELINE_REVISION = "3d0001base"
+CUTOVER_REVISION = "3e0001cutover"
 EXPECTED_TABLE_COUNT = 30
 EXPECTED_ENUM_COUNT = 27
 
@@ -45,34 +46,42 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 1:
-        raise RuntimeError(f"Expected exactly one Alembic revision, found {len(revisions)}.")
-    if heads != [BASELINE_REVISION]:
-        raise RuntimeError(f"Expected Alembic head {BASELINE_REVISION}, found {heads}.")
+    if len(revisions) != 2:
+        raise RuntimeError(f"Expected exactly two Alembic revisions, found {len(revisions)}.")
+    if heads != [CUTOVER_REVISION]:
+        raise RuntimeError(f"Expected Alembic head {CUTOVER_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
         raise RuntimeError(f"Expected Alembic base {BASELINE_REVISION}, found {bases}.")
 
-    revision = revisions[0]
-    if revision.revision != BASELINE_REVISION or revision.down_revision is not None:
+    by_revision = {revision.revision: revision for revision in revisions}
+    baseline = by_revision.get(BASELINE_REVISION)
+    cutover = by_revision.get(CUTOVER_REVISION)
+    if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
+    if cutover is None or cutover.down_revision != BASELINE_REVISION:
+        raise RuntimeError("The Alembic ownership cutover revision graph is invalid.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 5:
-        raise RuntimeError("Ownership manifest schema_version must be 5 for step 3E-A.")
-    if manifest.get("current_migration_owner") != "prisma":
-        raise RuntimeError("Prisma remains the current migration owner during step 3E-A.")
-    if manifest.get("cutover_status") != "ready":
-        raise RuntimeError("Migration ownership cutover must be ready but not activated in 3E-A.")
+    if manifest.get("schema_version") != 6:
+        raise RuntimeError("Ownership manifest schema_version must be 6 after cutover.")
+    if manifest.get("current_migration_owner") != "alembic":
+        raise RuntimeError("Alembic must be the current migration owner after cutover.")
+    if manifest.get("target_migration_owner") != "alembic":
+        raise RuntimeError("Alembic must remain the target migration owner.")
+    if manifest.get("cutover_status") != "completed":
+        raise RuntimeError("Migration ownership cutover must be completed.")
 
     cutover = manifest.get("cutover")
     if not isinstance(cutover, dict):
-        raise RuntimeError("Ownership manifest is missing the cutover preparation section.")
-    if cutover.get("phase") != "prepared":
-        raise RuntimeError("Cutover phase must be prepared during step 3E-A.")
-    if cutover.get("production_activation_allowed") is not False:
-        raise RuntimeError("Production activation must remain blocked during step 3E-A.")
+        raise RuntimeError("Ownership manifest is missing the cutover section.")
+    if cutover.get("phase") != "completed":
+        raise RuntimeError("Cutover phase must be completed.")
+    if cutover.get("cutover_revision") != CUTOVER_REVISION:
+        raise RuntimeError("Ownership manifest has the wrong cutover revision.")
+    if cutover.get("remote_databases_exist") is not False:
+        raise RuntimeError("This direct cutover requires no persistent remote databases.")
 
     excluded = set(manifest.get("excluded_database_objects", []))
     if excluded != {"_prisma_migrations", "alembic_version"}:
@@ -83,10 +92,11 @@ def verify_manifest() -> None:
         raise RuntimeError("Ownership manifest is missing the Alembic baseline section.")
 
     expected: dict[str, Any] = {
-        "state": "verified_not_owner",
+        "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 1,
+        "revision_count": 2,
         "head_count": 1,
+        "head_revision": CUTOVER_REVISION,
         "upgrade_is_noop": True,
         "downgrade_supported": False,
         "version_table": "alembic_version",
@@ -159,7 +169,8 @@ def verify_database_state(state: DatabaseState) -> None:
     if state.enum_count != EXPECTED_ENUM_COUNT:
         raise RuntimeError(f"Expected {EXPECTED_ENUM_COUNT} enums, found {state.enum_count}.")
 
-    unknown_revisions = set(state.version_revisions) - {BASELINE_REVISION}
+    known = {BASELINE_REVISION, CUTOVER_REVISION}
+    unknown_revisions = set(state.version_revisions) - known
     if unknown_revisions:
         raise RuntimeError(f"Database contains unknown Alembic revisions: {unknown_revisions}.")
     if len(state.version_revisions) > 1:
@@ -185,7 +196,7 @@ def verify_sqlalchemy_parity(database_url: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify a PostgreSQL database before stamping the Alembic baseline."
+        description="Verify an inherited PostgreSQL schema across the Alembic ownership boundary."
     )
     parser.add_argument("--verify", action="store_true", required=True)
     parser.add_argument(
@@ -218,7 +229,7 @@ def main() -> int:
         print(f"Alembic baseline verification failed: {error}", file=sys.stderr)
         return 1
 
-    print("Alembic baseline verification passed; the database is safe to stamp.")
+    print("Alembic baseline verification passed across the completed ownership cutover.")
     return 0
 
 

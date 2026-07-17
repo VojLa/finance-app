@@ -1,28 +1,47 @@
 # Alembic migrations
 
-This directory contains the future Python-owned migration history.
+This directory is the active migration history for the Python backend.
 
-The first revision is a no-op baseline for the physical PostgreSQL schema that already exists
-through the frozen Prisma migration archive. It does not create, alter, or drop application
-objects. Existing databases must pass the guarded baseline verification before they are
-stamped.
+## Ownership boundary
 
-During step 3E-A:
+The revision graph begins with two no-op revisions:
 
-- Prisma remains the current owner of all application tables and enums.
-- creation of new Prisma migrations is frozen,
-- Alembic is configured and verified, but owns no application object,
-- the prepared migration runner requires an explicit baseline stamp for existing databases,
-- upgrades are serialized with a PostgreSQL advisory lock,
-- `alembic stamp` is an explicit operator action and is never run by application startup,
-- the baseline downgrade remains unsupported because Alembic did not create the inherited
-  schema,
-- Alembic comparison metadata normalizes the default `public` schema, Prisma object names, and
-  PostgreSQL unique-index representation without changing runtime SQLAlchemy metadata or
-  issuing DDL.
+```text
+3d0001base
+    ↓
+3e0001cutover
+```
 
-No cutover marker or schema-changing revision belongs in step 3E-A. The ownership activation
-revision will be introduced only after all target databases have verified cutover receipts.
+`3d0001base` represents the physical PostgreSQL schema inherited from the frozen Prisma migration
+archive. `3e0001cutover` records the point at which Alembic became the sole migration owner. Neither
+revision creates, alters, or drops application objects.
+
+The inherited baseline and ownership marker cannot be downgraded automatically because they record
+historical boundaries rather than reversible application schema operations.
+
+## Current policy
+
+- Alembic owns all future production schema changes.
+- All 30 application tables and 27 PostgreSQL enums are tracked as `alembic_owned`.
+- Prisma migration creation and deployment are disabled.
+- The frozen Prisma history is retained only for a restricted historical CI bootstrap.
+- Prisma Client remains a runtime compatibility layer.
+- `schema.prisma` must be updated when an Alembic revision affects Prisma-visible objects.
+- Upgrades are executed by `scripts/database_migrate.py` under a PostgreSQL advisory lock.
+- Migrations and stamps are never executed by application startup.
+
+## New revisions
+
+Every future revision must:
+
+1. follow the current single head,
+2. declare `prisma_schema_impact` as `required` or `none`,
+3. include appropriate SQLAlchemy metadata changes,
+4. update `schema.prisma` when the runtime client is affected,
+5. include upgrade, rollback or forward-recovery documentation,
+6. include integration tests against both an existing and a clean database.
+
+The first schema-changing revision belongs to Step 3F, not to the ownership cutover itself.
 
 See `database/README.md`, `database/cutover/README.md`, and
-`database/schema_ownership.toml` for the ownership state and cutover rules.
+`database/schema_ownership.toml` for deployment and ownership rules.

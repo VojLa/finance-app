@@ -1,15 +1,15 @@
-schema_version = 5
-current_migration_owner = "prisma"
+schema_version = 6
+current_migration_owner = "alembic"
 target_migration_owner = "alembic"
-cutover_status = "ready"
+cutover_status = "completed"
 ownership_granularity = "table_and_enum"
 child_object_policy = "indexes_constraints_and_foreign_keys_inherit_table_owner"
 excluded_database_objects = ["_prisma_migrations", "alembic_version"]
 
 [defaults]
-current_owner = "prisma"
+current_owner = "alembic"
 target_owner = "alembic"
-cutover_status = "prisma_owned"
+cutover_status = "alembic_owned"
 
 [objects.tables]
 users = ["User"]
@@ -119,10 +119,11 @@ enum_values = true
 verified_against = "prisma_migrated_postgresql_16"
 
 [alembic_baseline]
-state = "verified_not_owner"
+state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 1
+revision_count = 2
 head_count = 1
+head_revision = "3e0001cutover"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -138,12 +139,25 @@ sqlalchemy_parity = true
 data_preservation = true
 alembic_check = true
 
-[cutover]
-phase = "prepared"
+[alembic]
+state = "sole_migration_owner"
 baseline_revision = "3d0001base"
-all_target_databases_must_be_stamped = true
-production_activation_allowed = false
-receipts_required_before_activation = true
+cutover_revision = "3e0001cutover"
+revision_count = 2
+head_count = 1
+
+[cutover]
+phase = "completed"
+baseline_revision = "3d0001base"
+cutover_revision = "3e0001cutover"
+previous_owner = "prisma"
+current_owner = "alembic"
+all_target_databases_stamped = true
+all_target_databases_activated = true
+deployment_command_switched = true
+remote_databases_exist = false
+production_activation_allowed = true
+completion_receipts_required = false
 
 [prisma_migrations]
 state = "frozen_archive"
@@ -159,6 +173,8 @@ client_enabled = true
 schema_is_migration_source = false
 
 [cutover_evidence]
-receipt_template = "database/cutover/receipt.template.toml"
-receipts_required_before_activation = true
+environment_inventory = "database/cutover/environments.toml"
+remote_databases_exist = false
+preparation_receipts_required = false
+activation_receipts_required = false
 secrets_allowed = false

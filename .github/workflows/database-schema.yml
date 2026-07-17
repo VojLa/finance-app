@@ -7,6 +7,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/prisma-migrations-frozen.mjs"
+      - "scripts/prisma-archive-verify.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -41,6 +42,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/prisma-migrations-frozen.mjs"
+      - "scripts/prisma-archive-verify.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -73,7 +75,7 @@ permissions:
 
 jobs:
   verify-schema:
-    name: Verify Prisma archive and Alembic cutover readiness
+    name: Verify Alembic ownership cutover
     runs-on: ubuntu-24.04
 
     services:
@@ -108,14 +110,6 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Apply frozen Prisma migration archive for legacy verification
-        run: npm run db:prisma:deploy:legacy
-
-      - name: Verify Prisma runtime compatibility tooling
-        run: |
-          npm run db:prisma:validate
-          npm run db:prisma:generate
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -136,7 +130,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
-      - name: Enforce frozen Prisma archive and cutover preparation policy
+      - name: Apply frozen Prisma archive for historical verification
+        env:
+          ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY: "1"
+        run: npm run db:prisma:archive:verify
+
+      - name: Verify Prisma runtime compatibility tooling
+        run: |
+          npm run db:prisma:validate
+          npm run db:prisma:generate
+
+      - name: Enforce frozen Prisma archive and completed Alembic ownership policy
         working-directory: backend/python
         run: uv run python scripts/migration_policy.py --check
 
@@ -161,11 +165,11 @@ jobs:
         working-directory: backend/python
         run: uv run python scripts/sqlalchemy_schema.py --check
 
-      - name: Verify database is safe to stamp
+      - name: Verify inherited database across the cutover boundary
         working-directory: backend/python
         run: uv run python scripts/alembic_baseline.py --verify
 
-      - name: Run persistence, parity, and Alembic integration tests
+      - name: Run persistence, parity, and Alembic cutover integration tests
         working-directory: backend/python
         run: >-
           uv run pytest
@@ -174,14 +178,14 @@ jobs:
           tests/test_alembic_integration.py
           -v
 
-      - name: Verify prepared migration runner and advisory lock
+      - name: Verify Alembic-owned migration runner and advisory lock
         working-directory: backend/python
         run: |
           uv run pytest tests/test_database_migrate_integration.py -v
           uv run python scripts/database_migrate.py check
           uv run python scripts/database_migrate.py upgrade
 
-      - name: Verify stamped database is at Alembic head
+      - name: Verify database is at the Alembic ownership head
         working-directory: backend/python
         run: |
           uv run alembic -c alembic.ini current --check-heads
@@ -195,7 +199,7 @@ jobs:
           uv run python scripts/database_schema.py --check
           uv run python scripts/sqlalchemy_schema.py --check
 
-      - name: Verify prepared Prisma-free canonical bootstrap
+      - name: Verify Prisma-free canonical bootstrap to cutover head
         working-directory: backend/python
         env:
           BOOTSTRAP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_canonical_bootstrap

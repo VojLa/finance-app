@@ -12,12 +12,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.db.models import UserModel
 from app.db.url import normalize_database_url
-from scripts.alembic_baseline import BASELINE_REVISION
+from scripts.alembic_baseline import BASELINE_REVISION, CUTOVER_REVISION
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_CONFIG = BACKEND_ROOT / "alembic.ini"
-TEST_USER_ID = "alembic-baseline-preservation-user"
+TEST_USER_ID = "alembic-cutover-preservation-user"
 
 
 def run_command(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -38,7 +38,7 @@ def run_command(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.mark.integration
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
-async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
+async def test_alembic_cutover_preserves_schema_and_data() -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     now = datetime(2026, 7, 17, 12, 0, 0)
@@ -49,8 +49,8 @@ async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
             await connection.execute(
                 insert(UserModel).values(
                     id=TEST_USER_ID,
-                    email="alembic-baseline@example.test",
-                    name="Alembic Baseline",
+                    email="alembic-cutover@example.test",
+                    name="Alembic Cutover",
                     password_hash=None,
                     base_currency="CZK",
                     created_at=now,
@@ -59,7 +59,7 @@ async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
             )
 
         verification = run_command("scripts/alembic_baseline.py", "--verify")
-        assert "safe to stamp" in verification.stdout
+        assert "completed ownership cutover" in verification.stdout
 
         run_command(
             "-m",
@@ -69,6 +69,7 @@ async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
             "stamp",
             BASELINE_REVISION,
         )
+        run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "upgrade", "head")
         run_command(
             "-m",
             "alembic",
@@ -79,7 +80,6 @@ async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
         )
         check = run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "check")
         assert "No new upgrade operations detected" in check.stdout + check.stderr
-        run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "upgrade", "head")
 
         async with engine.connect() as connection:
             preserved_user = await connection.scalar(
@@ -97,8 +97,8 @@ async def test_alembic_baseline_stamp_preserves_schema_and_data() -> None:
                 )
             )
 
-        assert preserved_user == "alembic-baseline@example.test"
-        assert version == BASELINE_REVISION
+        assert preserved_user == "alembic-cutover@example.test"
+        assert version == CUTOVER_REVISION
         assert application_tables == 30
     finally:
         async with engine.begin() as connection:

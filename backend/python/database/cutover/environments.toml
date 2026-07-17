@@ -1,0 +1,4 @@
+version = 1
+remote_databases_exist = false
+required_environment_count = 0
+reason = "The application has not yet been deployed to a persistent staging or production database."
