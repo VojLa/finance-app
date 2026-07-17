@@ -33,7 +33,7 @@ class CategoryModel(Base):
     type: Mapped[CategoryType] = mapped_column(CATEGORY_TYPE_DB, nullable=False)
     parent_id: Mapped[str | None] = mapped_column(
         "parentId",
-        ForeignKey("public.Category.id"),
+        ForeignKey("public.Category.id", ondelete="SET NULL"),
     )
     is_default: Mapped[bool] = mapped_column(
         "isDefault",
