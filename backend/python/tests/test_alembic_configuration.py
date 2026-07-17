@@ -11,7 +11,9 @@ BASELINE_REVISION = "3d0001base"
 def test_alembic_configuration_uses_local_migration_directory() -> None:
     config = Config(str(ALEMBIC_CONFIG))
 
-    script_location = Path(config.get_main_option("script_location"))
+    configured_location = config.get_main_option("script_location")
+    assert configured_location is not None
+    script_location = Path(configured_location)
     assert script_location.resolve() == (BACKEND_ROOT / "migrations").resolve()
     assert not config.get_main_option("sqlalchemy.url")
 
