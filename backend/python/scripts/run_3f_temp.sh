@@ -106,12 +106,14 @@ npm run db:prisma:generate
 npm test
 npm run lint
 
+# The workflow files are applied separately through the GitHub connector because
+# the Actions token cannot update workflow definitions.
+git checkout HEAD -- .github/workflows/database-schema.yml .github/workflows/implement-3f.yml
 rm -f backend/python/scripts/implement_3f_temp.py
 rm -f backend/python/scripts/fix_implement_3f_temp.py
 rm -f backend/python/scripts/run_3f_temp.sh
 rm -f backend/python/3f-format-report.txt
 rm -f backend/python/3f-lifecycle-report.txt
-rm -f .github/workflows/implement-3f.yml
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
