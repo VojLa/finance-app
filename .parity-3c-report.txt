@@ -1,1 +1,0 @@
-SQLAlchemy metadata matches the Prisma-migrated PostgreSQL schema.
