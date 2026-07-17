@@ -7,6 +7,7 @@ cd "$BACKEND_ROOT"
 
 uv run python scripts/fix_implement_3f_temp.py
 uv run python scripts/implement_3f_temp.py
+uv run ruff check . --fix
 uv run ruff format .
 
 cd "$REPOSITORY_ROOT"
@@ -84,6 +85,7 @@ rm -f backend/python/scripts/implement_3f_temp.py
 rm -f backend/python/scripts/fix_implement_3f_temp.py
 rm -f backend/python/scripts/run_3f_temp.sh
 rm -f backend/python/3f-format-report.txt
+rm -f backend/python/3f-lifecycle-report.txt
 rm -f .github/workflows/implement-3f.yml
 
 git config user.name "github-actions[bot]"
