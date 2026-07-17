@@ -1,3 +1,5 @@
+from typing import cast
+
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM
 
@@ -121,8 +123,10 @@ def test_postgresql_enums_reuse_existing_types() -> None:
         Base.metadata.tables["public.AssetListing"].c.provider,
         Base.metadata.tables["public.ExchangeRate"].c.source,
     ]
+    enum_types = [cast(ENUM, column.type) for column in enum_columns]
 
-    assert {column.type.name for column in enum_columns} == {
+    assert all(isinstance(enum_type, ENUM) for enum_type in enum_types)
+    assert {enum_type.name for enum_type in enum_types} == {
         "AccountType",
         "AccountMemberRole",
         "AccountRelationType",
@@ -130,5 +134,4 @@ def test_postgresql_enums_reuse_existing_types() -> None:
         "PriceSource",
         "ExchangeRateSource",
     }
-    assert all(isinstance(column.type, ENUM) for column in enum_columns)
-    assert all(column.type.create_type is False for column in enum_columns)
+    assert all(enum_type.create_type is False for enum_type in enum_types)

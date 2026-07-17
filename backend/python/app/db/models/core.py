@@ -1,6 +1,5 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import ClassVar
 
 from sqlalchemy import Boolean, ForeignKey, Numeric, Text
 from sqlalchemy.dialects import postgresql
@@ -27,7 +26,7 @@ _TIMESTAMP = postgresql.TIMESTAMP(precision=3, timezone=False)
 
 class UserModel(Base):
     __tablename__ = "User"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     email: Mapped[str] = mapped_column(Text, nullable=False)
@@ -40,7 +39,7 @@ class UserModel(Base):
 
 class AccountModel(Base):
     __tablename__ = "Account"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -55,7 +54,7 @@ class AccountModel(Base):
 
 class AccountMemberModel(Base):
     __tablename__ = "AccountMember"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
@@ -82,7 +81,7 @@ class AccountMemberModel(Base):
 
 class AssetModel(Base):
     __tablename__ = "Asset"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
@@ -96,7 +95,7 @@ class AssetModel(Base):
 
 class AssetListingModel(Base):
     __tablename__ = "AssetListing"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     asset_id: Mapped[str] = mapped_column(
@@ -118,7 +117,7 @@ class AssetListingModel(Base):
 
 class HoldingModel(Base):
     __tablename__ = "Holding"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
@@ -151,7 +150,7 @@ class HoldingModel(Base):
 
 class ExchangeRateModel(Base):
     __tablename__ = "ExchangeRate"
-    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+    __table_args__ = {"schema": "public"}  # noqa: RUF012
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     from_currency: Mapped[str] = mapped_column("fromCurrency", Text, nullable=False)
