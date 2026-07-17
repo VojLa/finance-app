@@ -1,0 +1,95 @@
+name: Database Schema
+
+on:
+  pull_request:
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "backend/python/database/**"
+      - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_schema.py"
+      - "backend/python/uv.lock"
+      - ".github/workflows/database-schema.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "backend/python/database/**"
+      - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_schema.py"
+      - "backend/python/uv.lock"
+      - ".github/workflows/database-schema.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-schema:
+    name: Verify Prisma schema baseline
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finance_app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finance_app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Apply committed Prisma migrations
+        run: npm run db:deploy
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/python/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend/python
+        run: uv sync --frozen --extra dev
+
+      - name: Install PostgreSQL 16 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+
+      - name: Verify canonical schema baseline
+        working-directory: backend/python
+        run: uv run python scripts/database_schema.py --check
+
+      - name: Validate schema ownership inventory
+        working-directory: backend/python
+        run: uv run pytest tests/test_database_schema.py

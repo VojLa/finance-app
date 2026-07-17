@@ -9,6 +9,19 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvPath = Join-Path $scriptDir ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
+function Invoke-Step {
+    param(
+        [string]$Label,
+        [scriptblock]$Command
+    )
+
+    Write-Host $Label
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label failed with exit code $LASTEXITCODE."
+    }
+}
+
 $pythonCommand = $null
 $pythonArguments = @()
 
@@ -38,18 +51,22 @@ if (Test-Path $venvPath) {
     Remove-Item $venvPath -Recurse -Force
 }
 
-Write-Host "Creating virtual environment at $venvPath"
-& $pythonCommand @pythonArguments -m venv $venvPath
+Invoke-Step "Creating virtual environment at $venvPath" {
+    & $pythonCommand @pythonArguments -m venv $venvPath
+}
 
-Write-Host "Upgrading pip"
-& $venvPython -m pip install --upgrade pip
+Invoke-Step "Upgrading pip" {
+    & $venvPython -m pip install --upgrade pip
+}
 
-Write-Host "Installing backend dependencies"
-& $venvPython -m pip install -e "$scriptDir[dev]"
+Invoke-Step "Installing backend dependencies" {
+    & $venvPython -m pip install -e "$scriptDir[dev]"
+}
 
 if ($RunChecks) {
-    Write-Host "Running backend quality checks"
-    & $venvPython (Join-Path $scriptDir "scripts\check.py")
+    Invoke-Step "Running backend quality checks" {
+        & $venvPython (Join-Path $scriptDir "scripts\check.py")
+    }
 }
 
 Write-Host ""

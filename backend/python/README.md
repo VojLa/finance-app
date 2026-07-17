@@ -100,13 +100,54 @@ Individual commands:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy app tests
+uv run mypy app scripts tests
 uv run pytest
 uv run pytest --cov=app --cov-report=term-missing
 ```
 
 The initial coverage threshold is 70 percent. The threshold should increase as domain
 modules replace migration code.
+
+## Database schema inventory
+
+Prisma remains the only migration owner during the hybrid migration. The target owner is
+Alembic, but SQLAlchemy mappings or Alembic revisions are not introduced by the inventory
+step.
+
+The current physical PostgreSQL schema is recorded in:
+
+```text
+database/
+    README.md
+    schema_ownership.toml
+    baseline/
+        schema.sql
+        schema.sha256
+```
+
+`schema_ownership.toml` inventories all Prisma tables and PostgreSQL enum types and records
+the first Python persistence slice. Table-owned indexes, unique constraints, foreign keys,
+and checks inherit the ownership of their table.
+
+To regenerate the baseline intentionally after applying all committed Prisma migrations:
+
+```bash
+uv run python scripts/database_schema.py --write
+```
+
+To compare a migrated PostgreSQL database with the committed baseline:
+
+```bash
+uv run python scripts/database_schema.py --check
+```
+
+Both commands require `DATABASE_URL` and PostgreSQL 16 `pg_dump`. The drift check excludes
+`_prisma_migrations`, because it is migration-system metadata rather than an application
+schema object.
+
+The `Database Schema` GitHub Actions workflow creates a clean PostgreSQL 16 database,
+applies all committed Prisma migrations, compares the resulting schema with the baseline,
+and validates the ownership manifest.
 
 ## Environment variables
 
@@ -155,8 +196,11 @@ instead of the application error envelope.
 ## Continuous integration
 
 `.github/workflows/backend-python.yml` runs when backend files or the workflow itself
-change. It installs the locked dependencies with `uv sync --frozen` and runs the same
-Ruff, mypy, and pytest quality checks as the local quality gate.
+change. It installs the locked dependencies with `uv sync --frozen` and runs Ruff, mypy,
+and pytest quality checks.
+
+`.github/workflows/database-schema.yml` additionally verifies Prisma migrations, the
+canonical PostgreSQL schema baseline, its checksum, and the ownership inventory.
 
 ## Project structure
 
@@ -170,10 +214,15 @@ app/
     lifespan.py          process startup and shutdown resources
     main.py              FastAPI application factory
 
+database/
+    baseline/             canonical PostgreSQL schema generated from Prisma migrations
+    schema_ownership.toml database object ownership and Python usage inventory
+
 scripts/
     check.py              local quality gate
+    database_schema.py    schema baseline generation and drift detection
 
-tests/                   application and API regression tests
+tests/                   application, API, and schema inventory regression tests
 ```
 
 Rules:
@@ -181,7 +230,8 @@ Rules:
 - `main.py` assembles the application but does not contain business logic.
 - `api/` is a thin transport layer.
 - Domain endpoints belong to their owning module.
-- `db/` contains shared database infrastructure, not financial rules.
+- `db/` contains shared runtime database infrastructure, not financial rules.
+- `database/` records physical schema ownership and migration evidence.
 - New business logic must not use Next.js route handlers as its long-term source of truth.
 
 ## Portfolio parity check
