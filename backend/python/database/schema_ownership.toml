@@ -1,0 +1,44 @@
+schema_version = 1
+current_migration_owner = "prisma"
+target_migration_owner = "alembic"
+cutover_status = "not_started"
+ownership_granularity = "table_and_enum"
+child_object_policy = "indexes_constraints_and_foreign_keys_inherit_table_owner"
+excluded_database_objects = ["_prisma_migrations"]
+
+[defaults]
+current_owner = "prisma"
+target_owner = "alembic"
+cutover_status = "prisma_owned"
+
+[objects.tables]
+users = ["User"]
+accounts = ["Account", "AccountMember", "AccountInvite"]
+transactions = ["Transaction", "TransactionPair", "TransactionSplit"]
+counterparties = ["Counterparty", "CounterpartyAlias"]
+categories = ["Category", "CategoryRule"]
+budgets = ["Budget", "BudgetItem", "BudgetItemCategory", "BudgetAccount", "BudgetAlert"]
+assets = ["Asset", "AssetListing", "AssetAlias"]
+prices_fx = ["PriceSnapshot", "ExchangeRate"]
+ledger = ["InvestmentEvent", "InvestmentMovement"]
+holdings = ["Holding"]
+imports = ["ImportBatch", "ImportRow", "ImportLog"]
+snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
+
+[objects.enums]
+accounts = ["AccountMemberRole", "AccountRelationType", "AccountInviteStatus", "AccountType"]
+transactions = ["TransactionType", "TransactionClassification"]
+counterparties = ["CounterpartyType", "AliasMatchType"]
+categories = ["CategoryType", "RuleField", "RuleOperator"]
+budgets = ["BudgetPeriodType", "BudgetAlertType"]
+assets = ["AssetAliasProvider", "AssetType"]
+prices_fx = ["PriceSource", "ExchangeRateSource"]
+ledger = ["InvestmentEventType", "InvestmentMovementKind", "MovementDirection"]
+imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", "ImportLogEvent"]
+snapshots = ["SnapshotGranularity", "SnapshotSource"]
+
+[python_usage]
+read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate"]
+read_enums = []
+transitive_read_tables = ["User", "Asset", "AssetListing"]
+transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "PriceSource", "AssetType", "ExchangeRateSource"]
