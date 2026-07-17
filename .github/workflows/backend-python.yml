@@ -45,17 +45,18 @@ jobs:
         shell: bash
         run: |
           set +e
-          uv run ruff check . --output-format=json > ruff-results.json
+          uv run ruff check . --fix --exit-non-zero-on-fix
           status=$?
-          cat ruff-results.json
+          git diff -- . > ruff-fix.patch
+          cat ruff-fix.patch
           exit $status
 
-      - name: Upload Ruff report
+      - name: Upload Ruff fix patch
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ruff-results
-          path: backend/python/ruff-results.json
+          name: ruff-fix-patch
+          path: backend/python/ruff-fix.patch
           if-no-files-found: error
 
       - name: Ruff format
