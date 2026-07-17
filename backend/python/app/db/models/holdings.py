@@ -32,16 +32,16 @@ class HoldingModel(Base):
     realized_pnl: Mapped[Decimal | None] = mapped_column("realizedPnl", QUANTITY)
     asset_id: Mapped[str | None] = mapped_column(
         "assetId",
-        ForeignKey("public.Asset.id"),
+        ForeignKey("public.Asset.id", ondelete="SET NULL"),
     )
     listing_id: Mapped[str] = mapped_column(
         "listingId",
-        ForeignKey("public.AssetListing.id"),
+        ForeignKey("public.AssetListing.id", ondelete="RESTRICT"),
         nullable=False,
     )
     account_id: Mapped[str] = mapped_column(
         "accountId",
-        ForeignKey("public.Account.id"),
+        ForeignKey("public.Account.id", ondelete="RESTRICT"),
         nullable=False,
     )
     calculated_at: Mapped[datetime] = mapped_column(
