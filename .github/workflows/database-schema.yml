@@ -11,6 +11,14 @@ on:
       - "backend/python/database/**"
       - "backend/python/scripts/database_schema.py"
       - ".github/workflows/database-schema.yml"
+  pull_request:
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "backend/python/database/**"
+      - "backend/python/scripts/database_schema.py"
+      - ".github/workflows/database-schema.yml"
 
 permissions:
   contents: write
@@ -69,7 +77,16 @@ jobs:
       - name: Generate canonical schema baseline
         run: python backend/python/scripts/database_schema.py --write
 
+      - name: Upload generated baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-schema-baseline
+          path: |
+            backend/python/database/baseline/schema.sql
+            backend/python/database/baseline/schema.sha256
+
       - name: Commit generated baseline
+        if: github.event_name == 'push'
         run: |
           git add backend/python/database/baseline/schema.sql
           git add backend/python/database/baseline/schema.sha256
