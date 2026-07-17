@@ -1,0 +1,46 @@
+name: Generate 3E-A Prisma Archive
+
+on:
+  push:
+    branches:
+      - build/alembic-cutover-preparation
+    paths:
+      - ".github/workflows/generate-3e-a-archive.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install backend dependencies
+        working-directory: backend/python
+        run: uv sync --frozen --extra dev
+
+      - name: Generate frozen Prisma archive manifest
+        working-directory: backend/python
+        run: uv run python scripts/migration_policy.py --write-archive-manifest
+
+      - name: Commit generated archive metadata
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/python/database/prisma_migration_archive.toml \
+            backend/python/database/schema_ownership.toml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "build(db): record frozen Prisma migration archive"
+          git push
