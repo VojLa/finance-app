@@ -29,9 +29,7 @@ def flatten_domains(domains: dict[str, list[str]]) -> dict[str, str]:
     flattened: dict[str, str] = {}
     for domain, names in domains.items():
         for name in names:
-            assert (
-                name not in flattened
-            ), f"Duplicate database object in manifest: {name}"
+            assert name not in flattened, f"Duplicate database object in manifest: {name}"
             flattened[name] = domain
     return flattened
 
@@ -122,9 +120,7 @@ def test_baseline_checksum_is_valid() -> None:
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:
-    database_url = (
-        "postgresql://user:password@localhost/app?schema=public&sslmode=require"
-    )
+    database_url = "postgresql://user:password@localhost/app?schema=public&sslmode=require"
 
     assert normalize_database_url(database_url) == (
         "postgresql://user:password@localhost/app?sslmode=require"
