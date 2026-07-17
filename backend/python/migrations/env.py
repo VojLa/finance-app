@@ -6,11 +6,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from alembic import context
-from sqlalchemy import MetaData, pool
+from sqlalchemy import Index, MetaData, UniqueConstraint, pool
 from sqlalchemy.dialects.postgresql import ENUM
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-from sqlalchemy.schema import BLANK_SCHEMA
+from sqlalchemy.schema import BLANK_SCHEMA, Table
 
 from app.db import models as database_models  # noqa: F401
 from app.db.base import Base
@@ -31,6 +31,19 @@ def blank_referred_schema(
     return BLANK_SCHEMA
 
 
+def normalize_unique_indexes(table: Table) -> None:
+    """Represent Prisma unique keys as PostgreSQL unique indexes for autogenerate."""
+    for constraint in list(table.constraints):
+        if not isinstance(constraint, UniqueConstraint):
+            continue
+
+        columns = [table.c[column.name] for column in constraint.columns]
+        name = str(constraint.name or f"{table.name}_{'_'.join(column.name for column in columns)}_key")
+        table.constraints.remove(constraint)
+        if not any(index.name == name for index in table.indexes):
+            Index(name, *columns, unique=True)
+
+
 def build_target_metadata() -> MetaData:
     """Copy the default public schema into Alembic's unqualified comparison namespace."""
     metadata = MetaData(naming_convention=Base.metadata.naming_convention)
@@ -45,6 +58,7 @@ def build_target_metadata() -> MetaData:
         for foreign_key in table.foreign_key_constraints:
             if foreign_key.onupdate is None:
                 foreign_key.onupdate = "CASCADE"
+        normalize_unique_indexes(table)
 
     return metadata
 
