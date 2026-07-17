@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import MetaData, pool
+from sqlalchemy.dialects.postgresql import ENUM
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -16,8 +17,24 @@ from app.db.url import normalize_database_url
 from scripts.sqlalchemy_schema import normalize_default
 
 config = context.config
-target_metadata = Base.metadata
 EXCLUDED_TABLES = {"_prisma_migrations", "alembic_version"}
+
+
+def build_target_metadata() -> MetaData:
+    """Copy the default public schema into Alembic's unqualified comparison namespace."""
+    metadata = MetaData(naming_convention=Base.metadata.naming_convention)
+    for table in Base.metadata.sorted_tables:
+        table.to_metadata(metadata, schema=None)
+
+    for table in metadata.tables.values():
+        for foreign_key in table.foreign_key_constraints:
+            if foreign_key.onupdate is None:
+                foreign_key.onupdate = "CASCADE"
+
+    return metadata
+
+
+target_metadata = build_target_metadata()
 
 
 def database_url() -> str:
@@ -32,12 +49,25 @@ def include_name(
     type_: str,
     parent_names: Mapping[str, str | None],
 ) -> bool:
-    if type_ == "schema":
-        return name in {None, "public"}
+    del parent_names
     if type_ == "table":
-        schema_name = parent_names.get("schema_name")
-        return schema_name in {None, "public"} and name not in EXCLUDED_TABLES
+        return name not in EXCLUDED_TABLES
     return True
+
+
+def compare_column_type(
+    migration_context: Any,
+    inspected_column: Any,
+    metadata_column: Any,
+    inspected_type: Any,
+    metadata_type: Any,
+) -> bool | None:
+    del migration_context, inspected_column, metadata_column
+    if isinstance(inspected_type, ENUM) and isinstance(metadata_type, ENUM):
+        inspected_signature = (inspected_type.name, tuple(inspected_type.enums))
+        metadata_signature = (metadata_type.name, tuple(metadata_type.enums))
+        return inspected_signature != metadata_signature
+    return None
 
 
 def compare_server_default(
@@ -55,9 +85,9 @@ def compare_server_default(
 def configure_context(**kwargs: Any) -> None:
     context.configure(
         target_metadata=target_metadata,
-        include_schemas=True,
+        include_schemas=False,
         include_name=include_name,
-        compare_type=True,
+        compare_type=compare_column_type,
         compare_server_default=compare_server_default,
         version_table="alembic_version",
         version_table_schema="public",
