@@ -27,7 +27,13 @@ def create_app() -> FastAPI:
         return RootResponse(
             service="finance-app-backend",
             version=settings.app_version,
-            endpoints=["/api/v1/health", "/api/v1/portfolio", "/docs", "/openapi.json"],
+            endpoints=[
+                "/api/v1/health/live",
+                "/api/v1/health/ready",
+                "/api/v1/portfolio",
+                "/docs",
+                "/openapi.json",
+            ],
         )
 
     return app
