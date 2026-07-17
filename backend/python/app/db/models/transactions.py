@@ -48,16 +48,16 @@ class TransactionModel(Base):
     deleted_at: Mapped[datetime | None] = mapped_column("deletedAt", TIMESTAMP)
     category_id: Mapped[str | None] = mapped_column(
         "categoryId",
-        ForeignKey("public.Category.id"),
+        ForeignKey("public.Category.id", ondelete="SET NULL"),
     )
     account_id: Mapped[str] = mapped_column(
         "accountId",
-        ForeignKey("public.Account.id"),
+        ForeignKey("public.Account.id", ondelete="RESTRICT"),
         nullable=False,
     )
     import_batch_id: Mapped[str | None] = mapped_column(
         "importBatchId",
-        ForeignKey("public.ImportBatch.id"),
+        ForeignKey("public.ImportBatch.id", ondelete="SET NULL"),
     )
     created_at: Mapped[datetime] = mapped_column(
         "createdAt",
@@ -79,12 +79,12 @@ class TransactionPairModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     from_transaction_id: Mapped[str] = mapped_column(
         "fromTransactionId",
-        ForeignKey("public.Transaction.id"),
+        ForeignKey("public.Transaction.id", ondelete="RESTRICT"),
         nullable=False,
     )
     to_transaction_id: Mapped[str] = mapped_column(
         "toTransactionId",
-        ForeignKey("public.Transaction.id"),
+        ForeignKey("public.Transaction.id", ondelete="RESTRICT"),
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
