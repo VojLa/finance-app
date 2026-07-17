@@ -1,4 +1,4 @@
-name: Implement 3F
+name: Diagnose 3F format output
 
 on:
   pull_request:
@@ -6,32 +6,13 @@ on:
       - main
     paths:
       - ".github/workflows/implement-3f.yml"
-      - "backend/python/scripts/implement_3f_temp.py"
 
 permissions:
   contents: write
 
 jobs:
-  implement-and-verify:
+  diagnose:
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: finance_app
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d finance_app"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
-      PGPASSWORD: postgres
-      CI: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,118 +30,29 @@ jobs:
           python-version-file: backend/python/.python-version
 
       - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: backend/python/uv.lock
 
       - name: Install Python dependencies
         working-directory: backend/python
         run: uv sync --frozen --extra dev
 
-      - name: Install PostgreSQL 16 client
+      - name: Capture formatter output
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql-client-16
-
-      - name: Apply Step 3F source changes
-        working-directory: backend/python
-        run: uv run python scripts/implement_3f_temp.py
-
-      - name: Format Python, Prisma, and workflow sources
-        run: |
+          set +e
           cd backend/python
-          uv run ruff format .
+          uv run python scripts/implement_3f_temp.py > /tmp/3f-report.txt 2>&1
+          echo "patch_status=$?" >> /tmp/3f-report.txt
+          uv run ruff format . >> /tmp/3f-report.txt 2>&1
+          echo "ruff_format_status=$?" >> /tmp/3f-report.txt
           cd ../..
-          npx prisma format
-          npx prettier --write .github/workflows/database-schema.yml
-
-      - name: Load inherited baseline and generate current-head schema artifact
-        working-directory: backend/python
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          source = Path('database/baseline/schema.sql').read_text(encoding='utf-8')
-          Path('.bootstrap-3f.sql').write_text(
-              source.replace('CREATE SCHEMA "public";\n', '', 1),
-              encoding='utf-8',
-              newline='\n',
-          )
-          PY
-          psql --set=ON_ERROR_STOP=1 --dbname="$DATABASE_URL" --file=.bootstrap-3f.sql
-          rm .bootstrap-3f.sql
-          uv run alembic -c alembic.ini stamp 3d0001base
-          uv run alembic -c alembic.ini upgrade head
-          uv run python scripts/database_schema.py --write --revision 3f0001acctnote
-          uv run python scripts/database_schema.py --check --revision 3f0001acctnote
-          uv run python scripts/sqlalchemy_schema.py --check
-          uv run alembic -c alembic.ini check
-
-      - name: Reset database to frozen Prisma history
-        run: |
-          dropdb --host localhost --username postgres --force finance_app
-          createdb --host localhost --username postgres finance_app
-          ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY=1 npm run db:prisma:archive:verify
-
-      - name: Verify static quality and migration policy
-        working-directory: backend/python
-        run: |
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run mypy app scripts tests
-          uv run python scripts/migration_policy.py --check
-          uv run pytest \
-            tests/test_database_schema.py \
-            tests/test_database_models.py \
-            tests/test_database_url.py \
-            tests/test_sqlalchemy_schema.py \
-            tests/test_alembic_configuration.py \
-            tests/test_alembic_baseline.py \
-            tests/test_migration_policy.py \
-            tests/test_database_migrate.py
-
-      - name: Verify inherited database migration lifecycle
-        working-directory: backend/python
-        run: |
-          uv run python scripts/database_schema.py --check --revision 3d0001base
-          uv run python scripts/alembic_baseline.py --verify
-          uv run pytest tests/test_alembic_integration.py -v
-          uv run pytest \
-            tests/test_sqlalchemy_schema_parity.py \
-            tests/test_sqlalchemy_persistence.py \
-            tests/test_database_migrate_integration.py \
-            -v
-          uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3f0001acctnote
-          uv run python scripts/sqlalchemy_schema.py --check
-          uv run alembic -c alembic.ini current --check-heads
-          uv run alembic -c alembic.ini check
-
-      - name: Verify clean bootstrap
-        working-directory: backend/python
-        env:
-          BOOTSTRAP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_bootstrap
-        run: |
-          createdb --host localhost --username postgres finance_app_bootstrap
-          export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
-          uv run python scripts/database_migrate.py bootstrap
-          uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3f0001acctnote
-          uv run python scripts/sqlalchemy_schema.py --check
-
-      - name: Verify Prisma and frontend compatibility
-        run: |
-          npm run db:prisma:validate
-          npm run db:prisma:generate
-          npm test
-          npm run lint
-
-      - name: Remove implementation helpers and commit verified result
-        run: |
-          rm backend/python/scripts/implement_3f_temp.py
-          rm .github/workflows/implement-3f.yml
+          npx prisma format >> /tmp/3f-report.txt 2>&1
+          echo "prisma_format_status=$?" >> /tmp/3f-report.txt
+          npx prettier --write .github/workflows/database-schema.yml >> /tmp/3f-report.txt 2>&1
+          echo "prettier_status=$?" >> /tmp/3f-report.txt
+          git reset --hard HEAD
+          cp /tmp/3f-report.txt backend/python/3f-format-report.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git diff --cached --check
-          git commit -m "feat(db): add first Alembic-owned schema migration"
+          git add backend/python/3f-format-report.txt
+          git commit -m "chore: capture complete 3F format output"
           git push origin HEAD:feat/alembic-account-notes
