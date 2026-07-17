@@ -1,0 +1,37 @@
+app/db/models/core.py:30: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:43: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:58: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:85: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:99: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:121: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+app/db/models/core.py:154: error: Cannot override instance variable (previously
+declared on base class "DeclarativeBase") with class variable  [misc]
+        __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
+        ^~~~~~~~~~~~~~
+tests/test_database_models.py:125: error: "TypeEngine[Any]" has no attribute
+"name"  [attr-defined]
+        assert {column.type.name for column in enum_columns} == {
+                ^~~~~~~~~~~~~~~~
+tests/test_database_models.py:134: error: "TypeEngine[Any]" has no attribute
+"create_type"  [attr-defined]
+        assert all(column.type.create_type is False for column in enum_col...
+                   ^~~~~~~~~~~~~~~~~~~~~~~
+Found 9 errors in 2 files (checked 47 source files)
