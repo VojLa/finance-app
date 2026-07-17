@@ -1,8 +1,0 @@
-app/db/models/core.py:29:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:42:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:57:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:84:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:98:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:120:22: RUF012 Mutable default value for class attribute
-app/db/models/core.py:153:22: RUF012 Mutable default value for class attribute
-Found 9 errors (2 fixed, 7 remaining).
