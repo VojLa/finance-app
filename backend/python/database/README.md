@@ -152,3 +152,7 @@ The next database milestone is Step 3F: the first real Alembic-owned schema migr
 The canonical baseline remains a verification artifact for the inherited starting schema. CI uses
 `--check` and fails if that inherited schema or checksum changes unexpectedly. It is not regenerated
 for ordinary post-cutover Alembic revisions.
+
+## First Alembic-owned schema change
+
+Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.

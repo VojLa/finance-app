@@ -13,6 +13,11 @@ from typing import Any
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts import database_schema
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 PRISMA_MIGRATIONS = REPOSITORY_ROOT / "prisma" / "migrations"
@@ -26,6 +31,12 @@ CUTOVER_REVISION_PATH = (
 PACKAGE_JSON = REPOSITORY_ROOT / "package.json"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
+HEAD_REVISION = "3f0001acctnote"
+SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
+FIRST_SCHEMA_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
+)
+PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
     "metadata.create_all",
@@ -182,7 +193,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 6,
+        "schema_version": 7,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -220,10 +231,19 @@ def verify_ownership_manifest(
         "state": "sole_migration_owner",
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
-        "revision_count": 2,
+        "head_revision": HEAD_REVISION,
+        "revision_count": 3,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
+
+    current_schema = manifest.get("current_schema")
+    if current_schema != {
+        "revision": HEAD_REVISION,
+        "schema_source": "database/revisions/3f0001acctnote/schema.sql",
+        "checksum_source": "database/revisions/3f0001acctnote/schema.sha256",
+    }:
+        raise RuntimeError("Current schema artifact metadata is invalid.")
 
     prisma_migrations = manifest.get("prisma_migrations")
     expected_prisma = {
@@ -257,37 +277,97 @@ def verify_ownership_manifest(
 def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     directory = ScriptDirectory.from_config(Config(str(config_path)))
     revisions = list(directory.walk_revisions())
-    if directory.get_heads() != [CUTOVER_REVISION]:
-        raise RuntimeError(f"Alembic head must be {CUTOVER_REVISION} after cutover.")
+    if directory.get_heads() != [HEAD_REVISION]:
+        raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 2:
-        raise RuntimeError("Completed cutover requires exactly two Alembic revisions.")
+    if len(revisions) != 3:
+        raise RuntimeError("The first schema migration requires exactly three Alembic revisions.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
+    head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
         raise RuntimeError("The Alembic ownership marker must follow the inherited baseline.")
+    if head is None or head.down_revision != CUTOVER_REVISION:
+        raise RuntimeError("The first Alembic schema revision must follow the ownership marker.")
 
-    module = cutover.module
-    expected_metadata = {
+    cutover_module = cutover.module
+    expected_cutover_metadata = {
         "ownership_cutover": True,
         "previous_migration_owner": "prisma",
         "new_migration_owner": "alembic",
         "baseline_revision": BASELINE_REVISION,
         "prisma_schema_impact": "none",
     }
-    for key, value in expected_metadata.items():
-        if getattr(module, key, None) != value:
+    for key, value in expected_cutover_metadata.items():
+        if getattr(cutover_module, key, None) != value:
             raise RuntimeError(f"Cutover revision metadata is invalid for {key}.")
 
-    source = CUTOVER_REVISION_PATH.read_text(encoding="utf-8")
-    forbidden = ("op.", "create_table", "drop_table", "add_column", "alter_column")
-    if any(token in source for token in forbidden):
+    head_module = head.module
+    expected_head_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_nullable_column",
+        "affected_tables": ("Account",),
+        "affected_columns": ("Account.notes",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_head_metadata.items():
+        if getattr(head_module, key, None) != value:
+            raise RuntimeError(f"First schema revision metadata is invalid for {key}.")
+
+    cutover_source = CUTOVER_REVISION_PATH.read_text(encoding="utf-8")
+    if any(token in cutover_source for token in ("op.", "create_table", "add_column")):
         raise RuntimeError("The ownership cutover revision must not contain application DDL.")
+
+    head_source = FIRST_SCHEMA_REVISION_PATH.read_text(encoding="utf-8")
+    for token in ("op.add_column", '"Account"', '"notes"', "op.drop_column"):
+        if token not in head_source:
+            raise RuntimeError(f"First schema revision is missing required token {token}.")
+    if 'WHERE "notes" IS NOT NULL' not in head_source:
+        raise RuntimeError("Account notes downgrade must guard against data loss.")
+
+
+def verify_schema_registry(
+    registry_path: Path = SCHEMA_REGISTRY,
+    config_path: Path = ALEMBIC_CONFIG,
+) -> None:
+    registry = load_toml(registry_path)
+    if registry.get("version") != 1:
+        raise RuntimeError("Schema revision registry version must be 1.")
+    entries = registry.get("revisions")
+    if not isinstance(entries, dict):
+        raise RuntimeError("Schema revision registry is missing revisions.")
+
+    directory = ScriptDirectory.from_config(Config(str(config_path)))
+    graph_revisions = {revision.revision for revision in directory.walk_revisions()}
+    if set(entries) != graph_revisions:
+        raise RuntimeError("Schema revision registry must cover the complete Alembic graph.")
+
+    for revision in graph_revisions:
+        schema_path, checksum_path = database_schema.schema_artifact_paths(revision, registry_path)
+        if not schema_path.is_file() or not checksum_path.is_file():
+            raise RuntimeError(f"Schema artifact is missing for revision {revision}.")
+        expected = schema_path.read_text(encoding="utf-8")
+        digest_parts = checksum_path.read_text(encoding="utf-8").strip().split()
+        if not digest_parts or digest_parts[0] != database_schema.schema_digest(expected):
+            raise RuntimeError(f"Schema artifact checksum is invalid for revision {revision}.")
+
+    head_entry = entries.get(HEAD_REVISION)
+    if not isinstance(head_entry, dict) or head_entry.get("schema_change") is not True:
+        raise RuntimeError("The first schema revision must own a concrete schema artifact.")
+    if "inherits_schema_from" in head_entry:
+        raise RuntimeError("A schema-changing revision cannot inherit an older schema artifact.")
+
+    prisma_source = PRISMA_SCHEMA.read_text(encoding="utf-8")
+    account_start = prisma_source.index("model Account {")
+    account_end = prisma_source.index("\n}", account_start)
+    if "notes" not in prisma_source[account_start:account_end]:
+        raise RuntimeError("Prisma Account model must expose the notes compatibility field.")
 
 
 def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
@@ -351,6 +431,7 @@ def verify_policy() -> PrismaArchiveState:
     verify_environment_inventory()
     verify_ownership_manifest(state)
     verify_alembic_graph()
+    verify_schema_registry()
     verify_package_scripts()
     verify_runtime_ddl()
     verify_workflow_policy()

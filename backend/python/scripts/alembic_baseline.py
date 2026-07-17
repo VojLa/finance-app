@@ -25,6 +25,7 @@ ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 OWNERSHIP_MANIFEST = PROJECT_ROOT / "database" / "schema_ownership.toml"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
+HEAD_REVISION = "3f0001acctnote"
 EXPECTED_TABLE_COUNT = 30
 EXPECTED_ENUM_COUNT = 27
 
@@ -46,26 +47,31 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 2:
-        raise RuntimeError(f"Expected exactly two Alembic revisions, found {len(revisions)}.")
-    if heads != [CUTOVER_REVISION]:
-        raise RuntimeError(f"Expected Alembic head {CUTOVER_REVISION}, found {heads}.")
+    if len(revisions) != 3:
+        raise RuntimeError(f"Expected exactly three Alembic revisions, found {len(revisions)}.")
+    if heads != [HEAD_REVISION]:
+        raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
         raise RuntimeError(f"Expected Alembic base {BASELINE_REVISION}, found {bases}.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
+    head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
         raise RuntimeError("The Alembic ownership cutover revision graph is invalid.")
+    if head is None or head.down_revision != CUTOVER_REVISION:
+        raise RuntimeError("The first Alembic schema revision must follow the cutover marker.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 6:
-        raise RuntimeError("Ownership manifest schema_version must be 6 after cutover.")
+    if manifest.get("schema_version") != 7:
+        raise RuntimeError(
+            "Ownership manifest schema_version must be 7 after the first schema change."
+        )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
     if manifest.get("target_migration_owner") != "alembic":
@@ -94,9 +100,9 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 2,
+        "revision_count": 3,
         "head_count": 1,
-        "head_revision": CUTOVER_REVISION,
+        "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
         "downgrade_supported": False,
         "version_table": "alembic_version",
@@ -169,7 +175,8 @@ def verify_database_state(state: DatabaseState) -> None:
     if state.enum_count != EXPECTED_ENUM_COUNT:
         raise RuntimeError(f"Expected {EXPECTED_ENUM_COUNT} enums, found {state.enum_count}.")
 
-    known = {BASELINE_REVISION, CUTOVER_REVISION}
+    directory = ScriptDirectory.from_config(alembic_config())
+    known = {revision.revision for revision in directory.walk_revisions()}
     unknown_revisions = set(state.version_revisions) - known
     if unknown_revisions:
         raise RuntimeError(f"Database contains unknown Alembic revisions: {unknown_revisions}.")
@@ -186,6 +193,10 @@ def verify_canonical_baseline(database_url: str, pg_dump: str) -> None:
     )
     if result != 0:
         raise RuntimeError("Live PostgreSQL schema does not match the canonical baseline.")
+
+
+def verify_revision_schema(database_url: str, pg_dump: str, revision: str) -> None:
+    database_schema.verify_live_schema(database_url, pg_dump, revision)
 
 
 def verify_sqlalchemy_parity(database_url: str) -> None:
@@ -223,13 +234,15 @@ def main() -> int:
         verify_manifest()
         state = asyncio.run(inspect_database(args.database_url))
         verify_database_state(state)
-        verify_canonical_baseline(args.database_url, args.pg_dump)
-        verify_sqlalchemy_parity(args.database_url)
+        revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
+        verify_revision_schema(args.database_url, args.pg_dump, revision)
+        if revision == HEAD_REVISION:
+            verify_sqlalchemy_parity(args.database_url)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"Alembic baseline verification failed: {error}", file=sys.stderr)
         return 1
 
-    print("Alembic baseline verification passed across the completed ownership cutover.")
+    print("Alembic schema verification passed for the database revision state.")
     return 0
 
 

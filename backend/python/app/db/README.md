@@ -59,3 +59,7 @@ Base.metadata.drop_all(...)
 
 All schema changes must be expressed as reviewed Alembic revisions and executed by the dedicated
 migration runner, never by application startup.
+
+## First Alembic-owned schema change
+
+Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.

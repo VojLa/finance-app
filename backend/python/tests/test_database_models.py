@@ -1,4 +1,4 @@
-from sqlalchemy import Numeric
+from sqlalchemy import Numeric, Text
 from sqlalchemy.dialects.postgresql import ENUM
 
 from app.db import models as database_models  # noqa: F401
@@ -190,6 +190,14 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     assert all(
         [column.name for column in table.primary_key.columns] == ["id"] for table in tables.values()
     )
+
+
+def test_account_notes_column_is_nullable_text() -> None:
+    column = Base.metadata.tables["public.Account"].c.notes
+
+    assert isinstance(column.type, Text)
+    assert column.nullable is True
+    assert column.server_default is None
 
 
 def test_all_foreign_keys_target_mapped_tables() -> None:

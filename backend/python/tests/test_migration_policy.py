@@ -8,6 +8,7 @@ import pytest
 from scripts.migration_policy import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
+    HEAD_REVISION,
     archive_state,
     render_archive_manifest,
     verify_archive_manifest,
@@ -15,6 +16,7 @@ from scripts.migration_policy import (
     verify_package_scripts,
     verify_policy,
     verify_runtime_ddl,
+    verify_schema_registry,
     verify_workflow_policy,
 )
 
@@ -92,6 +94,10 @@ def test_no_remote_database_inventory_requires_explicit_reason(tmp_path: Path) -
         verify_environment_inventory(inventory)
 
 
+def test_repository_schema_registry_is_complete() -> None:
+    verify_schema_registry()
+
+
 def test_repository_migration_policy_is_completed() -> None:
     state = verify_policy()
 
@@ -166,3 +172,4 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
 def test_policy_revision_boundary_is_stable() -> None:
     assert BASELINE_REVISION == "3d0001base"
     assert CUTOVER_REVISION == "3e0001cutover"
+    assert HEAD_REVISION == "3f0001acctnote"

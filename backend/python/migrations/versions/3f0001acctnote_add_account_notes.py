@@ -2,8 +2,8 @@
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision: str = "3f0001acctnote"
 down_revision: str | None = "3e0001cutover"
@@ -31,14 +31,8 @@ def downgrade() -> None:
     """Remove the column only when doing so cannot discard account notes."""
     connection = op.get_bind()
     notes_exist = connection.execute(
-        sa.text(
-            'SELECT EXISTS ('
-            'SELECT 1 FROM "public"."Account" WHERE "notes" IS NOT NULL'
-            ')'
-        )
+        sa.text('SELECT EXISTS (SELECT 1 FROM "public"."Account" WHERE "notes" IS NOT NULL)')
     ).scalar_one()
     if notes_exist:
-        raise RuntimeError(
-            "Cannot remove Account.notes while non-null account note data exists."
-        )
+        raise RuntimeError("Cannot remove Account.notes while non-null account note data exists.")
     op.drop_column("Account", "notes", schema="public")
