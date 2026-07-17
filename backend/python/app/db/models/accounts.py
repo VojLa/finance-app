@@ -30,6 +30,7 @@ class AccountModel(Base):
     type: Mapped[AccountType] = mapped_column(ACCOUNT_TYPE_DB, nullable=False)
     currency: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(
         "isArchived",
         nullable=False,
