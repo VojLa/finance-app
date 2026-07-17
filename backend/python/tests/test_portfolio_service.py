@@ -1,17 +1,22 @@
 import asyncio
+from typing import Any
 
 from app.modules.portfolio.service import PortfolioService
 
 
 class FakePortfolioRepository:
-    async def accessible_accounts(self, user_id: str, account_id: str | None = None):
+    async def accessible_accounts(
+        self,
+        user_id: str,
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         assert user_id == "user-1"
         assert account_id is None
         return [
             {"id": "account-1", "name": "Broker", "type": "broker", "currency": "EUR"},
         ]
 
-    async def holdings_for_accounts(self, account_ids: list[str]):
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]:
         assert account_ids == ["account-1"]
         return [
             {
@@ -29,7 +34,10 @@ class FakePortfolioRepository:
             }
         ]
 
-    async def latest_exchange_rates(self, currency_pairs: list[tuple[str, str]]):
+    async def latest_exchange_rates(
+        self,
+        currency_pairs: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], float]:
         assert currency_pairs == [("USD", "EUR")]
         return {("USD", "EUR"): 0.9}
 

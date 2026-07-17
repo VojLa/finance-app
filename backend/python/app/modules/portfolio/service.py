@@ -1,9 +1,26 @@
+from typing import Any, Protocol
+
 from app.modules.portfolio.models import AccountSummary, HoldingSummary, PortfolioSummary
-from app.modules.portfolio.repository import PortfolioRepository, to_float
+from app.modules.portfolio.repository import to_float
+
+
+class PortfolioRepositoryPort(Protocol):
+    async def accessible_accounts(
+        self,
+        user_id: str,
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]: ...
+
+    async def latest_exchange_rates(
+        self,
+        currency_pairs: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], float]: ...
 
 
 class PortfolioService:
-    def __init__(self, repository: PortfolioRepository):
+    def __init__(self, repository: PortfolioRepositoryPort):
         self.repository = repository
 
     async def get_portfolio(self, user_id: str, account_id: str | None = None) -> PortfolioSummary:

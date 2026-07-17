@@ -16,7 +16,11 @@ class PortfolioRepository:
     def __init__(self, connection: asyncpg.Connection):
         self.connection = connection
 
-    async def accessible_accounts(self, user_id: str, account_id: str | None = None):
+    async def accessible_accounts(
+        self,
+        user_id: str,
+        account_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         rows = await self.connection.fetch(
             """
             SELECT a."id", a."name", a."type"::text AS "type", a."currency"
@@ -32,7 +36,7 @@ class PortfolioRepository:
         )
         return [dict(row) for row in rows]
 
-    async def holdings_for_accounts(self, account_ids: list[str]):
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]:
         if not account_ids:
             return []
 
@@ -59,7 +63,10 @@ class PortfolioRepository:
         )
         return [dict(row) for row in rows]
 
-    async def latest_exchange_rates(self, currency_pairs: list[tuple[str, str]]):
+    async def latest_exchange_rates(
+        self,
+        currency_pairs: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], float]:
         unique_pairs = sorted(
             {(from_currency, to_currency) for from_currency, to_currency in currency_pairs}
         )

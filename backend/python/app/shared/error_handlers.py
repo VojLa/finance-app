@@ -34,7 +34,8 @@ def _response(*, request: Request, status_code: int, code: str, message: str) ->
     )
 
 
-async def application_error_handler(request: Request, error: ApplicationError) -> JSONResponse:
+async def application_error_handler(request: Request, error: Exception) -> JSONResponse:
+    assert isinstance(error, ApplicationError)
     return _response(
         request=request,
         status_code=error.status_code,
@@ -45,7 +46,7 @@ async def application_error_handler(request: Request, error: ApplicationError) -
 
 async def validation_error_handler(
     request: Request,
-    _error: RequestValidationError,
+    _error: Exception,
 ) -> JSONResponse:
     return _response(
         request=request,
@@ -55,7 +56,8 @@ async def validation_error_handler(
     )
 
 
-async def http_error_handler(request: Request, error: StarletteHTTPException) -> JSONResponse:
+async def http_error_handler(request: Request, error: Exception) -> JSONResponse:
+    assert isinstance(error, StarletteHTTPException)
     codes = {
         status.HTTP_401_UNAUTHORIZED: "unauthorized",
         status.HTTP_403_FORBIDDEN: "forbidden",
