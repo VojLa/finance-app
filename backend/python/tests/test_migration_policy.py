@@ -109,7 +109,11 @@ def test_package_scripts_freeze_prisma_migration_creation(tmp_path: Path) -> Non
         verify_package_scripts(package)
 
 
-def test_runtime_ddl_policy_rejects_automatic_migrations(tmp_path: Path) -> None:
+def test_runtime_ddl_policy_rejects_automatic_migrations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("scripts.migration_policy.REPOSITORY_ROOT", tmp_path)
     app = tmp_path / "app"
     app.mkdir()
     (app / "safe.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -120,7 +124,11 @@ def test_runtime_ddl_policy_rejects_automatic_migrations(tmp_path: Path) -> None
         verify_runtime_ddl(app)
 
 
-def test_workflow_policy_allows_only_named_legacy_archive_command(tmp_path: Path) -> None:
+def test_workflow_policy_allows_only_named_legacy_archive_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("scripts.migration_policy.REPOSITORY_ROOT", tmp_path)
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     workflow = workflows / "database.yml"
