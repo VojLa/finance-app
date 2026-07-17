@@ -1,16 +1,6 @@
 name: Database Schema
 
 on:
-  push:
-    branches:
-      - build/database-schema-inventory
-    paths:
-      - "prisma/**"
-      - "package.json"
-      - "package-lock.json"
-      - "backend/python/database/**"
-      - "backend/python/scripts/database_schema.py"
-      - ".github/workflows/database-schema.yml"
   pull_request:
     paths:
       - "prisma/**"
@@ -18,14 +8,28 @@ on:
       - "package-lock.json"
       - "backend/python/database/**"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_schema.py"
+      - "backend/python/uv.lock"
+      - ".github/workflows/database-schema.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "backend/python/database/**"
+      - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_schema.py"
+      - "backend/python/uv.lock"
       - ".github/workflows/database-schema.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  generate-baseline:
-    name: Generate Prisma schema baseline
+  verify-schema:
+    name: Verify Prisma schema baseline
     runs-on: ubuntu-24.04
 
     services:
@@ -47,10 +51,8 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
 
     steps:
-      - name: Check out inventory branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: build/database-schema-inventory
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -69,32 +71,25 @@ jobs:
         with:
           python-version-file: backend/python/.python-version
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/python/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend/python
+        run: uv sync --frozen --extra dev
+
       - name: Install PostgreSQL 16 client
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
-      - name: Generate canonical schema baseline
-        run: python backend/python/scripts/database_schema.py --write
+      - name: Verify canonical schema baseline
+        working-directory: backend/python
+        run: uv run python scripts/database_schema.py --check
 
-      - name: Upload generated baseline
-        uses: actions/upload-artifact@v4
-        with:
-          name: database-schema-baseline
-          path: |
-            backend/python/database/baseline/schema.sql
-            backend/python/database/baseline/schema.sha256
-
-      - name: Commit generated baseline
-        if: github.event_name == 'push'
-        run: |
-          git add backend/python/database/baseline/schema.sql
-          git add backend/python/database/baseline/schema.sha256
-          if git diff --cached --quiet; then
-            echo "Baseline is already current."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "build(db): record canonical Prisma schema baseline"
-          git push origin HEAD:build/database-schema-inventory
+      - name: Validate schema ownership inventory
+        working-directory: backend/python
+        run: uv run pytest tests/test_database_schema.py
