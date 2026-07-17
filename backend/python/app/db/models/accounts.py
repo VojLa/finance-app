@@ -105,12 +105,12 @@ class AccountInviteModel(Base):
     )
     inviter_id: Mapped[str] = mapped_column(
         "inviterId",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="RESTRICT"),
         nullable=False,
     )
     accepted_by_id: Mapped[str | None] = mapped_column(
         "acceptedById",
-        ForeignKey("public.User.id"),
+        ForeignKey("public.User.id", ondelete="SET NULL"),
     )
     email: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[AccountMemberRole] = mapped_column(
