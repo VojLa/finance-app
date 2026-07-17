@@ -113,10 +113,10 @@ def test_python_persistence_slice_is_explicit() -> None:
 
 
 def test_baseline_checksum_is_valid() -> None:
-    baseline = BASELINE_PATH.read_bytes()
+    baseline = BASELINE_PATH.read_text(encoding="utf-8")
     expected_digest = CHECKSUM_PATH.read_text(encoding="utf-8").split()[0]
 
-    assert hashlib.sha256(baseline).hexdigest() == expected_digest
+    assert hashlib.sha256(baseline.encode("utf-8")).hexdigest() == expected_digest
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:
