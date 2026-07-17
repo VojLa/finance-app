@@ -1,9 +1,4 @@
-+ set -euo pipefail
-+++ dirname backend/python/scripts/run_3f_temp.sh
-++ cd backend/python/scripts/../../..
-++ pwd
-+ REPOSITORY_ROOT=/home/runner/work/finance-app/finance-app
-+ BACKEND_ROOT=/home/runner/work/finance-app/finance-app/backend/python
++ trap preserve_failure_trace EXIT
 + cd /home/runner/work/finance-app/finance-app/backend/python
 + uv run python scripts/fix_implement_3f_temp.py
 + uv run python scripts/implement_3f_temp.py
@@ -27,9 +22,9 @@ Prisma schema loaded from prisma/schema.prisma
 │    npm i --save-dev prisma@latest                       │
 │    npm i @prisma/client@latest                          │
 └─────────────────────────────────────────────────────────┘
-Formatted prisma/schema.prisma in 54ms 🚀
+Formatted prisma/schema.prisma in 55ms 🚀
 + npx prettier --write .github/workflows/database-schema.yml
-[90m.github/workflows/database-schema.yml[39m 31ms (unchanged)
+[90m.github/workflows/database-schema.yml[39m 32ms (unchanged)
 + cd /home/runner/work/finance-app/finance-app/backend/python
 + python -
 + psql --set=ON_ERROR_STOP=1 --dbname=postgresql://postgres:postgres@localhost:5432/finance_app --file=.bootstrap-3f.sql
@@ -324,4 +319,13 @@ Traceback (most recent call last):
   File "/home/runner/work/finance-app/finance-app/backend/python/scripts/migration_policy.py", line 16, in <module>
     from scripts import database_schema
 ModuleNotFoundError: No module named 'scripts'
++ preserve_failure_trace
++ local status=1
++ [[ 1 -eq 0 ]]
++ set +e
++ cd /home/runner/work/finance-app/finance-app
++ git reset --hard HEAD
+HEAD is now at f708000 chore: preserve 3F audit trace on failure
++ cp /tmp/3f-lifecycle-report.txt backend/python/3f-lifecycle-report.txt
+
 exit_status=1
