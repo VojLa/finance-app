@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Python backend services for finance-app."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "alembic>=1.18.0,<2.0.0",
   "asyncpg>=0.29.0",
   "fastapi>=0.115.0",
   "pydantic>=2.8.0",

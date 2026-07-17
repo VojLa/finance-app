@@ -25,7 +25,7 @@ from app.db import models as database_models  # noqa: E402,F401
 from app.db.base import Base  # noqa: E402
 from app.db.url import normalize_database_url  # noqa: E402
 
-EXCLUDED_TABLES = {"_prisma_migrations"}
+EXCLUDED_TABLES = {"_prisma_migrations", "alembic_version"}
 
 
 def normalize_default(value: object | None) -> str | None:

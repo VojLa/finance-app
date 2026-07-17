@@ -4,8 +4,8 @@ This directory records the physical PostgreSQL schema during the hybrid migratio
 Prisma to SQLAlchemy and Alembic.
 
 The governing decision is ADR 0006 in `!planning/decisions`. Prisma remains the migration
-owner until an explicit cutover is approved. Adding or completing SQLAlchemy mappings does
-not transfer migration ownership by itself.
+owner until an explicit cutover is approved. Adding SQLAlchemy mappings or an Alembic
+baseline does not transfer migration ownership by itself.
 
 ## Current state
 
@@ -14,7 +14,8 @@ not transfer migration ownership by itself.
 - cutover status: not started
 - production schema changes: still created by Prisma migrations
 - SQLAlchemy mirror: complete for all 30 application tables and 27 enum types
-- Alembic revisions: not introduced
+- Alembic revision graph: one verified no-op baseline revision
+- Alembic application-object ownership: none
 
 ## Files
 
@@ -28,8 +29,9 @@ database/
 ```
 
 `baseline/schema.sql` is generated from a clean PostgreSQL 16 database after applying all
-committed Prisma migrations. It is not handwritten. `_prisma_migrations` is excluded because
-it is migration-system metadata rather than an application schema object.
+committed Prisma migrations. It is not handwritten. `_prisma_migrations` and
+`alembic_version` are excluded because they are migration-system metadata rather than
+application schema objects.
 
 `schema_ownership.toml` records independently migratable application objects. Ownership is
 tracked for tables and PostgreSQL enum types. Indexes, unique constraints, foreign keys,
@@ -51,8 +53,7 @@ still modify it.
 1. Start from a schema produced by committed Prisma migrations on a clean database.
 2. Keep the generated baseline and ownership manifest synchronized with that schema.
 3. Complete SQLAlchemy mappings without changing migration ownership.
-4. Verify the future Alembic baseline on both a clean database and a copy of an existing
-   database.
+4. Verify the Alembic baseline on both a clean database and a copy of an existing database.
 5. Record the cutover commit and affected objects explicitly.
 6. After cutover, create new production schema changes only in Alembic.
 7. Never rewrite existing Prisma migration history merely to make the baseline cleaner.
@@ -82,8 +83,50 @@ For diagnostics without connecting to PostgreSQL:
 python scripts/sqlalchemy_schema.py --print
 ```
 
-The parity checker performs no schema DDL. CI runs the canonical baseline check before and
-after metadata validation to prove that verification did not mutate the database schema.
+The parity checker performs no schema DDL.
+
+## Alembic baseline readiness
+
+The revision `3d0001base` is a no-op marker for the inherited Prisma schema. Its upgrade does
+not create or alter application objects, and its downgrade is intentionally blocked because
+Alembic did not create the schema.
+
+Before stamping any database, run:
+
+```bash
+python scripts/database_schema.py --check
+python scripts/sqlalchemy_schema.py --check
+python scripts/alembic_baseline.py --verify
+```
+
+Only after all checks pass may an operator run:
+
+```bash
+alembic stamp 3d0001base
+alembic current --check-heads
+alembic check
+alembic upgrade head
+```
+
+Stamping is never performed by FastAPI startup. It creates only
+`public.alembic_version`; application data and physical application objects must remain
+unchanged.
+
+### Prisma-free bootstrap verification
+
+A future new database can be initialized without replaying Prisma history:
+
+```bash
+createdb finance_app
+psql finance_app -c 'DROP SCHEMA public CASCADE'
+psql finance_app -f database/baseline/schema.sql
+python scripts/alembic_baseline.py --verify
+alembic stamp 3d0001base
+alembic upgrade head
+```
+
+This is a verified readiness path, not the production cutover. Prisma remains the only
+migration owner until step 3E is approved.
 
 ## Runtime persistence slice
 
@@ -126,6 +169,3 @@ python scripts/database_schema.py --check
 
 `--write` is an explicit maintenance command. CI uses `--check` and fails when the live
 schema differs from the committed baseline or when the checksum is invalid.
-
-The next migration step may add Alembic baseline infrastructure, but ownership must remain
-with Prisma until a separate cutover is explicitly approved and verified.

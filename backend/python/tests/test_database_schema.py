@@ -87,15 +87,20 @@ def test_baseline_matches_ownership_manifest() -> None:
     assert baseline_tables == set(manifest_tables)
     assert baseline_enums == set(manifest_enums)
     assert "_prisma_migrations" not in baseline_tables
+    assert "alembic_version" not in baseline_tables
 
 
 def test_all_objects_remain_prisma_owned_before_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["current_migration_owner"] == "prisma"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "not_started"
+    assert set(manifest["excluded_database_objects"]) == {
+        "_prisma_migrations",
+        "alembic_version",
+    }
     assert manifest["defaults"] == {
         "current_owner": "prisma",
         "target_owner": "alembic",

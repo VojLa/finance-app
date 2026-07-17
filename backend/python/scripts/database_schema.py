@@ -22,6 +22,7 @@ _VOLATILE_PREFIXES = (
 _VOLATILE_LINES = {
     "SET transaction_timeout = 0;",
 }
+_EXCLUDED_TABLES = ("public._prisma_migrations", "public.alembic_version")
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -58,9 +59,10 @@ def dump_schema(database_url: str, pg_dump: str = "pg_dump") -> str:
         "--no-owner",
         "--no-privileges",
         "--quote-all-identifiers",
-        "--exclude-table=public._prisma_migrations",
-        normalize_database_url(database_url),
     ]
+    command.extend(f"--exclude-table={table}" for table in _EXCLUDED_TABLES)
+    command.append(normalize_database_url(database_url))
+
     result = subprocess.run(command, capture_output=True, check=False, text=True)
     if result.returncode != 0:
         detail = result.stderr.strip() or "pg_dump failed without an error message"
@@ -98,7 +100,6 @@ def check_baseline(schema: str, baseline_path: Path, checksum_path: Path) -> int
             file=sys.stderr,
         )
         return 1
-
     if schema == expected:
         print("Database schema matches the committed baseline.")
         return 0
