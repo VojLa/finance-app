@@ -1,32 +1,28 @@
 from fastapi.testclient import TestClient
 
 from app.api.routes import health as health_module
+from app.config.settings import Settings
 from app.main import create_app
 
 
-def test_legacy_health_endpoint_remains_available() -> None:
-    with TestClient(create_app()) as client:
+def test_legacy_health_endpoint_remains_available(test_settings: Settings) -> None:
+    with TestClient(create_app(test_settings)) as client:
         response = client.get("/api/v1/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "finance-app-backend"}
 
 
-def test_liveness_returns_200() -> None:
-    with TestClient(create_app()) as client:
+def test_liveness_returns_200(test_settings: Settings) -> None:
+    with TestClient(create_app(test_settings)) as client:
         response = client.get("/api/v1/health/live")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "finance-app-backend"}
 
 
-def test_readiness_returns_503_without_database(monkeypatch) -> None:
-    async def no_database() -> None:
-        return None
-
-    monkeypatch.setattr("app.lifespan.connect_database", no_database)
-
-    with TestClient(create_app()) as client:
+def test_readiness_returns_503_without_database(test_settings: Settings) -> None:
+    with TestClient(create_app(test_settings)) as client:
         response = client.get("/api/v1/health/ready")
 
     assert response.status_code == 503
@@ -36,12 +32,15 @@ def test_readiness_returns_503_without_database(monkeypatch) -> None:
     }
 
 
-def test_readiness_returns_200_when_database_is_available(monkeypatch) -> None:
+def test_readiness_returns_200_when_database_is_available(
+    monkeypatch,
+    test_settings: Settings,
+) -> None:
     class FakePool:
         async def close(self) -> None:
             return None
 
-    async def fake_database() -> FakePool:
+    async def fake_database(_settings: Settings) -> FakePool:
         return FakePool()
 
     async def database_is_available(_pool: object) -> bool:
@@ -50,7 +49,7 @@ def test_readiness_returns_200_when_database_is_available(monkeypatch) -> None:
     monkeypatch.setattr("app.lifespan.connect_database", fake_database)
     monkeypatch.setattr(health_module, "check_database", database_is_available)
 
-    with TestClient(create_app()) as client:
+    with TestClient(create_app(test_settings)) as client:
         response = client.get("/api/v1/health/ready")
 
     assert response.status_code == 200

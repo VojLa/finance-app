@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AccountSummary(BaseModel):
@@ -29,5 +29,4 @@ class PortfolioSummary(BaseModel):
     total_cost: float
     accounts: list[AccountSummary]
     holdings: list[HoldingSummary]
-    warnings: list[str] = []
-
+    warnings: list[str] = Field(default_factory=list)

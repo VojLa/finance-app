@@ -3,11 +3,10 @@ from collections.abc import AsyncIterator
 import asyncpg
 from fastapi import HTTPException, Request
 
-from app.config.settings import get_settings
+from app.config.settings import Settings
 
 
-async def connect_database() -> asyncpg.Pool | None:
-    settings = get_settings()
+async def connect_database(settings: Settings) -> asyncpg.Pool | None:
     if not settings.database_url:
         return None
     return await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)

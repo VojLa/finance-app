@@ -5,4 +5,10 @@ dist
 .venv
 __pycache__
 .pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+*.egg-info
 target

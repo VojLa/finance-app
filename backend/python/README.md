@@ -1,41 +1,31 @@
 # Python Backend
 
-The Python backend is the primary application backend for the migration toward the
-`0.1 - Architecture Locked` milestone. It owns FastAPI transport, import orchestration,
-financial application services, background job entry points, and provider integrations.
+The Python backend is the primary application backend for the
+`0.1 - Architecture Locked` milestone. It owns FastAPI transport, financial
+application services, import orchestration, background job entry points, and provider
+integrations.
+
+Architectural decisions and milestone scope are documented in [`!planning`](../../!planning).
 
 ## Requirements
 
-- Python 3.12 or newer
+- Python `3.12.10` (declared in [`.python-version`](./.python-version))
+- [`uv`](https://docs.astral.sh/uv/) for the primary development workflow
 - PostgreSQL for readiness and data-backed endpoints
-- Docker Compose when running the full local stack
+- Docker Compose for the full local stack
 
-Recommended local version:
-
-- Python `3.12.10`
-
-The repository includes [`.python-version`](./.python-version) so the expected version is explicit.
-
-## Local installation
+## Install dependencies
 
 From `backend/python`:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .[dev]
-```
-
-On Linux or macOS, activate the environment with:
-
 ```bash
-source .venv/bin/activate
+uv sync --frozen --extra dev
 ```
 
-## Windows bootstrap
+### Windows recovery bootstrap
 
-For Windows there is a verified bootstrap script that recreates `.venv`, installs dev
-dependencies, and can optionally run tests and lint:
+The PowerShell bootstrap recreates `.venv`, discovers Python 3.12, and installs the
+backend with development dependencies:
 
 ```powershell
 cd backend/python
@@ -43,18 +33,16 @@ cd backend/python
 .\bootstrap.ps1 -RunChecks
 ```
 
-If your Python 3.12 executable is elsewhere:
+An explicit interpreter can be supplied when discovery is not sufficient:
 
 ```powershell
 .\bootstrap.ps1 -PythonPath "C:\path\to\python.exe" -RunChecks
 ```
 
-This is the recommended recovery path when a local virtual environment becomes broken.
-
 ## Run locally
 
 ```bash
-uvicorn app.main:app --reload --port 8010
+uv run uvicorn app.main:app --reload --port 8010
 ```
 
 The application is available at `http://localhost:8010`.
@@ -92,35 +80,98 @@ docker compose up --build
 The API container uses `/api/v1/health/live` as its Docker healthcheck. The readiness
 endpoint additionally verifies PostgreSQL connectivity.
 
-## Tests and linting
+## Development checks
 
-From `backend/python`:
+Run the complete backend quality gate:
 
 ```bash
-pytest
-ruff check .
+uv run python scripts/check.py
 ```
 
-Or, without activating the environment:
+The command runs, in order:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe -m ruff check .
+1. Ruff linting
+2. Ruff formatting check
+3. mypy type checking
+4. pytest with branch coverage
+
+Individual commands:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy app tests
+uv run pytest
+uv run pytest --cov=app --cov-report=term-missing
 ```
 
-The application tests cover FastAPI creation, root metadata, OpenAPI generation,
-liveness, readiness without a database, and readiness with a mocked healthy database.
+The initial coverage threshold is 70 percent. The threshold should increase as domain
+modules replace migration code.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ENVIRONMENT` | `development` | `development`, `test`, or `production` |
+| `DATABASE_URL` | unset | PostgreSQL connection string |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
+| `LOG_JSON` | `false` | Emit machine-readable JSON logs |
+| `DOCS_ENABLED` | `true` | Enable `/docs` and `/openapi.json` |
+
+Production startup requires:
+
+```text
+DATABASE_URL=<configured PostgreSQL URL>
+LOG_JSON=true
+DOCS_ENABLED=false
+ENVIRONMENT=production
+```
+
+Invalid production settings stop application startup instead of falling back to unsafe
+development defaults.
+
+## API platform conventions
+
+Application errors use a stable envelope:
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "Resource was not found.",
+    "request_id": "9ae1021f-f78c-4bea-a860-c643ae127f55"
+  }
+}
+```
+
+Every request receives an `X-Request-ID` response header. A valid UUID supplied by the
+client is propagated; an invalid or missing value is replaced. Structured request logs
+include the request ID, method, path, status code, duration, and environment. Request
+bodies, cookies, authorization headers, and financial payloads are not logged.
+
+Health endpoints intentionally keep their small orchestration-friendly response format
+instead of the application error envelope.
+
+## Continuous integration
+
+`.github/workflows/backend-python.yml` runs when backend files or the workflow itself
+change. It installs the locked dependencies with `uv sync --frozen` and runs the same
+Ruff, mypy, and pytest quality checks as the local quality gate.
 
 ## Project structure
 
 ```text
 app/
     api/                 HTTP routing and API version aggregation
-    config/              application settings
+    config/              validated application settings
     db/                  database connection lifecycle and health checks
     modules/             domain-owned application code and API adapters
+    shared/              error, request-context, and logging infrastructure
     lifespan.py          process startup and shutdown resources
     main.py              FastAPI application factory
+
+scripts/
+    check.py              local quality gate
 
 tests/                   application and API regression tests
 ```
@@ -131,7 +182,7 @@ Rules:
 - `api/` is a thin transport layer.
 - Domain endpoints belong to their owning module.
 - `db/` contains shared database infrastructure, not financial rules.
-- New business logic must not be added to Next.js route handlers as its long-term source of truth.
+- New business logic must not use Next.js route handlers as its long-term source of truth.
 
 ## Portfolio parity check
 

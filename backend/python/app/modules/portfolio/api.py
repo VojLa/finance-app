@@ -6,7 +6,6 @@ from app.modules.portfolio.models import PortfolioSummary
 from app.modules.portfolio.repository import PortfolioRepository
 from app.modules.portfolio.service import PortfolioService
 
-
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
