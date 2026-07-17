@@ -41,6 +41,13 @@ jobs:
       - name: Install backend dependencies
         run: uv sync --extra dev
 
+      - name: Upload generated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-lock
+          path: backend/python/uv.lock
+          if-no-files-found: error
+
       - name: Ruff lint
         run: uv run ruff check .
 
