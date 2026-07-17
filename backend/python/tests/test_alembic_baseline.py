@@ -16,9 +16,7 @@ from scripts.alembic_baseline import (
 )
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-REVISION_PATH = (
-    BACKEND_ROOT / "migrations" / "versions" / "3d0001base_prisma_schema_baseline.py"
-)
+REVISION_PATH = BACKEND_ROOT / "migrations" / "versions" / "3d0001base_prisma_schema_baseline.py"
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
 

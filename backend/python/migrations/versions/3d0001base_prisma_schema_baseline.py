@@ -5,6 +5,7 @@ Revises: None
 Create Date: 2026-07-17
 
 """
+
 from collections.abc import Sequence
 
 revision: str = "3d0001base"
