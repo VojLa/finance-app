@@ -42,25 +42,28 @@ jobs:
         run: uv sync --extra dev
 
       - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
         shell: bash
         run: |
           set +e
-          uv run ruff check . --fix --exit-non-zero-on-fix
+          uv run ruff format --check .
           status=$?
-          git diff -- . > ruff-fix.patch
-          cat ruff-fix.patch
+          if [ $status -ne 0 ]; then
+            uv run ruff format .
+            git diff -- . > ruff-format.patch
+            cat ruff-format.patch
+          fi
           exit $status
 
-      - name: Upload Ruff fix patch
+      - name: Upload Ruff format patch
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ruff-fix-patch
-          path: backend/python/ruff-fix.patch
+          name: ruff-format-patch
+          path: backend/python/ruff-format.patch
           if-no-files-found: error
-
-      - name: Ruff format
-        run: uv run ruff format --check .
 
       - name: Mypy
         run: uv run mypy app tests
