@@ -1,6 +1,7 @@
 import asyncio
-from typing import Any
+from decimal import Decimal
 
+from app.modules.portfolio.contracts import AccountRow, HoldingRow
 from app.modules.portfolio.service import PortfolioService
 
 
@@ -9,29 +10,29 @@ class FakePortfolioRepository:
         self,
         user_id: str,
         account_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[AccountRow]:
         assert user_id == "user-1"
         assert account_id is None
         return [
-            {"id": "account-1", "name": "Broker", "type": "broker", "currency": "EUR"},
+            AccountRow(id="account-1", name="Broker", type="broker", currency="EUR"),
         ]
 
-    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]:
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[HoldingRow]:
         assert account_ids == ["account-1"]
         return [
-            {
-                "id": "holding-1",
-                "account_id": "account-1",
-                "account_name": "Broker",
-                "account_currency": "EUR",
-                "symbol": "VUAA",
-                "name": "Vanguard S&P 500",
-                "asset_type": "etf",
-                "quantity": 2,
-                "avg_buy_price": 100,
-                "currency": "USD",
-                "listing_id": "listing-1",
-            }
+            HoldingRow(
+                id="holding-1",
+                account_id="account-1",
+                account_name="Broker",
+                account_currency="EUR",
+                symbol="VUAA",
+                name="Vanguard S&P 500",
+                asset_type="etf",
+                quantity=Decimal("2"),
+                avg_buy_price=Decimal("100"),
+                currency="USD",
+                listing_id="listing-1",
+            )
         ]
 
     async def latest_exchange_rates(

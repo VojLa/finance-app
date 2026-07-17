@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 current_migration_owner = "prisma"
 target_migration_owner = "alembic"
 cutover_status = "not_started"
@@ -42,3 +42,8 @@ read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate"]
 read_enums = []
 transitive_read_tables = ["User", "Asset", "AssetListing"]
 transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "PriceSource", "AssetType", "ExchangeRateSource"]
+
+[sqlalchemy_mirror]
+state = "mirrored_in_sqlalchemy"
+tables = ["User", "Account", "AccountMember", "Asset", "AssetListing", "Holding", "ExchangeRate"]
+enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "AssetType", "PriceSource", "ExchangeRateSource"]

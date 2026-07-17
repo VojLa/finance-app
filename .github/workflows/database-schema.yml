@@ -6,9 +6,16 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "backend/python/app/db/**"
+      - "backend/python/app/lifespan.py"
+      - "backend/python/app/modules/portfolio/**"
       - "backend/python/database/**"
+      - "backend/python/pyproject.toml"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
+      - "backend/python/tests/test_database_url.py"
+      - "backend/python/tests/test_sqlalchemy_persistence.py"
       - "backend/python/uv.lock"
       - ".github/workflows/database-schema.yml"
   push:
@@ -18,9 +25,16 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "backend/python/app/db/**"
+      - "backend/python/app/lifespan.py"
+      - "backend/python/app/modules/portfolio/**"
       - "backend/python/database/**"
+      - "backend/python/pyproject.toml"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
+      - "backend/python/tests/test_database_url.py"
+      - "backend/python/tests/test_sqlalchemy_persistence.py"
       - "backend/python/uv.lock"
       - ".github/workflows/database-schema.yml"
 
@@ -90,6 +104,14 @@ jobs:
         working-directory: backend/python
         run: uv run python scripts/database_schema.py --check
 
-      - name: Validate schema ownership inventory
+      - name: Validate ownership and SQLAlchemy metadata
         working-directory: backend/python
-        run: uv run pytest tests/test_database_schema.py
+        run: >-
+          uv run pytest
+          tests/test_database_schema.py
+          tests/test_database_models.py
+          tests/test_database_url.py
+
+      - name: Verify SQLAlchemy repository against migrated schema
+        working-directory: backend/python
+        run: uv run pytest tests/test_sqlalchemy_persistence.py -v
