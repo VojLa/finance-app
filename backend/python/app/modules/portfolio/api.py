@@ -1,7 +1,7 @@
 import asyncpg
 from fastapi import APIRouter, Depends, Query
 
-from app.core.db import get_db
+from app.db.connection import get_db
 from app.modules.portfolio.models import PortfolioSummary
 from app.modules.portfolio.repository import PortfolioRepository
 from app.modules.portfolio.service import PortfolioService
@@ -18,4 +18,3 @@ async def get_portfolio(
 ) -> PortfolioSummary:
     service = PortfolioService(PortfolioRepository(connection))
     return await service.get_portfolio(user_id=user_id, account_id=account_id)
-

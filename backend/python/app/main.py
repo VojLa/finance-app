@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app.core.db import create_pool
-from app.routers.health import router as health_router
-from app.routers.portfolio import router as portfolio_router
+from app.api.router import api_router, legacy_router
+from app.config.settings import get_settings
+from app.lifespan import lifespan
 
 
 class RootResponse(BaseModel):
@@ -13,31 +13,29 @@ class RootResponse(BaseModel):
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
-        title="Finance App Backend",
-        version="0.1.0",
+        title=settings.app_name,
+        version=settings.app_version,
         description="Python backend for orchestration, imports, jobs, and service APIs.",
+        lifespan=lifespan,
     )
-    app.include_router(health_router)
-    app.include_router(portfolio_router)
+    app.include_router(api_router)
+    app.include_router(legacy_router)
 
     @app.get("/", response_model=RootResponse)
     def root() -> RootResponse:
         return RootResponse(
             service="finance-app-backend",
-            version="0.1.0",
-            endpoints=["/health", "/portfolio", "/docs", "/openapi.json"],
+            version=settings.app_version,
+            endpoints=[
+                "/api/v1/health/live",
+                "/api/v1/health/ready",
+                "/api/v1/portfolio",
+                "/docs",
+                "/openapi.json",
+            ],
         )
-
-    @app.on_event("startup")
-    async def startup() -> None:
-        app.state.db_pool = await create_pool()
-
-    @app.on_event("shutdown")
-    async def shutdown() -> None:
-        pool = getattr(app.state, "db_pool", None)
-        if pool is not None:
-            await pool.close()
 
     return app
 
