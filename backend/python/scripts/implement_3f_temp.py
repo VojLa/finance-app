@@ -198,14 +198,23 @@ replace_once(
     'CUTOVER_REVISION = "3e0001cutover"\n',
     'CUTOVER_REVISION = "3e0001cutover"\nHEAD_REVISION = "3f0001acctnote"\n',
 )
-replace_once(
-    database_migrate,
+runner_source = database_migrate.read_text(encoding="utf-8")
+runner_old = (
     "    alembic_baseline.verify_canonical_baseline(database_url, pg_dump)\n"
-    "    alembic_baseline.verify_sqlalchemy_parity(database_url)\n",
+    "    alembic_baseline.verify_sqlalchemy_parity(database_url)\n"
+)
+runner_new = (
     "    current_revision = state.version_revisions[0]\n"
     "    alembic_baseline.verify_revision_schema(database_url, pg_dump, current_revision)\n"
     "    if require_head:\n"
-    "        alembic_baseline.verify_sqlalchemy_parity(database_url)\n",
+    "        alembic_baseline.verify_sqlalchemy_parity(database_url)\n"
+)
+if runner_old not in runner_source:
+    raise RuntimeError("Prepared database verification block is missing.")
+database_migrate.write_text(
+    runner_source.replace(runner_old, runner_new, 1),
+    encoding="utf-8",
+    newline="\n",
 )
 replace_once(
     database_migrate,
@@ -318,7 +327,7 @@ new_graph = '''def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> N
     for token in ("op.add_column", '"Account"', '"notes"', "op.drop_column"):
         if token not in head_source:
             raise RuntimeError(f"First schema revision is missing required token {token}.")
-    if "WHERE \"notes\" IS NOT NULL" not in head_source:
+    if 'WHERE "notes" IS NOT NULL' not in head_source:
         raise RuntimeError("Account notes downgrade must guard against data loss.")
 
 
