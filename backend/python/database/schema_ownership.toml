@@ -151,7 +151,7 @@ creation_enabled = false
 deployment_enabled = false
 legacy_archive_verification_enabled = true
 archive_manifest = "database/prisma_migration_archive.toml"
-archive_sha256 = "pending"
+archive_sha256 = "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
 
 [prisma_runtime]
 state = "compatibility_mirror"

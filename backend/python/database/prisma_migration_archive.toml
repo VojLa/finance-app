@@ -1,0 +1,11 @@
+version = 1
+state = "frozen"
+migration_creation_enabled = false
+migration_deployment_enabled = false
+legacy_archive_verification_enabled = true
+last_migration = "20260710000000_snapshot_currency_breakdowns"
+file_count = 4
+migration_count = 3
+aggregate_sha256 = "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
+hash_algorithm = "sha256(relative_path NUL content_sha256 NUL)"
+cutover_baseline_revision = "3d0001base"
