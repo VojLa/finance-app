@@ -106,6 +106,7 @@ def local_table_snapshot(table: Table) -> dict[str, Any]:
             "unique": index.unique,
         }
         for index in table.indexes
+        if not index.unique
     ]
 
     return {
@@ -160,18 +161,24 @@ def reflected_table_snapshot(inspector: Inspector, table_name: str) -> dict[str,
         for foreign_key in inspector.get_foreign_keys(table_name, schema="public")
     ]
 
+    reflected_indexes = inspector.get_indexes(table_name, schema="public")
     unique_constraints = [
         _sorted_columns(constraint.get("column_names"))
         for constraint in inspector.get_unique_constraints(table_name, schema="public")
     ]
+    unique_constraints.extend(
+        _sorted_columns(index.get("column_names"))
+        for index in reflected_indexes
+        if index.get("unique")
+    )
 
     indexes = [
         {
             "columns": _sorted_columns(index.get("column_names")),
-            "unique": bool(index.get("unique")),
+            "unique": False,
         }
-        for index in inspector.get_indexes(table_name, schema="public")
-        if not index.get("duplicates_constraint")
+        for index in reflected_indexes
+        if not index.get("unique") and not index.get("duplicates_constraint")
     ]
 
     primary_key = inspector.get_pk_constraint(table_name, schema="public")
