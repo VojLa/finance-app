@@ -69,8 +69,6 @@ async def test_alembic_cutover_preserves_schema_and_data() -> None:
             "stamp",
             BASELINE_REVISION,
         )
-        check = run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "check")
-        assert "No new upgrade operations detected" in check.stdout + check.stderr
         run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "upgrade", "head")
         run_command(
             "-m",
@@ -80,6 +78,8 @@ async def test_alembic_cutover_preserves_schema_and_data() -> None:
             "current",
             "--check-heads",
         )
+        check = run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "check")
+        assert "No new upgrade operations detected" in check.stdout + check.stderr
 
         async with engine.connect() as connection:
             preserved_user = await connection.scalar(
