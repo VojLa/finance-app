@@ -3,14 +3,19 @@ from collections.abc import AsyncIterator
 import asyncpg
 from fastapi import HTTPException, Request
 
-from app.core.config import get_settings
+from app.config.settings import get_settings
 
 
-async def create_pool() -> asyncpg.Pool | None:
+async def connect_database() -> asyncpg.Pool | None:
     settings = get_settings()
     if not settings.database_url:
         return None
     return await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+
+
+async def close_database(pool: asyncpg.Pool | None) -> None:
+    if pool is not None:
+        await pool.close()
 
 
 async def get_db(request: Request) -> AsyncIterator[asyncpg.Connection]:
@@ -23,4 +28,3 @@ async def get_db(request: Request) -> AsyncIterator[asyncpg.Connection]:
 
     async with pool.acquire() as connection:
         yield connection
-
