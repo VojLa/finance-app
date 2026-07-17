@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feat/alembic-account-notes
 
       - uses: actions/setup-node@v4
         with:
@@ -56,4 +58,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/implement-3f.yml backend/python/3f-format-report.txt
           git commit -m "chore: capture 3F formatting diagnostic"
-          git push
+          git push origin HEAD:feat/alembic-account-notes
