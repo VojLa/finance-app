@@ -1,75 +1,102 @@
-from decimal import Decimal
-from typing import Any
+from enum import StrEnum
 
-import asyncpg
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import AccountMemberModel, AccountModel, ExchangeRateModel, HoldingModel
+from app.modules.portfolio.contracts import AccountRow, HoldingRow
+from app.modules.portfolio.conversions import to_float
 
 
-def to_float(value: Any) -> float:
-    if value is None:
-        return 0.0
-    if isinstance(value, Decimal):
-        return float(value)
-    return float(value)
+def _enum_value(value: StrEnum | str) -> str:
+    return value.value if isinstance(value, StrEnum) else value
 
 
 class PortfolioRepository:
-    def __init__(self, connection: asyncpg.Connection):
-        self.connection = connection
+    def __init__(self, session: AsyncSession):
+        self.session = session
 
     async def accessible_accounts(
         self,
         user_id: str,
         account_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        rows = await self.connection.fetch(
-            """
-            SELECT a."id", a."name", a."type"::text AS "type", a."currency"
-            FROM "Account" a
-            JOIN "AccountMember" am ON am."accountId" = a."id"
-            WHERE am."userId" = $1
-              AND a."isArchived" = false
-              AND ($2::text IS NULL OR a."id" = $2)
-            ORDER BY a."createdAt" ASC
-            """,
-            user_id,
-            account_id,
+    ) -> list[AccountRow]:
+        statement = (
+            select(
+                AccountModel.id,
+                AccountModel.name,
+                AccountModel.type,
+                AccountModel.currency,
+            )
+            .join(
+                AccountMemberModel,
+                AccountMemberModel.account_id == AccountModel.id,
+            )
+            .where(
+                AccountMemberModel.user_id == user_id,
+                AccountModel.is_archived.is_(False),
+            )
+            .order_by(AccountModel.created_at.asc())
         )
-        return [dict(row) for row in rows]
+        if account_id is not None:
+            statement = statement.where(AccountModel.id == account_id)
 
-    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]:
+        rows = (await self.session.execute(statement)).all()
+        return [
+            AccountRow(
+                id=row.id,
+                name=row.name,
+                type=_enum_value(row.type),
+                currency=row.currency,
+            )
+            for row in rows
+        ]
+
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[HoldingRow]:
         if not account_ids:
             return []
 
-        rows = await self.connection.fetch(
-            """
-            SELECT
-              h."id",
-              h."accountId" AS "account_id",
-              a."name" AS "account_name",
-              a."currency" AS "account_currency",
-              h."symbol",
-              h."name",
-              h."assetType"::text AS "asset_type",
-              h."quantity",
-              h."avgBuyPrice" AS "avg_buy_price",
-              h."currency",
-              h."listingId" AS "listing_id"
-            FROM "Holding" h
-            JOIN "Account" a ON a."id" = h."accountId"
-            WHERE h."accountId" = ANY($1::text[])
-            ORDER BY a."createdAt" ASC, h."symbol" ASC
-            """,
-            account_ids,
+        statement = (
+            select(
+                HoldingModel.id,
+                HoldingModel.account_id,
+                AccountModel.name.label("account_name"),
+                AccountModel.currency.label("account_currency"),
+                HoldingModel.symbol,
+                HoldingModel.name,
+                HoldingModel.asset_type,
+                HoldingModel.quantity,
+                HoldingModel.avg_buy_price,
+                HoldingModel.currency,
+                HoldingModel.listing_id,
+            )
+            .join(AccountModel, AccountModel.id == HoldingModel.account_id)
+            .where(HoldingModel.account_id.in_(account_ids))
+            .order_by(AccountModel.created_at.asc(), HoldingModel.symbol.asc())
         )
-        return [dict(row) for row in rows]
+        rows = (await self.session.execute(statement)).all()
+        return [
+            HoldingRow(
+                id=row.id,
+                account_id=row.account_id,
+                account_name=row.account_name,
+                account_currency=row.account_currency,
+                symbol=row.symbol,
+                name=row.name,
+                asset_type=_enum_value(row.asset_type),
+                quantity=row.quantity,
+                avg_buy_price=row.avg_buy_price,
+                currency=row.currency,
+                listing_id=row.listing_id,
+            )
+            for row in rows
+        ]
 
     async def latest_exchange_rates(
         self,
         currency_pairs: list[tuple[str, str]],
     ) -> dict[tuple[str, str], float]:
-        unique_pairs = sorted(
-            {(from_currency, to_currency) for from_currency, to_currency in currency_pairs}
-        )
+        unique_pairs = sorted(set(currency_pairs))
         rates: dict[tuple[str, str], float] = {}
 
         for from_currency, to_currency in unique_pairs:
@@ -77,19 +104,17 @@ class PortfolioRepository:
                 rates[(from_currency, to_currency)] = 1.0
                 continue
 
-            row = await self.connection.fetchrow(
-                """
-                SELECT "rate"
-                FROM "ExchangeRate"
-                WHERE "fromCurrency" = $1
-                  AND "toCurrency" = $2
-                ORDER BY "date" DESC
-                LIMIT 1
-                """,
-                from_currency,
-                to_currency,
+            statement = (
+                select(ExchangeRateModel.rate)
+                .where(
+                    ExchangeRateModel.from_currency == from_currency,
+                    ExchangeRateModel.to_currency == to_currency,
+                )
+                .order_by(ExchangeRateModel.date.desc())
+                .limit(1)
             )
-            if row:
-                rates[(from_currency, to_currency)] = to_float(row["rate"])
+            rate = (await self.session.execute(statement)).scalar_one_or_none()
+            if rate is not None:
+                rates[(from_currency, to_currency)] = to_float(rate)
 
         return rates

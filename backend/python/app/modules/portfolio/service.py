@@ -1,7 +1,8 @@
-from typing import Any, Protocol
+from typing import Protocol
 
+from app.modules.portfolio.contracts import AccountRow, HoldingRow
+from app.modules.portfolio.conversions import to_float
 from app.modules.portfolio.models import AccountSummary, HoldingSummary, PortfolioSummary
-from app.modules.portfolio.repository import to_float
 
 
 class PortfolioRepositoryPort(Protocol):
@@ -9,9 +10,9 @@ class PortfolioRepositoryPort(Protocol):
         self,
         user_id: str,
         account_id: str | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[AccountRow]: ...
 
-    async def holdings_for_accounts(self, account_ids: list[str]) -> list[dict[str, Any]]: ...
+    async def holdings_for_accounts(self, account_ids: list[str]) -> list[HoldingRow]: ...
 
     async def latest_exchange_rates(
         self,

@@ -13,8 +13,8 @@ migration ownership by itself.
 - target migration owner: Alembic
 - cutover status: not started
 - production schema changes: still created by Prisma migrations
-- SQLAlchemy models: not introduced by this inventory step
-- Alembic revisions: not introduced by this inventory step
+- SQLAlchemy mirror: first portfolio read slice implemented
+- Alembic revisions: not introduced
 
 ## Files
 
@@ -57,16 +57,16 @@ still modify it.
 6. After cutover, create new production schema changes only in Alembic.
 7. Never rewrite existing Prisma migration history merely to make the baseline cleaner.
 
-## First Python persistence slice
+## First SQLAlchemy persistence slice
 
-The current portfolio read model directly queries:
+The portfolio read path directly uses:
 
 - `Account`
 - `AccountMember`
 - `Holding`
 - `ExchangeRate`
 
-Its first SQLAlchemy mapping slice will also require these transitive dependencies:
+Its mapped transitive dependencies are:
 
 - `User`
 - `Asset`
@@ -78,9 +78,9 @@ Its first SQLAlchemy mapping slice will also require these transitive dependenci
 - `PriceSource`
 - `ExchangeRateSource`
 
-These objects remain `prisma_owned` during step 3A. The inventory only records their
-current Python usage so that step 3B can introduce mappings without an accidental schema
-cutover.
+These objects are recorded as `mirrored_in_sqlalchemy` in the manifest while their current
+migration owner remains Prisma. The Python application uses explicit read queries and does
+not run schema DDL.
 
 ## Generate or verify the baseline
 
@@ -99,3 +99,7 @@ python scripts/database_schema.py --check
 
 `--write` is an explicit maintenance command. CI uses `--check` and fails when the live
 schema differs from the committed baseline or when the checksum is invalid.
+
+The database workflow also runs the SQLAlchemy metadata tests and reads fixture data through
+the portfolio repository against a clean PostgreSQL database created by the committed Prisma
+migrations.

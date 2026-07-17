@@ -36,17 +36,20 @@ def test_readiness_returns_200_when_database_is_available(
     monkeypatch,
     test_settings: Settings,
 ) -> None:
-    class FakePool:
-        async def close(self) -> None:
+    class FakeEngine:
+        async def dispose(self) -> None:
             return None
 
-    async def fake_database(_settings: Settings) -> FakePool:
-        return FakePool()
+    class FakeDatabase:
+        engine = FakeEngine()
 
-    async def database_is_available(_pool: object) -> bool:
+    def fake_database(_settings: Settings) -> FakeDatabase:
+        return FakeDatabase()
+
+    async def database_is_available(_database: object) -> bool:
         return True
 
-    monkeypatch.setattr("app.lifespan.connect_database", fake_database)
+    monkeypatch.setattr("app.lifespan.create_database", fake_database)
     monkeypatch.setattr(health_module, "check_database", database_is_available)
 
     with TestClient(create_app(test_settings)) as client:

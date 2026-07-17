@@ -6,6 +6,10 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.dialects.postgresql import ENUM
+
+from app.db import models as database_models  # noqa: F401
+from app.db.base import Base
 from scripts.database_schema import normalize_database_url, normalize_schema_dump
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +61,17 @@ def baseline_objects() -> tuple[set[str], set[str]]:
     return tables, enums
 
 
+def sqlalchemy_objects() -> tuple[set[str], set[str]]:
+    tables = {table.name for table in Base.metadata.tables.values()}
+    enums = {
+        column.type.name
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, ENUM) and column.type.name is not None
+    }
+    return tables, enums
+
+
 def test_ownership_manifest_matches_prisma_models_and_enums() -> None:
     prisma_models, prisma_enums = prisma_objects()
     manifest_tables, manifest_enums = manifest_objects()
@@ -77,6 +92,7 @@ def test_baseline_matches_ownership_manifest() -> None:
 def test_all_objects_remain_prisma_owned_before_cutover() -> None:
     manifest = load_manifest()
 
+    assert manifest["schema_version"] == 2
     assert manifest["current_migration_owner"] == "prisma"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "not_started"
@@ -112,11 +128,26 @@ def test_python_persistence_slice_is_explicit() -> None:
     }
 
 
+def test_sqlalchemy_mirror_matches_declared_metadata() -> None:
+    mirror = load_manifest()["sqlalchemy_mirror"]
+    mapped_tables, mapped_enums = sqlalchemy_objects()
+    manifest_tables, manifest_enums = manifest_objects()
+    baseline_tables, baseline_enums = baseline_objects()
+
+    assert mirror["state"] == "mirrored_in_sqlalchemy"
+    assert set(mirror["tables"]) == mapped_tables
+    assert set(mirror["enums"]) == mapped_enums
+    assert mapped_tables <= set(manifest_tables)
+    assert mapped_enums <= set(manifest_enums)
+    assert mapped_tables <= baseline_tables
+    assert mapped_enums <= baseline_enums
+
+
 def test_baseline_checksum_is_valid() -> None:
-    baseline = BASELINE_PATH.read_text(encoding="utf-8")
+    baseline = BASELINE_PATH.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
     expected_digest = CHECKSUM_PATH.read_text(encoding="utf-8").split()[0]
 
-    assert hashlib.sha256(baseline.encode("utf-8")).hexdigest() == expected_digest
+    assert hashlib.sha256(baseline).hexdigest() == expected_digest
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:
