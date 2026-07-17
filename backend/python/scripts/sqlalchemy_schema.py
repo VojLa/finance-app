@@ -191,7 +191,7 @@ def reflected_snapshot(inspector: Inspector) -> dict[str, Any]:
     tables = {
         table_name: reflected_table_snapshot(inspector, table_name) for table_name in table_names
     }
-    get_enums = getattr(inspector, "get_enums")
+    get_enums = inspector.get_enums
     enums = {enum["name"]: list(enum["labels"]) for enum in get_enums(schema="public")}
     return {"tables": tables, "enums": dict(sorted(enums.items()))}
 
