@@ -1,0 +1,50 @@
+name: Diagnose 3E-A
+
+on:
+  push:
+    branches:
+      - build/alembic-cutover-preparation
+    paths:
+      - ".github/workflows/diagnose-3e-a.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Capture npm ci
+        shell: bash
+        run: |
+          set +e
+          npm ci > npm-ci-report.txt 2>&1
+          echo "exit_code=$?" >> npm-ci-report.txt
+          exit 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: uv sync --frozen --extra dev
+      - name: Capture Ruff
+        working-directory: backend/python
+        shell: bash
+        run: |
+          set +e
+          uv run ruff check . > ruff-report.txt 2>&1
+          echo "exit_code=$?" >> ruff-report.txt
+          exit 0
+      - name: Commit reports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add npm-ci-report.txt backend/python/ruff-report.txt
+          git commit -m "chore: capture 3E-A diagnostics"
+          git push
