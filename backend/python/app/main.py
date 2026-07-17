@@ -17,13 +17,19 @@ class RootResponse(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    configure_logging(json_logs=settings.environment != "development")
+    configure_logging(log_level=settings.log_level, json_logs=settings.log_json)
+
+    docs_url = "/docs" if settings.docs_enabled else None
+    openapi_url = "/openapi.json" if settings.docs_enabled else None
 
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         description="Python backend for orchestration, imports, jobs, and service APIs.",
         lifespan=lifespan,
+        docs_url=docs_url,
+        redoc_url=None,
+        openapi_url=openapi_url,
     )
     app.state.settings = settings
     app.add_middleware(RequestContextMiddleware)
@@ -33,16 +39,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", response_model=RootResponse)
     def root() -> RootResponse:
+        endpoints = [
+            "/api/v1/health/live",
+            "/api/v1/health/ready",
+            "/api/v1/portfolio",
+        ]
+        if settings.docs_enabled:
+            endpoints.extend(["/docs", "/openapi.json"])
+
         return RootResponse(
             service="finance-app-backend",
             version=settings.app_version,
-            endpoints=[
-                "/api/v1/health/live",
-                "/api/v1/health/ready",
-                "/api/v1/portfolio",
-                "/docs",
-                "/openapi.json",
-            ],
+            endpoints=endpoints,
         )
 
     return app

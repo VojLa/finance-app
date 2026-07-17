@@ -4,17 +4,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.config.settings import Settings
 from app.main import create_app
 from app.shared.errors import NotFoundError
 
 
 @pytest.fixture
-def error_app(monkeypatch) -> FastAPI:
-    async def no_database() -> None:
-        return None
-
-    monkeypatch.setattr("app.lifespan.connect_database", no_database)
-    app = create_app()
+def error_app(test_settings: Settings) -> FastAPI:
+    app = create_app(test_settings)
 
     @app.get("/_test/items/{item_id}")
     def read_item(item_id: int) -> dict[str, int]:
