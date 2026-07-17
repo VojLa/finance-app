@@ -1,0 +1,6 @@
+npm error code ETARGET
+npm error notarget No matching version found for @types/papaparse@^2.4.6.
+npm error notarget In most cases you or one of your dependencies are requesting
+npm error notarget a package version that doesn't exist.
+npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-07-17T18_40_15_646Z-debug-0.log
+exit_code=1

@@ -1,0 +1,12 @@
+RUF043 Pattern passed to `match=` contains metacharacters but is neither escaped nor raw
+   --> tests/test_migration_policy.py:119:44
+    |
+118 |     (app / "unsafe.py").write_text("Base.metadata.create_all(engine)\n", encoding="utf-8")
+119 |     with pytest.raises(RuntimeError, match="metadata.create_all"):
+    |                                            ^^^^^^^^^^^^^^^^^^^^^
+120 |         verify_runtime_ddl(app)
+    |
+help: Use a raw string or `re.escape()` to make the intention explicit
+
+Found 1 error.
+exit_code=1
