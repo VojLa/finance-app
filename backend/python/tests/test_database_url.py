@@ -8,9 +8,10 @@ def render(database_url: str) -> str:
 
 
 def test_normalize_database_url_uses_asyncpg_and_removes_prisma_schema() -> None:
-    assert render(
-        "postgresql://user:password@localhost:5432/app?schema=public&sslmode=require"
-    ) == "postgresql+asyncpg://user:password@localhost:5432/app?sslmode=require"
+    assert (
+        render("postgresql://user:password@localhost:5432/app?schema=public&sslmode=require")
+        == "postgresql+asyncpg://user:password@localhost:5432/app?sslmode=require"
+    )
 
 
 def test_normalize_database_url_accepts_postgres_alias() -> None:

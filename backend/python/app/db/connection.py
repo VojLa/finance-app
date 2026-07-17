@@ -2,7 +2,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config.settings import Settings
 from app.db.url import normalize_database_url

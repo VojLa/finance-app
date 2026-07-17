@@ -8,8 +8,8 @@ from typing import Any
 
 from sqlalchemy.dialects.postgresql import ENUM
 
-from app.db.base import Base
 from app.db import models as database_models  # noqa: F401
+from app.db.base import Base
 from scripts.database_schema import normalize_database_url, normalize_schema_dump
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
