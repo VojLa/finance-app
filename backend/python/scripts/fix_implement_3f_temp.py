@@ -12,11 +12,11 @@ replacements = (
     (
         '    "from alembic.script import ScriptDirectory\\n\\nfrom scripts import database_schema\\n",\n',
         '    "from alembic.script import ScriptDirectory\\n\\n"\n'
-        '    "try:\\n"\n'
-        '    "    from scripts import database_schema\\n"\n'
-        '    "except ModuleNotFoundError:  # Direct script execution.\\n"\n'
-        '    "    import database_schema\\n",\n',
-        "migration policy dual import",
+        '    "if __package__ in (None, \\\"\\\"):\\n"\n'
+        '    "    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\\n"\n'
+        '    "\\n"\n'
+        '    "from scripts import database_schema\\n",\n',
+        "migration policy direct-execution import",
     ),
 )
 
