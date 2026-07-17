@@ -12,3 +12,4 @@ coverage.xml
 htmlcov
 *.egg-info
 target
+instrukce.md
