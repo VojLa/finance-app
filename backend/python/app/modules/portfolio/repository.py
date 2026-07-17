@@ -60,7 +60,9 @@ class PortfolioRepository:
         return [dict(row) for row in rows]
 
     async def latest_exchange_rates(self, currency_pairs: list[tuple[str, str]]):
-        unique_pairs = sorted({(from_currency, to_currency) for from_currency, to_currency in currency_pairs})
+        unique_pairs = sorted(
+            {(from_currency, to_currency) for from_currency, to_currency in currency_pairs}
+        )
         rates: dict[tuple[str, str], float] = {}
 
         for from_currency, to_currency in unique_pairs:
@@ -84,4 +86,3 @@ class PortfolioRepository:
                 rates[(from_currency, to_currency)] = to_float(row["rate"])
 
         return rates
-

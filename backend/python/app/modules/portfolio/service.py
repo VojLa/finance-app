@@ -65,4 +65,3 @@ class PortfolioService:
             holdings=holdings,
             warnings=warnings,
         )
-

@@ -63,7 +63,9 @@ async def http_error_handler(request: Request, error: StarletteHTTPException) ->
         status.HTTP_409_CONFLICT: "conflict",
         status.HTTP_503_SERVICE_UNAVAILABLE: "dependency_unavailable",
     }
-    message = error.detail if isinstance(error.detail, str) else "The request could not be completed."
+    message = (
+        error.detail if isinstance(error.detail, str) else "The request could not be completed."
+    )
     return _response(
         request=request,
         status_code=error.status_code,
