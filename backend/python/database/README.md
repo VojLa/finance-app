@@ -1,24 +1,22 @@
 # Database schema ownership
 
-This directory records the physical PostgreSQL schema during the controlled migration from
-Prisma to SQLAlchemy and Alembic.
+This directory records the physical PostgreSQL schema and the completed migration ownership
+transfer from Prisma to SQLAlchemy and Alembic.
 
-The governing decision is ADR 0006 in `!planning/decisions`. Prisma remains the migration
-owner until the explicit activation PR in step 3E-B. A complete SQLAlchemy mirror, an Alembic
-baseline, or a prepared deployment runner does not transfer ownership by itself.
+The governing decision is ADR 0006 in `!planning/decisions`.
 
 ## Current state
 
-- current migration owner: Prisma
+- current migration owner: Alembic
 - target migration owner: Alembic
-- cutover status: ready, not activated
-- production schema changes: no new Prisma migrations may be created
-- frozen Prisma history: retained for legacy bootstrap verification
-- SQLAlchemy mirror: complete for all 30 application tables and 27 enum types
-- Alembic revision graph: one verified no-op baseline revision
-- prepared Alembic runner: check, upgrade, and empty-database bootstrap
-- Alembic application-object ownership: none
-- Prisma Client: still enabled as a Next.js runtime compatibility layer
+- cutover status: completed
+- SQLAlchemy mirror: complete for all 30 application tables and 27 PostgreSQL enum types
+- Alembic revision graph: inherited baseline `3d0001base` followed by ownership marker
+  `3e0001cutover`
+- active deployment runner: `scripts/database_migrate.py`
+- Prisma migration history: frozen read-only archive
+- Prisma Client: enabled as a Next.js runtime compatibility layer
+- persistent staging or production databases: none at the time of cutover
 
 ## Files
 
@@ -32,68 +30,76 @@ database/
         schema.sha256
     cutover/
         README.md
+        environments.toml
         receipt.template.toml
 ```
 
-`baseline/schema.sql` is generated from a clean PostgreSQL 16 database after applying all
-committed Prisma migrations. It is not handwritten. `_prisma_migrations` and
-`alembic_version` are excluded because they are migration-system metadata rather than
-application schema objects.
+`baseline/schema.sql` represents the PostgreSQL 16 schema created by the final frozen Prisma
+migration history. `_prisma_migrations` and `alembic_version` are excluded because they are
+migration-system metadata rather than application schema objects.
 
-`prisma_migration_archive.toml` records a deterministic aggregate SHA-256 over every file in
-the frozen Prisma migration directory. The hash input is the sorted relative path, a NUL
-separator, the file-content SHA-256, and a second NUL separator.
+`prisma_migration_archive.toml` records a deterministic aggregate SHA-256 over every frozen Prisma
+migration file. Existing files must never be rewritten and no new Prisma migration may be added.
 
-`schema_ownership.toml` records independently migratable application objects. Ownership is
-tracked for tables and PostgreSQL enum types. Indexes, unique constraints, foreign keys,
-checks, and other table-owned child objects inherit the owner and cutover status of their
-table.
+`schema_ownership.toml` records ownership for tables and PostgreSQL enums. Indexes, unique
+constraints, foreign keys, and other child objects inherit the ownership of their table.
+
+`cutover/environments.toml` explicitly records that no persistent remote database existed when the
+ownership transfer completed. The repository therefore does not contain fabricated staging or
+production receipts.
 
 ## Ownership states
 
-- `prisma_owned`: Prisma is the only system allowed to change the object.
-- `mirrored_in_sqlalchemy`: a SQLAlchemy mapping exists, but Prisma still owns migrations.
-- `alembic_owned`: Alembic is the only system allowed to change the object.
-- `retired`: the object is no longer part of the active application schema.
+- `prisma_owned`: historical state before cutover
+- `mirrored_in_sqlalchemy`: SQLAlchemy mapping exists without migration ownership
+- `alembic_owned`: Alembic is the only system allowed to change the object
+- `retired`: object is no longer part of the active application schema
 
-A table or enum must never be marked `alembic_owned` while an active Prisma migration can
-still modify it. During step 3E-A all 30 tables and all 27 enum types remain Prisma-owned.
+All application tables and enums now inherit `alembic_owned` from the manifest defaults.
 
-## Cutover rules
+## Active migration commands
 
-1. Start from a schema produced by the frozen Prisma migration archive.
-2. Keep the canonical baseline and ownership manifest synchronized with that schema.
-3. Verify complete SQLAlchemy metadata parity.
-4. Verify and explicitly stamp every target database at `3d0001base`.
-5. Record a non-secret receipt for every target environment.
-6. Activate Alembic ownership only in the separate step 3E-B PR.
-7. After activation, create new production schema changes only in Alembic.
-8. Never rewrite the frozen Prisma migration history.
-
-## Frozen Prisma migration policy
-
-Run from `backend/python`:
+From the repository root:
 
 ```bash
-python scripts/migration_policy.py --check
+npm run db:check
+npm run db:migrate
+npm run db:deploy
+npm run db:bootstrap
 ```
 
-The policy check verifies:
+`db:migrate` and `db:deploy` both invoke the Alembic runner. The runner:
 
-- the frozen archive file count, migration count, final migration, and aggregate hash,
-- the ownership manifest state,
-- a single-head Alembic revision graph,
-- the fail-closed Prisma migration creation command,
-- the prepared Alembic root commands,
-- the absence of runtime DDL and automatic startup migrations,
-- the absence of raw Prisma migration commands in deployment workflows.
+- rejects unstamped existing databases,
+- rejects unknown revisions,
+- requires a single revision head,
+- serializes upgrades with a PostgreSQL advisory lock,
+- verifies the canonical baseline and SQLAlchemy parity,
+- emits a sanitized migration audit without exposing credentials,
+- never runs from FastAPI or Next.js startup.
 
-The root `db:migrate` command intentionally fails. The existing `db:deploy` alias remains
-unchanged only until the activation PR. CI uses the explicitly named
-`db:prisma:deploy:legacy` command solely to verify the frozen historical bootstrap path.
+For a new empty PostgreSQL database:
 
-Prisma Client, `prisma validate`, `prisma generate`, and Prisma Studio remain available. The
-Prisma schema is a runtime compatibility mirror, not the future migration source of truth.
+```bash
+npm run db:bootstrap
+```
+
+Bootstrap loads the canonical baseline, stamps `3d0001base`, upgrades to `3e0001cutover`, and
+verifies the result. It refuses a non-empty `public` schema.
+
+## Frozen Prisma archive
+
+The Prisma migration archive exists only for historical CI verification. Its restricted wrapper is:
+
+```bash
+CI=true ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY=1 npm run db:prisma:archive:verify
+```
+
+The wrapper checks that the target schema is empty before calling Prisma Migrate. No normal
+production or developer deployment command may invoke Prisma Migrate.
+
+Prisma Client, `prisma validate`, `prisma generate`, and Prisma Studio remain available. The Prisma
+schema is a runtime compatibility mirror, not the migration source of truth.
 
 ## SQLAlchemy metadata parity
 
@@ -101,33 +107,27 @@ The complete SQLAlchemy mirror covers:
 
 - 30 application tables,
 - 27 PostgreSQL enum types,
-- columns and physical names,
-- data types, nullability, and server defaults,
-- primary keys, foreign keys, and `ON DELETE` behavior,
+- columns, names, types, nullability, and server defaults,
+- primary keys, foreign keys, and delete behavior,
 - unique constraints and indexes,
 - enum values and ordering.
 
 Run:
 
 ```bash
+cd backend/python
 python scripts/sqlalchemy_schema.py --check
-```
-
-For diagnostics without connecting to PostgreSQL:
-
-```bash
-python scripts/sqlalchemy_schema.py --print
 ```
 
 The parity checker performs no schema DDL.
 
-## Alembic baseline and prepared runner
+## Alembic ownership boundary
 
-The revision `3d0001base` is a no-op marker for the inherited Prisma schema. Its upgrade does
-not create or alter application objects, and its downgrade is intentionally blocked because
-Alembic did not create the schema.
+The revision `3d0001base` is a no-op marker for the inherited Prisma schema. The revision
+`3e0001cutover` is a second no-op marker recording Alembic ownership. Their downgrades are blocked
+because neither revision created the inherited application schema.
 
-Before stamping an existing database:
+An externally supplied existing database must first pass:
 
 ```bash
 python scripts/database_schema.py --check
@@ -135,61 +135,20 @@ python scripts/sqlalchemy_schema.py --check
 python scripts/alembic_baseline.py --verify
 ```
 
-Only after those checks pass may an operator explicitly run:
+It must then be explicitly stamped at `3d0001base` and upgraded through
+`database_migrate.py upgrade`. Automatic stamping is prohibited.
 
-```bash
-alembic stamp 3d0001base
-python scripts/database_migrate.py check
-python scripts/database_migrate.py upgrade
-```
+## Future schema changes
 
-The prepared runner:
+Every production schema change after this cutover must be an Alembic revision. A revision must
+update SQLAlchemy metadata and must update `schema.prisma` when Prisma Client-visible objects are
+affected. The frozen Prisma migration directory and canonical inherited baseline must not be
+rewritten to represent later changes.
 
-- rejects unstamped existing databases,
-- rejects unknown Alembic revisions,
-- requires a single revision head,
-- serializes upgrade execution with a PostgreSQL advisory lock,
-- verifies schema parity after upgrading,
-- never runs from FastAPI or Next.js startup.
+The next database milestone is Step 3F: the first real Alembic-owned schema migration.
 
-For a new empty PostgreSQL database:
+## Canonical baseline maintenance
 
-```bash
-python scripts/database_migrate.py bootstrap
-```
-
-Bootstrap refuses a non-empty `public` schema. It loads the canonical SQL baseline, stamps the
-baseline revision, upgrades to head, and verifies the final state.
-
-## Environment receipts
-
-Every staging and production database must complete the procedure in `cutover/README.md` and
-produce a receipt based on `cutover/receipt.template.toml` before step 3E-B may activate
-Alembic ownership.
-
-Receipts must not contain passwords, connection strings, personal data, or financial data.
-
-## Runtime persistence slice
-
-The portfolio read path currently uses `Account`, `AccountMember`, `Holding`, and
-`ExchangeRate`, with transitive mappings for `User`, `Asset`, `AssetListing`, and their enum
-types. The remaining SQLAlchemy mappings establish metadata parity and do not introduce new
-application reads or writes by themselves.
-
-## Generate or verify the canonical baseline
-
-Requirements:
-
-- a PostgreSQL database with the frozen Prisma migration archive applied,
-- PostgreSQL 16 `pg_dump` available on `PATH`,
-- `DATABASE_URL` pointing to that database.
-
-From `backend/python`:
-
-```bash
-python scripts/database_schema.py --write
-python scripts/database_schema.py --check
-```
-
-`--write` is an explicit maintenance command. CI uses `--check` and fails when the live
-schema differs from the committed baseline or when the checksum is invalid.
+The canonical baseline remains a verification artifact for the inherited starting schema. CI uses
+`--check` and fails if that inherited schema or checksum changes unexpectedly. It is not regenerated
+for ordinary post-cutover Alembic revisions.
