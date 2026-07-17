@@ -41,5 +41,14 @@ jobs:
       - name: Install backend dependencies
         run: uv sync --extra dev
 
-      - name: Run backend checks
-        run: uv run python scripts/check.py
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy app tests
+
+      - name: Pytest
+        run: uv run pytest --cov=app --cov-report=term-missing
