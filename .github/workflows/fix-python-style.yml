@@ -1,0 +1,53 @@
+name: Fix Python Style
+
+on:
+  push:
+    branches:
+      - build/sqlalchemy-persistence-foundation
+    paths:
+      - ".github/workflows/fix-python-style.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    name: Apply Ruff fixes
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/python
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Apply Ruff lint fixes
+        run: uv run ruff check . --fix
+
+      - name: Apply Ruff formatting
+        run: uv run ruff format .
+
+      - name: Commit style fixes
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/python
+          if git diff --cached --quiet; then
+            echo "No style changes were required."
+            exit 0
+          fi
+          git commit -m "style(backend): apply Ruff fixes"
+          git push
