@@ -14,6 +14,9 @@ During step 3D:
 - `alembic stamp` is an explicit operator action and is never run by FastAPI startup.
 - The baseline downgrade is intentionally unsupported because Alembic did not create the
   inherited schema.
+- Alembic comparison metadata normalizes the default `public` schema, Prisma object names,
+  and PostgreSQL unique-index representation without changing runtime SQLAlchemy metadata or
+  issuing DDL.
 
 See `database/README.md` and `database/schema_ownership.toml` for the ownership state and
 cutover rules.
