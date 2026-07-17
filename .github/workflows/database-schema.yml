@@ -136,14 +136,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
-      - name: Generate frozen archive metadata for verification
-        working-directory: backend/python
-        run: |
-          uv run python scripts/migration_policy.py --write-archive-manifest
-          cat database/prisma_migration_archive.toml
-          grep archive_sha256 database/schema_ownership.toml
-
-      - name: Enforce migration cutover preparation policy
+      - name: Enforce frozen Prisma archive and cutover preparation policy
         working-directory: backend/python
         run: uv run python scripts/migration_policy.py --check
 
