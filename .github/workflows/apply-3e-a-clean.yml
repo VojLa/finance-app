@@ -1,0 +1,69 @@
+name: Apply Clean 3E-A
+
+on:
+  push:
+    branches:
+      - build/alembic-cutover-preparation-clean
+    paths:
+      - ".github/workflows/apply-3e-a-clean.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out clean branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch verified 3E-A source
+        run: git fetch origin build/alembic-cutover-preparation
+
+      - name: Apply only Step 3E-A files
+        run: |
+          git checkout origin/build/alembic-cutover-preparation -- \
+            .github/workflows/database-schema.yml \
+            backend/python/database/README.md \
+            backend/python/database/cutover/README.md \
+            backend/python/database/cutover/receipt.template.toml \
+            backend/python/database/prisma_migration_archive.toml \
+            backend/python/database/schema_ownership.toml \
+            backend/python/migrations/README.md \
+            backend/python/scripts/alembic_baseline.py \
+            backend/python/scripts/database_migrate.py \
+            backend/python/scripts/migration_policy.py \
+            backend/python/tests/test_alembic_baseline.py \
+            backend/python/tests/test_database_migrate.py \
+            backend/python/tests/test_database_migrate_integration.py \
+            backend/python/tests/test_database_schema.py \
+            backend/python/tests/test_migration_policy.py \
+            package.json \
+            scripts/prisma-migrations-frozen.mjs
+
+      - name: Commit clean Step 3E-A
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .github/workflows/database-schema.yml \
+            backend/python/database/README.md \
+            backend/python/database/cutover/README.md \
+            backend/python/database/cutover/receipt.template.toml \
+            backend/python/database/prisma_migration_archive.toml \
+            backend/python/database/schema_ownership.toml \
+            backend/python/migrations/README.md \
+            backend/python/scripts/alembic_baseline.py \
+            backend/python/scripts/database_migrate.py \
+            backend/python/scripts/migration_policy.py \
+            backend/python/tests/test_alembic_baseline.py \
+            backend/python/tests/test_database_migrate.py \
+            backend/python/tests/test_database_migrate_integration.py \
+            backend/python/tests/test_database_schema.py \
+            backend/python/tests/test_migration_policy.py \
+            package.json \
+            scripts/prisma-migrations-frozen.mjs
+          git commit -m "build(db): prepare Alembic ownership cutover"
+          git push
