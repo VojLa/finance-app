@@ -90,13 +90,13 @@ def test_baseline_matches_ownership_manifest() -> None:
     assert "alembic_version" not in baseline_tables
 
 
-def test_all_objects_remain_prisma_owned_before_cutover() -> None:
+def test_all_objects_remain_prisma_owned_during_cutover_preparation() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["current_migration_owner"] == "prisma"
     assert manifest["target_migration_owner"] == "alembic"
-    assert manifest["cutover_status"] == "not_started"
+    assert manifest["cutover_status"] == "ready"
     assert set(manifest["excluded_database_objects"]) == {
         "_prisma_migrations",
         "alembic_version",
@@ -105,6 +105,13 @@ def test_all_objects_remain_prisma_owned_before_cutover() -> None:
         "current_owner": "prisma",
         "target_owner": "alembic",
         "cutover_status": "prisma_owned",
+    }
+    assert manifest["cutover"]["phase"] == "prepared"
+    assert manifest["cutover"]["production_activation_allowed"] is False
+    assert manifest["prisma_runtime"] == {
+        "state": "compatibility_mirror",
+        "client_enabled": True,
+        "schema_is_migration_source": False,
     }
 
 
