@@ -22,7 +22,7 @@ class TransactionModel(Base):
         Index(None, "categoryId", "date"),
         Index(None, "importBatchId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     date: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
@@ -74,7 +74,7 @@ class TransactionPairModel(Base):
         UniqueConstraint("fromTransactionId"),
         UniqueConstraint("toTransactionId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     from_transaction_id: Mapped[str] = mapped_column(
@@ -101,7 +101,7 @@ class TransactionSplitModel(Base):
         Index(None, "transactionId"),
         Index(None, "categoryId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     transaction_id: Mapped[str] = mapped_column(

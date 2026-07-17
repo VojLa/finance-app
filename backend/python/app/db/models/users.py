@@ -12,7 +12,7 @@ class UserModel(Base):
     __table_args__ = (
         UniqueConstraint("email"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     email: Mapped[str] = mapped_column(Text, nullable=False)

@@ -20,7 +20,7 @@ class BudgetModel(Base):
         UniqueConstraint("userId", "periodStart", "periodEnd", "name"),
         Index(None, "userId", "periodStart", "periodEnd"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -61,7 +61,7 @@ class BudgetItemModel(Base):
     __table_args__ = (
         Index(None, "budgetId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str | None] = mapped_column(Text)
@@ -92,7 +92,7 @@ class BudgetItemCategoryModel(Base):
         UniqueConstraint("budgetItemId", "categoryId"),
         Index(None, "categoryId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     budget_item_id: Mapped[str] = mapped_column(
@@ -119,7 +119,7 @@ class BudgetAccountModel(Base):
         UniqueConstraint("budgetId", "accountId"),
         Index(None, "accountId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     budget_id: Mapped[str] = mapped_column(
@@ -146,7 +146,7 @@ class BudgetAlertModel(Base):
         Index(None, "userId", "triggeredAt"),
         Index(None, "budgetItemId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(

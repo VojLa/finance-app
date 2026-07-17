@@ -24,7 +24,7 @@ class NetWorthSnapshotModel(Base):
         Index(None, "userId", "granularity", "timestamp"),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
@@ -100,7 +100,7 @@ class AccountSnapshotModel(Base):
         Index(None, "accountId", "granularity", "timestamp"),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
@@ -228,7 +228,7 @@ class AccountSnapshotItemModel(Base):
         Index(None, "assetId"),
         Index(None, "listingId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     snapshot_id: Mapped[str] = mapped_column(

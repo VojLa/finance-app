@@ -22,7 +22,7 @@ class PriceSnapshotModel(Base):
         Index(None, "listingId", "timestamp"),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     asset_id: Mapped[str] = mapped_column(
@@ -54,7 +54,7 @@ class ExchangeRateModel(Base):
         Index(None, "fromCurrency", "toCurrency", "date"),
         Index(None, "source", "date"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     from_currency: Mapped[str] = mapped_column("fromCurrency", Text, nullable=False)

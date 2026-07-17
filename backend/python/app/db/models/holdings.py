@@ -17,7 +17,7 @@ class HoldingModel(Base):
         Index(None, "assetId"),
         Index(None, "listingId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, nullable=False)

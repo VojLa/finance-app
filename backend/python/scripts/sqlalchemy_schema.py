@@ -185,8 +185,7 @@ def reflected_snapshot(inspector: Inspector) -> dict[str, Any]:
         if table_name not in EXCLUDED_TABLES
     )
     tables = {
-        table_name: reflected_table_snapshot(inspector, table_name)
-        for table_name in table_names
+        table_name: reflected_table_snapshot(inspector, table_name) for table_name in table_names
     }
     enums = {enum["name"]: list(enum["labels"]) for enum in inspector.get_enums(schema="public")}
     return {"tables": tables, "enums": dict(sorted(enums.items()))}

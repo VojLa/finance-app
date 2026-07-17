@@ -28,7 +28,7 @@ class InvestmentEventModel(Base):
         Index(None, "orderId"),
         Index(None, "importBatchId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
@@ -71,7 +71,7 @@ class InvestmentMovementModel(Base):
         Index(None, "listingId"),
         Index(None, "kind"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     event_id: Mapped[str] = mapped_column(

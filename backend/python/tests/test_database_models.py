@@ -188,8 +188,7 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     assert len(tables) == 30
     assert all(table.schema == "public" for table in tables.values())
     assert all(
-        [column.name for column in table.primary_key.columns] == ["id"]
-        for table in tables.values()
+        [column.name for column in table.primary_key.columns] == ["id"] for table in tables.values()
     )
 
 

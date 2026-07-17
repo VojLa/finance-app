@@ -22,7 +22,7 @@ class AssetModel(Base):
         Index(None, "isin"),
         Index(None, "assetType"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
@@ -49,7 +49,7 @@ class AssetListingModel(Base):
         Index(None, "symbol"),
         Index(None, "provider", "providerSymbol"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     asset_id: Mapped[str] = mapped_column(
@@ -84,7 +84,7 @@ class AssetAliasModel(Base):
         UniqueConstraint("provider", "externalId"),
         Index(None, "assetId", "provider"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     asset_id: Mapped[str] = mapped_column(

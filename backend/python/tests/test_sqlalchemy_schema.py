@@ -31,6 +31,6 @@ def test_schema_comparison_reports_normalized_drift(capsys) -> None:
 
 def test_default_normalization_removes_schema_qualification() -> None:
     assert (
-        normalize_default("'viewer'::\"public\".\"AccountMemberRole\"")
+        normalize_default('\'viewer\'::"public"."AccountMemberRole"')
         == "'viewer'::accountmemberrole"
     )

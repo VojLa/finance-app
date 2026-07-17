@@ -24,7 +24,7 @@ class CategoryModel(Base):
         Index(None, "parentId"),
         Index(None, "userId", "type"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -57,7 +57,7 @@ class CategoryRuleModel(Base):
         Index(None, "categoryId"),
         Index(None, "field", "operator"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)

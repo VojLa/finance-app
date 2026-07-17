@@ -28,7 +28,7 @@ class ImportBatchModel(Base):
         Index(None, "accountId", "createdAt"),
         Index(None, "source", "status"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
@@ -72,7 +72,7 @@ class ImportRowModel(Base):
         Index(None, "importBatchId", "status"),
         Index(None, "deduplicationKey"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     import_batch_id: Mapped[str] = mapped_column(
@@ -113,7 +113,7 @@ class ImportLogModel(Base):
         Index(None, "importBatchId", "createdAt"),
         Index(None, "level", "createdAt"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     import_batch_id: Mapped[str] = mapped_column(

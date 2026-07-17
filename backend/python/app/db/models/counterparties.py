@@ -19,7 +19,7 @@ class CounterpartyModel(Base):
         Index(None, "userId"),
         Index(None, "userId", "name"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[str] = mapped_column(
@@ -50,7 +50,7 @@ class CounterpartyAliasModel(Base):
     __table_args__ = (
         Index(None, "counterpartyId"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     counterparty_id: Mapped[str] = mapped_column(

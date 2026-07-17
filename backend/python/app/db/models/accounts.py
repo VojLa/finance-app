@@ -23,7 +23,7 @@ class AccountModel(Base):
         Index(None, "type"),
         Index(None, "isArchived"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -52,7 +52,7 @@ class AccountMemberModel(Base):
         Index(None, "userId"),
         Index(None, "accountId", "role"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
@@ -95,7 +95,7 @@ class AccountInviteModel(Base):
         Index(None, "email", "status"),
         Index(None, "inviterId", "createdAt"),
         {"schema": "public"},
-    )  # noqa: RUF012
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     account_id: Mapped[str] = mapped_column(
