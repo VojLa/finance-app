@@ -18,9 +18,14 @@ REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 PRISMA_MIGRATIONS = REPOSITORY_ROOT / "prisma" / "migrations"
 ARCHIVE_MANIFEST = BACKEND_ROOT / "database" / "prisma_migration_archive.toml"
 OWNERSHIP_MANIFEST = BACKEND_ROOT / "database" / "schema_ownership.toml"
+ENVIRONMENT_INVENTORY = BACKEND_ROOT / "database" / "cutover" / "environments.toml"
 ALEMBIC_CONFIG = BACKEND_ROOT / "alembic.ini"
+CUTOVER_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3e0001cutover_alembic_ownership.py"
+)
 PACKAGE_JSON = REPOSITORY_ROOT / "package.json"
 BASELINE_REVISION = "3d0001base"
+CUTOVER_REVISION = "3e0001cutover"
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
     "metadata.create_all",
@@ -122,6 +127,13 @@ def load_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(source)
 
 
+def display_path(path: Path) -> str:
+    try:
+        return path.relative_to(REPOSITORY_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def verify_archive_manifest(
     state: PrismaArchiveState,
     archive_manifest: Path = ARCHIVE_MANIFEST,
@@ -145,38 +157,72 @@ def verify_archive_manifest(
             raise RuntimeError(f"Frozen Prisma migration archive mismatch for {key}.")
 
 
+def verify_environment_inventory(path: Path = ENVIRONMENT_INVENTORY) -> None:
+    inventory = load_toml(path)
+    if inventory.get("version") != 1:
+        raise RuntimeError("Cutover environment inventory version must be 1.")
+    if inventory.get("remote_databases_exist") is not False:
+        raise RuntimeError("This direct cutover requires remote_databases_exist = false.")
+    if inventory.get("required_environment_count") != 0:
+        raise RuntimeError("No persistent remote databases means required_environment_count must be 0.")
+    reason = inventory.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise RuntimeError("The no-remote-database inventory requires an explicit reason.")
+    if inventory.get("environments"):
+        raise RuntimeError("No environment entries are allowed when remote_databases_exist is false.")
+
+
 def verify_ownership_manifest(
     archive: PrismaArchiveState,
     ownership_manifest: Path = OWNERSHIP_MANIFEST,
 ) -> None:
     manifest = load_toml(ownership_manifest)
-    if manifest.get("schema_version") != 5:
-        raise RuntimeError("Ownership manifest schema_version must be 5 for step 3E-A.")
-    if manifest.get("current_migration_owner") != "prisma":
-        raise RuntimeError("Prisma remains the migration owner until activation in step 3E-B.")
-    if manifest.get("target_migration_owner") != "alembic":
-        raise RuntimeError("Alembic must remain the target migration owner.")
-    if manifest.get("cutover_status") != "ready":
-        raise RuntimeError("Step 3E-A requires cutover_status ready.")
+    expected_top_level = {
+        "schema_version": 6,
+        "current_migration_owner": "alembic",
+        "target_migration_owner": "alembic",
+        "cutover_status": "completed",
+    }
+    for key, value in expected_top_level.items():
+        if manifest.get(key) != value:
+            raise RuntimeError(f"Invalid completed ownership manifest value for {key}.")
+
+    if manifest.get("defaults") != {
+        "current_owner": "alembic",
+        "target_owner": "alembic",
+        "cutover_status": "alembic_owned",
+    }:
+        raise RuntimeError("Application objects must inherit Alembic ownership after cutover.")
 
     cutover = manifest.get("cutover")
-    if not isinstance(cutover, dict):
-        raise RuntimeError("Ownership manifest is missing the cutover section.")
-    cutover_expected = {
-        "phase": "prepared",
+    expected_cutover = {
+        "phase": "completed",
         "baseline_revision": BASELINE_REVISION,
-        "all_target_databases_must_be_stamped": True,
-        "production_activation_allowed": False,
-        "receipts_required_before_activation": True,
+        "cutover_revision": CUTOVER_REVISION,
+        "previous_owner": "prisma",
+        "current_owner": "alembic",
+        "all_target_databases_stamped": True,
+        "all_target_databases_activated": True,
+        "deployment_command_switched": True,
+        "remote_databases_exist": False,
+        "production_activation_allowed": True,
+        "completion_receipts_required": False,
     }
-    for key, value in cutover_expected.items():
-        if cutover.get(key) != value:
-            raise RuntimeError(f"Invalid cutover manifest value for {key}.")
+    if cutover != expected_cutover:
+        raise RuntimeError("Completed cutover manifest is invalid.")
+
+    alembic = manifest.get("alembic")
+    if alembic != {
+        "state": "sole_migration_owner",
+        "baseline_revision": BASELINE_REVISION,
+        "cutover_revision": CUTOVER_REVISION,
+        "revision_count": 2,
+        "head_count": 1,
+    }:
+        raise RuntimeError("Alembic ownership metadata is invalid.")
 
     prisma_migrations = manifest.get("prisma_migrations")
-    if not isinstance(prisma_migrations, dict):
-        raise RuntimeError("Ownership manifest is missing prisma_migrations.")
-    prisma_expected = {
+    expected_prisma = {
         "state": "frozen_archive",
         "creation_enabled": False,
         "deployment_enabled": False,
@@ -184,50 +230,82 @@ def verify_ownership_manifest(
         "archive_manifest": "database/prisma_migration_archive.toml",
         "archive_sha256": archive.aggregate_sha256,
     }
-    for key, value in prisma_expected.items():
-        if prisma_migrations.get(key) != value:
-            raise RuntimeError(f"Invalid Prisma migration policy value for {key}.")
+    if prisma_migrations != expected_prisma:
+        raise RuntimeError("Frozen Prisma migration ownership policy is invalid.")
 
-    prisma_runtime = manifest.get("prisma_runtime")
-    if prisma_runtime != {
+    if manifest.get("prisma_runtime") != {
         "state": "compatibility_mirror",
         "client_enabled": True,
         "schema_is_migration_source": False,
     }:
         raise RuntimeError("Prisma runtime compatibility policy is invalid.")
 
+    if manifest.get("cutover_evidence") != {
+        "environment_inventory": "database/cutover/environments.toml",
+        "remote_databases_exist": False,
+        "preparation_receipts_required": False,
+        "activation_receipts_required": False,
+        "secrets_allowed": False,
+    }:
+        raise RuntimeError("No-remote-database cutover evidence is invalid.")
+
 
 def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     directory = ScriptDirectory.from_config(Config(str(config_path)))
     revisions = list(directory.walk_revisions())
-    if directory.get_heads() != [BASELINE_REVISION]:
-        raise RuntimeError("Step 3E-A requires the baseline to remain the only Alembic head.")
+    if directory.get_heads() != [CUTOVER_REVISION]:
+        raise RuntimeError(f"Alembic head must be {CUTOVER_REVISION} after cutover.")
     if directory.get_bases() != [BASELINE_REVISION]:
-        raise RuntimeError("The inherited Prisma baseline must remain the Alembic base.")
-    if len(revisions) != 1 or revisions[0].revision != BASELINE_REVISION:
-        raise RuntimeError("Step 3E-A must not introduce a schema-changing Alembic revision.")
+        raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
+    if len(revisions) != 2:
+        raise RuntimeError("Completed cutover requires exactly two Alembic revisions.")
+
+    by_revision = {revision.revision: revision for revision in revisions}
+    baseline = by_revision.get(BASELINE_REVISION)
+    cutover = by_revision.get(CUTOVER_REVISION)
+    if baseline is None or baseline.down_revision is not None:
+        raise RuntimeError("The inherited Prisma baseline revision is invalid.")
+    if cutover is None or cutover.down_revision != BASELINE_REVISION:
+        raise RuntimeError("The Alembic ownership marker must follow the inherited baseline.")
+
+    module = cutover.module
+    expected_metadata = {
+        "ownership_cutover": True,
+        "previous_migration_owner": "prisma",
+        "new_migration_owner": "alembic",
+        "baseline_revision": BASELINE_REVISION,
+        "prisma_schema_impact": "none",
+    }
+    for key, value in expected_metadata.items():
+        if getattr(module, key, None) != value:
+            raise RuntimeError(f"Cutover revision metadata is invalid for {key}.")
+
+    source = CUTOVER_REVISION_PATH.read_text(encoding="utf-8")
+    forbidden = ("op.", "create_table", "drop_table", "add_column", "alter_column")
+    if any(token in source for token in forbidden):
+        raise RuntimeError("The ownership cutover revision must not contain application DDL.")
 
 
 def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
-    package = json.loads(package_json.read_text(encoding="utf-8"))
-    scripts = package.get("scripts", {})
-    if scripts.get("db:migrate") != "node scripts/prisma-migrations-frozen.mjs":
-        raise RuntimeError("db:migrate must fail closed after the Prisma migration freeze.")
-    if scripts.get("db:deploy") != "prisma migrate deploy":
-        raise RuntimeError(
-            "Step 3E-A must preserve the existing deployment alias until activation."
-        )
-    if scripts.get("db:prisma:deploy:legacy") != "prisma migrate deploy":
-        raise RuntimeError("Frozen Prisma archive verification command is missing.")
-
-    expected_alembic = {
-        "db:alembic:check": "cd backend/python && uv run python scripts/database_migrate.py check",
-        "db:alembic:upgrade": "cd backend/python && uv run python scripts/database_migrate.py upgrade",
-        "db:alembic:bootstrap": "cd backend/python && uv run python scripts/database_migrate.py bootstrap",
+    scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+    upgrade = "cd backend/python && uv run python scripts/database_migrate.py upgrade"
+    check = "cd backend/python && uv run python scripts/database_migrate.py check"
+    bootstrap = "cd backend/python && uv run python scripts/database_migrate.py bootstrap"
+    expected = {
+        "db:migrate": upgrade,
+        "db:deploy": upgrade,
+        "db:check": check,
+        "db:bootstrap": bootstrap,
+        "db:alembic:check": check,
+        "db:alembic:upgrade": upgrade,
+        "db:alembic:bootstrap": bootstrap,
+        "db:prisma:archive:verify": "node scripts/prisma-archive-verify.mjs",
     }
-    for name, command in expected_alembic.items():
+    for name, command in expected.items():
         if scripts.get(name) != command:
-            raise RuntimeError(f"Missing prepared Alembic script: {name}.")
+            raise RuntimeError(f"Invalid post-cutover database script: {name}.")
+    if "db:prisma:deploy:legacy" in scripts:
+        raise RuntimeError("The unrestricted legacy Prisma deploy script must be removed.")
 
 
 def verify_runtime_ddl(app_root: Path | None = None) -> None:
@@ -236,9 +314,8 @@ def verify_runtime_ddl(app_root: Path | None = None) -> None:
         source = path.read_text(encoding="utf-8")
         for pattern in FORBIDDEN_RUNTIME_PATTERNS:
             if pattern in source:
-                relative = path.relative_to(REPOSITORY_ROOT)
                 raise RuntimeError(
-                    f"Forbidden runtime migration operation {pattern} in {relative}."
+                    f"Forbidden runtime migration operation {pattern} in {display_path(path)}."
                 )
 
 
@@ -246,6 +323,7 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
     root = workflows_root or REPOSITORY_ROOT / ".github" / "workflows"
     forbidden = (
         "prisma migrate dev",
+        "prisma migrate deploy",
         "prisma migrate reset",
         "prisma db push",
     )
@@ -253,19 +331,18 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
         source = path.read_text(encoding="utf-8")
         for command in forbidden:
             if command in source:
-                relative = path.relative_to(REPOSITORY_ROOT)
-                raise RuntimeError(f"Forbidden Prisma migration command {command} in {relative}.")
-        if "prisma migrate deploy" in source:
-            relative = path.relative_to(REPOSITORY_ROOT)
-            raise RuntimeError(
-                "Workflows must invoke the named frozen archive verification script instead of "
-                f"raw prisma migrate deploy: {relative}."
-            )
+                raise RuntimeError(f"Forbidden Prisma migration command {command} in {display_path(path)}.")
+    database_workflow = root / "database-schema.yml"
+    if database_workflow.is_file():
+        source = database_workflow.read_text(encoding="utf-8")
+        if "npm run db:prisma:archive:verify" not in source:
+            raise RuntimeError("Database CI must use the restricted Prisma archive wrapper.")
 
 
 def verify_policy() -> PrismaArchiveState:
     state = archive_state()
     verify_archive_manifest(state)
+    verify_environment_inventory()
     verify_ownership_manifest(state)
     verify_alembic_graph()
     verify_package_scripts()
@@ -299,8 +376,8 @@ def main() -> int:
         return 1
 
     print(
-        "Migration policy verification passed; Prisma history is frozen and Alembic cutover "
-        "preparation is ready."
+        "Migration policy verification passed; Alembic is the sole migration owner and the "
+        "Prisma migration history remains frozen."
     )
     return 0
 
