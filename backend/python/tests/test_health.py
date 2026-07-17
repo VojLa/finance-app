@@ -20,7 +20,12 @@ def test_liveness_returns_200() -> None:
     assert response.json() == {"status": "ok", "service": "finance-app-backend"}
 
 
-def test_readiness_returns_503_without_database() -> None:
+def test_readiness_returns_503_without_database(monkeypatch) -> None:
+    async def no_database() -> None:
+        return None
+
+    monkeypatch.setattr("app.lifespan.connect_database", no_database)
+
     with TestClient(create_app()) as client:
         response = client.get("/api/v1/health/ready")
 
@@ -32,9 +37,17 @@ def test_readiness_returns_503_without_database() -> None:
 
 
 def test_readiness_returns_200_when_database_is_available(monkeypatch) -> None:
+    class FakePool:
+        async def close(self) -> None:
+            return None
+
+    async def fake_database() -> FakePool:
+        return FakePool()
+
     async def database_is_available(_pool: object) -> bool:
         return True
 
+    monkeypatch.setattr("app.lifespan.connect_database", fake_database)
     monkeypatch.setattr(health_module, "check_database", database_is_available)
 
     with TestClient(create_app()) as client:

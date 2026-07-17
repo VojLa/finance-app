@@ -10,6 +10,12 @@ financial application services, background job entry points, and provider integr
 - PostgreSQL for readiness and data-backed endpoints
 - Docker Compose when running the full local stack
 
+Recommended local version:
+
+- Python `3.12.10`
+
+The repository includes [`.python-version`](./.python-version) so the expected version is explicit.
+
 ## Local installation
 
 From `backend/python`:
@@ -25,6 +31,25 @@ On Linux or macOS, activate the environment with:
 ```bash
 source .venv/bin/activate
 ```
+
+## Windows bootstrap
+
+For Windows there is a verified bootstrap script that recreates `.venv`, installs dev
+dependencies, and can optionally run tests and lint:
+
+```powershell
+cd backend/python
+.\bootstrap.ps1
+.\bootstrap.ps1 -RunChecks
+```
+
+If your Python 3.12 executable is elsewhere:
+
+```powershell
+.\bootstrap.ps1 -PythonPath "C:\path\to\python.exe" -RunChecks
+```
+
+This is the recommended recovery path when a local virtual environment becomes broken.
 
 ## Run locally
 
@@ -74,6 +99,13 @@ From `backend/python`:
 ```bash
 pytest
 ruff check .
+```
+
+Or, without activating the environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m ruff check .
 ```
 
 The application tests cover FastAPI creation, root metadata, OpenAPI generation,

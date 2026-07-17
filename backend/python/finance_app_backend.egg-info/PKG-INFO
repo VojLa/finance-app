@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: finance-app-backend
+Version: 0.1.0
+Summary: Python backend services for finance-app.
+Requires-Python: >=3.12
+Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Provides-Extra: dev
+Requires-Dist: httpx>=0.27.0; extra == "dev"
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
