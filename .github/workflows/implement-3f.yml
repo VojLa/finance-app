@@ -12,6 +12,7 @@ on:
     paths:
       - ".github/workflows/implement-3f.yml"
       - "backend/python/scripts/implement_3f_temp.py"
+      - "backend/python/scripts/fix_implement_3f_temp.py"
 
 permissions:
   contents: write
@@ -67,7 +68,9 @@ jobs:
 
       - name: Apply Step 3F source changes
         working-directory: backend/python
-        run: uv run python scripts/implement_3f_temp.py
+        run: |
+          uv run python scripts/fix_implement_3f_temp.py
+          uv run python scripts/implement_3f_temp.py
 
       - name: Format Python and Prisma sources
         run: |
@@ -160,6 +163,7 @@ jobs:
       - name: Remove implementation helpers and commit verified result
         run: |
           rm backend/python/scripts/implement_3f_temp.py
+          rm backend/python/scripts/fix_implement_3f_temp.py
           rm .github/workflows/implement-3f.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
