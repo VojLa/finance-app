@@ -1,0 +1,83 @@
+name: Database Schema
+
+on:
+  push:
+    branches:
+      - build/database-schema-inventory
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "backend/python/database/**"
+      - "backend/python/scripts/database_schema.py"
+      - ".github/workflows/database-schema.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  generate-baseline:
+    name: Generate Prisma schema baseline
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finance_app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finance_app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
+
+    steps:
+      - name: Check out inventory branch
+        uses: actions/checkout@v4
+        with:
+          ref: build/database-schema-inventory
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Apply committed Prisma migrations
+        run: npm run db:deploy
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Install PostgreSQL 16 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-16
+
+      - name: Generate canonical schema baseline
+        run: python backend/python/scripts/database_schema.py --write
+
+      - name: Commit generated baseline
+        run: |
+          git add backend/python/database/baseline/schema.sql
+          git add backend/python/database/baseline/schema.sha256
+          if git diff --cached --quiet; then
+            echo "Baseline is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "build(db): record canonical Prisma schema baseline"
+          git push origin HEAD:build/database-schema-inventory
