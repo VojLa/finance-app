@@ -1,0 +1,20 @@
+version = 1
+environment = "replace-with-environment-name"
+database_identifier = "replace-with-non-secret-identifier"
+verified_at_utc = "YYYY-MM-DDTHH:MM:SSZ"
+application_commit = "replace-with-git-sha"
+baseline_revision = "3d0001base"
+canonical_schema_sha256 = "replace-with-sha256"
+prisma_archive_sha256 = "replace-with-sha256"
+table_count = 30
+enum_count = 27
+sqlalchemy_parity = false
+alembic_check = false
+data_preserved = false
+backup_verified = false
+operator = "replace-with-operator-identifier"
+
+[prohibited]
+contains_database_password = false
+contains_connection_string = false
+contains_personal_or_financial_data = false

@@ -6,6 +6,7 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/prisma-migrations-frozen.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -14,14 +15,19 @@ on:
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
       - "backend/python/scripts/alembic_baseline.py"
+      - "backend/python/scripts/database_migrate.py"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/scripts/migration_policy.py"
       - "backend/python/scripts/sqlalchemy_schema.py"
       - "backend/python/tests/test_alembic_configuration.py"
       - "backend/python/tests/test_alembic_baseline.py"
       - "backend/python/tests/test_alembic_integration.py"
+      - "backend/python/tests/test_database_migrate.py"
+      - "backend/python/tests/test_database_migrate_integration.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
+      - "backend/python/tests/test_migration_policy.py"
       - "backend/python/tests/test_sqlalchemy_persistence.py"
       - "backend/python/tests/test_sqlalchemy_schema.py"
       - "backend/python/tests/test_sqlalchemy_schema_parity.py"
@@ -34,6 +40,7 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/prisma-migrations-frozen.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -42,14 +49,19 @@ on:
       - "backend/python/database/**"
       - "backend/python/pyproject.toml"
       - "backend/python/scripts/alembic_baseline.py"
+      - "backend/python/scripts/database_migrate.py"
       - "backend/python/scripts/database_schema.py"
+      - "backend/python/scripts/migration_policy.py"
       - "backend/python/scripts/sqlalchemy_schema.py"
       - "backend/python/tests/test_alembic_configuration.py"
       - "backend/python/tests/test_alembic_baseline.py"
       - "backend/python/tests/test_alembic_integration.py"
+      - "backend/python/tests/test_database_migrate.py"
+      - "backend/python/tests/test_database_migrate_integration.py"
       - "backend/python/tests/test_database_models.py"
       - "backend/python/tests/test_database_schema.py"
       - "backend/python/tests/test_database_url.py"
+      - "backend/python/tests/test_migration_policy.py"
       - "backend/python/tests/test_sqlalchemy_persistence.py"
       - "backend/python/tests/test_sqlalchemy_schema.py"
       - "backend/python/tests/test_sqlalchemy_schema_parity.py"
@@ -61,7 +73,7 @@ permissions:
 
 jobs:
   verify-schema:
-    name: Verify Prisma and Alembic baseline
+    name: Verify Prisma archive and Alembic cutover readiness
     runs-on: ubuntu-24.04
 
     services:
@@ -96,8 +108,13 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Apply committed Prisma migrations
-        run: npm run db:deploy
+      - name: Apply frozen Prisma migration archive for legacy verification
+        run: npm run db:prisma:deploy:legacy
+
+      - name: Verify Prisma runtime compatibility tooling
+        run: |
+          npm run db:prisma:validate
+          npm run db:prisma:generate
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -119,11 +136,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
+      - name: Enforce frozen Prisma archive and cutover preparation policy
+        working-directory: backend/python
+        run: uv run python scripts/migration_policy.py --check
+
       - name: Verify canonical schema baseline before metadata checks
         working-directory: backend/python
         run: uv run python scripts/database_schema.py --check
 
-      - name: Validate ownership, SQLAlchemy metadata, and Alembic graph
+      - name: Validate ownership, SQLAlchemy metadata, Alembic graph, and migration policy
         working-directory: backend/python
         run: >-
           uv run pytest
@@ -133,6 +154,8 @@ jobs:
           tests/test_sqlalchemy_schema.py
           tests/test_alembic_configuration.py
           tests/test_alembic_baseline.py
+          tests/test_migration_policy.py
+          tests/test_database_migrate.py
 
       - name: Compare SQLAlchemy metadata with migrated PostgreSQL
         working-directory: backend/python
@@ -151,6 +174,13 @@ jobs:
           tests/test_alembic_integration.py
           -v
 
+      - name: Verify prepared migration runner and advisory lock
+        working-directory: backend/python
+        run: |
+          uv run pytest tests/test_database_migrate_integration.py -v
+          uv run python scripts/database_migrate.py check
+          uv run python scripts/database_migrate.py upgrade
+
       - name: Verify stamped database is at Alembic head
         working-directory: backend/python
         run: |
@@ -165,21 +195,14 @@ jobs:
           uv run python scripts/database_schema.py --check
           uv run python scripts/sqlalchemy_schema.py --check
 
-      - name: Verify Prisma-free canonical bootstrap
+      - name: Verify prepared Prisma-free canonical bootstrap
         working-directory: backend/python
         env:
           BOOTSTRAP_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_canonical_bootstrap
         run: |
           createdb --host localhost --username postgres finance_app_canonical_bootstrap
-          psql --host localhost --username postgres --dbname finance_app_canonical_bootstrap \
-            --command 'DROP SCHEMA public CASCADE'
-          psql --host localhost --username postgres --dbname finance_app_canonical_bootstrap \
-            --file database/baseline/schema.sql
           export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
-          uv run python scripts/alembic_baseline.py --verify
-          uv run alembic -c alembic.ini stamp 3d0001base
-          uv run alembic -c alembic.ini current --check-heads
-          uv run alembic -c alembic.ini check
-          uv run alembic -c alembic.ini upgrade head
+          uv run python scripts/database_migrate.py bootstrap
+          uv run python scripts/database_migrate.py check
           uv run python scripts/database_schema.py --check
           uv run python scripts/sqlalchemy_schema.py --check

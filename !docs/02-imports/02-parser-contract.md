@@ -8,4 +8,3 @@ Parser responsibilities:
 - Preserve enough raw context to debug unsupported rows.
 
 Parser output must be deterministic and covered by fixture tests.
-

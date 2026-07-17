@@ -8,4 +8,3 @@ Current supported direction:
 - Grouped multi-row investment parsers
 - Bank transaction parsers
 - Parse issues for unsupported or unread rows
-

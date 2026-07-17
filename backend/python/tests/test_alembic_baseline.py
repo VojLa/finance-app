@@ -44,13 +44,16 @@ def test_baseline_upgrade_is_noop_and_downgrade_is_blocked() -> None:
         revision.downgrade()
 
 
-def test_baseline_manifest_keeps_prisma_as_owner() -> None:
+def test_baseline_manifest_keeps_prisma_as_owner_during_cutover_preparation() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
+    cutover = manifest["cutover"]
 
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["current_migration_owner"] == "prisma"
-    assert manifest["cutover_status"] == "not_started"
+    assert manifest["cutover_status"] == "ready"
+    assert cutover["phase"] == "prepared"
+    assert cutover["production_activation_allowed"] is False
     assert baseline["state"] == "verified_not_owner"
     assert baseline["revision"] == BASELINE_REVISION
     assert baseline["upgrade_is_noop"] is True
