@@ -1,7 +1,10 @@
 from collections.abc import AsyncIterator
+from typing import cast
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_principal
 from app.auth.models import AuthenticatedPrincipal
@@ -10,10 +13,6 @@ from app.db.connection import get_db_session
 from app.main import create_app
 from app.modules.portfolio.models import PortfolioSummary
 from app.modules.portfolio.service import PortfolioService
-
-
-async def _session_override() -> AsyncIterator[object]:
-    yield object()
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -33,11 +32,11 @@ def _summary() -> PortfolioSummary:
     )
 
 
-def _client(test_settings: Settings) -> tuple[TestClient, object]:
+def _client(test_settings: Settings) -> tuple[TestClient, AsyncSession]:
     app = create_app(test_settings)
-    session = object()
+    session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
 
-    async def session_override() -> AsyncIterator[object]:
+    async def session_override() -> AsyncIterator[AsyncSession]:
         yield session
 
     app.dependency_overrides[get_current_principal] = _principal
@@ -55,7 +54,7 @@ def test_portfolio_requires_authentication(test_settings: Settings) -> None:
 
 def test_portfolio_uses_authenticated_user_scope(
     test_settings: Settings,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     get_portfolio = AsyncMock(return_value=_summary())
     monkeypatch.setattr(PortfolioService, "get_portfolio", get_portfolio)
@@ -70,7 +69,7 @@ def test_portfolio_uses_authenticated_user_scope(
 
 def test_portfolio_checks_explicit_account_access(
     test_settings: Settings,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     access_check = AsyncMock()
     get_portfolio = AsyncMock(return_value=_summary())
