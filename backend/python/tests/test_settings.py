@@ -15,6 +15,17 @@ def test_development_defaults() -> None:
     assert settings.internal_auth_audience == "finance-app-python"
 
 
+def test_test_environment_starts_without_auth_secret() -> None:
+    settings = Settings(environment="test", internal_auth_secret=None, _env_file=None)
+
+    assert settings.internal_auth_secret is None
+
+
+def test_negative_auth_clock_skew_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="must be non-negative"):
+        Settings(internal_auth_clock_skew_seconds=-1, _env_file=None)
+
+
 def test_unknown_environment_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"environment": "staging"})

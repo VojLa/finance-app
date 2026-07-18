@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr
 
 
 class InternalTokenClaims(BaseModel):
@@ -6,13 +6,13 @@ class InternalTokenClaims(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    sub: str
-    email: str | None = None
-    iss: str
-    aud: str | list[str]
-    iat: int
-    exp: int
-    jti: str | None = None
+    sub: StrictStr
+    email: StrictStr | None = None
+    iss: StrictStr
+    aud: StrictStr | list[StrictStr]
+    iat: StrictInt
+    exp: StrictInt
+    jti: StrictStr | None = None
 
 
 class AuthenticatedPrincipal(BaseModel):

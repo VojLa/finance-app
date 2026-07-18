@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import re
 import time
 from typing import Any
 
@@ -73,9 +74,11 @@ class InternalTokenVerifier:
 
     @staticmethod
     def _decode_segment(segment: str) -> bytes:
+        if re.fullmatch(r"[A-Za-z0-9_-]+", segment) is None:
+            raise InvalidSessionTokenError("The session token encoding is invalid.")
         padding = "=" * (-len(segment) % 4)
         try:
-            return base64.urlsafe_b64decode(segment + padding)
+            return base64.b64decode(segment + padding, altchars=b"-_", validate=True)
         except (ValueError, binascii.Error) as exc:
             raise InvalidSessionTokenError("The session token encoding is invalid.") from exc
 

@@ -16,7 +16,11 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.users import UserModel
 
-bearer_scheme = HTTPBearer(auto_error=False, scheme_name="InternalSessionToken")
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="InternalSessionToken",
+    bearerFormat="JWT",
+)
 
 
 def get_request_settings(request: Request) -> Settings:
