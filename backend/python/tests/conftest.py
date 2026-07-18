@@ -11,5 +11,6 @@ def test_settings() -> Settings:
         log_level="ERROR",
         log_json=False,
         docs_enabled=True,
+        internal_auth_secret="test-secret-that-is-long-enough-for-auth",
         _env_file=None,
     )

@@ -42,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         endpoints = [
             "/api/v1/health/live",
             "/api/v1/health/ready",
+            "/api/v1/auth/me",
             "/api/v1/portfolio",
         ]
         if settings.docs_enabled:
