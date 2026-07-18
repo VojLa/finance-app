@@ -65,10 +65,11 @@ async def require_account_access(
     if row is None:
         raise AccountNotFoundError()
 
+    resolved_account_id, role, relation_type = row
     authorized = AuthorizedAccount(
-        account_id=row.account_id,
-        role=row.role,
-        relation_type=row.relation_type,
+        account_id=resolved_account_id,
+        role=role,
+        relation_type=relation_type,
     )
     if allowed_roles is not None and authorized.role not in allowed_roles:
         raise AccountAccessDeniedError()
