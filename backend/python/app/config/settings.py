@@ -29,24 +29,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_settings(self) -> Self:
-        errors: list[str] = []
         if self.internal_auth_clock_skew_seconds < 0:
-            errors.append("INTERNAL_AUTH_CLOCK_SKEW_SECONDS must be non-negative")
+            raise ValueError("INTERNAL_AUTH_CLOCK_SKEW_SECONDS must be non-negative")
+        if self.environment != "production":
+            return self
 
-        if self.environment == "production":
-            if not self.database_url:
-                errors.append("DATABASE_URL is required")
-            if not self.log_json:
-                errors.append("LOG_JSON must be true")
-            if self.docs_enabled:
-                errors.append("DOCS_ENABLED must be false")
-            if not self.internal_auth_secret:
-                errors.append("INTERNAL_AUTH_SECRET is required")
-            elif len(self.internal_auth_secret) < 32:
-                errors.append("INTERNAL_AUTH_SECRET must contain at least 32 characters")
+        errors: list[str] = []
+        if not self.database_url:
+            errors.append("DATABASE_URL is required")
+        if not self.log_json:
+            errors.append("LOG_JSON must be true")
+        if self.docs_enabled:
+            errors.append("DOCS_ENABLED must be false")
+        if not self.internal_auth_secret:
+            errors.append("INTERNAL_AUTH_SECRET is required")
+        elif len(self.internal_auth_secret) < 32:
+            errors.append("INTERNAL_AUTH_SECRET must contain at least 32 characters")
 
         if errors:
-            raise ValueError("Invalid settings: " + "; ".join(errors))
+            raise ValueError("Invalid production settings: " + "; ".join(errors))
         return self
 
 
