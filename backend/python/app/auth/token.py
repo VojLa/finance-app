@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -75,7 +76,7 @@ class InternalTokenVerifier:
         padding = "=" * (-len(segment) % 4)
         try:
             return base64.urlsafe_b64decode(segment + padding)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             raise InvalidSessionTokenError("The session token encoding is invalid.") from exc
 
     @classmethod
