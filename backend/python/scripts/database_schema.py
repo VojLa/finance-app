@@ -6,12 +6,14 @@ import hashlib
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = PROJECT_ROOT / "database" / "baseline" / "schema.sql"
 DEFAULT_CHECKSUM = PROJECT_ROOT / "database" / "baseline" / "schema.sha256"
+DEFAULT_REGISTRY = PROJECT_ROOT / "database" / "schema_revisions.toml"
 
 _VOLATILE_PREFIXES = (
     "-- Dumped from database version ",
@@ -72,6 +74,52 @@ def dump_schema(database_url: str, pg_dump: str = "pg_dump") -> str:
 
 def schema_digest(schema: str) -> str:
     return hashlib.sha256(schema.encode("utf-8")).hexdigest()
+
+
+def schema_artifact_paths(
+    revision: str | None,
+    registry_path: Path = DEFAULT_REGISTRY,
+) -> tuple[Path, Path]:
+    if revision is None:
+        return DEFAULT_BASELINE, DEFAULT_CHECKSUM
+    with registry_path.open("rb") as source:
+        registry = tomllib.load(source)
+    if registry.get("version") != 1:
+        raise RuntimeError("Schema revision registry version must be 1.")
+    revisions = registry.get("revisions")
+    if not isinstance(revisions, dict):
+        raise RuntimeError("Schema revision registry is missing revisions.")
+    current = revision
+    visited: set[str] = set()
+    while True:
+        if current in visited:
+            raise RuntimeError("Schema revision registry contains an inheritance cycle.")
+        visited.add(current)
+        entry = revisions.get(current)
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Schema artifact is not registered for revision {current}.")
+        inherited = entry.get("inherits_schema_from")
+        if isinstance(inherited, str):
+            current = inherited
+            continue
+        schema_source = entry.get("schema_source")
+        checksum_source = entry.get("checksum_source")
+        if not isinstance(schema_source, str) or not isinstance(checksum_source, str):
+            raise RuntimeError(f"Revision {current} has no concrete schema artifact.")
+        return PROJECT_ROOT / schema_source, PROJECT_ROOT / checksum_source
+
+
+def verify_live_schema(
+    database_url: str,
+    pg_dump: str,
+    revision: str | None,
+    registry_path: Path = DEFAULT_REGISTRY,
+) -> None:
+    schema_path, checksum_path = schema_artifact_paths(revision, registry_path)
+    schema = dump_schema(database_url, pg_dump)
+    if check_baseline(schema, schema_path, checksum_path) != 0:
+        label = revision or "inherited baseline"
+        raise RuntimeError(f"Live PostgreSQL schema does not match revision {label}.")
 
 
 def write_baseline(schema: str, baseline_path: Path, checksum_path: Path) -> None:
@@ -138,8 +186,10 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("PG_DUMP", "pg_dump"),
         help="pg_dump executable. Defaults to PG_DUMP or pg_dump.",
     )
-    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
-    parser.add_argument("--checksum", type=Path, default=DEFAULT_CHECKSUM)
+    parser.add_argument("--baseline", type=Path, default=None)
+    parser.add_argument("--checksum", type=Path, default=None)
+    parser.add_argument("--revision", default=None)
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     return parser.parse_args()
 
 
@@ -158,12 +208,15 @@ def main() -> int:
         print(f"Unable to export database schema: {error}", file=sys.stderr)
         return 1
 
+    registered_schema, registered_checksum = schema_artifact_paths(args.revision, args.registry)
+    baseline_path = args.baseline or registered_schema
+    checksum_path = args.checksum or registered_checksum
     if args.write:
-        write_baseline(schema, args.baseline, args.checksum)
-        print(f"Wrote database baseline to {args.baseline}.")
+        write_baseline(schema, baseline_path, checksum_path)
+        print(f"Wrote database schema artifact to {baseline_path}.")
         return 0
 
-    return check_baseline(schema, args.baseline, args.checksum)
+    return check_baseline(schema, baseline_path, checksum_path)
 
 
 if __name__ == "__main__":

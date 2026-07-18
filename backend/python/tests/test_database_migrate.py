@@ -10,6 +10,7 @@ from scripts.database_migrate import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
     DEFAULT_ADVISORY_LOCK_KEY,
+    HEAD_REVISION,
     run_alembic,
     verify_revision_state,
 )
@@ -25,14 +26,15 @@ def test_revision_state_rejects_unknown_revision() -> None:
         verify_revision_state(DatabaseState(30, 27, ("unknown",)), require_head=False)
 
 
-def test_revision_state_accepts_baseline_before_upgrade() -> None:
+def test_revision_state_accepts_known_revision_before_upgrade() -> None:
     verify_revision_state(DatabaseState(30, 27, (BASELINE_REVISION,)), require_head=False)
+    verify_revision_state(DatabaseState(30, 27, (CUTOVER_REVISION,)), require_head=False)
 
 
-def test_revision_state_requires_cutover_head_for_check() -> None:
+def test_revision_state_requires_current_schema_head_for_check() -> None:
     with pytest.raises(RuntimeError, match="not at the Alembic head"):
-        verify_revision_state(DatabaseState(30, 27, (BASELINE_REVISION,)), require_head=True)
-    verify_revision_state(DatabaseState(30, 27, (CUTOVER_REVISION,)), require_head=True)
+        verify_revision_state(DatabaseState(30, 27, (CUTOVER_REVISION,)), require_head=True)
+    verify_revision_state(DatabaseState(30, 27, (HEAD_REVISION,)), require_head=True)
 
 
 def test_alembic_runner_uses_python_module_and_local_config(

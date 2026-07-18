@@ -35,6 +35,7 @@ model Account {
   type                AccountType
   currency            String
   color               String?
+  notes               String?
   isArchived          Boolean              @default(false)
   archivedAt          DateTime?
   members             AccountMember[]

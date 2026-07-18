@@ -17,6 +17,7 @@ REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
+SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
 PRISMA_SCHEMA_PATH = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 
 PRISMA_OBJECT_PATTERN = re.compile(r"^\s*(model|enum)\s+(\w+)\s+\{", re.MULTILINE)
@@ -93,7 +94,7 @@ def test_baseline_matches_ownership_manifest() -> None:
 def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 6
+    assert manifest["schema_version"] == 7
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
@@ -112,7 +113,8 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "state": "sole_migration_owner",
         "baseline_revision": "3d0001base",
         "cutover_revision": "3e0001cutover",
-        "revision_count": 2,
+        "head_revision": "3f0001acctnote",
+        "revision_count": 3,
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
@@ -171,7 +173,7 @@ def test_sqlalchemy_parity_policy_is_explicit() -> None:
         "indexes": True,
         "server_defaults": True,
         "enum_values": True,
-        "verified_against": "prisma_migrated_postgresql_16",
+        "verified_against": "alembic_head_postgresql_16",
     }
 
 
@@ -180,6 +182,15 @@ def test_baseline_checksum_is_valid() -> None:
     expected_digest = CHECKSUM_PATH.read_text(encoding="utf-8").split()[0]
 
     assert hashlib.sha256(baseline).hexdigest() == expected_digest
+
+
+def test_schema_revision_registry_preserves_inherited_baseline_and_head_snapshot() -> None:
+    with SCHEMA_REGISTRY_PATH.open("rb") as source:
+        registry = tomllib.load(source)
+
+    assert registry["version"] == 1
+    assert registry["revisions"]["3e0001cutover"]["inherits_schema_from"] == "3d0001base"
+    assert registry["revisions"]["3f0001acctnote"]["schema_change"] is True
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:

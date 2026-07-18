@@ -1,0 +1,15 @@
+version = 1
+
+[revisions."3d0001base"]
+schema_source = "database/baseline/schema.sql"
+checksum_source = "database/baseline/schema.sha256"
+schema_change = false
+
+[revisions."3e0001cutover"]
+inherits_schema_from = "3d0001base"
+schema_change = false
+
+[revisions."3f0001acctnote"]
+schema_source = "database/revisions/3f0001acctnote/schema.sql"
+checksum_source = "database/revisions/3f0001acctnote/schema.sha256"
+schema_change = true

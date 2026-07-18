@@ -43,6 +43,7 @@ class AccountModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
 
 
 class AccountMemberModel(Base):

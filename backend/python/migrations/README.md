@@ -45,3 +45,7 @@ The first schema-changing revision belongs to Step 3F, not to the ownership cuto
 
 See `database/README.md`, `database/cutover/README.md`, and
 `database/schema_ownership.toml` for deployment and ownership rules.
+
+## First Alembic-owned schema change
+
+Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.

@@ -1,4 +1,4 @@
-schema_version = 6
+schema_version = 7
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -116,14 +116,14 @@ unique_constraints = true
 indexes = true
 server_defaults = true
 enum_values = true
-verified_against = "prisma_migrated_postgresql_16"
+verified_against = "alembic_head_postgresql_16"
 
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 2
+revision_count = 3
 head_count = 1
-head_revision = "3e0001cutover"
+head_revision = "3f0001acctnote"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -143,8 +143,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-revision_count = 2
+head_revision = "3f0001acctnote"
+revision_count = 3
 head_count = 1
+
+[current_schema]
+revision = "3f0001acctnote"
+schema_source = "database/revisions/3f0001acctnote/schema.sql"
+checksum_source = "database/revisions/3f0001acctnote/schema.sha256"
 
 [cutover]
 phase = "completed"

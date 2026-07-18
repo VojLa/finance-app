@@ -26,6 +26,7 @@ ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 CANONICAL_BASELINE = PROJECT_ROOT / "database" / "baseline" / "schema.sql"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
+HEAD_REVISION = "3f0001acctnote"
 DEFAULT_ADVISORY_LOCK_KEY = 731845204311764461
 
 
@@ -84,8 +85,10 @@ def verify_prepared_database(database_url: str, pg_dump: str, *, require_head: b
     state = asyncio.run(alembic_baseline.inspect_database(database_url))
     alembic_baseline.verify_database_state(state)
     verify_revision_state(state, require_head=require_head)
-    alembic_baseline.verify_canonical_baseline(database_url, pg_dump)
-    alembic_baseline.verify_sqlalchemy_parity(database_url)
+    current_revision = state.version_revisions[0]
+    alembic_baseline.verify_revision_schema(database_url, pg_dump, current_revision)
+    if require_head:
+        alembic_baseline.verify_sqlalchemy_parity(database_url)
 
 
 def run_check(database_url: str, pg_dump: str) -> None:
@@ -133,7 +136,7 @@ def run_upgrade(database_url: str, pg_dump: str, lock_key: int) -> None:
         f"database={database_identifier(database_url)} "
         f"previous={before.version_revisions} "
         f"current={after.version_revisions} "
-        f"target={CUTOVER_REVISION} "
+        f"target={HEAD_REVISION} "
         "owner=alembic "
         f"verified_at={datetime.now(UTC).isoformat()}"
     )
@@ -208,7 +211,6 @@ def run_bootstrap(database_url: str, pg_dump: str, psql: str, lock_key: int) -> 
         raise RuntimeError("Bootstrap refuses to modify a non-empty public schema.")
     load_canonical_baseline(database_url, psql)
     alembic_baseline.verify_canonical_baseline(database_url, pg_dump)
-    alembic_baseline.verify_sqlalchemy_parity(database_url)
     run_alembic(database_url, "stamp", BASELINE_REVISION)
     asyncio.run(upgrade_with_lock(database_url, lock_key))
     run_check(database_url, pg_dump)
