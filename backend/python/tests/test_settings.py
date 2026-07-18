@@ -11,6 +11,8 @@ def test_development_defaults() -> None:
     assert settings.log_level == "INFO"
     assert settings.log_json is False
     assert settings.docs_enabled is True
+    assert settings.internal_auth_issuer == "finance-app-next"
+    assert settings.internal_auth_audience == "finance-app-python"
 
 
 def test_unknown_environment_is_rejected() -> None:
@@ -23,6 +25,19 @@ def test_production_requires_safe_configuration() -> None:
         Settings.model_validate({"environment": "production"})
 
 
+def test_production_rejects_short_auth_secret() -> None:
+    with pytest.raises(ValidationError, match="at least 32 characters"):
+        Settings.model_validate(
+            {
+                "environment": "production",
+                "database_url": "postgresql://example",
+                "log_json": True,
+                "docs_enabled": False,
+                "internal_auth_secret": "short",
+            }
+        )
+
+
 def test_valid_production_configuration() -> None:
     settings = Settings.model_validate(
         {
@@ -30,6 +45,7 @@ def test_valid_production_configuration() -> None:
             "database_url": "postgresql://example",
             "log_json": True,
             "docs_enabled": False,
+            "internal_auth_secret": "production-secret-with-at-least-32-characters",
         }
     )
 
