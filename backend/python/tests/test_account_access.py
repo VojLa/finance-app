@@ -37,8 +37,9 @@ def _principal() -> AuthenticatedPrincipal:
 
 def _session(row: _MembershipRow | None) -> tuple[AsyncSession, AsyncMock]:
     execute = AsyncMock(return_value=_Result(row))
-    session = cast(AsyncSession, type("Session", (), {"execute": execute})())
-    return session, execute
+    session_mock = AsyncMock(spec=AsyncSession)
+    session_mock.configure_mock(execute=execute)
+    return cast(AsyncSession, session_mock), execute
 
 
 @pytest.mark.asyncio
