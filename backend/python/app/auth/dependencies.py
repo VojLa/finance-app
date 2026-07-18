@@ -10,7 +10,7 @@ from app.auth.errors import (
     AuthenticationRequiredError,
     InvalidSessionTokenError,
 )
-from app.auth.models import AuthenticatedPrincipal
+from app.auth.models import AuthenticatedPrincipal, InternalTokenClaims
 from app.auth.token import InternalTokenVerifier
 from app.config.settings import Settings
 from app.db.connection import get_db_session
@@ -23,24 +23,30 @@ def get_request_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-async def get_current_principal(
+def get_verified_token_claims(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[Settings, Depends(get_request_settings)],
-) -> AuthenticatedPrincipal:
-    """Authenticate the request and resolve the subject against PostgreSQL."""
+) -> InternalTokenClaims:
+    """Reject missing or invalid tokens before any database dependency is opened."""
 
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise AuthenticationRequiredError()
     if not settings.internal_auth_secret:
         raise AuthenticationConfigurationError()
 
-    claims = InternalTokenVerifier(
+    return InternalTokenVerifier(
         secret=settings.internal_auth_secret,
         issuer=settings.internal_auth_issuer,
         audience=settings.internal_auth_audience,
         clock_skew_seconds=settings.internal_auth_clock_skew_seconds,
     ).verify(credentials.credentials)
+
+
+async def get_current_principal(
+    claims: Annotated[InternalTokenClaims, Depends(get_verified_token_claims)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AuthenticatedPrincipal:
+    """Resolve a verified token subject against PostgreSQL."""
 
     user = await session.scalar(select(UserModel).where(UserModel.id == claims.sub))
     if user is None:
