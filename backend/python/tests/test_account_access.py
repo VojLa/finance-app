@@ -62,6 +62,12 @@ async def test_require_account_access_returns_membership() -> None:
     assert result.role is AccountMemberRole.editor
     assert result.relation_type is AccountRelationType.collaborator
     execute.assert_awaited_once()
+    assert execute.await_args is not None
+    statement = execute.await_args.args[0]
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert '"AccountMember"."accountId" = \'account-a\'' in compiled
+    assert '"AccountMember"."userId" = \'user-a\'' in compiled
+    assert '"Account"."isArchived" IS false' in compiled
 
 
 @pytest.mark.asyncio
@@ -99,3 +105,46 @@ async def test_require_account_access_enforces_allowed_roles() -> None:
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.code == "account_access_denied"
+
+
+@pytest.mark.parametrize("role", list(AccountMemberRole))
+async def test_require_account_access_accepts_any_membership_without_role_constraint(
+    role: AccountMemberRole,
+) -> None:
+    session, _ = _session(
+        _MembershipRow(
+            account_id="account-a",
+            role=role,
+            relation_type=AccountRelationType.owner,
+        )
+    )
+
+    result = await require_account_access(
+        session=session,
+        principal=_principal(),
+        account_id="account-a",
+    )
+
+    assert result.role is role
+
+
+@pytest.mark.parametrize("role", [AccountMemberRole.owner, AccountMemberRole.admin])
+async def test_require_account_access_accepts_explicitly_allowed_role(
+    role: AccountMemberRole,
+) -> None:
+    session, _ = _session(
+        _MembershipRow(
+            account_id="account-a",
+            role=role,
+            relation_type=AccountRelationType.owner,
+        )
+    )
+
+    result = await require_account_access(
+        session=session,
+        principal=_principal(),
+        account_id="account-a",
+        allowed_roles={AccountMemberRole.owner, AccountMemberRole.admin},
+    )
+
+    assert result.role is role
