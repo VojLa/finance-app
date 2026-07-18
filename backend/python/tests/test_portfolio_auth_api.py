@@ -82,6 +82,7 @@ def test_portfolio_checks_explicit_account_access(
 
     assert response.status_code == 200
     access_check.assert_awaited_once()
+    assert access_check.await_args is not None
     call = access_check.await_args.kwargs
     assert call["session"] is session
     assert call["principal"].user_id == "user-a"
