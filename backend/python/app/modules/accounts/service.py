@@ -9,12 +9,26 @@ from app.db.models.enums import AccountMemberRole, AccountRelationType
 from app.modules.accounts.access import AccountNotFoundError, require_account_access
 from app.modules.accounts.models import AccountCreateRequest, AccountResponse, AccountUpdateRequest
 from app.modules.accounts.repository import AccountRepository
+from app.shared.errors import ApplicationError
 
 EDIT_ROLES = {
     AccountMemberRole.owner,
     AccountMemberRole.admin,
     AccountMemberRole.editor,
 }
+LIFECYCLE_ROLES = {
+    AccountMemberRole.owner,
+    AccountMemberRole.admin,
+}
+
+
+class AccountNotArchivedError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="account_not_archived",
+            message="The account is not archived.",
+            status_code=409,
+        )
 
 
 def _now() -> datetime:
@@ -70,19 +84,7 @@ class AccountService:
             await self.session.rollback()
             raise
 
-        return AccountResponse(
-            id=account.id,
-            name=account.name,
-            type=account.type,
-            currency=account.currency,
-            color=account.color,
-            notes=account.notes,
-            is_archived=account.is_archived,
-            role=membership.role,
-            relation_type=membership.relation_type,
-            created_at=account.created_at,
-            updated_at=account.updated_at,
-        )
+        return self._response(account, membership.role, membership.relation_type)
 
     async def update_account(
         self,
@@ -106,12 +108,70 @@ class AccountService:
             setattr(account, field, value)
         account.updated_at = _now()
 
+        await self._commit()
+        return self._response(account, authorized.role, authorized.relation_type)
+
+    async def archive_account(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+    ) -> AccountResponse:
+        authorized = await require_account_access(
+            session=self.session,
+            principal=principal,
+            account_id=account_id,
+            allowed_roles=LIFECYCLE_ROLES,
+        )
+        account = await self.repository.get_account_for_lifecycle(account_id)
+        if account is None or account.is_archived:
+            raise AccountNotFoundError()
+
+        now = _now()
+        account.is_archived = True
+        account.archived_at = now
+        account.updated_at = now
+        await self._commit()
+        return self._response(account, authorized.role, authorized.relation_type)
+
+    async def restore_account(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+    ) -> AccountResponse:
+        authorized = await require_account_access(
+            session=self.session,
+            principal=principal,
+            account_id=account_id,
+            allowed_roles=LIFECYCLE_ROLES,
+            include_archived=True,
+        )
+        account = await self.repository.get_account_for_lifecycle(account_id)
+        if account is None:
+            raise AccountNotFoundError()
+        if not account.is_archived:
+            raise AccountNotArchivedError()
+
+        account.is_archived = False
+        account.archived_at = None
+        account.updated_at = _now()
+        await self._commit()
+        return self._response(account, authorized.role, authorized.relation_type)
+
+    async def _commit(self) -> None:
         try:
             await self.session.commit()
         except Exception:
             await self.session.rollback()
             raise
 
+    @staticmethod
+    def _response(
+        account: AccountModel,
+        role: AccountMemberRole,
+        relation_type: AccountRelationType,
+    ) -> AccountResponse:
         return AccountResponse(
             id=account.id,
             name=account.name,
@@ -120,8 +180,8 @@ class AccountService:
             color=account.color,
             notes=account.notes,
             is_archived=account.is_archived,
-            role=authorized.role,
-            relation_type=authorized.relation_type,
+            role=role,
+            relation_type=relation_type,
             created_at=account.created_at,
             updated_at=account.updated_at,
         )
