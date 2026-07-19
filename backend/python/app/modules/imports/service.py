@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import (
+    AccountMemberRole,
     ImportLogEvent,
     ImportLogLevel,
     ImportStatus,
@@ -15,7 +16,11 @@ from app.modules.imports.models import ImportBatchCreateRequest, ImportBatchResp
 from app.modules.imports.repository import ImportBatchRepository
 from app.shared.errors import ApplicationError
 
-WRITE_ROLES = {"owner", "admin", "editor"}
+WRITE_ROLES = {
+    AccountMemberRole.owner,
+    AccountMemberRole.admin,
+    AccountMemberRole.editor,
+}
 
 
 class ImportBatchNotFoundError(ApplicationError):
@@ -28,12 +33,11 @@ class ImportBatchNotFoundError(ApplicationError):
 
 
 class ImportBatchExistsError(ApplicationError):
-    def __init__(self, batch_id: str) -> None:
+    def __init__(self) -> None:
         super().__init__(
             code="import_batch_exists",
             message="An import batch with this checksum already exists.",
             status_code=409,
-            details={"batch_id": batch_id},
         )
 
 
@@ -65,7 +69,7 @@ class ImportBatchService:
             checksum=payload.checksum,
         )
         if existing is not None:
-            raise ImportBatchExistsError(existing.id)
+            raise ImportBatchExistsError()
 
         now = _now()
         batch = ImportBatchModel(
