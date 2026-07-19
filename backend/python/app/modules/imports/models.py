@@ -20,6 +20,8 @@ class ImportBatchCreateRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("Filename must not be blank.")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("Filename must not contain path separators.")
         return normalized
 
     @field_validator("file_encoding")
@@ -34,14 +36,15 @@ class ImportBatchCreateRequest(BaseModel):
     @classmethod
     def normalize_checksum(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+        if len(normalized) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized
+        ):
             raise ValueError("Checksum must be a 64-character SHA-256 hexadecimal digest.")
         return normalized
 
 
 class ImportBatchResponse(BaseModel):
     id: str
-    user_id: str
     account_id: str
     source: ImportSource
     filename: str

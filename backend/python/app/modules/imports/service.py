@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
@@ -104,6 +105,16 @@ class ImportBatchService:
             await self.session.flush()
             self.repository.add_log(log)
             await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            duplicate = await self.repository.get_by_checksum(
+                user_id=principal.user_id,
+                account_id=account_id,
+                checksum=payload.checksum,
+            )
+            if duplicate is not None:
+                raise ImportBatchExistsError() from None
+            raise
         except Exception:
             await self.session.rollback()
             raise
@@ -121,7 +132,9 @@ class ImportBatchService:
             principal=principal,
             account_id=account_id,
         )
-        return [self._response(batch) for batch in await self.repository.list_for_account(account_id)]
+        return [
+            self._response(batch) for batch in await self.repository.list_for_account(account_id)
+        ]
 
     async def get_batch(
         self,
@@ -144,7 +157,6 @@ class ImportBatchService:
     def _response(batch: ImportBatchModel) -> ImportBatchResponse:
         return ImportBatchResponse(
             id=batch.id,
-            user_id=batch.user_id,
             account_id=batch.account_id,
             source=batch.source,
             filename=batch.filename,

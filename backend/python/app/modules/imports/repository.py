@@ -12,7 +12,7 @@ class ImportBatchRepository:
         result = await self.session.scalars(
             select(ImportBatchModel)
             .where(ImportBatchModel.account_id == account_id)
-            .order_by(ImportBatchModel.created_at.desc(), ImportBatchModel.id.asc())
+            .order_by(ImportBatchModel.created_at.desc(), ImportBatchModel.id.desc())
         )
         return list(result.all())
 

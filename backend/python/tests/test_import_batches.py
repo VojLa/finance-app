@@ -24,7 +24,6 @@ def _principal() -> AuthenticatedPrincipal:
 def _batch() -> ImportBatchResponse:
     return ImportBatchResponse(
         id="batch-a",
-        user_id="user-a",
         account_id="account-a",
         source=ImportSource.raiffeisenbank,
         filename="history.csv",
@@ -77,6 +76,36 @@ def test_import_batch_endpoints_require_authentication(
     assert response.json()["error"]["code"] == "authentication_required"
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        (
+            "post",
+            "/api/v1/accounts/account-a/imports",
+            {"source": "raiffeisenbank", "filename": "history.csv", "checksum": "a" * 64},
+        ),
+        ("get", "/api/v1/accounts/account-a/imports", None),
+        ("get", "/api/v1/accounts/account-a/imports/batch-a", None),
+    ],
+)
+def test_import_batch_endpoints_reject_invalid_authentication(
+    test_settings: Settings,
+    method: str,
+    path: str,
+    payload: dict[str, str] | None,
+) -> None:
+    with TestClient(create_app(test_settings)) as client:
+        response = client.request(
+            method,
+            path,
+            json=payload,
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_session_token"
+
+
 def test_create_import_batch_uses_authenticated_principal(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -109,7 +138,11 @@ def test_create_import_batch_uses_authenticated_principal(
     "payload",
     [
         {"source": "raiffeisenbank", "filename": "", "checksum": "a" * 64},
+        {"source": "raiffeisenbank", "filename": "../secret.csv", "checksum": "a" * 64},
+        {"source": "raiffeisenbank", "filename": "C:\\temp\\data.csv", "checksum": "a" * 64},
+        {"source": "raiffeisenbank", "filename": "a.csv", "file_size": -1, "checksum": "a" * 64},
         {"source": "raiffeisenbank", "filename": "a.csv", "checksum": "bad"},
+        {"source": "raiffeisenbank", "filename": "a.csv", "checksum": "g" * 64},
         {"source": "unknown", "filename": "a.csv", "checksum": "a" * 64},
         {"source": "raiffeisenbank", "filename": "a.csv", "checksum": "a" * 64, "user_id": "x"},
     ],
@@ -134,3 +167,8 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     for operation in operations:
         assert operation["security"] == [{"InternalSessionToken": []}]
     assert "201" in operations[0]["responses"]
+    assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None
+    assert sorted(path for path in schema["paths"] if "import" in path) == [
+        "/api/v1/accounts/{account_id}/imports",
+        "/api/v1/accounts/{account_id}/imports/{batch_id}",
+    ]
