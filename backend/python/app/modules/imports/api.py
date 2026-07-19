@@ -39,7 +39,20 @@ async def list_import_batches(
     )
 
 
-@router.put("/{batch_id}/file", response_model=ImportUploadResponse)
+@router.put(
+    "/{batch_id}/file",
+    response_model=ImportUploadResponse,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        }
+    },
+)
 async def upload_import_file(
     account_id: str,
     batch_id: str,
