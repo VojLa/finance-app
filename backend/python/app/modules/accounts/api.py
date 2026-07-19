@@ -38,3 +38,27 @@ async def update_account(
         account_id=account_id,
         payload=payload,
     )
+
+
+@router.post("/{account_id}/archive", response_model=AccountResponse)
+async def archive_account(
+    account_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountResponse:
+    return await AccountService(session).archive_account(
+        principal=principal,
+        account_id=account_id,
+    )
+
+
+@router.post("/{account_id}/restore", response_model=AccountResponse)
+async def restore_account(
+    account_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountResponse:
+    return await AccountService(session).restore_account(
+        principal=principal,
+        account_id=account_id,
+    )
