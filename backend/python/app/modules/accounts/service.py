@@ -63,6 +63,7 @@ class AccountService:
 
         try:
             self.repository.add_account(account)
+            await self.session.flush()
             self.repository.add_membership(membership)
             await self.session.commit()
         except Exception:

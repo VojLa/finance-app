@@ -62,6 +62,47 @@ def test_accounts_require_authentication(test_settings: Settings) -> None:
     assert response.json()["error"]["code"] == "authentication_required"
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("post", "/api/v1/accounts", {"name": "A", "type": "bank", "currency": "CZK"}),
+        ("patch", "/api/v1/accounts/account-a", {"name": "Updated"}),
+    ],
+)
+def test_account_writes_require_authentication(
+    test_settings: Settings,
+    method: str,
+    path: str,
+    payload: dict[str, str],
+) -> None:
+    with TestClient(create_app(test_settings)) as client:
+        response = client.request(method, path, json=payload)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+
+
+def test_accounts_reject_invalid_token(test_settings: Settings) -> None:
+    with TestClient(create_app(test_settings)) as client:
+        response = client.get(
+            "/api/v1/accounts",
+            headers={"Authorization": "Bearer invalid"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_session_token"
+
+
+def test_accounts_return_controlled_503_without_database(test_settings: Settings) -> None:
+    app = create_app(test_settings)
+    app.dependency_overrides[get_current_principal] = _principal
+    with TestClient(app) as client:
+        response = client.get("/api/v1/accounts")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "dependency_unavailable"
+
+
 def test_list_accounts_uses_principal(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -116,11 +157,92 @@ def test_create_account_rejects_identity_and_role_fields(test_settings: Settings
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "   ", "type": "bank", "currency": "CZK"},
+        {"name": "A" * 121, "type": "bank", "currency": "CZK"},
+        {"name": "A", "type": "bank", "currency": "EURO"},
+        {"name": "A", "type": "bank", "currency": "12A"},
+        {"name": "A", "type": "bank", "currency": "ČZK"},
+        {"name": "A", "type": "invalid", "currency": "CZK"},
+        {"name": "A", "type": "bank", "currency": "CZK", "unknown": "value"},
+        {"name": "A", "type": "bank", "currency": "CZK", "is_archived": True},
+        {"name": "A", "type": "bank", "currency": "CZK", "relation_type": "owner"},
+        {"name": "A", "type": "bank", "currency": "CZK", "id": "client-id"},
+    ],
+)
+def test_create_account_rejects_invalid_or_forbidden_input(
+    test_settings: Settings,
+    payload: dict[str, object],
+) -> None:
+    with _client(test_settings) as client:
+        response = client.post("/api/v1/accounts", json=payload)
+
+    assert response.status_code == 422
+
+
 def test_patch_account_rejects_empty_payload(test_settings: Settings) -> None:
     with _client(test_settings) as client:
         response = client.patch("/api/v1/accounts/account-a", json={})
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("payload", [{"name": None}, {"currency": None}])
+def test_patch_account_rejects_null_required_fields(
+    test_settings: Settings,
+    payload: dict[str, None],
+) -> None:
+    with _client(test_settings) as client:
+        response = client.patch("/api/v1/accounts/account-a", json=payload)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"unknown": "value"},
+        {"type": "cash"},
+        {"role": "owner"},
+        {"relation_type": "owner"},
+        {"user_id": "user-b"},
+        {"is_archived": True},
+    ],
+)
+def test_patch_account_rejects_forbidden_fields(
+    test_settings: Settings,
+    payload: dict[str, object],
+) -> None:
+    with _client(test_settings) as client:
+        response = client.patch("/api/v1/accounts/account-a", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_patch_normalizes_values_and_preserves_explicit_null(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update_account = AsyncMock(return_value=_account())
+    monkeypatch.setattr(AccountService, "update_account", update_account)
+
+    with _client(test_settings) as client:
+        response = client.patch(
+            "/api/v1/accounts/account-a",
+            json={"name": "  Updated  ", "currency": "eur", "color": None, "notes": "   "},
+        )
+
+    assert response.status_code == 200
+    assert update_account.await_args is not None
+    payload = update_account.await_args.kwargs["payload"]
+    assert payload.model_dump(exclude_unset=True) == {
+        "name": "Updated",
+        "currency": "EUR",
+        "color": None,
+        "notes": None,
+    }
 
 
 def test_patch_account_calls_role_protected_service(
@@ -155,3 +277,10 @@ def test_accounts_openapi_contract(test_settings: Settings) -> None:
     parameters = schema["paths"]["/api/v1/accounts"]["get"].get("parameters", [])
     assert "user_id" not in {parameter["name"] for parameter in parameters}
     assert schema["paths"]["/api/v1/accounts"]["post"]["responses"].get("201") is not None
+    assert (
+        schema["paths"]["/api/v1/accounts/{account_id}"]["patch"]["parameters"][0]["name"]
+        == "account_id"
+    )
+    assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None
+    assert "/accounts" not in schema["paths"]
+    assert "/api/accounts" not in schema["paths"]

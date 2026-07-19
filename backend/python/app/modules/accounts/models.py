@@ -95,4 +95,8 @@ class AccountUpdateRequest(BaseModel):
     def require_update(self) -> "AccountUpdateRequest":
         if not self.model_fields_set:
             raise ValueError("At least one mutable account field is required.")
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("Account name must not be null.")
+        if "currency" in self.model_fields_set and self.currency is None:
+            raise ValueError("Account currency must not be null.")
         return self
