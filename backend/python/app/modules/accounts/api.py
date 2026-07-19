@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
+from app.modules.accounts.invitations import router as invitation_router
 from app.modules.accounts.models import (
     AccountCreateRequest,
     AccountMemberResponse,
@@ -115,3 +116,6 @@ async def restore_account(
         principal=principal,
         account_id=account_id,
     )
+
+
+router.include_router(invitation_router)
