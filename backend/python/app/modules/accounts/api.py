@@ -1,9 +1,15 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
-from app.modules.accounts.models import AccountCreateRequest, AccountResponse, AccountUpdateRequest
+from app.modules.accounts.models import (
+    AccountCreateRequest,
+    AccountMemberResponse,
+    AccountMemberRoleUpdateRequest,
+    AccountResponse,
+    AccountUpdateRequest,
+)
 from app.modules.accounts.service import AccountService
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -38,6 +44,53 @@ async def update_account(
         account_id=account_id,
         payload=payload,
     )
+
+
+@router.get("/{account_id}/members", response_model=list[AccountMemberResponse])
+async def list_account_members(
+    account_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[AccountMemberResponse]:
+    return await AccountService(session).list_members(
+        principal=principal,
+        account_id=account_id,
+    )
+
+
+@router.patch("/{account_id}/members/{member_id}", response_model=AccountMemberResponse)
+async def update_account_member_role(
+    account_id: str,
+    member_id: str,
+    payload: AccountMemberRoleUpdateRequest,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountMemberResponse:
+    return await AccountService(session).update_member_role(
+        principal=principal,
+        account_id=account_id,
+        member_id=member_id,
+        payload=payload,
+    )
+
+
+@router.delete(
+    "/{account_id}/members/{member_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def remove_account_member(
+    account_id: str,
+    member_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    await AccountService(session).remove_member(
+        principal=principal,
+        account_id=account_id,
+        member_id=member_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{account_id}/archive", response_model=AccountResponse)

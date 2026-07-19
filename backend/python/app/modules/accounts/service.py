@@ -7,7 +7,13 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.enums import AccountMemberRole, AccountRelationType
 from app.modules.accounts.access import AccountNotFoundError, require_account_access
-from app.modules.accounts.models import AccountCreateRequest, AccountResponse, AccountUpdateRequest
+from app.modules.accounts.models import (
+    AccountCreateRequest,
+    AccountMemberResponse,
+    AccountMemberRoleUpdateRequest,
+    AccountResponse,
+    AccountUpdateRequest,
+)
 from app.modules.accounts.repository import AccountRepository
 from app.shared.errors import ApplicationError
 
@@ -20,6 +26,7 @@ LIFECYCLE_ROLES = {
     AccountMemberRole.owner,
     AccountMemberRole.admin,
 }
+OWNER_ONLY = {AccountMemberRole.owner}
 
 
 class AccountNotArchivedError(ApplicationError):
@@ -27,6 +34,24 @@ class AccountNotArchivedError(ApplicationError):
         super().__init__(
             code="account_not_archived",
             message="The account is not archived.",
+            status_code=409,
+        )
+
+
+class AccountMemberNotFoundError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="account_member_not_found",
+            message="The account member was not found.",
+            status_code=404,
+        )
+
+
+class AccountOwnerImmutableError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="account_owner_immutable",
+            message="The account owner cannot be changed or removed.",
             status_code=409,
         )
 
@@ -111,6 +136,58 @@ class AccountService:
         await self._commit()
         return self._response(account, authorized.role, authorized.relation_type)
 
+    async def list_members(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+    ) -> list[AccountMemberResponse]:
+        await self._require_owner(principal=principal, account_id=account_id)
+        return await self.repository.list_members(account_id)
+
+    async def update_member_role(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        member_id: str,
+        payload: AccountMemberRoleUpdateRequest,
+    ) -> AccountMemberResponse:
+        await self._require_owner(principal=principal, account_id=account_id)
+        membership = await self.repository.get_member(account_id=account_id, member_id=member_id)
+        if membership is None:
+            raise AccountMemberNotFoundError()
+        if membership.role is AccountMemberRole.owner:
+            raise AccountOwnerImmutableError()
+
+        membership.role = payload.role
+        membership.updated_at = _now()
+        await self._commit()
+        response = await self.repository.get_member_response(
+            account_id=account_id,
+            member_id=member_id,
+        )
+        if response is None:
+            raise AccountMemberNotFoundError()
+        return response
+
+    async def remove_member(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        member_id: str,
+    ) -> None:
+        await self._require_owner(principal=principal, account_id=account_id)
+        membership = await self.repository.get_member(account_id=account_id, member_id=member_id)
+        if membership is None:
+            raise AccountMemberNotFoundError()
+        if membership.role is AccountMemberRole.owner:
+            raise AccountOwnerImmutableError()
+
+        await self.repository.delete_membership(membership)
+        await self._commit()
+
     async def archive_account(
         self,
         *,
@@ -158,6 +235,19 @@ class AccountService:
         account.updated_at = _now()
         await self._commit()
         return self._response(account, authorized.role, authorized.relation_type)
+
+    async def _require_owner(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+    ) -> None:
+        await require_account_access(
+            session=self.session,
+            principal=principal,
+            account_id=account_id,
+            allowed_roles=OWNER_ONLY,
+        )
 
     async def _commit(self) -> None:
         try:
