@@ -78,3 +78,6 @@ class AccountRepository:
                 AccountModel.is_archived.is_(False),
             )
         )
+
+    async def get_account_for_lifecycle(self, account_id: str) -> AccountModel | None:
+        return await self.session.scalar(select(AccountModel).where(AccountModel.id == account_id))

@@ -148,3 +148,30 @@ async def test_require_account_access_accepts_explicitly_allowed_role(
     )
 
     assert result.role is role
+
+
+@pytest.mark.asyncio
+async def test_require_account_access_can_include_archived_without_weakening_membership_filters() -> (
+    None
+):
+    session, execute = _session(
+        _MembershipRow(
+            account_id="account-a",
+            role=AccountMemberRole.owner,
+            relation_type=AccountRelationType.owner,
+        )
+    )
+
+    await require_account_access(
+        session=session,
+        principal=_principal(),
+        account_id="account-a",
+        include_archived=True,
+    )
+
+    assert execute.await_args is not None
+    compiled = str(execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert '"AccountMember"."accountId" = \'account-a\'' in compiled
+    assert '"AccountMember"."userId" = \'user-a\'' in compiled
+    assert 'public."Account".id = public."AccountMember"."accountId"' in compiled
+    assert '"Account"."isArchived"' not in compiled
