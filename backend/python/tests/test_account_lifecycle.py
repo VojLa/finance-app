@@ -133,7 +133,11 @@ async def test_archive_sets_archive_fields_and_commits(
         )
     )
     monkeypatch.setattr("app.modules.accounts.service.require_account_access", access)
-    monkeypatch.setattr(service.repository, "get_account_for_lifecycle", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_for_lifecycle",
+        AsyncMock(return_value=account),
+    )
 
     result = await service.archive_account(principal=_principal(), account_id="account-a")
 
@@ -162,7 +166,11 @@ async def test_restore_requires_archived_account(
         )
     )
     monkeypatch.setattr("app.modules.accounts.service.require_account_access", access)
-    monkeypatch.setattr(service.repository, "get_account_for_lifecycle", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_for_lifecycle",
+        AsyncMock(return_value=account),
+    )
 
     with pytest.raises(AccountNotArchivedError):
         await service.restore_account(principal=_principal(), account_id="account-a")
@@ -200,7 +208,11 @@ async def test_lifecycle_commit_failure_rolls_back(
             )
         ),
     )
-    monkeypatch.setattr(service.repository, "get_account_for_lifecycle", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_for_lifecycle",
+        AsyncMock(return_value=account),
+    )
 
     with pytest.raises(RuntimeError, match="commit failed"):
         await service.archive_account(principal=_principal(), account_id="account-a")
