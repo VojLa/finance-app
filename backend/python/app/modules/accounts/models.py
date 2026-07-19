@@ -21,6 +21,30 @@ class AccountResponse(BaseModel):
     updated_at: datetime
 
 
+class AccountMemberResponse(BaseModel):
+    id: str
+    user_id: str
+    email: str
+    name: str | None
+    role: AccountMemberRole
+    relation_type: AccountRelationType
+    accepted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AccountMemberRoleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AccountMemberRole
+
+    @model_validator(mode="after")
+    def forbid_owner_assignment(self) -> "AccountMemberRoleUpdateRequest":
+        if self.role is AccountMemberRole.owner:
+            raise ValueError("Ownership transfer is not supported by this endpoint.")
+        return self
+
+
 class AccountCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
