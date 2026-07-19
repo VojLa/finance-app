@@ -6,14 +6,14 @@ from secrets import token_urlsafe
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Response, status
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.auth.models import AuthenticatedPrincipal
 from app.db.connection import get_db_session
-from app.db.models.accounts import AccountInviteModel, AccountMemberModel
+from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import (
     AccountInviteStatus,
     AccountMemberRole,
@@ -43,14 +43,18 @@ def _token_hash(token: str) -> str:
 class AccountInviteCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailStr
+    email: str = Field(min_length=3, max_length=320)
     role: AccountMemberRole = AccountMemberRole.viewer
     expires_in_hours: int = Field(default=72, ge=1, le=168)
 
     @field_validator("email")
     @classmethod
-    def normalize_email(cls, value: EmailStr) -> str:
-        return str(value).strip().lower()
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        local, separator, domain = normalized.partition("@")
+        if not separator or not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError("A valid email address is required.")
+        return normalized
 
     @model_validator(mode="after")
     def forbid_owner_role(self) -> AccountInviteCreateRequest:
@@ -81,6 +85,11 @@ class AccountInviteResponse(BaseModel):
 
 class AccountInviteCreatedResponse(AccountInviteResponse):
     token: str
+
+
+class AccountInviteAcceptedResponse(BaseModel):
+    account_id: str
+    member_id: str
 
 
 class AccountInviteNotFoundError(ApplicationError):
@@ -114,12 +123,14 @@ class AccountInvitationRepository:
         *,
         account_id: str,
         email: str,
+        now: datetime,
     ) -> AccountInviteModel | None:
         return await self.session.scalar(
             select(AccountInviteModel).where(
                 AccountInviteModel.account_id == account_id,
                 func.lower(AccountInviteModel.email) == email.lower(),
                 AccountInviteModel.status == AccountInviteStatus.pending,
+                AccountInviteModel.expires_at > now,
             )
         )
 
@@ -136,9 +147,15 @@ class AccountInvitationRepository:
             )
         )
 
-    async def get_by_token_hash(self, token_hash: str) -> AccountInviteModel | None:
+    async def get_active_by_token_hash(self, token_hash: str) -> AccountInviteModel | None:
         return await self.session.scalar(
-            select(AccountInviteModel).where(AccountInviteModel.token_hash == token_hash)
+            select(AccountInviteModel)
+            .join(AccountModel, AccountModel.id == AccountInviteModel.account_id)
+            .where(
+                AccountInviteModel.token_hash == token_hash,
+                AccountModel.is_archived.is_(False),
+            )
+            .with_for_update()
         )
 
     async def user_has_membership(self, *, account_id: str, user_id: str) -> bool:
@@ -167,9 +184,11 @@ class AccountInvitationService:
         payload: AccountInviteCreateRequest,
     ) -> AccountInviteCreatedResponse:
         await self._require_owner(principal=principal, account_id=account_id)
+        now = _now()
         existing = await self.repository.pending_for_email(
             account_id=account_id,
-            email=str(payload.email),
+            email=payload.email,
+            now=now,
         )
         if existing is not None:
             raise AccountInviteConflictError(
@@ -178,13 +197,12 @@ class AccountInvitationService:
             )
 
         token = token_urlsafe(32)
-        now = _now()
         invite = AccountInviteModel(
             id=str(uuid4()),
             account_id=account_id,
             inviter_id=principal.user_id,
             accepted_by_id=None,
-            email=str(payload.email),
+            email=payload.email,
             role=payload.role,
             status=AccountInviteStatus.pending,
             token_hash=_token_hash(token),
@@ -234,8 +252,8 @@ class AccountInvitationService:
         *,
         principal: AuthenticatedPrincipal,
         payload: AccountInviteAcceptRequest,
-    ) -> AccountMemberModel:
-        invite = await self.repository.get_by_token_hash(_token_hash(payload.token))
+    ) -> AccountInviteAcceptedResponse:
+        invite = await self.repository.get_active_by_token_hash(_token_hash(payload.token))
         if invite is None:
             raise AccountInviteNotFoundError()
         now = _now()
@@ -281,7 +299,10 @@ class AccountInvitationService:
         invite.accepted_at = now
         invite.updated_at = now
         await self._commit()
-        return membership
+        return AccountInviteAcceptedResponse(
+            account_id=membership.account_id,
+            member_id=membership.id,
+        )
 
     async def _require_owner(
         self,
@@ -369,14 +390,17 @@ async def revoke_account_invite(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/invites/accept", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/invites/accept",
+    response_model=AccountInviteAcceptedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def accept_account_invite(
     payload: AccountInviteAcceptRequest,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
-) -> dict[str, str]:
-    membership = await AccountInvitationService(session).accept_invite(
+) -> AccountInviteAcceptedResponse:
+    return await AccountInvitationService(session).accept_invite(
         principal=principal,
         payload=payload,
     )
-    return {"account_id": membership.account_id, "member_id": membership.id}
