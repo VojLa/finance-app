@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -13,8 +14,13 @@ from app.db.models.enums import (
 )
 from app.db.models.imports import ImportBatchModel, ImportLogModel
 from app.modules.accounts.access import require_account_access
-from app.modules.imports.models import ImportBatchCreateRequest, ImportBatchResponse
+from app.modules.imports.models import (
+    ImportBatchCreateRequest,
+    ImportBatchResponse,
+    ImportUploadResponse,
+)
 from app.modules.imports.repository import ImportBatchRepository
+from app.modules.imports.storage import ImportFileTooLargeError, LocalImportStorage
 from app.shared.errors import ApplicationError
 
 WRITE_ROLES = {
@@ -22,6 +28,7 @@ WRITE_ROLES = {
     AccountMemberRole.admin,
     AccountMemberRole.editor,
 }
+MAX_UPLOAD_BYTES = 1_073_741_824
 
 
 class ImportBatchNotFoundError(ApplicationError):
@@ -42,14 +49,51 @@ class ImportBatchExistsError(ApplicationError):
         )
 
 
+class ImportUploadContentTypeError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_upload_content_type_invalid",
+            message="The upload must use application/octet-stream.",
+            status_code=415,
+        )
+
+
+class ImportUploadTooLargeError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_upload_too_large",
+            message="The uploaded file exceeds the allowed size.",
+            status_code=413,
+        )
+
+
+class ImportUploadMismatchError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_upload_mismatch",
+            message="The uploaded file does not match the registered metadata.",
+            status_code=422,
+        )
+
+
+class ImportUploadStateError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_upload_state_invalid",
+            message="The import batch does not accept a raw file upload in its current state.",
+            status_code=409,
+        )
+
+
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
 class ImportBatchService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage: LocalImportStorage | None = None) -> None:
         self.session = session
         self.repository = ImportBatchRepository(session)
+        self.storage = storage or LocalImportStorage()
 
     async def create_batch(
         self,
@@ -120,6 +164,50 @@ class ImportBatchService:
             raise
 
         return self._response(batch)
+
+    async def upload_file(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        batch_id: str,
+        content_type: str | None,
+        chunks: AsyncIterator[bytes],
+    ) -> ImportUploadResponse:
+        await require_account_access(
+            session=self.session,
+            principal=principal,
+            account_id=account_id,
+            allowed_roles=WRITE_ROLES,
+        )
+        batch = await self.repository.get_for_account(account_id=account_id, batch_id=batch_id)
+        if batch is None:
+            raise ImportBatchNotFoundError()
+        if batch.status is not ImportStatus.pending:
+            raise ImportUploadStateError()
+        if content_type is None or content_type.split(";", 1)[0].strip().lower() != "application/octet-stream":
+            raise ImportUploadContentTypeError()
+
+        maximum = batch.file_size if batch.file_size is not None else MAX_UPLOAD_BYTES
+        try:
+            stored = await self.storage.store(batch_id=batch.id, chunks=chunks, max_bytes=maximum)
+        except ImportFileTooLargeError:
+            raise ImportUploadTooLargeError() from None
+
+        size_matches = batch.file_size is None or stored.size == batch.file_size
+        checksum_matches = stored.checksum == batch.checksum
+        if not size_matches or not checksum_matches:
+            if stored.created:
+                self.storage.remove(batch.id)
+            raise ImportUploadMismatchError()
+
+        return ImportUploadResponse(
+            batch_id=batch.id,
+            size=stored.size,
+            checksum=stored.checksum,
+            stored=True,
+            idempotent=not stored.created,
+        )
 
     async def list_batches(
         self,
