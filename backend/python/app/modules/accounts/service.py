@@ -163,8 +163,13 @@ class AccountService:
         membership.role = payload.role
         membership.updated_at = _now()
         await self._commit()
-        members = await self.repository.list_members(account_id)
-        return next(member for member in members if member.id == member_id)
+        response = await self.repository.get_member_response(
+            account_id=account_id,
+            member_id=member_id,
+        )
+        if response is None:
+            raise AccountMemberNotFoundError()
+        return response
 
     async def remove_member(
         self,

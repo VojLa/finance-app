@@ -97,6 +97,36 @@ class AccountRepository:
             )
         )
 
+    async def get_member_response(
+        self,
+        *,
+        account_id: str,
+        member_id: str,
+    ) -> AccountMemberResponse | None:
+        statement = (
+            select(AccountMemberModel, UserModel.email, UserModel.name)
+            .join(UserModel, UserModel.id == AccountMemberModel.user_id)
+            .where(
+                AccountMemberModel.id == member_id,
+                AccountMemberModel.account_id == account_id,
+            )
+        )
+        row = (await self.session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        membership, email, name = row
+        return AccountMemberResponse(
+            id=membership.id,
+            user_id=membership.user_id,
+            email=email,
+            name=name,
+            role=membership.role,
+            relation_type=membership.relation_type,
+            accepted_at=membership.accepted_at,
+            created_at=membership.created_at,
+            updated_at=membership.updated_at,
+        )
+
     def add_account(self, account: AccountModel) -> None:
         self.session.add(account)
 
