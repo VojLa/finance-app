@@ -54,6 +54,21 @@ def test_upload_requires_authentication(test_settings: Settings) -> None:
     assert response.json()["error"]["code"] == "authentication_required"
 
 
+def test_upload_rejects_invalid_authentication(test_settings: Settings) -> None:
+    with TestClient(create_app(test_settings)) as client:
+        response = client.put(
+            "/api/v1/accounts/account-a/imports/batch-a/file",
+            content=b"data",
+            headers={
+                "Authorization": "Bearer invalid",
+                "Content-Type": "application/octet-stream",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_session_token"
+
+
 def test_upload_endpoint_forwards_stream_and_principal(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -90,8 +105,21 @@ async def test_local_storage_is_atomic_and_idempotent(tmp_path: Path) -> None:
     storage = LocalImportStorage(tmp_path)
     content = b"account import content"
 
-    first = await storage.store(batch_id="batch-a", chunks=_chunks(content), max_bytes=100)
-    second = await storage.store(batch_id="batch-a", chunks=_chunks(content), max_bytes=100)
+    checksum = sha256(content).hexdigest()
+    first = await storage.store(
+        batch_id="batch-a",
+        chunks=_chunks(content),
+        max_bytes=100,
+        expected_size=len(content),
+        expected_checksum=checksum,
+    )
+    second = await storage.store(
+        batch_id="batch-a",
+        chunks=_chunks(content),
+        max_bytes=100,
+        expected_size=len(content),
+        expected_checksum=checksum,
+    )
 
     assert first.created is True
     assert second.created is False
@@ -182,3 +210,12 @@ def test_upload_openapi_declares_binary_body_and_security(test_settings: Setting
 
     assert operation["security"] == [{"InternalSessionToken": []}]
     assert "200" in operation["responses"]
+    assert operation["requestBody"] == {
+        "required": True,
+        "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+    }
+    assert {parameter["name"] for parameter in operation["parameters"]} == {
+        "account_id",
+        "batch_id",
+    }
+    assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None

@@ -20,7 +20,11 @@ from app.modules.imports.models import (
     ImportUploadResponse,
 )
 from app.modules.imports.repository import ImportBatchRepository
-from app.modules.imports.storage import ImportFileTooLargeError, LocalImportStorage
+from app.modules.imports.storage import (
+    ImportFileMismatchError,
+    ImportFileTooLargeError,
+    LocalImportStorage,
+)
 from app.shared.errors import ApplicationError
 
 WRITE_ROLES = {
@@ -185,20 +189,29 @@ class ImportBatchService:
             raise ImportBatchNotFoundError()
         if batch.status is not ImportStatus.pending:
             raise ImportUploadStateError()
-        if content_type is None or content_type.split(";", 1)[0].strip().lower() != "application/octet-stream":
+        if (
+            content_type is None
+            or content_type.split(";", 1)[0].strip().lower() != "application/octet-stream"
+        ):
             raise ImportUploadContentTypeError()
 
         maximum = batch.file_size if batch.file_size is not None else MAX_UPLOAD_BYTES
         try:
-            stored = await self.storage.store(batch_id=batch.id, chunks=chunks, max_bytes=maximum)
+            stored = await self.storage.store(
+                batch_id=batch.id,
+                chunks=chunks,
+                max_bytes=maximum,
+                expected_size=batch.file_size,
+                expected_checksum=batch.checksum,
+            )
         except ImportFileTooLargeError:
             raise ImportUploadTooLargeError() from None
+        except ImportFileMismatchError:
+            raise ImportUploadMismatchError() from None
 
         size_matches = batch.file_size is None or stored.size == batch.file_size
         checksum_matches = stored.checksum == batch.checksum
         if not size_matches or not checksum_matches:
-            if stored.created:
-                self.storage.remove(batch.id)
             raise ImportUploadMismatchError()
 
         return ImportUploadResponse(

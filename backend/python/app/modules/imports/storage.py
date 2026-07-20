@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -19,6 +20,10 @@ class ImportFileTooLargeError(Exception):
     pass
 
 
+class ImportFileMismatchError(Exception):
+    pass
+
+
 class LocalImportStorage:
     def __init__(self, root: Path | None = None) -> None:
         configured = os.getenv("IMPORT_STORAGE_ROOT", ".data/imports")
@@ -34,15 +39,22 @@ class LocalImportStorage:
         batch_id: str,
         chunks: AsyncIterator[bytes],
         max_bytes: int,
+        expected_size: int | None,
+        expected_checksum: str,
     ) -> StoredImportFile:
         destination = self.path_for(batch_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = sha256()
         size = 0
 
-        with NamedTemporaryFile(dir=destination.parent, prefix="upload-", delete=False) as temporary:
-            temporary_path = Path(temporary.name)
-            try:
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                dir=destination.parent,
+                prefix="upload-",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
                 async for chunk in chunks:
                     if not chunk:
                         continue
@@ -53,22 +65,55 @@ class LocalImportStorage:
                     temporary.write(chunk)
                 temporary.flush()
                 os.fsync(temporary.fileno())
-            except Exception:
+        except Exception:
+            if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
-                raise
+            raise
 
         checksum = digest.hexdigest()
-        if destination.exists():
-            existing_checksum = sha256(destination.read_bytes()).hexdigest()
+        if (expected_size is not None and size != expected_size) or checksum != expected_checksum:
             temporary_path.unlink(missing_ok=True)
-            return StoredImportFile(
-                size=destination.stat().st_size,
-                checksum=existing_checksum,
-                created=False,
-            )
+            raise ImportFileMismatchError()
 
-        os.replace(temporary_path, destination)
-        return StoredImportFile(size=size, checksum=checksum, created=True)
+        lock_path = destination.parent / "publish.lock"
+        lock_descriptor: int | None = None
+        try:
+            while lock_descriptor is None:
+                try:
+                    lock_descriptor = os.open(
+                        lock_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                        0o600,
+                    )
+                except FileExistsError:
+                    await asyncio.sleep(0.01)
+
+            if destination.exists():
+                existing = self._metadata(destination)
+                temporary_path.unlink(missing_ok=True)
+                return StoredImportFile(
+                    size=existing.size,
+                    checksum=existing.checksum,
+                    created=False,
+                )
+
+            os.replace(temporary_path, destination)
+            return StoredImportFile(size=size, checksum=checksum, created=True)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+            if lock_descriptor is not None:
+                os.close(lock_descriptor)
+                lock_path.unlink(missing_ok=True)
 
     def remove(self, batch_id: str) -> None:
         self.path_for(batch_id).unlink(missing_ok=True)
+
+    @staticmethod
+    def _metadata(path: Path) -> StoredImportFile:
+        digest = sha256()
+        size = 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+        return StoredImportFile(size=size, checksum=digest.hexdigest(), created=False)
