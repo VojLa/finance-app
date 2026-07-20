@@ -68,7 +68,11 @@ class ImportNormalizationService:
         rows = await self.repository.list_rows_for_update(batch_id)
         if not rows:
             raise ImportNormalizeRowsMissingError()
-        if any(row.normalized_data is not None or row.deduplication_key is not None for row in rows):
+        if any(
+            row.normalized_data is not None or row.deduplication_key is not None for row in rows
+        ):
+            raise ImportNormalizeStateError()
+        if any(row.status not in {ImportRowStatus.pending, ImportRowStatus.failed} for row in rows):
             raise ImportNormalizeStateError()
 
         normalized = 0
@@ -101,6 +105,8 @@ class ImportNormalizationService:
 
             batch.rows_total = len(rows)
             batch.rows_imported = 0
+            # Step 5D retains the legacy counter: "skipped" temporarily means rows that
+            # cannot advance without review (parser failures plus normalization review).
             batch.rows_skipped = parser_failed + needs_review
             batch.completed_at = None
             await self.session.commit()

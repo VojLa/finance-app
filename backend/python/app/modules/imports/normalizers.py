@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any
@@ -19,8 +19,24 @@ class NormalizedImportRow:
 
 
 ALIASES: dict[str, tuple[str, ...]] = {
-    "external_id": ("id", "transaction id", "transaction_id", "reference", "order id"),
-    "date": ("date", "datum", "transaction date", "time", "timestamp", "created at"),
+    "external_id": (
+        "id",
+        "transaction id",
+        "transaction_id",
+        "id transakce",
+        "reference",
+        "order id",
+    ),
+    "date": (
+        "date",
+        "datum",
+        "datum a čas",
+        "datum a cas",
+        "transaction date",
+        "time",
+        "timestamp",
+        "created at",
+    ),
     "description": (
         "description",
         "popis",
@@ -30,9 +46,19 @@ ALIASES: dict[str, tuple[str, ...]] = {
         "instrument",
         "action",
     ),
-    "amount": ("amount", "částka", "castka", "total", "value", "result", "quantity"),
+    "amount": (
+        "amount",
+        "částka",
+        "castka",
+        "množství",
+        "mnozstvi",
+        "total",
+        "value",
+        "result",
+        "quantity",
+    ),
     "currency": ("currency", "měna", "mena", "currency code", "asset", "ticker"),
-    "type": ("type", "transaction type", "action", "operation"),
+    "type": ("type", "typ", "transaction type", "action", "operation"),
 }
 
 DATE_FORMATS = (
@@ -41,9 +67,8 @@ DATE_FORMATS = (
     "%Y-%m-%dT%H:%M:%S",
     "%d.%m.%Y",
     "%d.%m.%Y %H:%M:%S",
-    "%d/%m/%Y",
-    "%m/%d/%Y",
 )
+MAX_OPTIONAL_FIELD_LENGTH = 4096
 
 
 def _key(value: str) -> str:
@@ -51,18 +76,29 @@ def _key(value: str) -> str:
 
 
 def _lookup(raw: dict[str, Any], field: str) -> str | None:
-    keyed = {_key(str(key)): value for key, value in raw.items()}
+    keyed: dict[str, list[tuple[str, Any]]] = {}
+    for raw_key, value in raw.items():
+        keyed.setdefault(_key(str(raw_key)), []).append((str(raw_key), value))
     for alias in ALIASES[field]:
-        value = keyed.get(alias)
-        if value is not None and str(value).strip():
-            return str(value).strip()
+        candidates = sorted(keyed.get(alias, ()), key=lambda item: (item[0].casefold(), item[0]))
+        for _, value in candidates:
+            if value is not None and str(value).strip():
+                return str(value).strip()
     return None
 
 
 def _normalize_date(value: str) -> str:
     candidate = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        try:
+            return date.fromisoformat(candidate).isoformat()
+        except ValueError as exc:
+            raise ValueError("Unsupported date format.") from exc
     try:
-        return datetime.fromisoformat(candidate.replace("Z", "+00:00")).isoformat()
+        parsed_iso = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        if parsed_iso.tzinfo is not None:
+            parsed_iso = parsed_iso.astimezone(UTC)
+        return parsed_iso.isoformat()
     except ValueError:
         pass
     for fmt in DATE_FORMATS:
@@ -73,6 +109,16 @@ def _normalize_date(value: str) -> str:
             return parsed.isoformat()
         except ValueError:
             continue
+    slash_match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", candidate)
+    if slash_match:
+        first, second, year = (int(part) for part in slash_match.groups())
+        if first <= 12 and second <= 12:
+            raise ValueError("Ambiguous slash date format.")
+        day, month = (first, second) if first > 12 else (second, first)
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError as exc:
+            raise ValueError("Unsupported date format.") from exc
     raise ValueError("Unsupported date format.")
 
 
@@ -95,6 +141,8 @@ def _normalize_amount(value: str) -> str:
 
 
 def _deduplication_key(*, source: ImportSource, account_id: str, data: dict[str, Any]) -> str:
+    # This is candidate duplicate identity only. Posting may use it for review, but Step 5D
+    # never suppresses rows; optional provider text intentionally remains identity-sensitive.
     identity = {
         "source": source.value,
         "account_id": account_id,
@@ -110,10 +158,7 @@ def _deduplication_key(*, source: ImportSource, account_id: str, data: dict[str,
 
 
 def normalize_import_row(
-    *,
-    source: ImportSource,
-    account_id: str,
-    raw_data: dict[str, Any],
+    *, source: ImportSource, account_id: str, raw_data: dict[str, Any]
 ) -> NormalizedImportRow:
     errors: list[dict[str, str]] = []
     raw_date = _lookup(raw_data, "date")
@@ -125,9 +170,7 @@ def normalize_import_row(
     if raw_amount is None:
         errors.append({"field": "amount", "code": "required", "message": "Amount is required."})
     if raw_currency is None:
-        errors.append(
-            {"field": "currency", "code": "required", "message": "Currency is required."}
-        )
+        errors.append({"field": "currency", "code": "required", "message": "Currency is required."})
 
     normalized_date: str | None = None
     normalized_amount: str | None = None
@@ -144,9 +187,23 @@ def normalize_import_row(
 
     currency = raw_currency.upper() if raw_currency else None
     if currency is not None and not re.fullmatch(r"[A-Z0-9._-]{2,20}", currency):
-        errors.append(
-            {"field": "currency", "code": "invalid", "message": "Currency is invalid."}
-        )
+        errors.append({"field": "currency", "code": "invalid", "message": "Currency is invalid."})
+
+    optional_values: dict[str, str] = {}
+    for field in ("external_id", "description", "type"):
+        value = _lookup(raw_data, field)
+        if value is None:
+            continue
+        if len(value) > MAX_OPTIONAL_FIELD_LENGTH:
+            errors.append(
+                {
+                    "field": field,
+                    "code": "too_long",
+                    "message": f"{field.replace('_', ' ').title()} is too long.",
+                }
+            )
+        else:
+            optional_values[field] = value
 
     if errors:
         return NormalizedImportRow(data=None, deduplication_key=None, validation_errors=errors)
@@ -160,12 +217,8 @@ def normalize_import_row(
         "date": normalized_date,
         "amount": normalized_amount,
         "currency": currency,
+        **optional_values,
     }
-    for field in ("external_id", "description", "type"):
-        value = _lookup(raw_data, field)
-        if value is not None:
-            data[field] = value.strip()
-
     return NormalizedImportRow(
         data=data,
         deduplication_key=_deduplication_key(source=source, account_id=account_id, data=data),
