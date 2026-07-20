@@ -56,6 +56,15 @@ class ImportBatchRepository:
             or 0
         )
 
+    async def list_rows_for_update(self, batch_id: str) -> list[ImportRowModel]:
+        result = await self.session.scalars(
+            select(ImportRowModel)
+            .where(ImportRowModel.import_batch_id == batch_id)
+            .order_by(ImportRowModel.row_number)
+            .with_for_update()
+        )
+        return list(result.all())
+
     async def delete_rows(self, batch_id: str) -> None:
         await self.session.execute(
             delete(ImportRowModel).where(ImportRowModel.import_batch_id == batch_id)
