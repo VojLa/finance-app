@@ -57,3 +57,11 @@ class ImportBatchResponse(BaseModel):
     rows_skipped: int | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class ImportUploadResponse(BaseModel):
+    batch_id: str
+    size: int
+    checksum: str
+    stored: bool
+    idempotent: bool
