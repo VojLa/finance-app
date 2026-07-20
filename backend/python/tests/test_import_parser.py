@@ -108,6 +108,7 @@ def test_parse_endpoint_forwards_principal_and_ids(
 
     assert response.status_code == 200
     parse.assert_awaited_once()
+    assert parse.await_args is not None
     call = parse.await_args.kwargs
     assert call["principal"].user_id == "user-a"
     assert call["account_id"] == "account-a"
@@ -140,12 +141,23 @@ def test_parser_load_requires_existing_verified_file(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        ImportStatus.processing,
+        ImportStatus.completed,
+        ImportStatus.failed,
+        ImportStatus.partially_completed,
+        ImportStatus.cancelled,
+    ],
+)
 def test_parser_rejects_non_pending_batch_before_storage_read(
+    status: ImportStatus,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     content = b"a,b\n1,2\n"
     batch = _batch(content)
-    batch.status = ImportStatus.completed
+    batch.status = status
     session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
     service = ImportParserService(session)
     monkeypatch.setattr(

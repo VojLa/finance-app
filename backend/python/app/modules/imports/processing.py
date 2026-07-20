@@ -62,6 +62,15 @@ class ImportParseFailedError(ApplicationError):
         super().__init__(code="import_parse_failed", message=message, status_code=422)
 
 
+class ImportParseFileTooLargeError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_parse_file_too_large",
+            message="The import file exceeds the synchronous parser size limit.",
+            status_code=413,
+        )
+
+
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
@@ -98,24 +107,33 @@ class ImportParserService:
         if batch.status is not ImportStatus.pending:
             raise ImportParseStateError()
 
-        content = self._load_verified_file(
-            batch_id=batch.id,
-            expected_size=batch.file_size,
-            expected_checksum=batch.checksum,
-        )
         try:
+            content = self._load_verified_file(
+                batch_id=batch.id,
+                expected_size=batch.file_size,
+                expected_checksum=batch.checksum,
+            )
             parsed_rows = parse_import_file(
                 batch.source,
                 content,
                 encoding=batch.file_encoding,
             )
-        except ImportParseError as exc:
+        except (ImportFileMissingError, ImportFileInvalidError, ImportParseError) as exc:
             await self._record_fatal_failure(
                 account_id=account_id,
                 batch_id=batch_id,
                 message=str(exc),
             )
+            if isinstance(exc, ApplicationError):
+                raise
             raise ImportParseFailedError(str(exc)) from None
+        except ImportParseFileTooLargeError as exc:
+            await self._record_fatal_failure(
+                account_id=account_id,
+                batch_id=batch_id,
+                message=exc.message,
+            )
+            raise
 
         locked = await self.repository.get_for_account(
             account_id=account_id,
@@ -129,48 +147,45 @@ class ImportParserService:
         if locked.status is not ImportStatus.pending or await self.repository.count_rows(batch_id):
             raise ImportParseStateError()
 
-        now = _now()
-        failed = 0
-        for parsed in parsed_rows:
-            status = ImportRowStatus.failed if parsed.error_message else ImportRowStatus.pending
-            failed += int(status is ImportRowStatus.failed)
-            self.repository.add_row(
-                ImportRowModel(
-                    id=str(uuid4()),
-                    import_batch_id=batch_id,
-                    row_number=parsed.row_number,
-                    raw_data=parsed.raw_data,
-                    normalized_data=None,
-                    validation_errors=(
-                        {"parser": [parsed.error_message]} if parsed.error_message else None
-                    ),
-                    deduplication_key=None,
-                    status=status,
-                    error_message=parsed.error_message,
-                    created_transaction_id=None,
-                    created_investment_event_id=None,
-                    created_at=now,
-                )
-            )
-
-        locked.status = ImportStatus.processing
-        locked.rows_total = len(parsed_rows)
-        locked.rows_imported = 0
-        locked.rows_skipped = failed
-        locked.completed_at = None
-        if failed:
-            self.repository.add_log(
-                ImportLogModel(
-                    id=str(uuid4()),
-                    import_batch_id=batch_id,
-                    level=ImportLogLevel.warning,
-                    event=ImportLogEvent.parse_error,
-                    message=f"Parser preserved {failed} row(s) with issues.",
-                    created_at=now,
-                )
-            )
-
         try:
+            now = _now()
+            failed = 0
+            for parsed in parsed_rows:
+                status = ImportRowStatus.failed if parsed.error_message else ImportRowStatus.pending
+                failed += int(status is ImportRowStatus.failed)
+                self.repository.add_row(
+                    ImportRowModel(
+                        id=str(uuid4()),
+                        import_batch_id=batch_id,
+                        row_number=parsed.row_number,
+                        raw_data=parsed.raw_data,
+                        normalized_data=None,
+                        validation_errors=parsed.validation_errors,
+                        deduplication_key=None,
+                        status=status,
+                        error_message=parsed.error_message,
+                        created_transaction_id=None,
+                        created_investment_event_id=None,
+                        created_at=now,
+                    )
+                )
+
+            locked.status = ImportStatus.processing
+            locked.rows_total = len(parsed_rows)
+            locked.rows_imported = 0
+            locked.rows_skipped = failed
+            locked.completed_at = None
+            if failed:
+                self.repository.add_log(
+                    ImportLogModel(
+                        id=str(uuid4()),
+                        import_batch_id=batch_id,
+                        level=ImportLogLevel.warning,
+                        event=ImportLogEvent.parse_error,
+                        message=f"Parser preserved {failed} row(s) with issues.",
+                        created_at=now,
+                    )
+                )
             await self.session.commit()
         except Exception:
             await self.session.rollback()
@@ -178,7 +193,7 @@ class ImportParserService:
 
         return ImportParseResponse(
             batch_id=batch_id,
-            status=locked.status,
+            status=ImportStatus.processing,
             rows_total=len(parsed_rows),
             rows_pending=len(parsed_rows) - failed,
             rows_failed=failed,
@@ -196,7 +211,7 @@ class ImportParserService:
             raise ImportFileMissingError()
         size = path.stat().st_size
         if size > PARSER_MAX_BYTES:
-            raise ImportParseFailedError("The import file exceeds the parser size limit.")
+            raise ImportParseFileTooLargeError()
         content = path.read_bytes()
         if (expected_size is not None and len(content) != expected_size) or sha256(
             content
@@ -218,23 +233,23 @@ class ImportParserService:
         )
         if locked is None or locked.status is not ImportStatus.pending:
             raise ImportParseStateError()
-        now = _now()
-        locked.status = ImportStatus.failed
-        locked.rows_total = 0
-        locked.rows_imported = 0
-        locked.rows_skipped = 0
-        locked.completed_at = now
-        self.repository.add_log(
-            ImportLogModel(
-                id=str(uuid4()),
-                import_batch_id=batch_id,
-                level=ImportLogLevel.error,
-                event=ImportLogEvent.failed,
-                message=message[:1000],
-                created_at=now,
-            )
-        )
         try:
+            now = _now()
+            locked.status = ImportStatus.failed
+            locked.rows_total = 0
+            locked.rows_imported = 0
+            locked.rows_skipped = 0
+            locked.completed_at = now
+            self.repository.add_log(
+                ImportLogModel(
+                    id=str(uuid4()),
+                    import_batch_id=batch_id,
+                    level=ImportLogLevel.error,
+                    event=ImportLogEvent.failed,
+                    message=message[:1000],
+                    created_at=now,
+                )
+            )
             await self.session.commit()
         except Exception:
             await self.session.rollback()

@@ -49,9 +49,9 @@ class ImportBatchRepository:
     async def count_rows(self, batch_id: str) -> int:
         return int(
             await self.session.scalar(
-                select(func.count()).select_from(ImportRowModel).where(
-                    ImportRowModel.import_batch_id == batch_id
-                )
+                select(func.count())
+                .select_from(ImportRowModel)
+                .where(ImportRowModel.import_batch_id == batch_id)
             )
             or 0
         )
