@@ -73,3 +73,12 @@ class ImportParseResponse(BaseModel):
     rows_total: int
     rows_pending: int
     rows_failed: int
+
+
+class ImportNormalizeResponse(BaseModel):
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_normalized: int
+    rows_needs_review: int
+    rows_failed: int

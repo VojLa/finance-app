@@ -6,9 +6,11 @@ from app.db.connection import get_db_session
 from app.modules.imports.models import (
     ImportBatchCreateRequest,
     ImportBatchResponse,
+    ImportNormalizeResponse,
     ImportParseResponse,
     ImportUploadResponse,
 )
+from app.modules.imports.normalization import ImportNormalizationService
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
 
@@ -77,6 +79,20 @@ async def parse_import_batch(
     session: AsyncSession = Depends(get_db_session),
 ) -> ImportParseResponse:
     return await ImportParserService(session).parse_batch(
+        principal=principal,
+        account_id=account_id,
+        batch_id=batch_id,
+    )
+
+
+@router.post("/{batch_id}/normalize", response_model=ImportNormalizeResponse)
+async def normalize_import_batch(
+    account_id: str,
+    batch_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportNormalizeResponse:
+    return await ImportNormalizationService(session).normalize_batch(
         principal=principal,
         account_id=account_id,
         batch_id=batch_id,
