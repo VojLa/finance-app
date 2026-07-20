@@ -65,3 +65,11 @@ class ImportUploadResponse(BaseModel):
     checksum: str
     stored: bool
     idempotent: bool
+
+
+class ImportParseResponse(BaseModel):
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_pending: int
+    rows_failed: int

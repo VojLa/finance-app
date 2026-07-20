@@ -1,7 +1,7 @@
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.imports import ImportBatchModel, ImportLogModel
+from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 
 
 class ImportBatchRepository:
@@ -21,13 +21,15 @@ class ImportBatchRepository:
         *,
         account_id: str,
         batch_id: str,
+        for_update: bool = False,
     ) -> ImportBatchModel | None:
-        return await self.session.scalar(
-            select(ImportBatchModel).where(
-                ImportBatchModel.id == batch_id,
-                ImportBatchModel.account_id == account_id,
-            )
+        statement = select(ImportBatchModel).where(
+            ImportBatchModel.id == batch_id,
+            ImportBatchModel.account_id == account_id,
         )
+        if for_update:
+            statement = statement.with_for_update()
+        return await self.session.scalar(statement)
 
     async def get_by_checksum(
         self,
@@ -44,8 +46,26 @@ class ImportBatchRepository:
             )
         )
 
+    async def count_rows(self, batch_id: str) -> int:
+        return int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(ImportRowModel)
+                .where(ImportRowModel.import_batch_id == batch_id)
+            )
+            or 0
+        )
+
+    async def delete_rows(self, batch_id: str) -> None:
+        await self.session.execute(
+            delete(ImportRowModel).where(ImportRowModel.import_batch_id == batch_id)
+        )
+
     def add_batch(self, batch: ImportBatchModel) -> None:
         self.session.add(batch)
+
+    def add_row(self, row: ImportRowModel) -> None:
+        self.session.add(row)
 
     def add_log(self, log: ImportLogModel) -> None:
         self.session.add(log)

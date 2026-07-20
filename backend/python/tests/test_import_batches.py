@@ -172,4 +172,5 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
         "/api/v1/accounts/{account_id}/imports",
         "/api/v1/accounts/{account_id}/imports/{batch_id}",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/file",
+        "/api/v1/accounts/{account_id}/imports/{batch_id}/parse",
     ]
