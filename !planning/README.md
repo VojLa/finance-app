@@ -35,12 +35,26 @@ Neni to jen jednorazovy plan. Je to ziva dokumentace, podle ktere se rozhoduje o
 1. `decisions/README.md`
 2. jednotliva ADR rozhodnuti podle poradi
 
+### ChatGPT a Codex workflow
+
+1. `chatgpt/README.md`
+2. `chatgpt/01-chatgpt-step-design-prompt.md`
+3. `chatgpt/02-implementation-spec-template.md`
+4. `chatgpt/03-codex-implementation-prompt.md`
+5. `chatgpt/04-codex-final-report-template.md`
+6. `chatgpt/05-chatgpt-pr-review-prompt.md`
+7. `chatgpt/06-step-sizing-and-budget.md`
+8. `chatgpt/07-step-log-template.md`
+
+Tato cast standardizuje spolupraci, pri ktere ChatGPT navrhuje a kontroluje zmenu pres GitHub a Codex ji implementuje, testuje a opravuje v lokalnim repozitari.
+
 ## Smysl jednotlivych casti
 
 - `product/` popisuje proc produkt vznika, kam smeruje a jak se bude vydavat
 - `architecture/` popisuje jak ma byt system navrzeny a podle jakych pravidel se ma stavet a zabezpecovat
 - `decisions/` drzi architektonicka a bezpecnostni rozhodnuti, ktera uz byla prijata
 - `scope/` drzi milestone scope a backlog
+- `chatgpt/` drzi opakovatelny postup, sablony zadani, ocekavane vystupy a pravidla deleni kroku pro ChatGPT a Codex
 
 ## Pravidlo pouzivani
 
@@ -54,3 +68,5 @@ Pokud pri vyvoji narazime na nejasnost:
 Bezpecnostni rozhodnuti se nesmi odkladat az na release. Pokud zmena pracuje s identitou, opravnenim, citlivymi daty, soubory, externi integraci nebo produkcnim pristupem, musi byt vyhodnocena podle `architecture/10-security-strategy.md`.
 
 Po uzavreni `0.0` se nema pridavat dalsi obecna dokumentace bez konkretniho duvodu. Hlavni prace se presouva do implementace scope `0.1 - Architecture Locked`.
+
+Sablony v `chatgpt/` se pouzivaji pouze jako implementacni workflow. Nenahrazuji roadmapu, scope, architekturu, bezpecnostni strategii ani ADR.
