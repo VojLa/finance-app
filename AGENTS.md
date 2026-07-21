@@ -8,6 +8,32 @@ Also read:
 - `memory/implementation_plan.md` when the task touches architecture, imports, portfolio, snapshots, database, or performance
 - `memory/backend_migration_plan.md` when the task touches the Python/Rust backend migration
 
+## ChatGPT and Codex Workflow
+
+For significant roadmap work, use the repository-scoped skill:
+
+```text
+$finance-app-implementation
+```
+
+The skill is stored at `.agents/skills/finance-app-implementation/SKILL.md`.
+
+The planning, specification, execution, final-report, review, and step-sizing templates are stored in `!planning/chatgpt/`.
+
+Before editing:
+
+- verify the current branch, HEAD, and working-tree state
+- preserve pre-existing local changes
+- read the approved implementation specification and relevant planning, ADR, architecture, security, and test documents
+- inspect nearby implementation, tests, fixtures, configuration, and migrations
+- verify specification assumptions against the actual checkout
+
+Do not silently change product behavior, public contracts, migration ownership, authorization or account isolation, financial invariants, security boundaries, or destructive behavior. Stop and report a material conflict before making such a decision.
+
+Keep the implementation within the approved scope. Avoid unrelated refactors, speculative abstractions, new dependencies without justification, and repeated work already performed during planning.
+
+For final reporting, use `!planning/chatgpt/04-codex-final-report-template.md`. Never report an unexecuted check as passed; use `NOT RUN` or `BLOCKED` with the exact reason.
+
 ## Architecture Direction
 
 - Frontend stays in TypeScript.
@@ -79,9 +105,12 @@ Also read:
   - `npm.cmd test`
   - `npm.cmd run lint`
 - Avoid `npm run build` while the user is running `next dev`; `.next` cache has repeatedly caused missing chunk/runtime errors.
+- For Python backend changes, run targeted tests during implementation and the documented backend quality gate before completion when the environment permits it.
+- Do not weaken a check, skip a required test, or suppress an error solely to obtain a green result.
 
 ## Working Style
 
 - Be explicit when a change is temporary TypeScript scaffolding versus the desired future Python/Rust backend shape.
 - Prefer small, reversible migration steps.
 - Do not introduce a new Python or Rust framework without explaining why it fits the planned backend split.
+- Inspect the final diff for unrelated changes, formatting churn, generated files, debug code, secrets, sensitive data, and unapproved scope expansion.
