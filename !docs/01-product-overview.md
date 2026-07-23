@@ -15,8 +15,8 @@ currency breakdowns are retained.
 - Bearer-token authentication for the Python API through a trusted Next.js
   session bridge.
 - Account creation, editing, archival, membership management, and invitations.
-- Import-batch registration, verified raw-file upload, CSV parsing, and generic
-  row normalization.
+- Import-batch registration, verified raw-file upload, CSV parsing, generic row
+  normalization, and account/source-scoped duplicate detection.
 - A basic portfolio read endpoint over accessible accounts, holdings, and the
   latest stored FX rates.
 - PostgreSQL persistence through async SQLAlchemy and Alembic-owned migrations.

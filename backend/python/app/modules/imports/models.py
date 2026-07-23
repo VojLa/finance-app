@@ -82,3 +82,13 @@ class ImportNormalizeResponse(BaseModel):
     rows_normalized: int
     rows_needs_review: int
     rows_failed: int
+
+
+class ImportDeduplicateResponse(BaseModel):
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_unique: int
+    rows_duplicate: int
+    rows_needs_review: int
+    rows_failed: int

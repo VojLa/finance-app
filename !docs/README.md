@@ -11,7 +11,7 @@ FastAPI service has working authentication, account, invitation, import-batch,
 and portfolio read endpoints. PostgreSQL schema ownership has moved to
 SQLAlchemy and Alembic. The Next.js application still calls its legacy
 TypeScript route handlers for its main UI workflows, and the Python import
-pipeline currently stops after parsing and normalization; it does not yet post
+pipeline currently stops after duplicate detection; it does not yet post
 transactions or investment events or rebuild holdings and snapshots.
 
 ## Reading guide

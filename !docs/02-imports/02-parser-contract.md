@@ -1,6 +1,6 @@
 # Parser Contract
 
-The current parser contract has two explicit stages.
+The current pre-posting import contract has three explicit stages.
 
 ## Stage 1: source parser
 
@@ -41,8 +41,18 @@ Dates are normalized to ISO date/time values; ambiguous slash dates are rejected
 Amounts are parsed with `Decimal` and serialized as finite decimal strings.
 Currency is upper-cased and validated as a 2–20 character source code. The
 candidate deduplication key is a SHA-256 hash of stable normalized identity
-fields scoped to source and account. It is advisory only: no current code
-suppresses rows based on it.
+fields scoped to source and account.
+
+## Stage 3: duplicate detection
+
+Duplicate detection compares normalized candidate keys only inside the same
+account and source. Already imported matches are preserved; otherwise the
+earliest eligible row wins. Later matches become `duplicate`, including matches
+across import batches. Each run reconciles all pending matches for the current
+keys, so out-of-order normalization cannot leave two pending winners.
+Transaction-level serialization prevents concurrent requests from selecting
+different winners. Failed, cancelled, review, and already duplicate rows never
+become winners.
 
 New source-specific parsers must be deterministic, preserve enough raw context
 for review, and add representative fixture and regression tests. They may not

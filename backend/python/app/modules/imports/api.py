@@ -3,9 +3,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
+from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import (
     ImportBatchCreateRequest,
     ImportBatchResponse,
+    ImportDeduplicateResponse,
     ImportNormalizeResponse,
     ImportParseResponse,
     ImportUploadResponse,
@@ -93,6 +95,20 @@ async def normalize_import_batch(
     session: AsyncSession = Depends(get_db_session),
 ) -> ImportNormalizeResponse:
     return await ImportNormalizationService(session).normalize_batch(
+        principal=principal,
+        account_id=account_id,
+        batch_id=batch_id,
+    )
+
+
+@router.post("/{batch_id}/deduplicate", response_model=ImportDeduplicateResponse)
+async def deduplicate_import_batch(
+    account_id: str,
+    batch_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportDeduplicateResponse:
+    return await ImportDeduplicationService(session).deduplicate_batch(
         principal=principal,
         account_id=account_id,
         batch_id=batch_id,

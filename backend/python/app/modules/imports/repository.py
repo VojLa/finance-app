@@ -1,6 +1,9 @@
+from hashlib import sha256
+
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.enums import ImportRowStatus, ImportSource, ImportStatus
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 
 
@@ -64,6 +67,55 @@ class ImportBatchRepository:
             .with_for_update()
         )
         return list(result.all())
+
+    async def lock_deduplication_scope(
+        self,
+        *,
+        account_id: str,
+        source: ImportSource,
+    ) -> None:
+        scope = f"imports:deduplication:{account_id}:{source.value}"
+        lock_id = int.from_bytes(sha256(scope.encode()).digest()[:8], "big", signed=True)
+        await self.session.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
+    async def list_deduplication_candidates_for_update(
+        self,
+        *,
+        account_id: str,
+        source: ImportSource,
+        deduplication_keys: set[str],
+    ) -> list[tuple[ImportRowModel, ImportBatchModel]]:
+        if not deduplication_keys:
+            return []
+        result = await self.session.execute(
+            select(ImportRowModel, ImportBatchModel)
+            .join(
+                ImportBatchModel,
+                ImportBatchModel.id == ImportRowModel.import_batch_id,
+            )
+            .where(
+                ImportBatchModel.account_id == account_id,
+                ImportBatchModel.source == source,
+                ImportBatchModel.status.in_(
+                    [
+                        ImportStatus.processing,
+                        ImportStatus.completed,
+                        ImportStatus.partially_completed,
+                    ]
+                ),
+                ImportRowModel.deduplication_key.in_(deduplication_keys),
+                ImportRowModel.normalized_data.is_not(None),
+                ImportRowModel.status.in_([ImportRowStatus.pending, ImportRowStatus.imported]),
+            )
+            .order_by(
+                ImportBatchModel.created_at,
+                ImportBatchModel.id,
+                ImportRowModel.row_number,
+                ImportRowModel.id,
+            )
+            .with_for_update()
+        )
+        return [(row, batch) for row, batch in result.all()]
 
     async def delete_rows(self, batch_id: str) -> None:
         await self.session.execute(

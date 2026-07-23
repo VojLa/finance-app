@@ -4,18 +4,18 @@ The PostgreSQL schema contains 30 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain | Canonical records | Derived/read records | Current Python use |
-| --- | --- | --- | --- |
-| Identity and access | `User`, `AccountMember`, `AccountInvite` | — | Implemented |
-| Accounts | `Account` | — | Implemented |
-| Cash transactions | `Transaction`, `TransactionPair`, `TransactionSplit` | — | Schema only |
-| Classification | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule` | — | Schema only |
-| Budgets | `Budget` and related item/account/alert tables | — | Schema only |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX | FX is read by portfolio |
-| Investment ledger | `InvestmentEvent`, `InvestmentMovement` | — | Schema only |
-| Portfolio | — | `Holding` | Read by portfolio; rebuild is not implemented |
-| Imports | `ImportBatch`, `ImportRow`, `ImportLog` | parse and normalization state | Implemented through normalization |
-| Snapshots | — | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only |
+| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                            |
+| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------- |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                   |
+| Accounts               | `Account`                                                              | —                                                            | Implemented                                   |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                   |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                   |
+| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                       |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; rebuild is not implemented |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only                                   |
 
 ## Important relationships
 
@@ -28,7 +28,9 @@ application service yet.
   the atomic asset, cash, fee, and tax legs.
 - Import batches belong to a user and account and are unique by their SHA-256
   checksum within that pair. Rows preserve raw data, validation state, and a
-  candidate deduplication key.
+  candidate deduplication key. Duplicate detection preserves already imported
+  history and otherwise keeps the earliest eligible row for a key within an
+  account and source.
 - Holdings and snapshots are rebuildable read models. They must never replace
   transactions or ledger events as the historical source of truth.
 
