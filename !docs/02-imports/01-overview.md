@@ -6,12 +6,13 @@ holdings, or snapshots.
 
 ## Batch lifecycle
 
-| Stage | Endpoint action | Result |
-| --- | --- | --- |
-| Register | `POST /accounts/{account_id}/imports` | A pending batch, unique by user/account/checksum |
-| Upload | `PUT /accounts/{account_id}/imports/{batch_id}/file` | Verified raw file in local storage |
-| Parse | `POST .../{batch_id}/parse` | Persisted raw rows; batch becomes `processing` |
-| Normalize | `POST .../{batch_id}/normalize` | Normalized candidate rows or review issues |
+| Stage       | Endpoint action                                      | Result                                                          |
+| ----------- | ---------------------------------------------------- | --------------------------------------------------------------- |
+| Register    | `POST /accounts/{account_id}/imports`                | A pending batch, unique by user/account/checksum                |
+| Upload      | `PUT /accounts/{account_id}/imports/{batch_id}/file` | Verified raw file in local storage                              |
+| Parse       | `POST .../{batch_id}/parse`                          | Persisted raw rows; batch becomes `processing`                  |
+| Normalize   | `POST .../{batch_id}/normalize`                      | Normalized candidate rows or review issues                      |
+| Deduplicate | `POST .../{batch_id}/deduplicate`                    | Unique candidates retained; repeated matches marked `duplicate` |
 
 Registration requires source metadata and a lower-case SHA-256 hexadecimal digest.
 The body upload must be `application/octet-stream`; it is streamed, checked
@@ -25,6 +26,15 @@ Normalization supports a generic date, amount, currency, external-id,
 description, and type shape. It records field-specific errors and changes
 invalid-but-parsed rows to `needs_review`; it does not discard them or post them.
 
-There is currently no background queue: parse and normalize run synchronously in
-the request. There is also no raw-data retention or purge worker, even though
-the database model reserves retention fields.
+Duplicate detection is scoped to one account and import source. An already
+imported row always wins so canonical history is not rewritten. Otherwise the
+earliest eligible row by batch creation time, batch id, source row number, and
+row id wins. Every run reconciles all matching pending candidates, including
+candidates in other batches that were normalized or deduplicated in a different
+order. Failed, cancelled, review, and already duplicate rows cannot become
+winners. The operation is repeatable and serialized per account/source in
+PostgreSQL. It does not create ledger records.
+
+There is currently no background queue: parse, normalize, and duplicate
+detection run synchronously in the request. There is also no raw-data retention
+or purge worker, even though the database model reserves retention fields.

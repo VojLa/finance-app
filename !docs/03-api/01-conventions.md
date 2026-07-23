@@ -15,24 +15,25 @@ secret returns `503` for protected calls.
 
 ## Implemented endpoints
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/v1/health/live` | Process liveness |
-| `GET` | `/api/v1/health/ready` | PostgreSQL readiness; `503` when unavailable |
-| `GET` | `/api/v1/auth/me` | Authenticated database identity |
-| `GET`, `POST` | `/api/v1/accounts` | List accessible accounts; create account |
-| `PATCH` | `/api/v1/accounts/{account_id}` | Update account |
-| `POST` | `/api/v1/accounts/{account_id}/archive` | Archive account |
-| `POST` | `/api/v1/accounts/{account_id}/restore` | Restore account |
-| `GET`, `PATCH`, `DELETE` | `/api/v1/accounts/{account_id}/members[/{member_id}]` | Owner-only membership management |
-| `GET`, `POST`, `DELETE` | `/api/v1/accounts/{account_id}/invites[/{invite_id}]` | Owner-only invitation management |
-| `POST` | `/api/v1/accounts/invites/accept` | Accept a supplied invitation token |
-| `GET`, `POST` | `/api/v1/accounts/{account_id}/imports` | List/register import batches |
-| `GET` | `/api/v1/accounts/{account_id}/imports/{batch_id}` | Read a batch |
-| `PUT` | `/api/v1/accounts/{account_id}/imports/{batch_id}/file` | Stream an octet-stream upload |
-| `POST` | `/api/v1/accounts/{account_id}/imports/{batch_id}/parse` | Parse its verified file |
-| `POST` | `/api/v1/accounts/{account_id}/imports/{batch_id}/normalize` | Normalize persisted rows |
-| `GET` | `/api/v1/portfolio?account_id=…` | Basic holdings cost summary |
+| Method                   | Path                                                           | Purpose                                      |
+| ------------------------ | -------------------------------------------------------------- | -------------------------------------------- |
+| `GET`                    | `/api/v1/health/live`                                          | Process liveness                             |
+| `GET`                    | `/api/v1/health/ready`                                         | PostgreSQL readiness; `503` when unavailable |
+| `GET`                    | `/api/v1/auth/me`                                              | Authenticated database identity              |
+| `GET`, `POST`            | `/api/v1/accounts`                                             | List accessible accounts; create account     |
+| `PATCH`                  | `/api/v1/accounts/{account_id}`                                | Update account                               |
+| `POST`                   | `/api/v1/accounts/{account_id}/archive`                        | Archive account                              |
+| `POST`                   | `/api/v1/accounts/{account_id}/restore`                        | Restore account                              |
+| `GET`, `PATCH`, `DELETE` | `/api/v1/accounts/{account_id}/members[/{member_id}]`          | Owner-only membership management             |
+| `GET`, `POST`, `DELETE`  | `/api/v1/accounts/{account_id}/invites[/{invite_id}]`          | Owner-only invitation management             |
+| `POST`                   | `/api/v1/accounts/invites/accept`                              | Accept a supplied invitation token           |
+| `GET`, `POST`            | `/api/v1/accounts/{account_id}/imports`                        | List/register import batches                 |
+| `GET`                    | `/api/v1/accounts/{account_id}/imports/{batch_id}`             | Read a batch                                 |
+| `PUT`                    | `/api/v1/accounts/{account_id}/imports/{batch_id}/file`        | Stream an octet-stream upload                |
+| `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/parse`       | Parse its verified file                      |
+| `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/normalize`   | Normalize persisted rows                     |
+| `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/deduplicate` | Mark repeated normalized rows as duplicates  |
+| `GET`                    | `/api/v1/portfolio?account_id=…`                               | Basic holdings cost summary                  |
 
 The legacy aliases `/health` and `/portfolio` remain without the version prefix
 and are intentionally excluded from OpenAPI. New clients must use `/api/v1`.

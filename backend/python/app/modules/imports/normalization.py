@@ -56,7 +56,6 @@ class ImportNormalizationService:
         batch = await self.repository.get_for_account(
             account_id=account_id,
             batch_id=batch_id,
-            for_update=True,
         )
         if batch is None:
             from app.modules.imports.service import ImportBatchNotFoundError
@@ -65,26 +64,44 @@ class ImportNormalizationService:
         if batch.status is not ImportStatus.processing:
             raise ImportNormalizeStateError()
 
-        rows = await self.repository.list_rows_for_update(batch_id)
-        if not rows:
-            raise ImportNormalizeRowsMissingError()
-        if any(
-            row.normalized_data is not None or row.deduplication_key is not None for row in rows
-        ):
-            raise ImportNormalizeStateError()
-        if any(row.status not in {ImportRowStatus.pending, ImportRowStatus.failed} for row in rows):
-            raise ImportNormalizeStateError()
-
-        normalized = 0
-        needs_review = 0
-        parser_failed = 0
         try:
+            await self.repository.lock_deduplication_scope(
+                account_id=account_id,
+                source=batch.source,
+            )
+            locked = await self.repository.get_for_account(
+                account_id=account_id,
+                batch_id=batch_id,
+                for_update=True,
+            )
+            if locked is None:
+                from app.modules.imports.service import ImportBatchNotFoundError
+
+                raise ImportBatchNotFoundError()
+            if locked.status is not ImportStatus.processing:
+                raise ImportNormalizeStateError()
+
+            rows = await self.repository.list_rows_for_update(batch_id)
+            if not rows:
+                raise ImportNormalizeRowsMissingError()
+            if any(
+                row.normalized_data is not None or row.deduplication_key is not None for row in rows
+            ):
+                raise ImportNormalizeStateError()
+            if any(
+                row.status not in {ImportRowStatus.pending, ImportRowStatus.failed} for row in rows
+            ):
+                raise ImportNormalizeStateError()
+
+            normalized = 0
+            needs_review = 0
+            parser_failed = 0
             for row in rows:
                 if row.status is ImportRowStatus.failed:
                     parser_failed += 1
                     continue
                 result = normalize_import_row(
-                    source=batch.source,
+                    source=locked.source,
                     account_id=account_id,
                     raw_data=row.raw_data,
                 )
@@ -103,12 +120,12 @@ class ImportNormalizationService:
                 row.status = ImportRowStatus.pending
                 normalized += 1
 
-            batch.rows_total = len(rows)
-            batch.rows_imported = 0
+            locked.rows_total = len(rows)
+            locked.rows_imported = 0
             # Step 5D retains the legacy counter: "skipped" temporarily means rows that
             # cannot advance without review (parser failures plus normalization review).
-            batch.rows_skipped = parser_failed + needs_review
-            batch.completed_at = None
+            locked.rows_skipped = parser_failed + needs_review
+            locked.completed_at = None
             await self.session.commit()
         except Exception:
             await self.session.rollback()

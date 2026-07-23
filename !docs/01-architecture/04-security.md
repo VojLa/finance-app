@@ -14,8 +14,8 @@ Account authorization is enforced server-side on every account-scoped operation:
 
 - `owner` can manage members and invitations; ownership cannot be assigned or
   removed through member APIs.
-- `owner`, `admin`, and `editor` may create import batches, upload, parse, and
-  normalize files.
+- `owner`, `admin`, and `editor` may create import batches, upload, parse,
+  normalize, and run duplicate detection.
 - any membership can read an accessible account, its imports, and its portfolio.
 - archived accounts are absent from normal access; lifecycle operations have an
   explicit archived-account path.
