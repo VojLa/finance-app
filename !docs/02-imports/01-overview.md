@@ -55,6 +55,11 @@ does not post or mutate data. Anycoin remains a review issue with
 Descriptions and counterparties never determine transfer, refund, loan, or
 other financial meaning.
 
+Anycoin now normalizes at batch scope: payment, fill, and refund rows are grouped
+by order ID into one schema-version-2 event on a deterministic fill anchor.
+Consumed members and neutral/fully-refunded rows are traceable `skipped` markers;
+incomplete groups remain review rows. This still creates no ledger records.
+
 Classification currently has no batch endpoint and does not persist its result,
 change import status, or create canonical transaction or ledger records.
 Batch persistence and workflow belong to Step 5F-C.
