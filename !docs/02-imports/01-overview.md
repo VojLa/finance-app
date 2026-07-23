@@ -22,9 +22,12 @@ write. A file may be up to 1 GiB, while synchronous parsing intentionally has a
 
 Parsing keeps every source row. A blank row, malformed column count, or parser
 failure is persisted as a failed row rather than silently discarded.
-Normalization supports a generic date, amount, currency, external-id,
-description, and type shape. It records field-specific errors and changes
-invalid-but-parsed rows to `needs_review`; it does not discard them or post them.
+Normalization uses the generic date, amount, currency, external-id, description,
+and type shape for bank, manual, and currently Anycoin rows. Trading212 uses a
+dedicated schema-version-2 investment-event shape with explicit action
+allowlists, Decimal amounts, asset identity, price/total/fee/conversion fields,
+and deterministic source-scoped deduplication. Invalid Trading212 rows become
+`needs_review`; normalization never posts them.
 
 Duplicate detection is scoped to one account and import source. An already
 imported row always wins so canonical history is not rewritten. Otherwise the
@@ -45,12 +48,12 @@ type tokens and the signed amount fallback; only `internal transfer` and
 transfer`, and `převod` are review issues because they do not prove common
 ownership.
 
-Trading212 and Anycoin always remain review issues in 5F-A with
-`investment_normalization_required`. The generic normalized contract cannot
-preserve Trading212 investment details or safely group Anycoin trade payment,
-fill, and refund rows. Step 5F-B will establish those source-specific canonical
-contracts; descriptions and counterparties never determine transfer, refund,
-loan, or other financial meaning.
+Trading212 schema-version-2 rows can produce immutable investment-event posting
+intents in 5F-B1. The classifier retains only canonical provider evidence and
+does not post or mutate data. Anycoin remains a review issue with
+`investment_normalization_required` until its grouped-trade contract exists.
+Descriptions and counterparties never determine transfer, refund, loan, or
+other financial meaning.
 
 Classification currently has no batch endpoint and does not persist its result,
 change import status, or create canonical transaction or ledger records.

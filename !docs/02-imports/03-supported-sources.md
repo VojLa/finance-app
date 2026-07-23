@@ -3,7 +3,7 @@
 | API source value | Current parser | Meaning of support |
 | --- | --- | --- |
 | `raiffeisenbank` | Generic strict CSV | Upload, preserve rows, and generic normalization |
-| `trading212` | Generic strict CSV | Upload, preserve rows, and generic normalization |
+| `trading212` | Generic strict CSV + schema v2 normalizer | Upload, preserve rows, canonicalize supported investment events, and classify pure intents |
 | `anycoin` | Generic strict CSV | Upload, preserve rows, and generic normalization |
 | `manual` | Generic strict CSV | Upload, preserve rows, and generic normalization |
 
