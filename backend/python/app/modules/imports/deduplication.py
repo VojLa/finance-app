@@ -54,6 +54,12 @@ def _is_valid_row_state(row: ImportRowModel) -> bool:
         return row.normalized_data is not None and row.deduplication_key is not None
     if row.status in {ImportRowStatus.failed, ImportRowStatus.needs_review}:
         return row.normalized_data is None and row.deduplication_key is None
+    if row.status is ImportRowStatus.skipped:
+        return (
+            isinstance(row.normalized_data, dict)
+            and row.normalized_data.get("kind") in {"group_member", "fully_refunded_group"}
+            and row.deduplication_key is None
+        )
     return False
 
 
@@ -168,11 +174,12 @@ class ImportDeduplicationService:
             duplicate_count = sum(row.status is ImportRowStatus.duplicate for row in rows)
             needs_review = sum(row.status is ImportRowStatus.needs_review for row in rows)
             failed = sum(row.status is ImportRowStatus.failed for row in rows)
+            skipped = sum(row.status is ImportRowStatus.skipped for row in rows)
             unique = sum(row.status is ImportRowStatus.pending for row in rows)
 
             locked.rows_total = len(rows)
             locked.rows_imported = 0
-            locked.rows_skipped = duplicate_count + needs_review + failed
+            locked.rows_skipped = duplicate_count + needs_review + failed + skipped
             locked.completed_at = None
             await self.session.commit()
         except Exception:

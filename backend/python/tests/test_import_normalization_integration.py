@@ -94,6 +94,9 @@ async def _seed() -> None:
         "norm-trading212-batch",
         "norm-trading212-review-batch",
         "norm-trading212-rollback-batch",
+        "norm-anycoin-batch",
+        "norm-anycoin-review-batch",
+        "norm-anycoin-rollback-batch",
     ]
     async with AsyncSession(engine) as session:
         await session.execute(
@@ -404,6 +407,74 @@ async def _trading212_rollback() -> tuple[
     return failed, counters, retried
 
 
+async def _add_anycoin_batch(batch_id: str, rows: list[dict[str, str]]) -> None:
+    """Seed a provider-shaped Anycoin batch for the real PostgreSQL contract tests."""
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with AsyncSession(engine) as session:
+        session.add(
+            ImportBatchModel(
+                id=batch_id,
+                user_id="norm-owner",
+                account_id="norm-active",
+                source=ImportSource.anycoin,
+                filename=f"{batch_id}.csv",
+                file_size=10,
+                file_encoding="utf-8",
+                checksum=hashlib.sha256(batch_id.encode()).hexdigest(),
+                status=ImportStatus.processing,
+                rows_total=len(rows),
+                rows_imported=0,
+                rows_skipped=0,
+                created_at=now,
+                completed_at=None,
+                retain_until=None,
+                raw_data_purged_at=None,
+            )
+        )
+        for index, raw_data in enumerate(rows, start=2):
+            session.add(
+                ImportRowModel(
+                    id=f"{batch_id}-{index}",
+                    import_batch_id=batch_id,
+                    row_number=index,
+                    raw_data=raw_data,
+                    normalized_data=None,
+                    validation_errors=None,
+                    deduplication_key=None,
+                    status=ImportRowStatus.pending,
+                    error_message=None,
+                    created_transaction_id=None,
+                    created_investment_event_id=None,
+                    created_at=now,
+                )
+            )
+        await session.commit()
+    await engine.dispose()
+
+
+def _anycoin_buy_rows(*, order_id: str = "anycoin-order-1") -> list[dict[str, str]]:
+    return [
+        {
+            "Type": "trade payment",
+            "Order ID": order_id,
+            "Date": "2026-07-21T10:00:00Z",
+            "Amount": "-100",
+            "Currency": "EUR",
+            "Transaction ID": f"{order_id}-payment",
+        },
+        {
+            "Type": "trade fill",
+            "Order ID": order_id,
+            "Date": "2026-07-21T10:01:00Z",
+            "Amount": "0.01",
+            "Currency": "BTC",
+            "Transaction ID": f"{order_id}-fill",
+        },
+    ]
+
+
 def test_normalization_endpoint_and_postgresql_contract() -> None:
     assert DATABASE_URL is not None
     _run(_seed())
@@ -565,3 +636,74 @@ def test_trading212_normalization_rollback_leaves_no_partial_rows_and_retries() 
     assert retried[0].normalized_data is not None
     assert retried[0].normalized_data["schema_version"] == 2
     assert retried[0].deduplication_key is not None
+
+
+def test_anycoin_group_normalization_persists_anchor_review_and_retry_contract() -> None:
+    """Exercise the grouped Anycoin path against PostgreSQL, without ledger posting."""
+    assert DATABASE_URL is not None
+    _run(_seed())
+    _run(_add_anycoin_batch("norm-anycoin-batch", _anycoin_buy_rows()))
+    _run(
+        _add_anycoin_batch(
+            "norm-anycoin-review-batch",
+            [{"Type": "trade fill", "Order ID": "incomplete", "Amount": "1", "Currency": "BTC"}],
+        )
+    )
+    _run(_add_anycoin_batch("norm-anycoin-rollback-batch", _anycoin_buy_rows()))
+
+    normalized = _run(_normalize_batch("norm-anycoin-batch"))
+    rows = _run(_rows("norm-anycoin-batch"))
+    member, anchor = rows
+    assert normalized.rows_normalized == 1
+    assert anchor.status is ImportRowStatus.pending
+    assert anchor.normalized_data is not None
+    assert anchor.normalized_data["schema_version"] == 2
+    assert anchor.normalized_data["source"] == "anycoin"
+    assert anchor.deduplication_key and len(anchor.deduplication_key) == 64
+    assert member.status is ImportRowStatus.skipped
+    assert member.normalized_data is not None
+    assert member.normalized_data["kind"] == "group_member"
+    assert member.normalized_data["anchor_row_id"] == anchor.id
+    assert _run(_batch_counters("norm-anycoin-batch")) == (2, 0, 1)
+    assert all(row.created_transaction_id is None for row in rows)
+    assert all(row.created_investment_event_id is None for row in rows)
+
+    review = _run(_normalize_batch("norm-anycoin-review-batch"))
+    review_row = _run(_rows("norm-anycoin-review-batch"))[0]
+    assert review.rows_needs_review == 1
+    assert review_row.status is ImportRowStatus.needs_review
+    assert review_row.normalized_data is None and review_row.deduplication_key is None
+    assert review_row.validation_errors
+    assert _run(_batch_counters("norm-anycoin-review-batch")) == (1, 0, 1)
+
+    async def rollback_and_retry() -> tuple[
+        list[ImportRowModel], tuple[int, int, int], list[ImportRowModel]
+    ]:
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            with (
+                patch.object(
+                    session, "commit", side_effect=RuntimeError("controlled commit failure")
+                ),
+                pytest.raises(RuntimeError),
+            ):
+                await ImportNormalizationService(session).normalize_batch(
+                    principal=_principal(),
+                    account_id="norm-active",
+                    batch_id="norm-anycoin-rollback-batch",
+                )
+        await engine.dispose()
+        failed = await _rows("norm-anycoin-rollback-batch")
+        counters = await _batch_counters("norm-anycoin-rollback-batch")
+        response = await _normalize_batch("norm-anycoin-rollback-batch")
+        assert response.rows_normalized == 1
+        retried = await _rows("norm-anycoin-rollback-batch")
+        return failed, counters, retried
+
+    failed, counters, retried = _run(rollback_and_retry())
+    assert all(row.status is ImportRowStatus.pending for row in failed)
+    assert all(row.normalized_data is None and row.deduplication_key is None for row in failed)
+    assert counters == (2, 0, 0)
+    assert retried[0].status is ImportRowStatus.skipped
+    assert retried[1].normalized_data is not None and retried[1].deduplication_key is not None
