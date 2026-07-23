@@ -10,7 +10,6 @@ from app.db.models.enums import (
     TransactionType,
 )
 from app.modules.imports.classification import (
-    InvestmentAction,
     InvestmentEventPostingIntent,
     NeedsReviewPostingIntent,
     PostingIntentIssueCode,
@@ -254,13 +253,21 @@ def test_posting_intent_contracts_are_immutable_versioned_and_json_serializable(
             source_type="expense",
         ),
     )
-    investment = InvestmentEventPostingIntent(
+    normalized = normalize_import_row(
         source=ImportSource.trading212,
-        date="2026-07-23",
-        amount=Decimal("12.50"),
-        currency="EUR",
-        investment_event_type=InvestmentEventType.trade,
-        action=InvestmentAction.buy,
+        account_id="account-a",
+        raw_data={
+            "Action": "Market buy",
+            "Time": "2026-07-23T10:00:00Z",
+            "Ticker": "VWCE",
+            "No. of shares": "2",
+            "Total": "12.50",
+            "Currency (Total)": "EUR",
+        },
+    )
+    assert normalized.data is not None
+    investment = classify_import_row(
+        source=ImportSource.trading212, normalized_data=normalized.data
     )
 
     assert isinstance(transaction, TransactionPostingIntent)
@@ -274,12 +281,13 @@ def test_posting_intent_contracts_are_immutable_versioned_and_json_serializable(
         "transaction_type": TransactionType.expense.value,
         "transaction_classification": TransactionClassification.real_expense.value,
     }
+    assert isinstance(investment, InvestmentEventPostingIntent)
     assert investment.model_dump(mode="json")["target"] == PostingIntentTarget.investment_event
-    assert investment.model_dump(mode="json")["amount"] == "12.50"
+    assert investment.model_dump(mode="json")["total"]["amount"] == "12.5"
     with pytest.raises(ValidationError):
         transaction.amount = Decimal("1")  # type: ignore[misc]
     with pytest.raises(ValidationError):
-        investment.amount = Decimal("1")  # type: ignore[misc]
+        investment.quantity = Decimal("1")  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
@@ -382,7 +390,7 @@ def test_manual_normalization_and_classification_composition(
     assert result.transaction_classification is expected_classification
 
 
-def test_trading212_normalization_and_classification_composition_needs_review() -> None:
+def test_trading212_normalization_and_classification_composition() -> None:
     normalized = normalize_import_row(
         source=ImportSource.trading212,
         account_id="account-a",
@@ -399,13 +407,13 @@ def test_trading212_normalization_and_classification_composition_needs_review() 
         },
     )
     assert normalized.data is not None
-    assert normalized.data["type"] == "Market buy"
-    assert normalized.data["currency"] == "VWCE"
+    assert normalized.data["schema_version"] == 2
+    assert normalized.data["action"] == "buy"
 
     result = classify_import_row(source=ImportSource.trading212, normalized_data=normalized.data)
 
-    assert isinstance(result, NeedsReviewPostingIntent)
-    assert _review_code(result) is PostingIntentIssueCode.investment_normalization_required
+    assert isinstance(result, InvestmentEventPostingIntent)
+    assert result.investment_event_type is InvestmentEventType.trade
 
 
 @pytest.mark.parametrize("source_type", ["trade payment", "trade fill", "trade refund"])

@@ -71,7 +71,7 @@ def test_normalizer_marks_missing_required_fields_for_review() -> None:
 
 def test_normalizer_rejects_nonfinite_amount() -> None:
     result = normalize_import_row(
-        source=ImportSource.trading212,
+        source=ImportSource.manual,
         account_id="account-a",
         raw_data={"Date": "2026-07-20", "Amount": "NaN", "Currency": "EUR"},
     )
@@ -177,24 +177,6 @@ def test_normalizer_rejects_invalid_currency(currency: str) -> None:
             {"date": "2026-07-20", "amount": "10.5", "currency": "CZK", "description": "Platba"},
         ),
         (
-            ImportSource.trading212,
-            {
-                "Time": "2026-07-20T10:00:00Z",
-                "Action": "Market buy",
-                "Result": "10.50",
-                "Currency": "eur",
-                "ID": "t-1",
-            },
-            {
-                "date": "2026-07-20T10:00:00+00:00",
-                "amount": "10.5",
-                "currency": "EUR",
-                "external_id": "t-1",
-                "description": "Market buy",
-                "type": "Market buy",
-            },
-        ),
-        (
             ImportSource.anycoin,
             {
                 "Datum a čas": "20.07.2026 12:30:00",
@@ -249,7 +231,7 @@ def test_deduplication_key_is_stable_and_scoped() -> None:
         source=ImportSource.manual, account_id="account-b", raw_data=equivalent
     )
     other_source = normalize_import_row(
-        source=ImportSource.trading212, account_id="account-a", raw_data=equivalent
+        source=ImportSource.anycoin, account_id="account-a", raw_data=equivalent
     )
     assert first.deduplication_key == second.deduplication_key
     assert first.deduplication_key != other_account.deduplication_key

@@ -160,6 +160,12 @@ def _deduplication_key(*, source: ImportSource, account_id: str, data: dict[str,
 def normalize_import_row(
     *, source: ImportSource, account_id: str, raw_data: dict[str, Any]
 ) -> NormalizedImportRow:
+    if source is ImportSource.trading212:
+        # Imported lazily so the provider module can reuse this stable result contract.
+        from app.modules.imports.trading212 import normalize_trading212_import_row
+
+        return normalize_trading212_import_row(account_id=account_id, raw_data=raw_data)
+
     errors: list[dict[str, str]] = []
     raw_date = _lookup(raw_data, "date")
     raw_amount = _lookup(raw_data, "amount")

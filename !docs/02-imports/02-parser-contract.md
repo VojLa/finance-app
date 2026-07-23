@@ -19,7 +19,7 @@ A fatal file error—bad encoding, invalid header, ambiguous delimiter, malforme
 CSV, or no data rows—fails the batch. Per-row problems must instead be emitted
 as rows, never silently skipped.
 
-## Stage 2: generic normalizer
+## Stage 2: normalizer
 
 The normalizer looks up common aliases for `date`, `amount`, and `currency`,
 with optional `external_id`, `description`, and `type`. It emits this versioned
@@ -57,8 +57,10 @@ become winners.
 
 ## Pure posting-intent classification
 
-`classify_import_row` is a deterministic, I/O-free contract over one normalized
-schema-version-1 row. It returns a frozen, JSON-serializable posting intent with
+`classify_import_row` is a deterministic, I/O-free contract over one supported
+normalized row. It accepts schema version 1 for bank/manual data and schema
+version 2 for canonical Trading212 investment data. It returns a frozen,
+JSON-serializable posting intent with
 its own schema version:
 
 - `transaction` with the original signed `Decimal`, `TransactionType`, and
@@ -88,6 +90,19 @@ grouping; Step 5F-C will add batch persistence and workflow.
 
 This classifier is not yet a persisted batch stage: there is no classification
 endpoint, row status transition, database write, or ledger posting.
+
+Trading212 has a dedicated schema-version-2 canonical investment-event shape.
+It accepts only exact normalized action tokens and field aliases, uses decimal
+strings for all monetary and quantity values, and records invalid rows as
+structured review issues. Its fallback duplicate identity excludes note, name,
+and raw action spelling; an external ID takes precedence. Schema version 2 is
+classified only for Trading212 and produces a frozen intent containing asset,
+quantity, money, fee, conversion, realized P/L, provider identity, and the
+promotional flag. It still has no posting workflow.
+
+Trading212 provider exports sometimes contain a zero-valued fee column. A zero
+fee is treated as absent and is not persisted in the canonical fee section; a
+present canonical fee must be strictly positive.
 
 New source-specific parsers must be deterministic, preserve enough raw context
 for review, and add representative fixture and regression tests. They may not

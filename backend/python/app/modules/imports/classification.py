@@ -29,6 +29,15 @@ class PostingIntentTarget(StrEnum):
 class InvestmentAction(StrEnum):
     buy = "buy"
     sell = "sell"
+    dividend = "dividend"
+    interest = "interest"
+    cash_deposit = "cash_deposit"
+    cash_withdrawal = "cash_withdrawal"
+    currency_conversion = "currency_conversion"
+    asset_transfer = "asset_transfer"
+    fee = "fee"
+    staking_reward = "staking_reward"
+    airdrop = "airdrop"
 
 
 class PostingIntentIssueCode(StrEnum):
@@ -42,6 +51,7 @@ class PostingIntentIssueCode(StrEnum):
     conflicting_transaction_type = "conflicting_transaction_type"
     ambiguous_transfer_type = "ambiguous_transfer_type"
     investment_normalization_required = "investment_normalization_required"
+    invalid_investment_payload = "invalid_investment_payload"
 
 
 class PostingIntentIssue(BaseModel):
@@ -68,14 +78,47 @@ class TransactionPostingIntent(_PostingIntentBase):
     transaction_classification: TransactionClassification
 
 
+class InvestmentAssetPostingIntent(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    symbol: str | None
+    isin: str | None
+    name: str | None
+    asset_type_hint: str | None
+
+
+class InvestmentMoneyPostingIntent(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    amount: Decimal
+    currency: str
+
+
+class InvestmentConversionPostingIntent(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    from_: InvestmentMoneyPostingIntent
+    to: InvestmentMoneyPostingIntent
+    exchange_rate: Decimal | None
+
+
 class InvestmentEventPostingIntent(_PostingIntentBase):
     target: Literal[PostingIntentTarget.investment_event] = PostingIntentTarget.investment_event
     source: ImportSource
     date: str
-    amount: Decimal
-    currency: str
     investment_event_type: InvestmentEventType
-    action: InvestmentAction | None = None
+    action: InvestmentAction
+    external_id: str | None
+    raw_action: str | None
+    asset: InvestmentAssetPostingIntent
+    quantity: Decimal | None
+    price: InvestmentMoneyPostingIntent | None
+    total: InvestmentMoneyPostingIntent | None
+    fee: InvestmentMoneyPostingIntent | None
+    conversion: InvestmentConversionPostingIntent | None
+    realized_pnl: InvestmentMoneyPostingIntent | None
+    is_promotional: bool
+    note: str | None
 
 
 class NeedsReviewPostingIntent(_PostingIntentBase):
@@ -263,6 +306,184 @@ def _classify_transaction(
     )
 
 
+_INVESTMENT_EVENT_TYPES: Final[Mapping[InvestmentAction, InvestmentEventType]] = MappingProxyType(
+    {
+        InvestmentAction.buy: InvestmentEventType.trade,
+        InvestmentAction.sell: InvestmentEventType.trade,
+        InvestmentAction.dividend: InvestmentEventType.dividend,
+        InvestmentAction.interest: InvestmentEventType.interest,
+        InvestmentAction.cash_deposit: InvestmentEventType.cash_deposit,
+        InvestmentAction.cash_withdrawal: InvestmentEventType.cash_withdrawal,
+        InvestmentAction.currency_conversion: InvestmentEventType.currency_conversion,
+        InvestmentAction.asset_transfer: InvestmentEventType.asset_transfer,
+        InvestmentAction.fee: InvestmentEventType.fee,
+        InvestmentAction.staking_reward: InvestmentEventType.staking_reward,
+        InvestmentAction.airdrop: InvestmentEventType.airdrop,
+    }
+)
+
+
+def _investment_review() -> NeedsReviewPostingIntent:
+    return _review(
+        _issue(
+            "normalized_data",
+            PostingIntentIssueCode.invalid_investment_payload,
+            "Trading212 normalized investment data is invalid.",
+        )
+    )
+
+
+def _investment_money(value: object) -> InvestmentMoneyPostingIntent | None | bool:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return False
+    amount = _validated_amount(value.get("amount"))
+    currency = _validated_currency(value.get("currency"))
+    if amount is None or currency is None:
+        return False
+    return InvestmentMoneyPostingIntent(amount=amount, currency=currency)
+
+
+def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent:
+    if normalized_data.get("kind") != "investment_event":
+        return _investment_review()
+    normalized_date = _validated_date(normalized_data.get("date"))
+    action_value = normalized_data.get("action")
+    if not isinstance(action_value, str):
+        return _investment_review()
+    try:
+        action = InvestmentAction(action_value)
+    except (TypeError, ValueError):
+        return _investment_review()
+    asset_data = normalized_data.get("asset")
+    if normalized_date is None or not isinstance(asset_data, Mapping):
+        return _investment_review()
+    asset_values = tuple(
+        asset_data.get(field) for field in ("symbol", "isin", "name", "asset_type_hint")
+    )
+    if any(value is not None and not isinstance(value, str) for value in asset_values):
+        return _investment_review()
+    quantity_raw = normalized_data.get("quantity")
+    quantity = None if quantity_raw is None else _validated_amount(quantity_raw)
+    if quantity_raw is not None and quantity is None:
+        return _investment_review()
+    money_values = [
+        _investment_money(normalized_data.get(field))
+        for field in ("price", "total", "fee", "realized_pnl")
+    ]
+    if any(value is False for value in money_values):
+        return _investment_review()
+    price, total, fee, realized_pnl = money_values
+    if not all(
+        value is None or isinstance(value, InvestmentMoneyPostingIntent)
+        for value in (price, total, fee, realized_pnl)
+    ):
+        return _investment_review()
+    assert price is None or isinstance(price, InvestmentMoneyPostingIntent)
+    assert total is None or isinstance(total, InvestmentMoneyPostingIntent)
+    assert fee is None or isinstance(fee, InvestmentMoneyPostingIntent)
+    assert realized_pnl is None or isinstance(realized_pnl, InvestmentMoneyPostingIntent)
+    conversion_data = normalized_data.get("conversion")
+    conversion: InvestmentConversionPostingIntent | None
+    if conversion_data is None:
+        conversion = None
+    elif not isinstance(conversion_data, Mapping):
+        return _investment_review()
+    else:
+        from_money = _investment_money(conversion_data.get("from"))
+        to_money = _investment_money(conversion_data.get("to"))
+        rate_raw = conversion_data.get("exchange_rate")
+        rate = None if rate_raw is None else _validated_amount(rate_raw)
+        if (
+            from_money is False
+            or to_money is False
+            or from_money is None
+            or to_money is None
+            or (rate_raw is not None and rate is None)
+        ):
+            return _investment_review()
+        conversion = InvestmentConversionPostingIntent(
+            from_=from_money, to=to_money, exchange_rate=rate
+        )
+    external_id = normalized_data.get("external_id")
+    raw_action = normalized_data.get("raw_action")
+    note = normalized_data.get("note")
+    promotional = normalized_data.get("is_promotional")
+    if (
+        (external_id is not None and not isinstance(external_id, str))
+        or (raw_action is not None and not isinstance(raw_action, str))
+        or (note is not None and not isinstance(note, str))
+        or type(promotional) is not bool
+    ):
+        return _investment_review()
+    asset = InvestmentAssetPostingIntent(
+        symbol=asset_values[0],
+        isin=asset_values[1],
+        name=asset_values[2],
+        asset_type_hint=asset_values[3],
+    )
+    asset_identity = bool(asset.symbol or asset.isin)
+    positive_quantity = quantity is not None and quantity > 0
+    positive_total = total is not None and total.amount > 0
+    if (
+        (price is not None and price.amount <= 0)
+        or (fee is not None and fee.amount <= 0)
+        or (
+            action in {InvestmentAction.buy, InvestmentAction.sell}
+            and not (asset_identity and positive_quantity and positive_total)
+        )
+        or (action is InvestmentAction.dividend and not (asset_identity and positive_total))
+        or (
+            action
+            in {
+                InvestmentAction.interest,
+                InvestmentAction.cash_deposit,
+                InvestmentAction.cash_withdrawal,
+                InvestmentAction.fee,
+            }
+            and not positive_total
+        )
+        or (
+            action
+            in {
+                InvestmentAction.asset_transfer,
+                InvestmentAction.staking_reward,
+                InvestmentAction.airdrop,
+            }
+            and not (asset_identity and positive_quantity)
+        )
+        or (action is InvestmentAction.currency_conversion and conversion is None)
+        or (
+            conversion is not None
+            and (
+                conversion.from_.currency == conversion.to.currency
+                or conversion.from_.amount <= 0
+                or conversion.to.amount <= 0
+                or (conversion.exchange_rate is not None and conversion.exchange_rate <= 0)
+            )
+        )
+    ):
+        return _investment_review()
+    return InvestmentEventPostingIntent(
+        source=ImportSource.trading212,
+        date=normalized_date,
+        investment_event_type=_INVESTMENT_EVENT_TYPES[action],
+        action=action,
+        external_id=external_id,
+        raw_action=raw_action,
+        asset=asset,
+        quantity=quantity,
+        price=price,
+        total=total,
+        fee=fee,
+        conversion=conversion,
+        realized_pnl=realized_pnl,
+        is_promotional=promotional,
+        note=note,
+    )
+
+
 def classify_import_row(
     *,
     source: ImportSource,
@@ -278,12 +499,12 @@ def classify_import_row(
             )
         )
     schema_version = normalized_data.get("schema_version")
-    if type(schema_version) is not int or schema_version != 1:
+    if type(schema_version) is not int or schema_version not in {1, 2}:
         return _review(
             _issue(
                 "schema_version",
                 PostingIntentIssueCode.unsupported_schema_version,
-                "Only normalized schema version 1 is supported.",
+                "Only supported normalized schema versions are accepted.",
             )
         )
     if normalized_data.get("source") != source.value:
@@ -292,6 +513,17 @@ def classify_import_row(
                 "source",
                 PostingIntentIssueCode.source_mismatch,
                 "The source argument must match the normalized source.",
+            )
+        )
+
+    if schema_version == 2:
+        if source is ImportSource.trading212:
+            return _classify_trading212(normalized_data)
+        return _review(
+            _issue(
+                "schema_version",
+                PostingIntentIssueCode.unsupported_schema_version,
+                "Normalized schema version 2 is only supported for Trading212.",
             )
         )
 

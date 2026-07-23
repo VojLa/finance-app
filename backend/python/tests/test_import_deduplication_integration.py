@@ -34,6 +34,7 @@ from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import ImportDeduplicateResponse
+from app.modules.imports.normalization import ImportNormalizationService
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5e-internal-auth-secret-32-characters"
@@ -52,6 +53,9 @@ BATCH_IDS = [
     "step5e-concurrent-a",
     "step5e-concurrent-b",
     "step5e-rollback",
+    "step5e-trading212-a",
+    "step5e-trading212-b",
+    "step5e-trading212-other",
 ]
 
 
@@ -153,6 +157,31 @@ def _row(
         deduplication_key=key,
         status=status,
         error_message="Controlled issue" if normalized is None else None,
+        created_transaction_id=None,
+        created_investment_event_id=None,
+        created_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+
+
+def _trading212_row(row_id: str, *, batch_id: str) -> ImportRowModel:
+    return ImportRowModel(
+        id=row_id,
+        import_batch_id=batch_id,
+        row_number=2,
+        raw_data={
+            "Action": "Market buy",
+            "Time": "2026-07-23T10:00:00Z",
+            "Ticker": "VWCE",
+            "No. of shares": "2",
+            "Total": "201",
+            "Currency (Total)": "EUR",
+            "ID": "provider-trade-1",
+        },
+        normalized_data=None,
+        validation_errors=None,
+        deduplication_key=None,
+        status=ImportRowStatus.pending,
+        error_message=None,
         created_transaction_id=None,
         created_investment_event_id=None,
         created_at=datetime.now(UTC).replace(tzinfo=None),
@@ -367,6 +396,78 @@ async def _statuses(*batch_ids: str) -> dict[str, ImportRowStatus]:
     return result
 
 
+async def _seed_trading212_normalization_candidates() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with AsyncSession(engine) as session:
+        batches = [
+            _batch("step5e-trading212-a", source=ImportSource.trading212, created_at=now),
+            _batch(
+                "step5e-trading212-b",
+                source=ImportSource.trading212,
+                created_at=now + timedelta(seconds=1),
+            ),
+            _batch(
+                "step5e-trading212-other",
+                account_id="step5e-other",
+                user_id="step5e-foreign",
+                source=ImportSource.trading212,
+                created_at=now,
+            ),
+        ]
+        session.add_all(batches)
+        session.add_all(
+            [
+                _trading212_row("step5e-trading212-a-row", batch_id="step5e-trading212-a"),
+                _trading212_row("step5e-trading212-b-row", batch_id="step5e-trading212-b"),
+                _trading212_row("step5e-trading212-other-row", batch_id="step5e-trading212-other"),
+            ]
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+async def _normalize_trading212_candidate(
+    *, batch_id: str, account_id: str, principal: AuthenticatedPrincipal
+) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        result = await ImportNormalizationService(session).normalize_batch(
+            principal=principal, account_id=account_id, batch_id=batch_id
+        )
+    await engine.dispose()
+    assert result.rows_normalized == 1
+
+
+async def _trading212_rows() -> list[ImportRowModel]:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(ImportRowModel)
+                    .where(
+                        ImportRowModel.id.in_(
+                            (
+                                "step5e-trading212-a-row",
+                                "step5e-trading212-b-row",
+                                "step5e-trading212-other-row",
+                            )
+                        )
+                    )
+                    .order_by(ImportRowModel.id)
+                )
+            ).all()
+        )
+        for row in rows:
+            session.expunge(row)
+    await engine.dispose()
+    return rows
+
+
 async def _make_older_candidate() -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
@@ -516,3 +617,62 @@ def test_duplicate_detection_rolls_back_and_retries() -> None:
         ImportRowStatus.pending,
         ImportRowStatus.duplicate,
     )
+
+
+def test_normalized_trading212_external_id_deduplicates_per_account_and_source() -> None:
+    assert DATABASE_URL is not None
+    _run(_seed())
+    _run(_seed_trading212_normalization_candidates())
+    owner = _principal()
+    foreign = AuthenticatedPrincipal(
+        user_id="step5e-foreign",
+        email="step5e-foreign@example.com",
+        name="Step 5E Foreign",
+    )
+    for batch_id, account_id, principal in [
+        ("step5e-trading212-a", "step5e-account", owner),
+        ("step5e-trading212-b", "step5e-account", owner),
+        ("step5e-trading212-other", "step5e-other", foreign),
+    ]:
+        _run(
+            _normalize_trading212_candidate(
+                batch_id=batch_id, account_id=account_id, principal=principal
+            )
+        )
+
+    normalized = {row.id: row for row in _run(_trading212_rows())}
+    assert (
+        normalized["step5e-trading212-a-row"].deduplication_key
+        == normalized["step5e-trading212-b-row"].deduplication_key
+    )
+    assert (
+        normalized["step5e-trading212-a-row"].deduplication_key
+        != normalized["step5e-trading212-other-row"].deduplication_key
+    )
+    assert all(row.created_transaction_id is None for row in normalized.values())
+    assert all(row.created_investment_event_id is None for row in normalized.values())
+
+    result = _run(_deduplicate("step5e-trading212-b"))
+    assert result.rows_unique == 0
+    assert result.rows_duplicate == 1
+    assert _run(_statuses("step5e-trading212-a", "step5e-trading212-b")) == {
+        "step5e-trading212-a": ImportRowStatus.pending,
+        "step5e-trading212-b": ImportRowStatus.duplicate,
+    }
+
+    async def deduplicate_other_account() -> ImportDeduplicateResponse:
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            response = await ImportDeduplicationService(session).deduplicate_batch(
+                principal=foreign,
+                account_id="step5e-other",
+                batch_id="step5e-trading212-other",
+            )
+        await engine.dispose()
+        return response
+
+    assert _run(deduplicate_other_account()).rows_unique == 1
+    assert _run(_statuses("step5e-trading212-other")) == {
+        "step5e-trading212-other": ImportRowStatus.pending
+    }
