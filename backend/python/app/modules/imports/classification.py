@@ -425,6 +425,24 @@ def _classify_investment(
         or type(promotional) is not bool
     ):
         return _investment_review()
+    if source is ImportSource.trading212 and (order_id is not None or asset_direction is not None):
+        return _investment_review()
+    if source is ImportSource.anycoin:
+        grouped_trade = action in {InvestmentAction.buy, InvestmentAction.sell}
+        transfer = action is InvestmentAction.asset_transfer
+        valid_order_id = (
+            isinstance(order_id, str) and bool(order_id.strip()) and len(order_id) <= 256
+        )
+        if (
+            (grouped_trade and (not valid_order_id or asset_direction is not None))
+            or (transfer and (order_id is not None or asset_direction not in {"in", "out"}))
+            or (
+                not grouped_trade
+                and not transfer
+                and (order_id is not None or asset_direction is not None)
+            )
+        ):
+            return _investment_review()
     asset = InvestmentAssetPostingIntent(
         symbol=asset_values[0],
         isin=asset_values[1],

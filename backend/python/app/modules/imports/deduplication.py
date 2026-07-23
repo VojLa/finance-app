@@ -57,8 +57,13 @@ def _is_valid_row_state(row: ImportRowModel) -> bool:
     if row.status is ImportRowStatus.skipped:
         return (
             isinstance(row.normalized_data, dict)
-            and row.normalized_data.get("kind") in {"group_member", "fully_refunded_group"}
+            and row.normalized_data.get("schema_version") == 2
+            and row.normalized_data.get("source") == "anycoin"
+            and row.normalized_data.get("kind")
+            in {"group_member", "fully_refunded_group", "neutral_row"}
             and row.deduplication_key is None
+            and row.created_transaction_id is None
+            and row.created_investment_event_id is None
         )
     return False
 

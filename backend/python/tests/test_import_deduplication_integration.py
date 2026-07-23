@@ -431,9 +431,11 @@ async def _seed_trading212_normalization_candidates() -> None:
     await engine.dispose()
 
 
-def _anycoin_rows(batch_id: str, *, order_id: str) -> list[ImportRowModel]:
+def _anycoin_rows(
+    batch_id: str, *, order_id: str, include_neutral: bool = False
+) -> list[ImportRowModel]:
     now = datetime.now(UTC).replace(tzinfo=None)
-    return [
+    rows = [
         ImportRowModel(
             id=f"{batch_id}-payment",
             import_batch_id=batch_id,
@@ -477,6 +479,29 @@ def _anycoin_rows(batch_id: str, *, order_id: str) -> list[ImportRowModel]:
             created_at=now,
         ),
     ]
+    if include_neutral:
+        rows.append(
+            ImportRowModel(
+                id=f"{batch_id}-neutral",
+                import_batch_id=batch_id,
+                row_number=4,
+                raw_data={
+                    "Type": "payment block",
+                    "Date": "2026-07-23",
+                    "Amount": "1",
+                    "Currency": "EUR",
+                },
+                normalized_data=None,
+                validation_errors=None,
+                deduplication_key=None,
+                status=ImportRowStatus.pending,
+                error_message=None,
+                created_transaction_id=None,
+                created_investment_event_id=None,
+                created_at=now,
+            )
+        )
+    return rows
 
 
 async def _seed_anycoin_normalization_candidates() -> None:
@@ -502,10 +527,15 @@ async def _seed_anycoin_normalization_candidates() -> None:
             ]
         )
         for batch_id in ("step5e-anycoin-a", "step5e-anycoin-b", "step5e-anycoin-other"):
-            session.add_all(_anycoin_rows(batch_id, order_id="anycoin-provider-order"))
+            batch_rows = _anycoin_rows(
+                batch_id,
+                order_id="anycoin-provider-order",
+                include_neutral=batch_id == "step5e-anycoin-b",
+            )
+            session.add_all(batch_rows)
             batch = await session.get(ImportBatchModel, batch_id)
             assert batch is not None
-            batch.rows_total = 2
+            batch.rows_total = len(batch_rows)
         await session.commit()
     await engine.dispose()
 
@@ -821,6 +851,26 @@ def test_normalized_anycoin_group_external_id_deduplicates_per_account_and_sourc
     after = _run(anchors())
     assert after["step5e-anycoin-a"].status is ImportRowStatus.pending
     assert after["step5e-anycoin-b"].status is ImportRowStatus.duplicate
+
+    async def neutral_row() -> ImportRowModel:
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            row = await session.get(ImportRowModel, "step5e-anycoin-b-neutral")
+            assert row is not None
+            session.expunge(row)
+        await engine.dispose()
+        return row
+
+    neutral = _run(neutral_row())
+    assert neutral.status is ImportRowStatus.skipped
+    assert neutral.normalized_data == {
+        "schema_version": 2,
+        "source": "anycoin",
+        "kind": "neutral_row",
+    }
+    assert neutral.deduplication_key is None
+    assert neutral.created_transaction_id is None and neutral.created_investment_event_id is None
 
     async def deduplicate_other() -> ImportDeduplicateResponse:
         assert DATABASE_URL is not None

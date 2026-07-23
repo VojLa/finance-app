@@ -464,3 +464,89 @@ def test_review_intent_serialization_does_not_echo_untrusted_values() -> None:
             }
         ],
     }
+
+
+def _anycoin_event(*, action: str = "buy") -> dict[str, object]:
+    transfer = action == "asset_transfer"
+    return {
+        "schema_version": 2,
+        "source": "anycoin",
+        "kind": "investment_event",
+        "date": "2026-07-23T10:00:00+00:00",
+        "action": action,
+        "external_id": "provider-id",
+        "order_id": None if transfer else "order-1",
+        "raw_action": "grouped_trade",
+        "asset": {"symbol": "BTC", "isin": None, "name": None, "asset_type_hint": "crypto"},
+        "quantity": "1",
+        "price": None if transfer else {"amount": "100", "currency": "EUR"},
+        "total": None if transfer else {"amount": "100", "currency": "EUR"},
+        "fee": None,
+        "conversion": None,
+        "realized_pnl": None,
+        "is_promotional": False,
+        "note": None,
+        "asset_direction": "in" if transfer else None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_intent"),
+    [
+        ({}, True),
+        ({"order_id": None}, False),
+        ({"order_id": "  "}, False),
+        ({"asset_direction": "in"}, False),
+    ],
+)
+def test_anycoin_grouped_trade_requires_canonical_order_contract(
+    changes: dict[str, object], expected_intent: bool
+) -> None:
+    payload = _anycoin_event()
+    payload.update(changes)
+    result = classify_import_row(source=ImportSource.anycoin, normalized_data=payload)
+    assert isinstance(result, InvestmentEventPostingIntent) is expected_intent
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_intent"),
+    [
+        ({}, True),
+        ({"asset_direction": "out"}, True),
+        ({"asset_direction": None}, False),
+        ({"order_id": "x"}, False),
+    ],
+)
+def test_anycoin_asset_transfer_requires_direction_without_order_id(
+    changes: dict[str, object], expected_intent: bool
+) -> None:
+    payload = _anycoin_event(action="asset_transfer")
+    payload.update(changes)
+    result = classify_import_row(source=ImportSource.anycoin, normalized_data=payload)
+    assert isinstance(result, InvestmentEventPostingIntent) is expected_intent
+
+
+def test_trading212_schema_v2_rejects_anycoin_only_fields() -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.trading212,
+        account_id="account-a",
+        raw_data={
+            "Action": "Market buy",
+            "Time": "2026-07-23T10:00:00Z",
+            "Ticker": "VWCE",
+            "No. of shares": "2",
+            "Total": "12",
+            "Currency (Total)": "EUR",
+        },
+    )
+    assert normalized.data is not None
+    valid = classify_import_row(source=ImportSource.trading212, normalized_data=normalized.data)
+    payload = dict(normalized.data)
+    payload["order_id"] = "not-allowed"
+    with_order = classify_import_row(source=ImportSource.trading212, normalized_data=payload)
+    payload["order_id"] = None
+    payload["asset_direction"] = "in"
+    with_direction = classify_import_row(source=ImportSource.trading212, normalized_data=payload)
+    assert isinstance(valid, InvestmentEventPostingIntent)
+    assert isinstance(with_order, NeedsReviewPostingIntent)
+    assert isinstance(with_direction, NeedsReviewPostingIntent)
