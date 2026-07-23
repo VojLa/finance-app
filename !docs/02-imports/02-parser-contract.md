@@ -100,6 +100,10 @@ classified only for Trading212 and produces a frozen intent containing asset,
 quantity, money, fee, conversion, realized P/L, provider identity, and the
 promotional flag. It still has no posting workflow.
 
+Trading212 provider exports sometimes contain a zero-valued fee column. A zero
+fee is treated as absent and is not persisted in the canonical fee section; a
+present canonical fee must be strictly positive.
+
 New source-specific parsers must be deterministic, preserve enough raw context
 for review, and add representative fixture and regression tests. They may not
 perform posting or financial calculation in the parser layer.

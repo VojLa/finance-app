@@ -72,6 +72,18 @@ def test_trading212_canonical_buy_and_complete_intent() -> None:
     assert intent.model_dump(mode="json")["fee"]["amount"] == "0.25"
 
 
+def test_zero_provider_fee_column_is_absent_from_canonical_payload() -> None:
+    result = _normalize(
+        **{
+            "Currency conversion fee": "0",
+            "Currency (Currency conversion fee)": "EUR",
+        }
+    )
+
+    assert result.data is not None
+    assert result.data["fee"] is None
+
+
 @pytest.mark.parametrize(
     ("action", "expected"),
     [
@@ -112,6 +124,15 @@ def test_unsupported_actions_require_review(action: str) -> None:
     assert result.validation_errors is not None
 
 
+@pytest.mark.parametrize("action", ["Transfer", "Account transfer"])
+def test_generic_transfer_actions_do_not_create_asset_transfer(action: str) -> None:
+    result = _normalize(Action=action)
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert result.validation_errors[0]["code"] == "unsupported_action"
+
+
 def test_promotional_free_share_requires_asset_and_quantity_and_ignores_fee() -> None:
     result = _normalize(
         Action="Free share",
@@ -138,6 +159,25 @@ def test_fee_currency_conflict_and_paired_fields_require_review() -> None:
     assert any(error["code"] == "conflicting_currency" for error in result.validation_errors or [])
     incomplete = _normalize(**{"Price / share": "100", "Currency (Price / share)": ""})
     assert incomplete.data is None
+
+
+def test_fee_action_with_zero_total_requires_review() -> None:
+    result = _normalize(Action="Fee", Total="0")
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert any(error["field"].startswith("total") for error in result.validation_errors)
+
+
+def test_classifier_rejects_manually_constructed_zero_fee() -> None:
+    normalized = _normalize()
+    assert normalized.data is not None
+    normalized.data["fee"] = {"amount": "0", "currency": "EUR"}
+
+    result = classify_import_row(source=ImportSource.trading212, normalized_data=normalized.data)
+
+    assert isinstance(result, NeedsReviewPostingIntent)
+    assert result.errors[0].code.value == "invalid_investment_payload"
 
 
 def test_fallback_dedup_is_canonical_and_excludes_provider_presentation() -> None:

@@ -58,9 +58,8 @@ _ACTION = {
     "exchange": "currency_conversion",
     "convert": "currency_conversion",
     "swap": "currency_conversion",
-    "transfer": "asset_transfer",
+    "asset transfer": "asset_transfer",
     "internal transfer": "asset_transfer",
-    "account transfer": "asset_transfer",
     "portfolio transfer": "asset_transfer",
     "fee": "fee",
     "commission": "fee",
@@ -374,9 +373,13 @@ def _fees(raw: dict[str, Any], errors: list[dict[str, str]]) -> dict[str, str] |
         if raw_amount is None:
             continue
         amount = _decimal(raw_amount, errors, "fee.amount")
-        currency = _currency(_value(raw, currency_header), errors, "fee.currency")
         if amount is None:
             continue
+        if Decimal(amount).is_zero():
+            # Provider exports may contain placeholder zero-fee columns. They do not
+            # establish a canonical fee section and do not need a fee currency.
+            continue
+        currency = _currency(_value(raw, currency_header), errors, "fee.currency")
         if currency is None:
             errors.append(
                 {

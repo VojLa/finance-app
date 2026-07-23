@@ -92,6 +92,8 @@ async def _seed() -> None:
         "norm-concurrent-batch",
         "norm-rollback-batch",
         "norm-trading212-batch",
+        "norm-trading212-review-batch",
+        "norm-trading212-rollback-batch",
     ]
     async with AsyncSession(engine) as session:
         await session.execute(
@@ -172,6 +174,8 @@ async def _seed() -> None:
             ("norm-concurrent-batch", "norm-active", "norm-owner"),
             ("norm-rollback-batch", "norm-active", "norm-owner"),
             ("norm-trading212-batch", "norm-active", "norm-owner"),
+            ("norm-trading212-review-batch", "norm-active", "norm-owner"),
+            ("norm-trading212-rollback-batch", "norm-active", "norm-owner"),
         ]
         for index, (batch_id, account_id, user_id) in enumerate(batches):
             session.add(
@@ -181,7 +185,7 @@ async def _seed() -> None:
                     account_id=account_id,
                     source=(
                         ImportSource.trading212
-                        if batch_id == "norm-trading212-batch"
+                        if batch_id.startswith("norm-trading212-")
                         else ImportSource.manual
                     ),
                     filename=f"{batch_id}.csv",
@@ -204,17 +208,21 @@ async def _seed() -> None:
                     import_batch_id=batch_id,
                     row_number=2,
                     raw_data=(
-                        {
-                            "Action": "Market buy",
-                            "Time": "2026-07-20T10:00:00Z",
-                            "Ticker": "VWCE",
-                            "No. of shares": "2",
-                            "Total": "201",
-                            "Currency (Total)": "EUR",
-                            "ID": "norm-trade-1",
-                        }
-                        if batch_id == "norm-trading212-batch"
-                        else {"Date": "2026-07-20", "Amount": "10.50", "Currency": "eur"}
+                        {"Action": "Transfer"}
+                        if batch_id == "norm-trading212-review-batch"
+                        else (
+                            {
+                                "Action": "Market buy",
+                                "Time": "2026-07-20T10:00:00Z",
+                                "Ticker": "VWCE",
+                                "No. of shares": "2",
+                                "Total": "201",
+                                "Currency (Total)": "EUR",
+                                "ID": f"{batch_id}-trade",
+                            }
+                            if batch_id.startswith("norm-trading212-")
+                            else {"Date": "2026-07-20", "Amount": "10.50", "Currency": "eur"}
+                        )
                     ),
                     normalized_data=None,
                     validation_errors=None,
@@ -300,6 +308,31 @@ async def _rows(batch_id: str) -> list[ImportRowModel]:
     return rows
 
 
+async def _batch_counters(batch_id: str) -> tuple[int, int, int]:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        batch = await session.get(ImportBatchModel, batch_id)
+        assert batch is not None
+        rows_total = batch.rows_total
+        rows_imported = batch.rows_imported
+        rows_skipped = batch.rows_skipped
+    await engine.dispose()
+    assert rows_total is not None and rows_imported is not None and rows_skipped is not None
+    return rows_total, rows_imported, rows_skipped
+
+
+async def _normalize_batch(batch_id: str):
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        response = await ImportNormalizationService(session).normalize_batch(
+            principal=_principal(), account_id="norm-active", batch_id=batch_id
+        )
+    await engine.dispose()
+    return response
+
+
 async def _concurrent() -> list[object]:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL), pool_size=2)
@@ -343,16 +376,32 @@ async def _rollback() -> tuple[list[ImportRowModel], list[ImportRowModel]]:
 
 
 async def _normalize_trading212_batch() -> None:
+    response = await _normalize_batch("norm-trading212-batch")
+    assert response.rows_normalized == 1
+
+
+async def _trading212_rollback() -> tuple[
+    list[ImportRowModel], tuple[int, int, int], list[ImportRowModel]
+]:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine) as session:
-        response = await ImportNormalizationService(session).normalize_batch(
-            principal=_principal(),
-            account_id="norm-active",
-            batch_id="norm-trading212-batch",
-        )
+        with (
+            patch.object(session, "commit", side_effect=RuntimeError("controlled commit failure")),
+            pytest.raises(RuntimeError),
+        ):
+            await ImportNormalizationService(session).normalize_batch(
+                principal=_principal(),
+                account_id="norm-active",
+                batch_id="norm-trading212-rollback-batch",
+            )
     await engine.dispose()
+    failed = await _rows("norm-trading212-rollback-batch")
+    counters = await _batch_counters("norm-trading212-rollback-batch")
+    response = await _normalize_batch("norm-trading212-rollback-batch")
     assert response.rows_normalized == 1
+    retried = await _rows("norm-trading212-rollback-batch")
+    return failed, counters, retried
 
 
 def test_normalization_endpoint_and_postgresql_contract() -> None:
@@ -478,3 +527,41 @@ def test_trading212_normalization_persists_schema_v2_without_posting() -> None:
     assert row.normalized_data["action"] == "buy"
     assert row.deduplication_key and len(row.deduplication_key) == 64
     assert row.created_transaction_id is None and row.created_investment_event_id is None
+
+
+def test_trading212_invalid_row_persists_structured_review_transition() -> None:
+    assert DATABASE_URL is not None
+    _run(_seed())
+
+    response = _run(_normalize_batch("norm-trading212-review-batch"))
+    row = _run(_rows("norm-trading212-review-batch"))[0]
+
+    assert response.rows_normalized == 0
+    assert response.rows_needs_review == 1
+    assert response.rows_failed == 0
+    assert row.status is ImportRowStatus.needs_review
+    assert row.normalized_data is None and row.deduplication_key is None
+    assert row.validation_errors == [
+        {
+            "field": "action",
+            "code": "unsupported_action",
+            "message": "The Trading212 action is not supported.",
+        },
+        {"field": "date", "code": "required", "message": "Date is required."},
+    ]
+    assert _run(_batch_counters("norm-trading212-review-batch")) == (1, 0, 1)
+
+
+def test_trading212_normalization_rollback_leaves_no_partial_rows_and_retries() -> None:
+    assert DATABASE_URL is not None
+    _run(_seed())
+
+    failed, counters, retried = _run(_trading212_rollback())
+
+    assert failed[0].status is ImportRowStatus.pending
+    assert failed[0].normalized_data is None and failed[0].deduplication_key is None
+    assert counters == (1, 0, 0)
+    assert retried[0].status is ImportRowStatus.pending
+    assert retried[0].normalized_data is not None
+    assert retried[0].normalized_data["schema_version"] == 2
+    assert retried[0].deduplication_key is not None

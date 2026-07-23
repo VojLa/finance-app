@@ -428,7 +428,7 @@ def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent
     positive_total = total is not None and total.amount > 0
     if (
         (price is not None and price.amount <= 0)
-        or (fee is not None and fee.amount < 0)
+        or (fee is not None and fee.amount <= 0)
         or (
             action in {InvestmentAction.buy, InvestmentAction.sell}
             and not (asset_identity and positive_quantity and positive_total)
