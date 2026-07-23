@@ -119,6 +119,8 @@ class InvestmentEventPostingIntent(_PostingIntentBase):
     realized_pnl: InvestmentMoneyPostingIntent | None
     is_promotional: bool
     note: str | None
+    order_id: str | None = None
+    asset_direction: Literal["in", "out"] | None = None
 
 
 class NeedsReviewPostingIntent(_PostingIntentBase):
@@ -345,7 +347,9 @@ def _investment_money(value: object) -> InvestmentMoneyPostingIntent | None | bo
     return InvestmentMoneyPostingIntent(amount=amount, currency=currency)
 
 
-def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent:
+def _classify_investment(
+    *, source: ImportSource, normalized_data: Mapping[str, object]
+) -> PostingIntent:
     if normalized_data.get("kind") != "investment_event":
         return _investment_review()
     normalized_date = _validated_date(normalized_data.get("date"))
@@ -409,11 +413,15 @@ def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent
     external_id = normalized_data.get("external_id")
     raw_action = normalized_data.get("raw_action")
     note = normalized_data.get("note")
+    order_id = normalized_data.get("order_id")
+    asset_direction = normalized_data.get("asset_direction")
     promotional = normalized_data.get("is_promotional")
     if (
         (external_id is not None and not isinstance(external_id, str))
         or (raw_action is not None and not isinstance(raw_action, str))
         or (note is not None and not isinstance(note, str))
+        or (order_id is not None and not isinstance(order_id, str))
+        or asset_direction not in {None, "in", "out"}
         or type(promotional) is not bool
     ):
         return _investment_review()
@@ -466,7 +474,7 @@ def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent
     ):
         return _investment_review()
     return InvestmentEventPostingIntent(
-        source=ImportSource.trading212,
+        source=source,
         date=normalized_date,
         investment_event_type=_INVESTMENT_EVENT_TYPES[action],
         action=action,
@@ -481,6 +489,8 @@ def _classify_trading212(normalized_data: Mapping[str, object]) -> PostingIntent
         realized_pnl=realized_pnl,
         is_promotional=promotional,
         note=note,
+        order_id=order_id,
+        asset_direction=asset_direction,
     )
 
 
@@ -517,8 +527,16 @@ def classify_import_row(
         )
 
     if schema_version == 2:
-        if source is ImportSource.trading212:
-            return _classify_trading212(normalized_data)
+        if source in {ImportSource.trading212, ImportSource.anycoin}:
+            if normalized_data.get("kind") != "investment_event":
+                return _review(
+                    _issue(
+                        "normalized_data",
+                        PostingIntentIssueCode.invalid_investment_payload,
+                        "Normalized data is not postable.",
+                    )
+                )
+            return _classify_investment(source=source, normalized_data=normalized_data)
         return _review(
             _issue(
                 "schema_version",
