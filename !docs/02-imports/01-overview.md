@@ -35,6 +35,19 @@ order. Failed, cancelled, review, and already duplicate rows cannot become
 winners. The operation is repeatable and serialized per account/source in
 PostgreSQL. It does not create ledger records.
 
+The imports module also exposes a pure posting-intent classifier for a future
+posting stage. It accepts normalized schema version 1, verifies the normalized
+source, date, signed decimal amount, and currency, and returns an immutable,
+versioned transaction, investment-event, or structured review intent. Bank and
+manual rows use only explicit type tokens and the signed amount fallback.
+Trading212 and Anycoin rows require an exact allowlisted action. Description and
+counterparty text never determine transfer, refund, loan, or other financial
+meaning. Trading212 card debits and card costs remain review issues until a
+linked cash-transaction contract exists.
+
+Classification currently has no batch endpoint and does not persist its result,
+change import status, or create canonical transaction or ledger records.
+
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention
 or purge worker, even though the database model reserves retention fields.
