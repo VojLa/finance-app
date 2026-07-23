@@ -40,9 +40,8 @@ class PostingIntentIssueCode(StrEnum):
     invalid_currency = "invalid_currency"
     zero_amount = "zero_amount"
     conflicting_transaction_type = "conflicting_transaction_type"
-    missing_investment_type = "missing_investment_type"
-    unsupported_investment_type = "unsupported_investment_type"
-    unsupported_linked_cash_transaction = "unsupported_linked_cash_transaction"
+    ambiguous_transfer_type = "ambiguous_transfer_type"
+    investment_normalization_required = "investment_normalization_required"
 
 
 class PostingIntentIssue(BaseModel):
@@ -102,16 +101,10 @@ _TRANSACTION_TYPE_RULES: Final[Mapping[str, tuple[TransactionType, TransactionCl
             "odchozí platba": (TransactionType.expense, TransactionClassification.real_expense),
             "card payment": (TransactionType.expense, TransactionClassification.real_expense),
             "platba kartou": (TransactionType.expense, TransactionClassification.real_expense),
-            "transfer": (TransactionType.transfer, TransactionClassification.internal_transfer),
             "internal transfer": (
                 TransactionType.transfer,
                 TransactionClassification.internal_transfer,
             ),
-            "account transfer": (
-                TransactionType.transfer,
-                TransactionClassification.internal_transfer,
-            ),
-            "převod": (TransactionType.transfer, TransactionClassification.internal_transfer),
             "interní převod": (
                 TransactionType.transfer,
                 TransactionClassification.internal_transfer,
@@ -119,96 +112,7 @@ _TRANSACTION_TYPE_RULES: Final[Mapping[str, tuple[TransactionType, TransactionCl
         }
     )
 )
-
-_INVESTMENT_EVENT_RULES: Final[
-    Mapping[str, tuple[InvestmentEventType, InvestmentAction | None]]
-] = MappingProxyType(
-    {
-        "buy": (InvestmentEventType.trade, InvestmentAction.buy),
-        "purchase": (InvestmentEventType.trade, InvestmentAction.buy),
-        "market buy": (InvestmentEventType.trade, InvestmentAction.buy),
-        "limit buy": (InvestmentEventType.trade, InvestmentAction.buy),
-        "stop buy": (InvestmentEventType.trade, InvestmentAction.buy),
-        "crypto purchase": (InvestmentEventType.trade, InvestmentAction.buy),
-        "nákup": (InvestmentEventType.trade, InvestmentAction.buy),
-        "sell": (InvestmentEventType.trade, InvestmentAction.sell),
-        "sale": (InvestmentEventType.trade, InvestmentAction.sell),
-        "market sell": (InvestmentEventType.trade, InvestmentAction.sell),
-        "limit sell": (InvestmentEventType.trade, InvestmentAction.sell),
-        "stop sell": (InvestmentEventType.trade, InvestmentAction.sell),
-        "stop loss": (InvestmentEventType.trade, InvestmentAction.sell),
-        "take profit": (InvestmentEventType.trade, InvestmentAction.sell),
-        "crypto sale": (InvestmentEventType.trade, InvestmentAction.sell),
-        "prodej": (InvestmentEventType.trade, InvestmentAction.sell),
-        "deposit": (InvestmentEventType.cash_deposit, None),
-        "fiat deposit": (InvestmentEventType.cash_deposit, None),
-        "crypto deposit": (InvestmentEventType.cash_deposit, None),
-        "receive": (InvestmentEventType.cash_deposit, None),
-        "incoming": (InvestmentEventType.cash_deposit, None),
-        "top up": (InvestmentEventType.cash_deposit, None),
-        "funding": (InvestmentEventType.cash_deposit, None),
-        "vklad": (InvestmentEventType.cash_deposit, None),
-        "withdrawal": (InvestmentEventType.cash_withdrawal, None),
-        "fiat withdrawal": (InvestmentEventType.cash_withdrawal, None),
-        "crypto withdrawal": (InvestmentEventType.cash_withdrawal, None),
-        "send": (InvestmentEventType.cash_withdrawal, None),
-        "outgoing": (InvestmentEventType.cash_withdrawal, None),
-        "výběr": (InvestmentEventType.cash_withdrawal, None),
-        "dividend": (InvestmentEventType.dividend, None),
-        "dividends": (InvestmentEventType.dividend, None),
-        "dividend (ordinary)": (InvestmentEventType.dividend, None),
-        "dividend (dividends paid by us corporations)": (
-            InvestmentEventType.dividend,
-            None,
-        ),
-        "dividend (dividend)": (InvestmentEventType.dividend, None),
-        "dividend (dividend manufactured payment)": (
-            InvestmentEventType.dividend,
-            None,
-        ),
-        "dividend (tax exempted)": (InvestmentEventType.dividend, None),
-        "dividend reinvestment": (InvestmentEventType.dividend, None),
-        "dividenda": (InvestmentEventType.dividend, None),
-        "interest": (InvestmentEventType.interest, None),
-        "interest on cash": (InvestmentEventType.interest, None),
-        "cash interest": (InvestmentEventType.interest, None),
-        "savings interest": (InvestmentEventType.interest, None),
-        "earn interest": (InvestmentEventType.interest, None),
-        "lending interest": (InvestmentEventType.interest, None),
-        "úrok": (InvestmentEventType.interest, None),
-        "currency conversion": (InvestmentEventType.currency_conversion, None),
-        "fx conversion": (InvestmentEventType.currency_conversion, None),
-        "exchange": (InvestmentEventType.currency_conversion, None),
-        "convert": (InvestmentEventType.currency_conversion, None),
-        "swap": (InvestmentEventType.currency_conversion, None),
-        "směna": (InvestmentEventType.currency_conversion, None),
-        "konverze měny": (InvestmentEventType.currency_conversion, None),
-        "asset transfer": (InvestmentEventType.asset_transfer, None),
-        "internal transfer": (InvestmentEventType.asset_transfer, None),
-        "portfolio transfer": (InvestmentEventType.asset_transfer, None),
-        "fee": (InvestmentEventType.fee, None),
-        "commission": (InvestmentEventType.fee, None),
-        "currency conversion fee": (InvestmentEventType.fee, None),
-        "transaction fee": (InvestmentEventType.fee, None),
-        "trading fee": (InvestmentEventType.fee, None),
-        "withdrawal fee": (InvestmentEventType.fee, None),
-        "service fee": (InvestmentEventType.fee, None),
-        "poplatek": (InvestmentEventType.fee, None),
-        "staking": (InvestmentEventType.staking_reward, None),
-        "staking reward": (InvestmentEventType.staking_reward, None),
-        "staking income": (InvestmentEventType.staking_reward, None),
-        "eth2 staking reward": (InvestmentEventType.staking_reward, None),
-        "airdrop": (InvestmentEventType.airdrop, None),
-        "fork": (InvestmentEventType.airdrop, None),
-        "token distribution": (InvestmentEventType.airdrop, None),
-        "free share": (InvestmentEventType.airdrop, None),
-        "free shares": (InvestmentEventType.airdrop, None),
-        "free stock": (InvestmentEventType.airdrop, None),
-        "free stocks": (InvestmentEventType.airdrop, None),
-    }
-)
-
-_TRADING212_LINKED_CASH_TYPES: Final = frozenset({"card debit", "card cost", "new card cost"})
+_AMBIGUOUS_TRANSFER_TYPES: Final = frozenset({"transfer", "account transfer", "převod"})
 _CURRENCY_PATTERN = re.compile(r"[A-Z0-9._-]{2,20}")
 
 
@@ -321,6 +225,15 @@ def _classify_transaction(
             )
         )
 
+    if normalized_type in _AMBIGUOUS_TRANSFER_TYPES:
+        return _review(
+            _issue(
+                "type",
+                PostingIntentIssueCode.ambiguous_transfer_type,
+                "The transfer type does not prove an internal transfer.",
+            )
+        )
+
     if explicit_rule is None:
         transaction_type, classification = (
             (TransactionType.income, TransactionClassification.real_income)
@@ -347,69 +260,6 @@ def _classify_transaction(
         currency=currency,
         transaction_type=transaction_type,
         transaction_classification=classification,
-    )
-
-
-def _classify_investment_event(
-    *,
-    source: ImportSource,
-    normalized_data: Mapping[str, object],
-    normalized_date: str,
-    amount: Decimal,
-    currency: str,
-) -> PostingIntent:
-    raw_type = normalized_data.get("type")
-    normalized_type = _normalize_type(raw_type)
-    if normalized_type is None:
-        if raw_type is not None and not (isinstance(raw_type, str) and not raw_type.strip()):
-            return _review(
-                _issue(
-                    "type",
-                    PostingIntentIssueCode.unsupported_investment_type,
-                    "The investment action is not supported by the explicit allowlist.",
-                )
-            )
-        return _review(
-            _issue(
-                "type",
-                PostingIntentIssueCode.missing_investment_type,
-                "An explicit investment action is required.",
-            )
-        )
-    if source is ImportSource.trading212 and normalized_type in _TRADING212_LINKED_CASH_TYPES:
-        return _review(
-            _issue(
-                "type",
-                PostingIntentIssueCode.unsupported_linked_cash_transaction,
-                "This Trading212 card action requires a linked cash transaction contract.",
-            )
-        )
-    rule = _INVESTMENT_EVENT_RULES.get(normalized_type)
-    if rule is None:
-        return _review(
-            _issue(
-                "type",
-                PostingIntentIssueCode.unsupported_investment_type,
-                "The investment action is not supported by the explicit allowlist.",
-            )
-        )
-    if amount.is_zero():
-        return _review(
-            _issue(
-                "amount",
-                PostingIntentIssueCode.zero_amount,
-                "A zero amount cannot be classified for posting.",
-            )
-        )
-
-    event_type, action = rule
-    return InvestmentEventPostingIntent(
-        source=source,
-        date=normalized_date,
-        amount=amount,
-        currency=currency,
-        investment_event_type=event_type,
-        action=action,
     )
 
 
@@ -459,12 +309,12 @@ def classify_import_row(
             currency=currency,
         )
     if source in _INVESTMENT_SOURCES:
-        return _classify_investment_event(
-            source=source,
-            normalized_data=normalized_data,
-            normalized_date=normalized_date,
-            amount=amount,
-            currency=currency,
+        return _review(
+            _issue(
+                "normalized_data",
+                PostingIntentIssueCode.investment_normalization_required,
+                "Source-specific investment normalization is required before classification.",
+            )
         )
     return _review(
         _issue(

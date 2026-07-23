@@ -38,15 +38,23 @@ PostgreSQL. It does not create ledger records.
 The imports module also exposes a pure posting-intent classifier for a future
 posting stage. It accepts normalized schema version 1, verifies the normalized
 source, date, signed decimal amount, and currency, and returns an immutable,
-versioned transaction, investment-event, or structured review intent. Bank and
-manual rows use only explicit type tokens and the signed amount fallback.
-Trading212 and Anycoin rows require an exact allowlisted action. Description and
-counterparty text never determine transfer, refund, loan, or other financial
-meaning. Trading212 card debits and card costs remain review issues until a
-linked cash-transaction contract exists.
+versioned transaction or structured review intent. Successful classification is
+limited to Raiffeisenbank and manual rows. Bank/manual rows use only explicit
+type tokens and the signed amount fallback; only `internal transfer` and
+`interní převod` become internal transfers. Generic `transfer`, `account
+transfer`, and `převod` are review issues because they do not prove common
+ownership.
+
+Trading212 and Anycoin always remain review issues in 5F-A with
+`investment_normalization_required`. The generic normalized contract cannot
+preserve Trading212 investment details or safely group Anycoin trade payment,
+fill, and refund rows. Step 5F-B will establish those source-specific canonical
+contracts; descriptions and counterparties never determine transfer, refund,
+loan, or other financial meaning.
 
 Classification currently has no batch endpoint and does not persist its result,
 change import status, or create canonical transaction or ledger records.
+Batch persistence and workflow belong to Step 5F-C.
 
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention

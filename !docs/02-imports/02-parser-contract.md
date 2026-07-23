@@ -64,24 +64,27 @@ its own schema version:
 - `transaction` with the original signed `Decimal`, `TransactionType`, and
   `TransactionClassification`;
 - `investment_event` with the original signed `Decimal`,
-  `InvestmentEventType`, and `buy`/`sell` action for trades;
+  `InvestmentEventType`, and `buy`/`sell` action for trades as a shared future
+  contract;
 - `needs_review` with structured field, code, and message entries that do not
   echo untrusted financial or identifying values.
 
 Raiffeisenbank and manual classification normalize only the optional source
 type by trimming, Unicode case-folding, and whitespace collapse. Exact income,
-expense, and internal-transfer tokens take precedence; unsupported or missing
-tokens fall back to the signed amount. An explicit income/expense token that
-conflicts with the sign and every zero amount require review. Description and
-counterparty values are ignored.
+expense, and unambiguous internal-transfer tokens take precedence; unsupported
+or missing tokens fall back to the signed amount. `transfer`, `account
+transfer`, and `převod` are explicitly ambiguous review issues, not internal
+transfers. An explicit income/expense token that conflicts with the sign and
+every zero amount require review. Description and counterparty values are
+ignored.
 
-Trading212 and Anycoin require an exact allowlisted source type for trade, cash
-deposit/withdrawal, dividend, interest, currency conversion, asset transfer,
-fee, staking reward, or airdrop. Amount sign never invents an investment event
-type. Trading212 card debit and card-cost rows require review because normalized
-schema version 1 cannot preserve the linked cash-transaction semantics required
-for safe posting. A description such as `Free share bonus` cannot turn a
-`deposit` token into an airdrop.
+Trading212 and Anycoin always return `investment_normalization_required` in
+5F-A. A Trading212 investment intent needs source-specific asset identity,
+quantity, price, total, fee, and conversion data. An Anycoin trade requires
+grouping payment, fill, and refund rows by order ID. The current generic
+normalized contract contains neither safely, so it cannot create a successful
+investment intent. Step 5F-B will add source-specific canonicalization and
+grouping; Step 5F-C will add batch persistence and workflow.
 
 This classifier is not yet a persisted batch stage: there is no classification
 endpoint, row status transition, database write, or ledger posting.

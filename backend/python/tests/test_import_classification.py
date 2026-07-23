@@ -18,6 +18,7 @@ from app.modules.imports.classification import (
     TransactionPostingIntent,
     classify_import_row,
 )
+from app.modules.imports.normalizers import normalize_import_row
 
 
 def _normalized(
@@ -78,39 +79,17 @@ def test_transaction_sources_fall_back_to_signed_decimal_amount(
 @pytest.mark.parametrize(
     ("source_type", "amount", "expected_type", "expected_classification"),
     [
+        ("income", "10", TransactionType.income, TransactionClassification.real_income),
+        ("expense", "-10", TransactionType.expense, TransactionClassification.real_expense),
         (
-            "income",
-            "10",
-            TransactionType.income,
-            TransactionClassification.real_income,
-        ),
-        (
-            "  PŘÍCHOZÍ \t PLATBA ",
-            "10",
-            TransactionType.income,
-            TransactionClassification.real_income,
-        ),
-        (
-            "expense",
+            "INTERNAL TRANSFER",
             "-10",
-            TransactionType.expense,
-            TransactionClassification.real_expense,
-        ),
-        (
-            " Odchozí   platba ",
-            "-10",
-            TransactionType.expense,
-            TransactionClassification.real_expense,
-        ),
-        (
-            "transfer",
-            "10",
             TransactionType.transfer,
             TransactionClassification.internal_transfer,
         ),
         (
-            "INTERNAL TRANSFER",
-            "-10",
+            "interní převod",
+            "10",
             TransactionType.transfer,
             TransactionClassification.internal_transfer,
         ),
@@ -133,10 +112,38 @@ def test_transaction_explicit_allowlist_uses_normalized_type(
     assert result.transaction_classification is expected_classification
 
 
-@pytest.mark.parametrize(
-    ("source_type", "amount"),
-    [("income", "-1"), ("expense", "1")],
-)
+@pytest.mark.parametrize("source", [ImportSource.raiffeisenbank, ImportSource.manual])
+@pytest.mark.parametrize("source_type", ["transfer", "account transfer", "převod"])
+def test_generic_transfer_tokens_need_review_without_description_inference(
+    source: ImportSource,
+    source_type: str,
+) -> None:
+    first = classify_import_row(
+        source=source,
+        normalized_data=_normalized(
+            source,
+            source_type=source_type,
+            description="internal transfer refund loan",
+            counterparty="My other account",
+        ),
+    )
+    second = classify_import_row(
+        source=source,
+        normalized_data=_normalized(
+            source,
+            source_type=source_type,
+            description="ordinary payment",
+            counterparty="External recipient",
+        ),
+    )
+
+    assert isinstance(first, NeedsReviewPostingIntent)
+    assert isinstance(second, NeedsReviewPostingIntent)
+    assert _review_code(first) is PostingIntentIssueCode.ambiguous_transfer_type
+    assert first == second
+
+
+@pytest.mark.parametrize(("source_type", "amount"), [("income", "-1"), ("expense", "1")])
 def test_explicit_transaction_type_conflicting_with_sign_needs_review(
     source_type: str,
     amount: str,
@@ -154,195 +161,41 @@ def test_explicit_transaction_type_conflicting_with_sign_needs_review(
     assert _review_code(result) is PostingIntentIssueCode.conflicting_transaction_type
 
 
-@pytest.mark.parametrize("source", list(ImportSource))
-def test_zero_amount_needs_review(source: ImportSource) -> None:
-    source_type = (
-        "income"
-        if source
-        in {
-            ImportSource.raiffeisenbank,
-            ImportSource.manual,
-        }
-        else "deposit"
-    )
+@pytest.mark.parametrize("source", [ImportSource.raiffeisenbank, ImportSource.manual])
+def test_zero_transaction_amount_needs_review(source: ImportSource) -> None:
     result = classify_import_row(
         source=source,
-        normalized_data=_normalized(source, amount="0.000", source_type=source_type),
+        normalized_data=_normalized(source, amount="0.000", source_type="income"),
     )
 
     assert isinstance(result, NeedsReviewPostingIntent)
     assert _review_code(result) is PostingIntentIssueCode.zero_amount
 
 
-def test_description_and_counterparty_do_not_influence_transaction_classification() -> None:
-    first_data = _normalized(
-        ImportSource.manual,
-        amount="-5",
-        source_type="unknown",
-        description="refund internal transfer loan income",
-        counterparty="Loan provider",
-    )
-    second_data = _normalized(
-        ImportSource.manual,
-        amount="-5",
-        source_type="unknown",
-        description="ordinary purchase",
-        counterparty="Merchant",
-    )
-
-    first = classify_import_row(
-        source=ImportSource.manual,
-        normalized_data=first_data,
-    )
-    second = classify_import_row(
-        source=ImportSource.manual,
-        normalized_data=second_data,
-    )
-
-    assert isinstance(first, TransactionPostingIntent)
-    assert isinstance(second, TransactionPostingIntent)
-    assert first == second
-    assert first.transaction_classification is TransactionClassification.real_expense
-
-
 @pytest.mark.parametrize("source", [ImportSource.trading212, ImportSource.anycoin])
-@pytest.mark.parametrize(
-    ("source_type", "event_type", "action"),
-    [
-        ("  MARKET   BUY ", InvestmentEventType.trade, InvestmentAction.buy),
-        ("PRODEJ", InvestmentEventType.trade, InvestmentAction.sell),
-        ("deposit", InvestmentEventType.cash_deposit, None),
-        ("withdrawal", InvestmentEventType.cash_withdrawal, None),
-        ("Dividend (Dividend)", InvestmentEventType.dividend, None),
-        ("interest on cash", InvestmentEventType.interest, None),
-        ("FX conversion", InvestmentEventType.currency_conversion, None),
-        ("asset transfer", InvestmentEventType.asset_transfer, None),
-        ("commission", InvestmentEventType.fee, None),
-        ("staking reward", InvestmentEventType.staking_reward, None),
-        ("free shares", InvestmentEventType.airdrop, None),
-    ],
-)
-def test_investment_action_families_map_to_canonical_events(
+@pytest.mark.parametrize("source_type", ["market buy", "deposit", "unknown action"])
+def test_investment_sources_always_require_source_specific_normalization(
     source: ImportSource,
     source_type: str,
-    event_type: InvestmentEventType,
-    action: InvestmentAction | None,
 ) -> None:
     result = classify_import_row(
         source=source,
         normalized_data=_normalized(source, amount="-12.5", source_type=source_type),
     )
 
-    assert isinstance(result, InvestmentEventPostingIntent)
-    assert result.investment_event_type is event_type
-    assert result.action is action
-    assert result.amount == Decimal("-12.5")
+    assert isinstance(result, NeedsReviewPostingIntent)
+    assert _review_code(result) is PostingIntentIssueCode.investment_normalization_required
 
 
 @pytest.mark.parametrize(
-    ("source_type", "expected_event", "expected_action"),
-    [
-        ("purchase", InvestmentEventType.trade, InvestmentAction.buy),
-        ("nákup", InvestmentEventType.trade, InvestmentAction.buy),
-        ("take profit", InvestmentEventType.trade, InvestmentAction.sell),
-        ("crypto sale", InvestmentEventType.trade, InvestmentAction.sell),
-        ("fiat deposit", InvestmentEventType.cash_deposit, None),
-        ("vklad", InvestmentEventType.cash_deposit, None),
-        ("crypto withdrawal", InvestmentEventType.cash_withdrawal, None),
-        ("výběr", InvestmentEventType.cash_withdrawal, None),
-        ("dividend (tax exempted)", InvestmentEventType.dividend, None),
-        ("cash interest", InvestmentEventType.interest, None),
-        ("swap", InvestmentEventType.currency_conversion, None),
-        ("portfolio transfer", InvestmentEventType.asset_transfer, None),
-        ("currency conversion fee", InvestmentEventType.fee, None),
-        ("eth2 staking reward", InvestmentEventType.staking_reward, None),
-        ("token distribution", InvestmentEventType.airdrop, None),
-    ],
+    "schema_version",
+    [None, 0, 2, True, "1"],
 )
-def test_investment_allowlist_variants_are_exact(
-    source_type: str,
-    expected_event: InvestmentEventType,
-    expected_action: InvestmentAction | None,
-) -> None:
-    result = classify_import_row(
-        source=ImportSource.anycoin,
-        normalized_data=_normalized(
-            ImportSource.anycoin,
-            source_type=source_type,
-        ),
-    )
-
-    assert isinstance(result, InvestmentEventPostingIntent)
-    assert result.investment_event_type is expected_event
-    assert result.action is expected_action
-
-
-@pytest.mark.parametrize(
-    "source_type",
-    [None, "", [], "market buy with bonus", "refund", "loan", "trade"],
-)
-def test_missing_unknown_or_non_exact_investment_action_needs_review(
-    source_type: object | None,
-) -> None:
-    result = classify_import_row(
-        source=ImportSource.anycoin,
-        normalized_data=_normalized(
-            ImportSource.anycoin,
-            source_type=source_type,
-            description="free share refund transfer",
-        ),
-    )
-
-    assert isinstance(result, NeedsReviewPostingIntent)
-    expected = (
-        PostingIntentIssueCode.missing_investment_type
-        if source_type is None or source_type == ""
-        else PostingIntentIssueCode.unsupported_investment_type
-    )
-    assert _review_code(result) is expected
-
-
-@pytest.mark.parametrize("source_type", ["card debit", "card cost", "new card cost"])
-def test_trading212_card_cost_requires_linked_cash_contract(source_type: str) -> None:
-    result = classify_import_row(
-        source=ImportSource.trading212,
-        normalized_data=_normalized(
-            ImportSource.trading212,
-            amount="-19.70",
-            source_type=source_type,
-        ),
-    )
-
-    assert isinstance(result, NeedsReviewPostingIntent)
-    assert _review_code(result) is PostingIntentIssueCode.unsupported_linked_cash_transaction
-
-
-def test_description_cannot_turn_investment_deposit_into_airdrop() -> None:
-    result = classify_import_row(
-        source=ImportSource.trading212,
-        normalized_data=_normalized(
-            ImportSource.trading212,
-            source_type="deposit",
-            description="Free share bonus",
-            counterparty="Promotion",
-        ),
-    )
-
-    assert isinstance(result, InvestmentEventPostingIntent)
-    assert result.investment_event_type is InvestmentEventType.cash_deposit
-
-
-@pytest.mark.parametrize("schema_version", [None, 0, 2, True, "1"])
-def test_unsupported_normalized_schema_version_is_deterministic(
-    schema_version: object,
-) -> None:
+def test_unsupported_normalized_schema_version_is_deterministic(schema_version: object) -> None:
     data = _normalized(ImportSource.manual)
     data["schema_version"] = schema_version
 
-    result = classify_import_row(
-        source=ImportSource.manual,
-        normalized_data=data,
-    )
+    result = classify_import_row(source=ImportSource.manual, normalized_data=data)
 
     assert isinstance(result, NeedsReviewPostingIntent)
     assert _review_code(result) is PostingIntentIssueCode.unsupported_schema_version
@@ -379,42 +232,39 @@ def test_untrusted_financial_fields_need_review(
     data = _normalized(ImportSource.manual)
     data[field] = value
 
-    result = classify_import_row(
-        source=ImportSource.manual,
-        normalized_data=data,
-    )
+    result = classify_import_row(source=ImportSource.manual, normalized_data=data)
 
     assert isinstance(result, NeedsReviewPostingIntent)
     assert _review_code(result) is expected_code
 
 
 def test_invalid_normalized_payload_needs_review() -> None:
-    result = classify_import_row(
-        source=ImportSource.manual,
-        normalized_data=[],
-    )
+    result = classify_import_row(source=ImportSource.manual, normalized_data=[])
 
     assert isinstance(result, NeedsReviewPostingIntent)
     assert _review_code(result) is PostingIntentIssueCode.invalid_payload
 
 
-def test_posting_intent_is_immutable_versioned_and_json_serializable() -> None:
-    normalized_data = _normalized(
-        ImportSource.manual,
-        amount="-123.4500",
-        source_type="expense",
-    )
-    original = normalized_data.copy()
-
-    result = classify_import_row(
+def test_posting_intent_contracts_are_immutable_versioned_and_json_serializable() -> None:
+    transaction = classify_import_row(
         source=ImportSource.manual,
-        normalized_data=normalized_data,
+        normalized_data=_normalized(
+            ImportSource.manual,
+            amount="-123.4500",
+            source_type="expense",
+        ),
+    )
+    investment = InvestmentEventPostingIntent(
+        source=ImportSource.trading212,
+        date="2026-07-23",
+        amount=Decimal("12.50"),
+        currency="EUR",
+        investment_event_type=InvestmentEventType.trade,
+        action=InvestmentAction.buy,
     )
 
-    assert isinstance(result, TransactionPostingIntent)
-    assert normalized_data == original
-    assert isinstance(result.amount, Decimal)
-    assert result.model_dump(mode="json") == {
+    assert isinstance(transaction, TransactionPostingIntent)
+    assert transaction.model_dump(mode="json") == {
         "schema_version": 1,
         "target": PostingIntentTarget.transaction.value,
         "source": ImportSource.manual.value,
@@ -424,8 +274,163 @@ def test_posting_intent_is_immutable_versioned_and_json_serializable() -> None:
         "transaction_type": TransactionType.expense.value,
         "transaction_classification": TransactionClassification.real_expense.value,
     }
+    assert investment.model_dump(mode="json")["target"] == PostingIntentTarget.investment_event
+    assert investment.model_dump(mode="json")["amount"] == "12.50"
     with pytest.raises(ValidationError):
-        result.amount = Decimal("1")  # type: ignore[misc]
+        transaction.amount = Decimal("1")  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        investment.amount = Decimal("1")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("source_type", "amount", "expected_type", "expected_classification"),
+    [
+        ("Příchozí platba", "100", TransactionType.income, TransactionClassification.real_income),
+        ("Odchozí platba", "-100", TransactionType.expense, TransactionClassification.real_expense),
+        ("Platba kartou", "-50", TransactionType.expense, TransactionClassification.real_expense),
+        ("Běžný typ", "100", TransactionType.income, TransactionClassification.real_income),
+        ("Běžný typ", "-100", TransactionType.expense, TransactionClassification.real_expense),
+    ],
+)
+def test_raiffeisenbank_normalization_and_classification_composition(
+    source_type: str,
+    amount: str,
+    expected_type: TransactionType,
+    expected_classification: TransactionClassification,
+) -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.raiffeisenbank,
+        account_id="account-a",
+        raw_data={
+            "Datum": "23.07.2026",
+            "Částka": amount,
+            "Měna": "czk",
+            "Typ": source_type,
+        },
+    )
+    assert normalized.data is not None
+
+    result = classify_import_row(
+        source=ImportSource.raiffeisenbank,
+        normalized_data=normalized.data,
+    )
+
+    assert isinstance(result, TransactionPostingIntent)
+    assert result.transaction_type is expected_type
+    assert result.transaction_classification is expected_classification
+
+
+def test_raiffeisenbank_generic_transfer_composition_needs_review() -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.raiffeisenbank,
+        account_id="account-a",
+        raw_data={
+            "Datum": "23.07.2026",
+            "Částka": "100",
+            "Měna": "CZK",
+            "Typ": "Převod",
+        },
+    )
+    assert normalized.data is not None
+
+    result = classify_import_row(
+        source=ImportSource.raiffeisenbank,
+        normalized_data=normalized.data,
+    )
+
+    assert isinstance(result, NeedsReviewPostingIntent)
+    assert _review_code(result) is PostingIntentIssueCode.ambiguous_transfer_type
+
+
+@pytest.mark.parametrize(
+    ("source_type", "amount", "expected_type", "expected_classification"),
+    [
+        ("income", "10", TransactionType.income, TransactionClassification.real_income),
+        ("expense", "-10", TransactionType.expense, TransactionClassification.real_expense),
+        (
+            "internal transfer",
+            "10",
+            TransactionType.transfer,
+            TransactionClassification.internal_transfer,
+        ),
+        ("unknown", "10", TransactionType.income, TransactionClassification.real_income),
+        ("unknown", "-10", TransactionType.expense, TransactionClassification.real_expense),
+    ],
+)
+def test_manual_normalization_and_classification_composition(
+    source_type: str,
+    amount: str,
+    expected_type: TransactionType,
+    expected_classification: TransactionClassification,
+) -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.manual,
+        account_id="account-a",
+        raw_data={
+            "Date": "2026-07-23",
+            "Amount": amount,
+            "Currency": "EUR",
+            "Type": source_type,
+        },
+    )
+    assert normalized.data is not None
+
+    result = classify_import_row(source=ImportSource.manual, normalized_data=normalized.data)
+
+    assert isinstance(result, TransactionPostingIntent)
+    assert result.transaction_type is expected_type
+    assert result.transaction_classification is expected_classification
+
+
+def test_trading212_normalization_and_classification_composition_needs_review() -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.trading212,
+        account_id="account-a",
+        raw_data={
+            "Action": "Market buy",
+            "Time": "2026-07-23T10:00:00Z",
+            "Ticker": "VWCE",
+            "No. of shares": "2",
+            "Price / share": "100.50",
+            "Currency (Price / share)": "EUR",
+            "Total": "201",
+            "Currency (Total)": "EUR",
+            "ID": "trade-1",
+        },
+    )
+    assert normalized.data is not None
+    assert normalized.data["type"] == "Market buy"
+    assert normalized.data["currency"] == "VWCE"
+
+    result = classify_import_row(source=ImportSource.trading212, normalized_data=normalized.data)
+
+    assert isinstance(result, NeedsReviewPostingIntent)
+    assert _review_code(result) is PostingIntentIssueCode.investment_normalization_required
+
+
+@pytest.mark.parametrize("source_type", ["trade payment", "trade fill", "trade refund"])
+def test_anycoin_individual_trade_rows_need_grouping_before_classification(
+    source_type: str,
+) -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.anycoin,
+        account_id="account-a",
+        raw_data={
+            "Type": source_type,
+            "Order ID": "order-1",
+            "Date": "2026-07-23T10:00:00Z",
+            "Amount": "1.25",
+            "Currency": "EUR",
+            "anycoin TX ID": "anycoin-1",
+        },
+    )
+    assert normalized.data is not None
+    assert normalized.data["type"] == source_type
+
+    result = classify_import_row(source=ImportSource.anycoin, normalized_data=normalized.data)
+
+    assert isinstance(result, NeedsReviewPostingIntent)
+    assert _review_code(result) is PostingIntentIssueCode.investment_normalization_required
 
 
 def test_review_intent_serialization_does_not_echo_untrusted_values() -> None:
@@ -445,9 +450,9 @@ def test_review_intent_serialization_does_not_echo_untrusted_values() -> None:
         "target": PostingIntentTarget.needs_review.value,
         "errors": [
             {
-                "field": "type",
-                "code": PostingIntentIssueCode.unsupported_investment_type.value,
-                "message": "The investment action is not supported by the explicit allowlist.",
+                "field": "normalized_data",
+                "code": PostingIntentIssueCode.investment_normalization_required.value,
+                "message": "Source-specific investment normalization is required before classification.",
             }
         ],
     }

@@ -1,4 +1,4 @@
-# 5F-A – Deterministic import classification contract
+# 5F-A – Deterministic bank import classification contract
 
 ## Metadata
 
@@ -10,14 +10,22 @@
 
 ## Goal
 
-Add a pure, deterministic and versioned classifier that converts one valid normalized import row into a posting intent for Step 5G. This step must not write to the database or create ledger records.
+Add a pure, deterministic and versioned classifier for one valid normalized
+import row. Step 5F-A classifies only Raiffeisenbank and manual rows into
+transaction posting intents. It must not write to the database or create ledger
+records.
 
 ## Split
 
-The original 5F combines classification, persistence, API, authorization, concurrency and money semantics. It is therefore split according to `ChatGPT/STEP-SIZING.md`:
+The original 5F combines classification, provider canonicalization, persistence,
+API, authorization, concurrency and money semantics. It is split into:
 
-- **5F-A:** pure classification contract and unit tests.
-- **5F-B:** batch endpoint, persistence, locks, rollback, idempotence and integration tests.
+- **5F-A:** shared posting-intent contract, generic payload validation, bank and
+  manual classification, review results, unit tests, and composition tests.
+- **5F-B:** source-specific Trading212/Anycoin canonicalization and Anycoin
+  order grouping, without batch API or ledger posting.
+- **5F-C:** authenticated batch classification workflow, persistence, locking,
+  idempotence, rollback, concurrency and integration tests.
 
 ## Required context
 
@@ -37,16 +45,23 @@ Legacy TypeScript parsers may be used only as behavior reference.
 
 ## Current state
 
-5D stores normalized source, date, signed decimal amount, currency and optional type/description/external ID. 5E leaves unique rows as `pending` and marks duplicates. Python does not yet decide whether a unique row represents a `Transaction`, an `InvestmentEvent` or a review issue.
+5D stores generic normalized source, date, signed decimal amount, currency and
+optional type/description/external ID. 5E leaves unique rows as `pending` and
+marks duplicates. That generic shape is sufficient for conservative bank/manual
+classification, but it cannot represent a canonical Trading212 investment row
+or an Anycoin grouped order.
 
 ## Scope
 
 - Add a pure classifier in `backend/python/app/modules/imports/`.
-- Define a typed, immutable and serializable posting-intent result.
+- Define a typed, immutable, serializable and versioned posting-intent result.
 - Use `Decimal`; never convert monetary values through `float`.
-- Use only explicit normalized source/type/amount fields.
-- Return structured review errors for ambiguous or unsupported rows.
-- Add focused unit tests and update import documentation.
+- Validate untrusted normalized payloads.
+- Classify `raiffeisenbank` and `manual` transaction rows only.
+- Return structured review errors for ambiguous, unsupported or insufficient
+  normalized rows.
+- Add focused unit and normalizer-to-classifier composition tests.
+- Update import documentation.
 
 ## Out of scope
 
@@ -57,15 +72,19 @@ Legacy TypeScript parsers may be used only as behavior reference.
 - No Prisma/Alembic/schema change.
 - No category, counterparty, transfer-pair, FX or asset resolution.
 - No description-based financial inference.
+- No Trading212/Anycoin canonicalization or successful investment-event
+  classification.
 
 ## Posting-intent contract
 
-The exact Python type may differ, but the serialized payload must be stable and versioned so 5F-B can later store it under `normalizedData["posting_intent"]`.
+The serialized payload must be stable and versioned so 5F-C can later store it
+under `normalizedData["posting_intent"]`.
 
-It must support:
+It supports:
 
 - target `transaction` with `TransactionType` and `TransactionClassification`;
-- target `investment_event` with `InvestmentEventType` and optional canonical action such as `buy` or `sell`;
+- target `investment_event` with `InvestmentEventType` and optional canonical
+  action such as `buy` or `sell`, as a shared future contract only;
 - structured `needs_review` errors;
 - rejection of unsupported normalized schema versions.
 
@@ -73,34 +92,34 @@ It must support:
 
 ### Raiffeisenbank and manual
 
-1. Normalize optional source type using trim, Unicode case-folding and whitespace collapse.
-2. Exact supported tokens may select income, expense or transfer.
+1. Normalize optional source type using trim, Unicode case-folding and
+   whitespace collapse.
+2. Exact supported tokens may select income, expense or an internal transfer.
 3. Otherwise use signed `Decimal` amount:
    - positive → `income` + `real_income`;
    - negative → `expense` + `real_expense`;
    - zero → review issue.
-4. Produce `internal_transfer` only from an explicit transfer token.
-5. Never infer transfer/refund/loan meaning from description or counterparty.
-6. Do not modify the original signed amount.
+4. Produce `internal_transfer` only from `internal transfer` or `interní
+převod`.
+5. `transfer`, `account transfer` and `převod` are ambiguous and return
+   `ambiguous_transfer_type`; they are never automatically internal transfers.
+6. Never infer transfer, refund or loan meaning from description or
+   counterparty.
+7. Do not modify the original signed amount.
 
 ### Trading212 and Anycoin
 
-Use an exact allowlist over normalized source type:
+Trading212 and Anycoin always return the structured
+`investment_normalization_required` review issue in 5F-A. Step 5D does not
+retain the source-specific canonical fields needed for a safe investment intent:
 
-- buy/sell variants → `trade`, preserving `buy` or `sell`;
-- deposit → `cash_deposit`;
-- withdrawal → `cash_withdrawal`;
-- dividend variants → `dividend`;
-- interest variants → `interest`;
-- currency/FX conversion, exchange, convert or swap → `currency_conversion`;
-- asset/internal/portfolio transfer → `asset_transfer`;
-- fee variants → `fee`;
-- staking variants → `staking_reward`;
-- airdrop/free-share variants → `airdrop`.
+- Trading212 needs asset identity, quantity, price, price currency, total,
+  fees, conversion legs and related details.
+- Anycoin needs grouping of `trade payment`, `trade fill` and `trade refund`
+  rows by order ID before a canonical trade exists.
 
-Missing, unknown or contradictory type returns a review issue. Amount sign must not invent an investment event type.
-
-Trading212 card debit/card cost must not silently become a standard investment withdrawal. If the current normalized contract cannot preserve the required linked cash-transaction meaning, return a review issue and document the limitation.
+The classifier must not use generic type or amount data to invent an investment
+event. Review messages must not echo raw financial data or identifiers.
 
 ## Validation and safety
 
@@ -114,10 +133,15 @@ Trading212 card debit/card cost must not silently become a standard investment w
 
 - [ ] Pure classifier exists and has no I/O.
 - [ ] Output is typed, immutable, serializable and versioned.
-- [ ] RB/manual positive, negative, explicit income, expense and transfer cases are tested.
+- [ ] Raiffeisenbank/manual positive, negative, explicit income, expense and
+      unambiguous internal-transfer cases are tested.
+- [ ] Generic transfer tokens return `ambiguous_transfer_type` and never become
+      `internal_transfer`.
 - [ ] Zero amount returns a review issue.
-- [ ] Supported investment action families map to canonical event types.
-- [ ] Unknown investment action returns a review issue.
+- [ ] Trading212 and Anycoin return `investment_normalization_required`; no
+      successful investment intent is created by 5F-A.
+- [ ] Composition tests exercise `normalize_import_row` followed by
+      `classify_import_row` for all supported and deferred sources.
 - [ ] Source mismatch and unsupported schema version are deterministic errors.
 - [ ] Tests prove descriptions do not influence financial classification.
 - [ ] No `float` conversion is introduced.
@@ -128,15 +152,41 @@ Trading212 card debit/card cost must not silently become a standard investment w
 From `backend/python`:
 
 ```bash
+uv sync --frozen --extra dev
 uv run pytest tests/test_import_classification.py
+uv run pytest tests/test_import_normalization.py tests/test_import_classification.py
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app scripts tests
 uv run pytest
+uv run python scripts/check.py
 ```
 
 Return results using `ChatGPT/templates/IMPLEMENTATION-OUTPUT.md`.
 
-## Next: 5F-B
+## Next: 5F-B – source-specific canonicalization
 
-5F-B will add `POST /api/v1/accounts/{account_id}/imports/{batch_id}/classify`, persist the intent in `normalizedData`, move ambiguous unique rows to `needs_review`, serialize with the existing account/source advisory lock, preserve duplicates/failures, and add authorization, idempotence, rollback, concurrency, OpenAPI and PostgreSQL integration tests.
+5F-B will add source-specific canonicalization without a batch API or ledger
+posting:
+
+- Trading212 canonical investment row;
+- Anycoin grouping by order ID;
+- asset identity;
+- quantity;
+- price;
+- total amount and currency;
+- fees;
+- conversion legs;
+- representative fixtures.
+
+## Next: 5F-C – batch classification workflow
+
+5F-C will add:
+
+- `POST /api/v1/accounts/{account_id}/imports/{batch_id}/classify`;
+- posting-intent persistence;
+- account/source advisory lock;
+- owner/admin/editor access and viewer rejection;
+- duplicate preservation and traceable review rows;
+- rollback, idempotence and concurrency handling;
+- OpenAPI and PostgreSQL integration tests.
