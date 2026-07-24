@@ -12,6 +12,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.common import TIMESTAMP
 from app.db.models.enums import AssetType, PriceSource
 from app.modules.imports.investment_posting_plan import InvestmentAssetResolutionPlan
 from app.modules.imports.posting_common import ImportPostStateError, bounded_optional_text
@@ -50,11 +51,24 @@ def _optional_upper(value: object) -> str | None:
     return _required_upper(value)
 
 
+def _current_updated_at(now: datetime | None = None) -> datetime:
+    """Return a naive UTC timestamp exactly representable by canonical TIMESTAMP."""
+    current = now or datetime.now(UTC)
+    current = current.replace(tzinfo=None)
+    precision = TIMESTAMP.precision
+    if precision is None or not 0 <= precision <= 6:
+        raise RuntimeError("Canonical TIMESTAMP precision must be between zero and six")
+    unit = 10 ** (6 - precision)
+    return current.replace(microsecond=current.microsecond - (current.microsecond % unit))
+
+
 def _validated_plan(plan: object) -> InvestmentAssetResolutionPlan:
     if not isinstance(plan, InvestmentAssetResolutionPlan):
         raise ImportPostStateError()
     symbol = _required_upper(plan.symbol)
     provider_symbol = _required_upper(plan.provider_symbol)
+    if provider_symbol != symbol:
+        raise ImportPostStateError()
     exchange = bounded_optional_text(plan.exchange)
     if (
         exchange is None
@@ -200,6 +214,7 @@ class ImportInvestmentAssetResolver:
         plan: InvestmentAssetResolutionPlan,
         asset: AssetModel,
         asset_created: bool,
+        updated_at: datetime | None = None,
     ) -> ResolvedInvestmentAsset:
         if plan.listing_currency_hint is None or plan.asset_currency_hint is None:
             raise ImportPostStateError()
@@ -227,7 +242,6 @@ class ImportInvestmentAssetResolver:
                 listing_created=False,
             )
 
-        now = datetime.now(UTC).replace(tzinfo=None)
         listing = AssetListingModel(
             id=str(uuid4()),
             asset_id=asset.id,
@@ -239,7 +253,7 @@ class ImportInvestmentAssetResolver:
             provider=plan.provider,
             provider_symbol=plan.provider_symbol,
             is_primary=False,
-            updated_at=now,
+            updated_at=updated_at or _current_updated_at(),
         )
         self.session.add(listing)
         await self.session.flush()
@@ -296,7 +310,7 @@ class ImportInvestmentAssetResolver:
         )
         if provider_identities or market_identities:
             raise ImportPostStateError()
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = _current_updated_at()
         asset = AssetModel(
             id=str(uuid4()),
             symbol=canonical_plan.symbol,
@@ -311,4 +325,5 @@ class ImportInvestmentAssetResolver:
             plan=canonical_plan,
             asset=asset,
             asset_created=True,
+            updated_at=now,
         )

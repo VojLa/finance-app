@@ -158,6 +158,41 @@ def test_duplicate_lock_ids_are_acquired_once(monkeypatch: pytest.MonkeyPatch) -
     assert session.locks == [1]
 
 
+def test_divergent_provider_symbol_is_rejected_before_locks_or_lookups() -> None:
+    session = _Session()
+
+    with pytest.raises(ImportPostStateError):
+        asyncio_run(
+            _resolver(session).resolve(plan=_plan(symbol="VWCE", provider_symbol="VWCE_US"))
+        )
+
+    assert session.locks == []
+    assert session.events == []
+    assert session.added == []
+    assert session.flush.await_count == 0
+
+
+def test_new_pair_truncates_updated_at_to_canonical_timestamp_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.modules.imports.investment_asset_resolution as resolution
+
+    controlled_now = datetime(2026, 7, 24, 12, 0, 0, 123456, tzinfo=UTC)
+    normalize_timestamp = resolution._current_updated_at
+    monkeypatch.setattr(
+        resolution,
+        "_current_updated_at",
+        lambda: normalize_timestamp(controlled_now),
+    )
+    session = _Session(query_rows=[[], [], []], scalar_rows=[[]])
+
+    result = asyncio_run(_resolver(session).resolve(plan=_plan()))
+
+    assert result.asset.updated_at == datetime(2026, 7, 24, 12, 0, 0, 123000)
+    assert result.listing.updated_at == result.asset.updated_at
+    assert result.asset.updated_at.microsecond % 1000 == 0
+
+
 def test_exact_provider_listing_is_preferred_without_mutation() -> None:
     asset = _asset()
     listing = _listing(asset)

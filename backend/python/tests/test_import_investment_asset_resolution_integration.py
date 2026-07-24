@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -288,6 +288,27 @@ async def _asset_counts(*, symbols: set[str], isins: set[str]) -> tuple[int, int
     return assets, listings
 
 
+async def _wait_for_ungranted_advisory_lock(*, engine: Any, backend_pid: int) -> None:
+    """Prove a second PostgreSQL backend is blocked on a transaction advisory lock."""
+    deadline = asyncio.get_running_loop().time() + 5
+    async with _session(engine) as inspector:
+        while True:
+            waiting = await inspector.scalar(
+                text(
+                    "SELECT 1 FROM pg_locks "
+                    "WHERE pid = :backend_pid "
+                    "AND locktype = 'advisory' "
+                    "AND granted = false"
+                ),
+                {"backend_pid": backend_pid},
+            )
+            if waiting == 1:
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("Second PostgreSQL backend did not wait on an advisory lock")
+            await asyncio.sleep(0.02)
+
+
 def _trading_buy(symbol: str, isin: str) -> dict[str, str]:
     return {
         "Action": "Market buy",
@@ -394,6 +415,16 @@ def test_new_trading212_pair_and_exact_replay_preserve_import_state() -> None:
         async with _session(engine) as session:
             first = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
             await session.commit()
+        first_asset_updated_at = first.asset.updated_at
+        first_listing_updated_at = first.listing.updated_at
+        assert first_asset_updated_at.microsecond % 1000 == 0
+        assert first_listing_updated_at.microsecond % 1000 == 0
+        async with _session(engine) as session:
+            persisted_asset = await session.get(AssetModel, first.asset.id)
+            persisted_listing = await session.get(AssetListingModel, first.listing.id)
+            assert persisted_asset is not None and persisted_listing is not None
+            assert persisted_asset.updated_at == first_asset_updated_at
+            assert persisted_listing.updated_at == first_listing_updated_at
         async with _session(engine) as session:
             replay = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
             await session.commit()
@@ -411,6 +442,10 @@ def test_new_trading212_pair_and_exact_replay_preserve_import_state() -> None:
             False,
         )
         assert (first.asset.symbol, first.asset.isin, first.asset.currency) == (symbol, isin, "EUR")
+        assert (replay.asset.updated_at, replay.listing.updated_at) == (
+            first_asset_updated_at,
+            first_listing_updated_at,
+        )
         assert (first.listing.provider, first.listing.exchange, first.listing.currency) == (
             PriceSource.broker,
             "trading212",
@@ -643,8 +678,9 @@ def test_same_provider_concurrency_returns_one_pair() -> None:
         await _clean_assets(symbols={symbol}, isins={isin})
         engine = _engine()
         first_resolved = asyncio.Event()
-        second_started = asyncio.Event()
+        second_pid_ready = asyncio.Event()
         release_first = asyncio.Event()
+        second_pid: int | None = None
 
         async def first_call():
             async with _session(engine) as session:
@@ -656,19 +692,27 @@ def test_same_provider_concurrency_returns_one_pair() -> None:
 
         async def second_call():
             await first_resolved.wait()
-            second_started.set()
             async with _session(engine) as session:
+                nonlocal second_pid
+                second_pid = int(await session.scalar(select(func.pg_backend_pid())) or 0)
+                second_pid_ready.set()
                 result = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
                 await session.commit()
                 return result
 
         first_task = asyncio.create_task(first_call())
         second_task = asyncio.create_task(second_call())
-        await second_started.wait()
-        release_first.set()
+        await second_pid_ready.wait()
+        assert second_pid is not None
+        try:
+            await _wait_for_ungranted_advisory_lock(engine=engine, backend_pid=second_pid)
+        finally:
+            release_first.set()
         first, second = await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=10)
         await engine.dispose()
         assert (first.asset.id, first.listing.id) == (second.asset.id, second.listing.id)
+        assert (first.asset_created, first.listing_created) == (True, True)
+        assert (second.asset_created, second.listing_created) == (False, False)
         assert await _asset_counts(symbols={symbol}, isins={isin}) == (1, 1)
 
     asyncio.run(scenario())
@@ -703,8 +747,9 @@ def test_same_isin_different_symbols_concurrency_reuses_one_asset() -> None:
         await _clean_assets(symbols={"B2ALPHA", "B2BETA"}, isins={isin})
         engine = _engine()
         first_resolved = asyncio.Event()
-        second_started = asyncio.Event()
+        second_pid_ready = asyncio.Event()
         release_first = asyncio.Event()
+        second_pid: int | None = None
 
         async def resolve_and_hold(plan: InvestmentAssetResolutionPlan, *, hold: bool):
             async with _session(engine) as session:
@@ -719,16 +764,29 @@ def test_same_isin_different_symbols_concurrency_reuses_one_asset() -> None:
         await first_resolved.wait()
 
         async def second_call():
-            second_started.set()
-            return await resolve_and_hold(plan_b, hold=False)
+            async with _session(engine) as session:
+                nonlocal second_pid
+                second_pid = int(await session.scalar(select(func.pg_backend_pid())) or 0)
+                second_pid_ready.set()
+                result = await ImportInvestmentAssetResolver(session).resolve(plan=plan_b)
+                await session.commit()
+                return result
 
         second_task = asyncio.create_task(second_call())
-        await second_started.wait()
-        release_first.set()
+        await second_pid_ready.wait()
+        assert second_pid is not None
+        try:
+            await _wait_for_ungranted_advisory_lock(engine=engine, backend_pid=second_pid)
+        finally:
+            release_first.set()
         first, second = await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=10)
         await engine.dispose()
         assert first.asset.id == second.asset.id
-        assert first.listing.provider_symbol != second.listing.provider_symbol
+        assert first.listing.id != second.listing.id
+        assert (first.listing.provider_symbol, second.listing.provider_symbol) == (
+            plan_a.provider_symbol,
+            plan_b.provider_symbol,
+        )
         assert await _asset_counts(symbols={"B2ALPHA", "B2BETA"}, isins={isin}) == (1, 2)
 
     asyncio.run(scenario())
