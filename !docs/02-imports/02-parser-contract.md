@@ -110,3 +110,15 @@ perform posting or financial calculation in the parser layer.
 # Workflow metadata
 
 Deduplication adds only `normalizedData.deduplication` with schema version `1` and status `unique` or `duplicate`. Classification then stores `normalizedData.posting_intent`; both are workflow metadata and are removed before re-running the canonical classifier. Provider normalizers must not create either key.
+
+## Internal transaction posting
+
+Step 5G-A provides an internal transaction-row writer for a locked, classified
+row. It removes workflow metadata from a copy, re-runs the pure classifier,
+requires exact stored-intent equality, and creates or exactly replays one
+canonical `Transaction` inside a caller-owned transaction. It does not commit,
+finalize the batch, or change batch counters.
+
+There is no public `/post` endpoint yet. Batch finalization belongs to Step
+5G-C, while `InvestmentEvent` and `InvestmentMovement` posting belongs to Step
+5G-B.
