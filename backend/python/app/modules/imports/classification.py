@@ -52,6 +52,10 @@ class PostingIntentIssueCode(StrEnum):
     ambiguous_transfer_type = "ambiguous_transfer_type"
     investment_normalization_required = "investment_normalization_required"
     invalid_investment_payload = "invalid_investment_payload"
+    missing_asset_symbol = "missing_asset_symbol"
+    missing_asset_direction = "missing_asset_direction"
+    unsupported_embedded_conversion = "unsupported_embedded_conversion"
+    incompatible_investment_fields = "incompatible_investment_fields"
 
 
 class PostingIntentIssue(BaseModel):
@@ -330,9 +334,17 @@ def _investment_review() -> NeedsReviewPostingIntent:
         _issue(
             "normalized_data",
             PostingIntentIssueCode.invalid_investment_payload,
-            "Trading212 normalized investment data is invalid.",
+            "Normalized investment data is invalid.",
         )
     )
+
+
+def _investment_field_review(
+    field: str,
+    code: PostingIntentIssueCode,
+    message: str,
+) -> NeedsReviewPostingIntent:
+    return _review(_issue(field, code, message))
 
 
 def _investment_money(value: object) -> InvestmentMoneyPostingIntent | None | bool:
@@ -449,48 +461,135 @@ def _classify_investment(
         name=asset_values[2],
         asset_type_hint=asset_values[3],
     )
-    asset_identity = bool(asset.symbol or asset.isin)
+    asset_identity = any(
+        isinstance(value, str) and bool(value.strip())
+        for value in (asset.symbol, asset.isin, asset.name, asset.asset_type_hint)
+    )
+    asset_symbol = isinstance(asset.symbol, str) and bool(asset.symbol.strip())
     positive_quantity = quantity is not None and quantity > 0
     positive_total = total is not None and total.amount > 0
-    if (
-        (price is not None and price.amount <= 0)
-        or (fee is not None and fee.amount <= 0)
-        or (
-            action in {InvestmentAction.buy, InvestmentAction.sell}
-            and not (asset_identity and positive_quantity and positive_total)
+    asset_actions = {
+        InvestmentAction.buy,
+        InvestmentAction.sell,
+        InvestmentAction.dividend,
+        InvestmentAction.asset_transfer,
+        InvestmentAction.staking_reward,
+        InvestmentAction.airdrop,
+    }
+    if action in asset_actions and not asset_symbol:
+        return _investment_field_review(
+            "asset.symbol",
+            PostingIntentIssueCode.missing_asset_symbol,
+            "A canonical asset symbol is required.",
         )
-        or (action is InvestmentAction.dividend and not (asset_identity and positive_total))
-        or (
-            action
-            in {
-                InvestmentAction.interest,
-                InvestmentAction.cash_deposit,
-                InvestmentAction.cash_withdrawal,
-                InvestmentAction.fee,
-            }
-            and not positive_total
+    if action is InvestmentAction.asset_transfer and asset_direction not in {"in", "out"}:
+        return _investment_field_review(
+            "asset_direction",
+            PostingIntentIssueCode.missing_asset_direction,
+            "An explicit asset transfer direction is required.",
         )
-        or (
-            action
-            in {
-                InvestmentAction.asset_transfer,
-                InvestmentAction.staking_reward,
-                InvestmentAction.airdrop,
-            }
-            and not (asset_identity and positive_quantity)
+    if conversion is not None and action is not InvestmentAction.currency_conversion:
+        return _investment_field_review(
+            "conversion",
+            PostingIntentIssueCode.unsupported_embedded_conversion,
+            "Embedded conversion legs are not supported for this investment action.",
         )
-        or (action is InvestmentAction.currency_conversion and conversion is None)
-        or (
-            conversion is not None
-            and (
-                conversion.from_.currency == conversion.to.currency
-                or conversion.from_.amount <= 0
-                or conversion.to.amount <= 0
-                or (conversion.exchange_rate is not None and conversion.exchange_rate <= 0)
+
+    common_invalid = (price is not None and price.amount <= 0) or (
+        fee is not None and fee.amount <= 0
+    )
+    incompatible = common_invalid
+    if action is InvestmentAction.buy:
+        incompatible = (
+            incompatible
+            or not (positive_quantity and positive_total)
+            or any(value is not None for value in (conversion, realized_pnl, asset_direction))
+        )
+    elif action is InvestmentAction.sell:
+        incompatible = (
+            incompatible
+            or not (positive_quantity and positive_total)
+            or any(value is not None for value in (conversion, asset_direction))
+        )
+    elif action is InvestmentAction.dividend:
+        incompatible = (
+            incompatible
+            or not positive_total
+            or any(
+                value is not None
+                for value in (quantity, price, conversion, realized_pnl, asset_direction)
             )
         )
-    ):
-        return _investment_review()
+    elif action in {
+        InvestmentAction.interest,
+        InvestmentAction.cash_deposit,
+        InvestmentAction.cash_withdrawal,
+    }:
+        incompatible = (
+            incompatible
+            or not positive_total
+            or asset_identity
+            or order_id is not None
+            or any(
+                value is not None
+                for value in (quantity, price, conversion, realized_pnl, asset_direction)
+            )
+        )
+    elif action is InvestmentAction.currency_conversion:
+        conversion_invalid = (
+            conversion is None
+            or conversion.from_.currency == conversion.to.currency
+            or conversion.from_.amount <= 0
+            or conversion.to.amount <= 0
+            or (conversion.exchange_rate is not None and conversion.exchange_rate <= 0)
+        )
+        total_matches_leg = total is None or (
+            conversion is not None and (total == conversion.from_ or total == conversion.to)
+        )
+        incompatible = (
+            incompatible
+            or conversion_invalid
+            or not total_matches_leg
+            or asset_identity
+            or order_id is not None
+            or any(value is not None for value in (quantity, price, realized_pnl, asset_direction))
+        )
+    elif action is InvestmentAction.asset_transfer:
+        incompatible = (
+            incompatible
+            or not positive_quantity
+            or any(value is not None for value in (price, total, conversion, realized_pnl))
+        )
+    elif action is InvestmentAction.fee:
+        incompatible = (
+            incompatible
+            or not positive_total
+            or asset_identity
+            or order_id is not None
+            or any(
+                value is not None
+                for value in (quantity, price, fee, conversion, realized_pnl, asset_direction)
+            )
+        )
+    elif action in {InvestmentAction.staking_reward, InvestmentAction.airdrop}:
+        incompatible = (
+            incompatible
+            or not positive_quantity
+            or (total is not None and total.amount <= 0)
+            or (price is not None and total is None)
+            or any(value is not None for value in (conversion, realized_pnl, asset_direction))
+            or order_id is not None
+        )
+    if realized_pnl is not None and action is not InvestmentAction.sell:
+        incompatible = True
+    if promotional and action is not InvestmentAction.airdrop:
+        incompatible = True
+    if incompatible:
+        return _investment_field_review(
+            "normalized_data",
+            PostingIntentIssueCode.incompatible_investment_fields,
+            "Investment fields are incompatible with the canonical action.",
+        )
     return InvestmentEventPostingIntent(
         source=source,
         date=normalized_date,

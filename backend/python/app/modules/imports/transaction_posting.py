@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -26,21 +24,16 @@ from app.modules.imports.classification import (
     TransactionPostingIntent,
     classify_import_row,
 )
-from app.modules.imports.normalizers import MAX_OPTIONAL_FIELD_LENGTH
-from app.shared.errors import ApplicationError
-
-_DEDUPLICATION = "deduplication"
-_POSTING_INTENT = "posting_intent"
-_UNIQUE_MARKER = {"schema_version": 1, "status": "unique"}
-
-
-class ImportPostStateError(ApplicationError):
-    def __init__(self) -> None:
-        super().__init__(
-            code="import_post_state_invalid",
-            message="The import batch is not available for posting.",
-            status_code=409,
-        )
+from app.modules.imports.posting_common import (
+    DEDUPLICATION_METADATA_KEY,
+    POSTING_INTENT_METADATA_KEY,
+    UNIQUE_DEDUPLICATION_MARKER,
+    ImportPostStateError,
+    bounded_optional_text,
+    copied_canonical_payload,
+    exact_naive_timestamp,
+    exact_numeric,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,57 +50,9 @@ class TransactionPostingPlan:
     external_id: str | None
 
 
-def _canonical_payload(normalized_data: dict[str, Any]) -> dict[str, Any]:
-    canonical = deepcopy(normalized_data)
-    canonical.pop(_DEDUPLICATION, None)
-    canonical.pop(_POSTING_INTENT, None)
-    return canonical
-
-
-def _optional_metadata(canonical: dict[str, Any], field: str) -> str | None:
-    value = canonical.get(field)
-    if value is None:
-        return None
-    if not isinstance(value, str) or len(value) > MAX_OPTIONAL_FIELD_LENGTH:
-        raise ImportPostStateError()
-    return value
-
-
 def _posting_amount(value: Decimal) -> Decimal:
-    precision = MONEY.precision
-    scale = MONEY.scale
-    if precision is None or scale is None:
-        raise RuntimeError("Canonical MONEY must define precision and scale.")
-    quantum = Decimal(1).scaleb(-scale)
-    try:
-        scaled = value.quantize(quantum)
-    except InvalidOperation as exc:
-        raise ImportPostStateError() from exc
-    limit = Decimal(10) ** (precision - scale)
-    if not value.is_finite() or value != scaled or abs(value) >= limit:
-        raise ImportPostStateError()
-    return value
-
-
-def _posting_date(value: str) -> datetime:
-    try:
-        if len(value) == 10:
-            parsed_date = date.fromisoformat(value)
-            if parsed_date.isoformat() != value:
-                raise ImportPostStateError()
-            return datetime.combine(parsed_date, datetime.min.time())
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.isoformat() != value:
-            raise ImportPostStateError()
-    except (TypeError, ValueError) as exc:
-        raise ImportPostStateError() from exc
-    result = parsed if parsed.tzinfo is None else parsed.astimezone(UTC).replace(tzinfo=None)
-    precision = TIMESTAMP.precision
-    if precision is not None:
-        unit = 10 ** (6 - precision)
-        if result.microsecond % unit:
-            raise ImportPostStateError()
-    return result
+    """Backward-compatible 5G-A boundary backed by the shared numeric helper."""
+    return exact_numeric(value, MONEY)
 
 
 def build_transaction_posting_plan(
@@ -122,7 +67,7 @@ def build_transaction_posting_plan(
         or row.import_batch_id != batch.id
         or row.status not in {ImportRowStatus.pending, ImportRowStatus.imported}
         or not isinstance(row.normalized_data, dict)
-        or row.normalized_data.get(_DEDUPLICATION) != _UNIQUE_MARKER
+        or row.normalized_data.get(DEDUPLICATION_METADATA_KEY) != UNIQUE_DEDUPLICATION_MARKER
         or not isinstance(row.deduplication_key, str)
         or not row.deduplication_key
         or row.validation_errors is not None
@@ -137,10 +82,10 @@ def build_transaction_posting_plan(
     ):
         raise ImportPostStateError()
 
-    stored = row.normalized_data.get(_POSTING_INTENT)
+    stored = row.normalized_data.get(POSTING_INTENT_METADATA_KEY)
     if not isinstance(stored, dict):
         raise ImportPostStateError()
-    canonical = _canonical_payload(row.normalized_data)
+    canonical = copied_canonical_payload(row.normalized_data)
     fresh = classify_import_row(
         source=batch.source,
         normalized_data=canonical,
@@ -156,13 +101,13 @@ def build_transaction_posting_plan(
         account_id=batch.account_id,
         import_batch_id=batch.id,
         source_row_id=row.id,
-        date=_posting_date(intent.date),
+        date=exact_naive_timestamp(intent.date, TIMESTAMP),
         amount=_posting_amount(intent.amount),
         currency=intent.currency,
         transaction_type=intent.transaction_type,
         transaction_classification=intent.transaction_classification,
-        description=_optional_metadata(canonical, "description"),
-        external_id=_optional_metadata(canonical, "external_id"),
+        description=bounded_optional_text(canonical.get("description")),
+        external_id=bounded_optional_text(canonical.get("external_id")),
     )
 
 

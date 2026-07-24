@@ -92,7 +92,6 @@ def test_zero_provider_fee_column_is_absent_from_canonical_payload() -> None:
         ("Deposit", InvestmentEventType.cash_deposit),
         ("Withdrawal", InvestmentEventType.cash_withdrawal),
         ("Currency conversion", InvestmentEventType.currency_conversion),
-        ("Portfolio transfer", InvestmentEventType.asset_transfer),
         ("Trading fee", InvestmentEventType.fee),
         ("Staking reward", InvestmentEventType.staking_reward),
         ("Airdrop", InvestmentEventType.airdrop),
@@ -100,9 +99,30 @@ def test_zero_provider_fee_column_is_absent_from_canonical_payload() -> None:
 )
 def test_supported_action_families(action: str, expected: InvestmentEventType) -> None:
     values = {"Action": action}
+    if expected is InvestmentEventType.dividend:
+        values.update({"No. of shares": "", "Price / share": "", "Currency (Price / share)": ""})
+    if expected in {
+        InvestmentEventType.interest,
+        InvestmentEventType.cash_deposit,
+        InvestmentEventType.cash_withdrawal,
+        InvestmentEventType.currency_conversion,
+        InvestmentEventType.fee,
+    }:
+        values.update(
+            {
+                "Ticker": "",
+                "ISIN": "",
+                "Name": "",
+                "No. of shares": "",
+                "Price / share": "",
+                "Currency (Price / share)": "",
+            }
+        )
     if expected is InvestmentEventType.currency_conversion:
         values.update(
             {
+                "Total": "100",
+                "Currency (Total)": "EUR",
                 "Currency conversion from amount": "100",
                 "Currency (Currency conversion from amount)": "EUR",
                 "Currency conversion to amount": "110",
@@ -114,6 +134,22 @@ def test_supported_action_families(action: str, expected: InvestmentEventType) -
     intent = classify_import_row(source=ImportSource.trading212, normalized_data=result.data)
     assert isinstance(intent, InvestmentEventPostingIntent)
     assert intent.investment_event_type is expected
+
+
+def test_directionless_trading212_asset_transfer_requires_review() -> None:
+    result = _normalize(
+        Action="Portfolio transfer",
+        **{
+            "Price / share": "",
+            "Currency (Price / share)": "",
+            "Total": "",
+            "Currency (Total)": "",
+        },
+    )
+    assert result.data is not None
+    intent = classify_import_row(source=ImportSource.trading212, normalized_data=result.data)
+    assert isinstance(intent, NeedsReviewPostingIntent)
+    assert intent.errors[0].code.value == "missing_asset_direction"
 
 
 @pytest.mark.parametrize("action", ["Card debit", "Card cost", "New card cost", "Unknown refund"])
@@ -177,7 +213,7 @@ def test_classifier_rejects_manually_constructed_zero_fee() -> None:
     result = classify_import_row(source=ImportSource.trading212, normalized_data=normalized.data)
 
     assert isinstance(result, NeedsReviewPostingIntent)
-    assert result.errors[0].code.value == "invalid_investment_payload"
+    assert result.errors[0].code.value == "incompatible_investment_fields"
 
 
 def test_fallback_dedup_is_canonical_and_excludes_provider_presentation() -> None:
