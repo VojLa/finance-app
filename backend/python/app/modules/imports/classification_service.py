@@ -59,6 +59,7 @@ def _valid_skipped(row: ImportRowModel) -> bool:
         in {"group_member", "fully_refunded_group", "neutral_row"}
         and row.deduplication_key is None
         and _INTENT not in row.normalized_data
+        and _MARKER not in row.normalized_data
         and row.created_transaction_id is None
         and row.created_investment_event_id is None
     )

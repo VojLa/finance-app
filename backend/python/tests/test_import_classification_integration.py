@@ -274,6 +274,91 @@ async def _seed_prepared(prefix: str, memberships: list[tuple[str, AccountMember
     await engine.dispose()
 
 
+async def _seed_raw(
+    prefix: str,
+    source: ImportSource,
+    rows: list[dict[str, str]],
+) -> str:
+    user_id = f"{prefix}-owner"
+    await _seed_prepared(prefix, [(user_id, AccountMemberRole.owner)])
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with AsyncSession(engine) as session:
+        await session.execute(
+            delete(ImportRowModel).where(ImportRowModel.import_batch_id == f"{prefix}-batch")
+        )
+        batch = await session.get(ImportBatchModel, f"{prefix}-batch")
+        assert batch is not None
+        batch.source = source
+        batch.rows_total = len(rows)
+        for index, raw_data in enumerate(rows, start=2):
+            session.add(
+                ImportRowModel(
+                    id=f"{prefix}-row-{index}",
+                    import_batch_id=f"{prefix}-batch",
+                    row_number=index,
+                    raw_data=raw_data,
+                    normalized_data=None,
+                    validation_errors=None,
+                    deduplication_key=None,
+                    status=ImportRowStatus.pending,
+                    error_message=None,
+                    created_transaction_id=None,
+                    created_investment_event_id=None,
+                    created_at=now,
+                )
+            )
+        await session.commit()
+    await engine.dispose()
+    return user_id
+
+
+async def _run_workflow(prefix: str, user_id: str):
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    principal = _principal_for(user_id)
+    async with AsyncSession(engine) as session:
+        await ImportNormalizationService(session).normalize_batch(
+            principal=principal,
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    async with AsyncSession(engine) as session:
+        await ImportDeduplicationService(session).deduplicate_batch(
+            principal=principal,
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    async with AsyncSession(engine) as session:
+        response = await ImportClassificationService(session).classify_batch(
+            principal=principal,
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    await engine.dispose()
+    return response
+
+
+async def _reload_rows(prefix: str) -> list[ImportRowModel]:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(ImportRowModel)
+                    .where(ImportRowModel.import_batch_id == f"{prefix}-batch")
+                    .order_by(ImportRowModel.row_number)
+                )
+            ).all()
+        )
+        for row in rows:
+            session.expunge(row)
+    await engine.dispose()
+    return rows
+
+
 def _principal_for(user_id: str) -> AuthenticatedPrincipal:
     return AuthenticatedPrincipal(user_id=user_id, email=f"{user_id}@example.com", name=user_id)
 
@@ -460,6 +545,100 @@ def test_non_member_and_foreign_account_path_are_rejected_without_mutation() -> 
         _, row = await _reload(prefix)
         assert row.status is ImportRowStatus.pending
         assert row.normalized_data is not None and "posting_intent" not in row.normalized_data
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_provider_normalize_deduplicate_classify_matrix() -> None:
+    async def scenario() -> None:
+        rb_prefix = "classify-provider-rb"
+        rb_user = await _seed_raw(
+            rb_prefix,
+            ImportSource.raiffeisenbank,
+            [
+                {
+                    "Datum": "24.07.2026",
+                    "Částka": "10",
+                    "Měna": "EUR",
+                    "Typ": "Převod",
+                }
+            ],
+        )
+        rb_response = await _run_workflow(rb_prefix, rb_user)
+        rb_row = (await _reload_rows(rb_prefix))[0]
+        assert rb_response.rows_needs_review == 1
+        assert rb_row.status is ImportRowStatus.needs_review
+        assert rb_row.normalized_data is not None
+        assert rb_row.normalized_data["posting_intent"]["target"] == "needs_review"
+
+        t212_prefix = "classify-provider-t212"
+        t212_user = await _seed_raw(
+            t212_prefix,
+            ImportSource.trading212,
+            [
+                {
+                    "Action": "Market buy",
+                    "Time": "2026-07-24T10:00:00Z",
+                    "Ticker": "VWCE",
+                    "No. of shares": "2",
+                    "Total": "201",
+                    "Currency (Total)": "EUR",
+                    "ID": "provider-buy",
+                }
+            ],
+        )
+        await _run_workflow(t212_prefix, t212_user)
+        t212_row = (await _reload_rows(t212_prefix))[0]
+        assert t212_row.normalized_data is not None
+        assert t212_row.normalized_data["posting_intent"]["target"] == "investment_event"
+        assert t212_row.normalized_data["posting_intent"]["action"] == "buy"
+
+        any_prefix = "classify-provider-anycoin"
+        any_user = await _seed_raw(
+            any_prefix,
+            ImportSource.anycoin,
+            [
+                {
+                    "Type": "trade payment",
+                    "Order ID": "provider-order",
+                    "Date": "2026-07-24T10:00:00Z",
+                    "Amount": "-100",
+                    "Currency": "EUR",
+                },
+                {
+                    "Type": "trade fill",
+                    "Order ID": "provider-order",
+                    "Date": "2026-07-24T10:01:00Z",
+                    "Amount": "0.01",
+                    "Currency": "BTC",
+                },
+                {
+                    "Type": "deposit",
+                    "Date": "2026-07-24T11:00:00Z",
+                    "Amount": "1",
+                    "Currency": "ETH",
+                },
+                {
+                    "Type": "withdrawal",
+                    "Date": "2026-07-24T12:00:00Z",
+                    "Amount": "1",
+                    "Currency": "SOL",
+                },
+            ],
+        )
+        await _run_workflow(any_prefix, any_user)
+        any_rows = await _reload_rows(any_prefix)
+        payment, anchor, deposit, withdrawal = any_rows
+        assert payment.status is ImportRowStatus.skipped
+        assert payment.normalized_data is not None
+        assert "posting_intent" not in payment.normalized_data
+        assert anchor.normalized_data is not None
+        assert anchor.normalized_data["posting_intent"]["order_id"] == "provider-order"
+        assert deposit.normalized_data is not None
+        assert deposit.normalized_data["posting_intent"]["asset_direction"] == "in"
+        assert withdrawal.normalized_data is not None
+        assert withdrawal.normalized_data["posting_intent"]["asset_direction"] == "out"
         await _assert_no_posting()
 
     asyncio.run(scenario())

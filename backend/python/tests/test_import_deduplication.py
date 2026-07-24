@@ -14,6 +14,7 @@ from app.modules.imports.deduplication import (
     ImportDeduplicateRowsMissingError,
     ImportDeduplicateStateError,
     ImportDeduplicationService,
+    _is_valid_row_state,
     _winner_ids,
 )
 
@@ -103,6 +104,35 @@ def test_winner_selection_prioritizes_imported_rows() -> None:
         ],
     )
     assert _winner_ids(candidates) == {"already-imported", "other"}
+
+
+@pytest.mark.parametrize("reserved_key", ["posting_intent", "deduplication"])
+def test_skipped_markers_reject_reserved_workflow_metadata(reserved_key: str) -> None:
+    row = _row("skipped", key=None, status=ImportRowStatus.skipped)
+    row.normalized_data = {"schema_version": 2, "source": "anycoin", "kind": "neutral_row"}
+    row.normalized_data[reserved_key] = {"schema_version": 1}
+    row.created_transaction_id = None
+    row.created_investment_event_id = None
+    assert not _is_valid_row_state(cast(ImportRowModel, row))
+
+
+@pytest.mark.parametrize(
+    ("status", "created_field"),
+    [
+        (ImportRowStatus.failed, "created_transaction_id"),
+        (ImportRowStatus.failed, "created_investment_event_id"),
+        (ImportRowStatus.needs_review, "created_transaction_id"),
+        (ImportRowStatus.needs_review, "created_investment_event_id"),
+    ],
+)
+def test_nonpostable_rows_reject_created_entity_ids(
+    status: ImportRowStatus, created_field: str
+) -> None:
+    row = _row("invalid", key=None, status=status)
+    row.created_transaction_id = None
+    row.created_investment_event_id = None
+    setattr(row, created_field, "created")
+    assert not _is_valid_row_state(cast(ImportRowModel, row))
 
 
 @pytest.mark.asyncio

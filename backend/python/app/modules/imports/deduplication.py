@@ -66,7 +66,12 @@ def _is_valid_row_state(row: ImportRowModel) -> bool:
             "status": "unique" if row.status is ImportRowStatus.pending else "duplicate",
         }
     if row.status in {ImportRowStatus.failed, ImportRowStatus.needs_review}:
-        return row.normalized_data is None and row.deduplication_key is None
+        return (
+            row.normalized_data is None
+            and row.deduplication_key is None
+            and getattr(row, "created_transaction_id", None) is None
+            and getattr(row, "created_investment_event_id", None) is None
+        )
     if row.status is ImportRowStatus.skipped:
         return (
             isinstance(row.normalized_data, dict)
@@ -74,6 +79,8 @@ def _is_valid_row_state(row: ImportRowModel) -> bool:
             and row.normalized_data.get("source") == "anycoin"
             and row.normalized_data.get("kind")
             in {"group_member", "fully_refunded_group", "neutral_row"}
+            and "posting_intent" not in row.normalized_data
+            and "deduplication" not in row.normalized_data
             and row.deduplication_key is None
             and row.created_transaction_id is None
             and row.created_investment_event_id is None

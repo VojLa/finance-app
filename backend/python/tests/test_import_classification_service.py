@@ -7,6 +7,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import ImportRowStatus, ImportSource, ImportStatus
 from app.modules.imports.classification_service import (
     ImportClassificationService,
+    ImportClassifyStateError,
     _canonical,
     _marker_is,
 )
@@ -141,3 +142,48 @@ async def test_service_persists_classification_review_with_safe_state(
     assert row.normalized_data["posting_intent"]["target"] == "needs_review"
     assert row.validation_errors == row.normalized_data["posting_intent"]["errors"]
     assert row.error_message == "Row requires classification review."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reserved_key", ["posting_intent", "deduplication"])
+async def test_service_rejects_reserved_metadata_on_skipped_marker(
+    monkeypatch: pytest.MonkeyPatch, reserved_key: str
+) -> None:
+    session = AsyncMock()
+    service = ImportClassificationService(session)
+    data = {"schema_version": 2, "source": "anycoin", "kind": "neutral_row"}
+    data[reserved_key] = {"schema_version": 1}
+    row = _row(status=ImportRowStatus.skipped, data=data)
+    row.deduplication_key = None
+    monkeypatch.setattr(
+        "app.modules.imports.classification_service.require_account_access", AsyncMock()
+    )
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=_batch()))
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
+
+    with pytest.raises(ImportClassifyStateError):
+        await service.classify_batch(principal=_principal(), account_id="account", batch_id="batch")
+
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_created_entity_ids_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    service = ImportClassificationService(session)
+    row = _row(data={"schema_version": 1, "source": "manual"})
+    row.created_transaction_id = "created"
+    monkeypatch.setattr(
+        "app.modules.imports.classification_service.require_account_access", AsyncMock()
+    )
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=_batch()))
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
+
+    with pytest.raises(ImportClassifyStateError):
+        await service.classify_batch(principal=_principal(), account_id="account", batch_id="batch")
+    session.commit.assert_not_awaited()
