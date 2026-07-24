@@ -125,12 +125,16 @@ async def test_service_persists_classification_review_with_safe_state(
             "deduplication": {"schema_version": 1, "status": "unique"},
         }
     )
-    monkeypatch.setattr("app.modules.imports.classification_service.require_account_access", AsyncMock())
+    monkeypatch.setattr(
+        "app.modules.imports.classification_service.require_account_access", AsyncMock()
+    )
     monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=_batch()))
     monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
     monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
 
-    response = await service.classify_batch(principal=_principal(), account_id="account", batch_id="batch")
+    response = await service.classify_batch(
+        principal=_principal(), account_id="account", batch_id="batch"
+    )
 
     assert response.rows_needs_review == 1
     assert row.status is ImportRowStatus.needs_review
