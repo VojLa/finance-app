@@ -83,6 +83,13 @@ only from sufficient canonical evidence, and creates no alias, event or
 movement. Event writing remains Step 5G-B3 and public batch posting remains
 Step 5G-C.
 
+Step 5G-B3 adds the internal investment event writer. In its caller-owned
+transaction it rebuilds the persisted B1 plan, resolves the optional B2
+identity, writes one event with its exact movement set, and links the import row.
+Exact replay validates existing history and fails closed on corruption; it never
+commits, rolls back, or changes batch counters or status. Public batch posting
+remains Step 5G-C.
+
 There is no public `POST .../{batch_id}/post` endpoint or batch finalization yet;
 those belong to Step 5G-C. Neither current posting foundation updates holdings
 or snapshots.
