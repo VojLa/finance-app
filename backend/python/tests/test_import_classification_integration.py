@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from copy import deepcopy
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -25,9 +26,13 @@ from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
-from app.modules.imports.classification_service import ImportClassificationService
+from app.modules.imports.classification_service import (
+    ImportClassificationService,
+    ImportClassifyStateError,
+)
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.normalization import ImportNormalizationService
+from app.modules.imports.service import ImportBatchNotFoundError
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -359,6 +364,69 @@ async def _reload_rows(prefix: str) -> list[ImportRowModel]:
     return rows
 
 
+async def _reload_batch_and_rows(
+    prefix: str,
+) -> tuple[ImportBatchModel, list[ImportRowModel]]:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        batch = await session.get(ImportBatchModel, f"{prefix}-batch")
+        rows = list(
+            (
+                await session.scalars(
+                    select(ImportRowModel)
+                    .where(ImportRowModel.import_batch_id == f"{prefix}-batch")
+                    .order_by(ImportRowModel.row_number)
+                )
+            ).all()
+        )
+        assert batch is not None
+        session.expunge(batch)
+        for row in rows:
+            session.expunge(row)
+    await engine.dispose()
+    return batch, rows
+
+
+async def _normalize(prefix: str, user_id: str):
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        response = await ImportNormalizationService(session).normalize_batch(
+            principal=_principal_for(user_id),
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    await engine.dispose()
+    return response
+
+
+async def _deduplicate(prefix: str, user_id: str):
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        response = await ImportDeduplicationService(session).deduplicate_batch(
+            principal=_principal_for(user_id),
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    await engine.dispose()
+    return response
+
+
+async def _classify(prefix: str, user_id: str):
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        response = await ImportClassificationService(session).classify_batch(
+            principal=_principal_for(user_id),
+            account_id=f"{prefix}-account",
+            batch_id=f"{prefix}-batch",
+        )
+    await engine.dispose()
+    return response
+
+
 def _principal_for(user_id: str) -> AuthenticatedPrincipal:
     return AuthenticatedPrincipal(user_id=user_id, email=f"{user_id}@example.com", name=user_id)
 
@@ -510,7 +578,7 @@ def test_postgresql_authorization_roles(role: AccountMemberRole, allowed: bool) 
     asyncio.run(scenario())
 
 
-def test_non_member_and_foreign_account_path_are_rejected_without_mutation() -> None:
+def test_non_member_is_rejected_without_mutation() -> None:
     prefix = "classify-boundary"
     owner, outsider = "classify-boundary-owner", "classify-boundary-outsider"
 
@@ -534,17 +602,53 @@ def test_non_member_and_foreign_account_path_are_rejected_without_mutation() -> 
                     account_id=f"{prefix}-account",
                     batch_id=f"{prefix}-batch",
                 )
-        async with AsyncSession(engine) as session:
-            with pytest.raises(AccountNotFoundError):
-                await ImportClassificationService(session).classify_batch(
-                    principal=_principal_for(owner),
-                    account_id="classify-db-account",
-                    batch_id=f"{prefix}-batch",
-                )
         await engine.dispose()
         _, row = await _reload(prefix)
         assert row.status is ImportRowStatus.pending
         assert row.normalized_data is not None and "posting_intent" not in row.normalized_data
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_foreign_account_batch_path_uses_account_scoped_not_found() -> None:
+    account_a = "classify-foreign-a"
+    account_b = "classify-foreign-b"
+    owner_a = "classify-foreign-owner-a"
+    writer_b = "classify-foreign-writer-b"
+
+    async def scenario() -> None:
+        await _seed_prepared(account_a, [(owner_a, AccountMemberRole.owner)])
+        await _seed_prepared(account_b, [(writer_b, AccountMemberRole.editor)])
+        before_batch, before_rows = await _reload_batch_and_rows(account_a)
+        assert len(before_rows) == 1
+        before_row = before_rows[0]
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            with pytest.raises(ImportBatchNotFoundError):
+                await ImportClassificationService(session).classify_batch(
+                    principal=_principal_for(writer_b),
+                    account_id=f"{account_b}-account",
+                    batch_id=f"{account_a}-batch",
+                )
+        await engine.dispose()
+
+        after_batch, after_rows = await _reload_batch_and_rows(account_a)
+        assert len(after_rows) == 1
+        after_row = after_rows[0]
+        assert after_batch.status is before_batch.status
+        assert after_batch.rows_total == before_batch.rows_total
+        assert after_batch.rows_imported == before_batch.rows_imported
+        assert after_batch.rows_skipped == before_batch.rows_skipped
+        assert after_batch.completed_at == before_batch.completed_at
+        assert after_row.status is before_row.status
+        assert after_row.normalized_data == before_row.normalized_data
+        assert after_row.deduplication_key == before_row.deduplication_key
+        assert after_row.validation_errors == before_row.validation_errors
+        assert after_row.error_message == before_row.error_message
+        assert after_row.normalized_data is not None
+        assert "posting_intent" not in after_row.normalized_data
         await _assert_no_posting()
 
     asyncio.run(scenario())
@@ -639,6 +743,322 @@ def test_provider_normalize_deduplicate_classify_matrix() -> None:
         assert deposit.normalized_data["posting_intent"]["asset_direction"] == "in"
         assert withdrawal.normalized_data is not None
         assert withdrawal.normalized_data["posting_intent"]["asset_direction"] == "out"
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_loser_remains_non_postable_after_classification() -> None:
+    prefix = "classify-duplicate-proof"
+
+    async def scenario() -> None:
+        raw = {
+            "Date": "2026-07-25",
+            "Amount": "42",
+            "Currency": "EUR",
+            "Type": "income",
+            "Description": "same logical row",
+        }
+        user_id = await _seed_raw(prefix, ImportSource.manual, [raw, dict(raw)])
+        await _normalize(prefix, user_id)
+        _, normalized_rows = await _reload_batch_and_rows(prefix)
+        assert len(normalized_rows) == 2
+        loser_canonical = deepcopy(normalized_rows[1].normalized_data)
+        assert loser_canonical is not None
+
+        await _deduplicate(prefix, user_id)
+        response = await _classify(prefix, user_id)
+        assert response.rows_classified == 1
+        assert response.rows_duplicate == 1
+
+        batch, rows = await _reload_batch_and_rows(prefix)
+        winner, loser = rows
+        assert winner.status is ImportRowStatus.pending
+        assert winner.normalized_data is not None
+        assert winner.normalized_data["deduplication"] == {
+            "schema_version": 1,
+            "status": "unique",
+        }
+        assert winner.normalized_data["posting_intent"]["target"] == "transaction"
+        assert winner.deduplication_key is not None
+        assert winner.created_transaction_id is None
+        assert winner.created_investment_event_id is None
+
+        assert loser.status is ImportRowStatus.duplicate
+        assert loser.normalized_data is not None
+        assert loser.normalized_data["deduplication"] == {
+            "schema_version": 1,
+            "status": "duplicate",
+        }
+        assert "posting_intent" not in loser.normalized_data
+        assert loser.deduplication_key is not None
+        assert loser.created_transaction_id is None
+        assert loser.created_investment_event_id is None
+        loser_after = deepcopy(loser.normalized_data)
+        loser_after.pop("deduplication")
+        assert loser_after == loser_canonical
+        assert batch.status is ImportStatus.processing
+        assert batch.rows_imported == 0
+        assert batch.completed_at is None
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_failed_and_normalization_review_rows_are_preserved() -> None:
+    prefix = "classify-preserved-proof"
+
+    async def scenario() -> None:
+        user_id = await _seed_raw(
+            prefix,
+            ImportSource.manual,
+            [
+                {
+                    "Date": "2026-07-25",
+                    "Amount": "10",
+                    "Currency": "EUR",
+                    "Type": "income",
+                },
+                {"fixture": "parser failed"},
+                {
+                    "Amount": "20",
+                    "Currency": "EUR",
+                    "Type": "income",
+                },
+            ],
+        )
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            failed = await session.get(ImportRowModel, f"{prefix}-row-3")
+            assert failed is not None
+            failed.status = ImportRowStatus.failed
+            failed.validation_errors = [
+                {
+                    "field": "row",
+                    "code": "parser_error",
+                    "message": "Controlled parser failure.",
+                }
+            ]
+            failed.error_message = "Row failed during parsing."
+            await session.commit()
+        await engine.dispose()
+
+        await _normalize(prefix, user_id)
+        await _deduplicate(prefix, user_id)
+        _, before_rows = await _reload_batch_and_rows(prefix)
+        successful_before, failed_before, review_before = before_rows
+        assert successful_before.status is ImportRowStatus.pending
+        assert failed_before.status is ImportRowStatus.failed
+        assert review_before.status is ImportRowStatus.needs_review
+        failed_snapshot = (
+            failed_before.status,
+            deepcopy(failed_before.normalized_data),
+            failed_before.deduplication_key,
+            deepcopy(failed_before.validation_errors),
+            failed_before.error_message,
+        )
+        review_snapshot = (
+            review_before.status,
+            deepcopy(review_before.normalized_data),
+            review_before.deduplication_key,
+            deepcopy(review_before.validation_errors),
+            review_before.error_message,
+        )
+
+        response = await _classify(prefix, user_id)
+        assert response.model_dump() == {
+            "batch_id": f"{prefix}-batch",
+            "status": ImportStatus.processing,
+            "rows_total": 3,
+            "rows_classified": 1,
+            "rows_needs_review": 1,
+            "rows_duplicate": 0,
+            "rows_skipped": 0,
+            "rows_failed": 1,
+        }
+        batch, after_rows = await _reload_batch_and_rows(prefix)
+        successful_after, failed_after, review_after = after_rows
+        assert successful_after.normalized_data is not None
+        assert successful_after.normalized_data["posting_intent"]["target"] == "transaction"
+        assert (
+            failed_after.status,
+            failed_after.normalized_data,
+            failed_after.deduplication_key,
+            failed_after.validation_errors,
+            failed_after.error_message,
+        ) == failed_snapshot
+        assert (
+            review_after.status,
+            review_after.normalized_data,
+            review_after.deduplication_key,
+            review_after.validation_errors,
+            review_after.error_message,
+        ) == review_snapshot
+        assert batch.status is ImportStatus.processing
+        assert batch.rows_total == 3
+        assert batch.rows_imported == 0
+        assert batch.rows_skipped == 2
+        assert batch.completed_at is None
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_classify_before_deduplicate_returns_409_without_mutation() -> None:
+    prefix = "classify-before-dedup-proof"
+
+    async def scenario() -> None:
+        user_id = await _seed_raw(
+            prefix,
+            ImportSource.manual,
+            [
+                {
+                    "Date": "2026-07-25",
+                    "Amount": "10",
+                    "Currency": "EUR",
+                    "Type": "income",
+                }
+            ],
+        )
+        await _normalize(prefix, user_id)
+        before_batch, before_rows = await _reload_batch_and_rows(prefix)
+        assert len(before_rows) == 1
+        before_row = before_rows[0]
+        assert before_row.normalized_data is not None
+        assert "deduplication" not in before_row.normalized_data
+        assert "posting_intent" not in before_row.normalized_data
+
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            with pytest.raises(ImportClassifyStateError) as exc_info:
+                await ImportClassificationService(session).classify_batch(
+                    principal=_principal_for(user_id),
+                    account_id=f"{prefix}-account",
+                    batch_id=f"{prefix}-batch",
+                )
+        await engine.dispose()
+        assert exc_info.value.code == "import_classify_state_invalid"
+        assert exc_info.value.status_code == 409
+
+        after_batch, after_rows = await _reload_batch_and_rows(prefix)
+        assert len(after_rows) == 1
+        after_row = after_rows[0]
+        assert after_row.status is before_row.status
+        assert after_row.normalized_data == before_row.normalized_data
+        assert after_row.deduplication_key == before_row.deduplication_key
+        assert after_row.validation_errors == before_row.validation_errors
+        assert after_row.error_message == before_row.error_message
+        assert after_row.normalized_data is not None
+        assert "deduplication" not in after_row.normalized_data
+        assert "posting_intent" not in after_row.normalized_data
+        assert after_batch.rows_total == before_batch.rows_total
+        assert after_batch.rows_imported == before_batch.rows_imported
+        assert after_batch.rows_skipped == before_batch.rows_skipped
+        assert after_batch.completed_at == before_batch.completed_at
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_successful_classify_repeat_is_database_idempotent() -> None:
+    prefix = "classify-repeat-success"
+
+    async def scenario() -> None:
+        user_id = await _seed_raw(
+            prefix,
+            ImportSource.manual,
+            [
+                {
+                    "Date": "2026-07-25",
+                    "Amount": "-15",
+                    "Currency": "EUR",
+                    "Type": "expense",
+                }
+            ],
+        )
+        first = await _run_workflow(prefix, user_id)
+        first_batch, first_rows = await _reload_batch_and_rows(prefix)
+        assert len(first_rows) == 1
+        first_row = first_rows[0]
+        normalized_snapshot = deepcopy(first_row.normalized_data)
+        assert normalized_snapshot is not None
+        canonical_snapshot = deepcopy(normalized_snapshot)
+        canonical_snapshot.pop("deduplication")
+        canonical_snapshot.pop("posting_intent")
+        intent_snapshot = deepcopy(normalized_snapshot["posting_intent"])
+
+        second = await _classify(prefix, user_id)
+        second_batch, second_rows = await _reload_batch_and_rows(prefix)
+        assert len(second_rows) == 1
+        second_row = second_rows[0]
+        assert second == first
+        assert second_row.normalized_data == normalized_snapshot
+        assert second_row.normalized_data is not None
+        assert second_row.normalized_data["posting_intent"] == intent_snapshot
+        second_canonical = deepcopy(second_row.normalized_data)
+        second_canonical.pop("deduplication")
+        second_canonical.pop("posting_intent")
+        assert second_canonical == canonical_snapshot
+        assert second_row.status is first_row.status is ImportRowStatus.pending
+        assert second_row.validation_errors == first_row.validation_errors
+        assert second_row.error_message == first_row.error_message
+        assert second_batch.status is first_batch.status is ImportStatus.processing
+        assert second_batch.rows_total == first_batch.rows_total
+        assert second_batch.rows_imported == first_batch.rows_imported == 0
+        assert second_batch.rows_skipped == first_batch.rows_skipped
+        assert second_batch.completed_at == first_batch.completed_at is None
+        await _assert_no_posting()
+
+    asyncio.run(scenario())
+
+
+def test_classification_review_repeat_is_database_idempotent() -> None:
+    prefix = "classify-repeat-review"
+
+    async def scenario() -> None:
+        user_id = await _seed_raw(
+            prefix,
+            ImportSource.manual,
+            [
+                {
+                    "Date": "2026-07-25",
+                    "Amount": "15",
+                    "Currency": "EUR",
+                    "Type": "transfer",
+                }
+            ],
+        )
+        first = await _run_workflow(prefix, user_id)
+        first_batch, first_rows = await _reload_batch_and_rows(prefix)
+        assert len(first_rows) == 1
+        first_row = first_rows[0]
+        assert first_row.status is ImportRowStatus.needs_review
+        assert first_row.normalized_data is not None
+        normalized_snapshot = deepcopy(first_row.normalized_data)
+        intent_snapshot = deepcopy(normalized_snapshot["posting_intent"])
+        errors_snapshot = deepcopy(first_row.validation_errors)
+        message_snapshot = first_row.error_message
+        assert intent_snapshot["target"] == "needs_review"
+        assert message_snapshot == "Row requires classification review."
+
+        second = await _classify(prefix, user_id)
+        second_batch, second_rows = await _reload_batch_and_rows(prefix)
+        assert len(second_rows) == 1
+        second_row = second_rows[0]
+        assert second == first
+        assert second_row.status is ImportRowStatus.needs_review
+        assert second_row.normalized_data == normalized_snapshot
+        assert second_row.normalized_data is not None
+        assert second_row.normalized_data["posting_intent"] == intent_snapshot
+        assert second_row.validation_errors == errors_snapshot
+        assert second_row.error_message == message_snapshot
+        assert second_batch.status is first_batch.status is ImportStatus.processing
+        assert second_batch.rows_total == first_batch.rows_total
+        assert second_batch.rows_imported == first_batch.rows_imported == 0
+        assert second_batch.rows_skipped == first_batch.rows_skipped
+        assert second_batch.completed_at == first_batch.completed_at is None
         await _assert_no_posting()
 
     asyncio.run(scenario())
