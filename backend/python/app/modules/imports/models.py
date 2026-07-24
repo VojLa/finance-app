@@ -92,3 +92,14 @@ class ImportDeduplicateResponse(BaseModel):
     rows_duplicate: int
     rows_needs_review: int
     rows_failed: int
+
+
+class ImportClassifyResponse(BaseModel):
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_classified: int
+    rows_needs_review: int
+    rows_duplicate: int
+    rows_skipped: int
+    rows_failed: int

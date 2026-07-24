@@ -51,7 +51,13 @@ def _now() -> datetime:
 
 def _is_valid_row_state(row: ImportRowModel) -> bool:
     if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
-        return row.normalized_data is not None and row.deduplication_key is not None
+        if not isinstance(row.normalized_data, dict) or row.deduplication_key is None:
+            return False
+        marker = row.normalized_data.get("deduplication")
+        return marker is None or marker == {
+            "schema_version": 1,
+            "status": "unique" if row.status is ImportRowStatus.pending else "duplicate",
+        }
     if row.status in {ImportRowStatus.failed, ImportRowStatus.needs_review}:
         return row.normalized_data is None and row.deduplication_key is None
     if row.status is ImportRowStatus.skipped:
@@ -155,6 +161,12 @@ class ImportDeduplicationService:
             for candidate, candidate_batch in candidates:
                 if candidate.status is ImportRowStatus.pending and candidate.id not in winner_ids:
                     candidate.status = ImportRowStatus.duplicate
+                    if isinstance(candidate.normalized_data, dict):
+                        candidate.normalized_data["deduplication"] = {
+                            "schema_version": 1,
+                            "status": "duplicate",
+                        }
+                        candidate.normalized_data.pop("posting_intent", None)
                     candidate.error_message = "Duplicate normalized import row."
                     duplicate_counts[candidate_batch.id] += 1
                     affected_batches[candidate_batch.id] = candidate_batch
@@ -175,6 +187,18 @@ class ImportDeduplicationService:
                         created_at=_now(),
                     )
                 )
+
+            for row in rows:
+                if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
+                    assert isinstance(row.normalized_data, dict)
+                    row.normalized_data["deduplication"] = {
+                        "schema_version": 1,
+                        "status": "unique"
+                        if row.status is ImportRowStatus.pending
+                        else "duplicate",
+                    }
+                    if row.status is ImportRowStatus.duplicate:
+                        row.normalized_data.pop("posting_intent", None)
 
             duplicate_count = sum(row.status is ImportRowStatus.duplicate for row in rows)
             needs_review = sum(row.status is ImportRowStatus.needs_review for row in rows)
