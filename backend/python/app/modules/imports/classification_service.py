@@ -57,7 +57,10 @@ def _valid_skipped(row: ImportRowModel) -> bool:
         and row.normalized_data.get("source") == "anycoin"
         and row.normalized_data.get("kind")
         in {"group_member", "fully_refunded_group", "neutral_row"}
+        and row.deduplication_key is None
         and _INTENT not in row.normalized_data
+        and row.created_transaction_id is None
+        and row.created_investment_event_id is None
     )
 
 
@@ -111,6 +114,7 @@ class ImportClassificationService:
                 elif row.status is ImportRowStatus.duplicate:
                     if (
                         not isinstance(row.normalized_data, dict)
+                        or not row.deduplication_key
                         or not _marker_is(row.normalized_data, "duplicate")
                         or _INTENT in row.normalized_data
                     ):
@@ -118,7 +122,10 @@ class ImportClassificationService:
                 elif row.status is ImportRowStatus.skipped and not _valid_skipped(row):
                     raise ImportClassifyStateError()
                 elif row.status is ImportRowStatus.failed and (
-                    row.normalized_data is not None or row.deduplication_key is not None
+                    row.normalized_data is not None
+                    or row.deduplication_key is not None
+                    or row.created_transaction_id is not None
+                    or row.created_investment_event_id is not None
                 ):
                     raise ImportClassifyStateError()
                 elif (
@@ -131,8 +138,17 @@ class ImportClassificationService:
                     row.normalized_data, dict
                 ):
                     raise ImportClassifyStateError()
+                elif row.status is ImportRowStatus.needs_review:
+                    assert isinstance(row.normalized_data, dict)
+                    if (
+                        not row.deduplication_key
+                        or not _marker_is(row.normalized_data, "unique")
+                        or not isinstance(row.normalized_data.get(_INTENT), dict)
+                        or row.error_message != "Row requires classification review."
+                    ):
+                        raise ImportClassifyStateError()
             for row in rows:
-                if row.status is not ImportRowStatus.pending:
+                if row.status not in {ImportRowStatus.pending, ImportRowStatus.needs_review}:
                     continue
                 assert isinstance(row.normalized_data, dict)
                 intent = classify_import_row(
@@ -140,10 +156,18 @@ class ImportClassificationService:
                 ).model_dump(mode="json")
                 stored = row.normalized_data.get(_INTENT)
                 if stored is not None:
-                    if stored != intent:
+                    if stored != intent or (
+                        row.status is ImportRowStatus.needs_review
+                        and (
+                            row.validation_errors != intent.get("errors")
+                            or row.error_message != "Row requires classification review."
+                        )
+                    ):
                         raise ImportClassifyStateError()
                     continue
-                row.normalized_data[_INTENT] = intent
+                updated = deepcopy(row.normalized_data)
+                updated[_INTENT] = intent
+                row.normalized_data = updated
                 if intent["target"] == "needs_review":
                     row.status = ImportRowStatus.needs_review
                     row.validation_errors = intent["errors"]
