@@ -1,8 +1,9 @@
 # Imports Overview
 
-The implemented Python import pipeline safely prepares external CSV data for a
-future posting workflow. It does not yet create transactions, investment events,
-holdings, or snapshots.
+The implemented Python import pipeline safely prepares external CSV data for
+canonical posting. An internal transaction-row writer can create one canonical
+transaction inside a caller-owned database transaction; there is not yet a
+public posting workflow.
 
 ## Batch lifecycle
 
@@ -60,9 +61,15 @@ by order ID into one schema-version-2 event on a deterministic fill anchor.
 Consumed members and neutral/fully-refunded rows are traceable `skipped` markers;
 incomplete groups remain review rows. This still creates no ledger records.
 
-Classification currently has no batch endpoint and does not persist its result,
-change import status, or create canonical transaction or ledger records.
-Batch persistence and workflow belong to Step 5F-C.
+Classification persists deterministic posting intents while keeping the batch
+in `processing`. Step 5G-A adds an internal transaction-row writer that
+revalidates a stored transaction intent, creates exactly one `Transaction`, and
+links the imported row without committing or changing batch counters.
+
+There is no public `POST .../{batch_id}/post` endpoint or batch finalization yet;
+those belong to Step 5G-C. Investment-event and movement posting belongs to Step
+5G-B. The transaction writer does not create investments, holdings, or
+snapshots.
 
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention
