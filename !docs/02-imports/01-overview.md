@@ -66,10 +66,18 @@ in `processing`. Step 5G-A adds an internal transaction-row writer that
 revalidates a stored transaction intent, creates exactly one `Transaction`, and
 links the imported row without committing or changing batch counters.
 
+Step 5G-B1 adds a pure immutable investment posting-plan builder. It revalidates
+the persisted investment intent and produces deterministic event metadata,
+conservative asset-resolution evidence, and an ordered movement tuple only when
+every numeric and timestamp value is exactly representable by the canonical
+database types. Building a plan performs no I/O and creates no `Asset`,
+`AssetListing`, `AssetAlias`, `InvestmentEvent`, or `InvestmentMovement`.
+Asset/listing resolution belongs to Step 5G-B2 and the investment writer belongs
+to Step 5G-B3.
+
 There is no public `POST .../{batch_id}/post` endpoint or batch finalization yet;
-those belong to Step 5G-C. Investment-event and movement posting belongs to Step
-5G-B. The transaction writer does not create investments, holdings, or
-snapshots.
+those belong to Step 5G-C. Neither current posting foundation updates holdings
+or snapshots.
 
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention
