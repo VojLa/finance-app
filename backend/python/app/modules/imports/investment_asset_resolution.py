@@ -134,6 +134,18 @@ def _listing_is_compatible(
     return _asset_is_compatible(asset, plan)
 
 
+def validate_resolved_investment_asset(
+    *,
+    plan: InvestmentAssetResolutionPlan,
+    asset: AssetModel,
+    listing: AssetListingModel,
+) -> None:
+    """Validate an already persisted B2 identity without any lookup or mutation."""
+    canonical_plan = _validated_plan(plan)
+    if listing.asset_id != asset.id or not _listing_is_compatible(listing, asset, canonical_plan):
+        raise ImportPostStateError()
+
+
 class ImportInvestmentAssetResolver:
     """Resolve B1 asset evidence inside a transaction owned by the caller."""
 

@@ -18,6 +18,7 @@ from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.modules.imports.investment_asset_resolution import (
     ImportInvestmentAssetResolver,
     ResolvedInvestmentAsset,
+    validate_resolved_investment_asset,
 )
 from app.modules.imports.investment_posting_plan import (
     InvestmentEventPostingPlan,
@@ -176,7 +177,6 @@ class ImportInvestmentPostingWriter:
         *,
         row: ImportRowModel,
         plan: InvestmentEventPostingPlan,
-        resolved: ResolvedInvestmentAsset | None,
     ) -> PostedInvestmentEvent:
         event_id = row.created_investment_event_id
         if not isinstance(event_id, str) or not event_id:
@@ -197,8 +197,7 @@ class ImportInvestmentPostingWriter:
                 )
             ).all()
         )
-        asset = None if resolved is None else resolved.asset
-        listing = None if resolved is None else resolved.listing
+        asset, listing = await self._replay_asset_identity(plan=plan, movements=movements)
         expected = Counter(
             _planned_signature(movement, asset=asset, listing=listing)
             for movement in plan.movements
@@ -213,6 +212,49 @@ class ImportInvestmentPostingWriter:
             created=False,
         )
 
+    async def _replay_asset_identity(
+        self,
+        *,
+        plan: InvestmentEventPostingPlan,
+        movements: tuple[InvestmentMovementModel, ...],
+    ) -> tuple[AssetModel | None, AssetListingModel | None]:
+        if plan.asset_resolution is None:
+            if any(
+                movement.asset_id is not None or movement.listing_id is not None
+                for movement in movements
+            ):
+                raise ImportPostStateError()
+            return None, None
+        linked_pairs = {
+            (movement.asset_id, movement.listing_id)
+            for movement in movements
+            if movement.asset_id is not None or movement.listing_id is not None
+        }
+        if len(linked_pairs) != 1:
+            raise ImportPostStateError()
+        asset_id, listing_id = linked_pairs.pop()
+        if (
+            not isinstance(asset_id, str)
+            or not asset_id
+            or not isinstance(listing_id, str)
+            or not listing_id
+        ):
+            raise ImportPostStateError()
+        asset = await self.session.scalar(
+            select(AssetModel).where(AssetModel.id == asset_id).with_for_update()
+        )
+        listing = await self.session.scalar(
+            select(AssetListingModel).where(AssetListingModel.id == listing_id).with_for_update()
+        )
+        if asset is None or listing is None:
+            raise ImportPostStateError()
+        validate_resolved_investment_asset(
+            plan=plan.asset_resolution,
+            asset=asset,
+            listing=listing,
+        )
+        return asset, listing
+
     async def post_row(
         self,
         *,
@@ -226,11 +268,11 @@ class ImportInvestmentPostingWriter:
             batch=batch,
             row=locked_row,
         )
-        resolved = await self._resolve_asset(plan=plan)
         if locked_row.status is ImportRowStatus.imported:
-            return await self._replay(row=locked_row, plan=plan, resolved=resolved)
+            return await self._replay(row=locked_row, plan=plan)
         if locked_row.status is not ImportRowStatus.pending:
             raise ImportPostStateError()
+        resolved = await self._resolve_asset(plan=plan)
 
         asset = None if resolved is None else resolved.asset
         listing = None if resolved is None else resolved.listing

@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetListingModel, AssetModel
-from app.db.models.enums import AssetType, ImportRowStatus, ImportSource, ImportStatus
+from app.db.models.enums import AssetType, ImportRowStatus, ImportSource, ImportStatus, PriceSource
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.modules.imports.classification import InvestmentEventPostingIntent, classify_import_row
@@ -150,7 +150,7 @@ def _resolved() -> ResolvedInvestmentAsset:
         mic=None,
         currency="EUR",
         country=None,
-        provider=None,
+        provider=PriceSource.broker,
         provider_symbol="VWCE",
         is_primary=False,
         updated_at=datetime(2026, 7, 25, 10),
@@ -325,15 +325,12 @@ def test_imported_replay_compares_exact_event_and_movement_multiset(
         )
         for index, movement in enumerate(plan.movements)
     ]
-    session = _Session(scalar_values=[row, event])
+    session = _Session(scalar_values=[row, event, resolved.asset, resolved.listing])
     session.scalars.return_value = _Rows(movements)
 
     class _Resolver:
         def __init__(self, _: object) -> None:
-            pass
-
-        async def resolve(self, *, plan: object) -> ResolvedInvestmentAsset:
-            return resolved
+            raise AssertionError("replay must not call the B2 creation resolver")
 
     monkeypatch.setattr(posting, "ImportInvestmentAssetResolver", _Resolver)
     result = _run(_writer(session).post_row(account_id="account", batch=batch, row=row))
@@ -343,7 +340,7 @@ def test_imported_replay_compares_exact_event_and_movement_multiset(
     )
     assert session.added == [] and session.flush.await_count == 0
 
-    session = _Session(scalar_values=[row, event])
+    session = _Session(scalar_values=[row, event, resolved.asset, resolved.listing])
     session.scalars.return_value = _Rows(movements[:-1])
     monkeypatch.setattr(posting, "ImportInvestmentAssetResolver", _Resolver)
     with pytest.raises(ImportPostStateError):
