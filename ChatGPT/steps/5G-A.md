@@ -180,6 +180,13 @@ external_id
 
 Use `Decimal`; never convert through `float`.
 
+Every posting-plan value must be exactly representable by its canonical database
+column type before any entity or row mutation. An amount that cannot be stored
+without change in the configured `MONEY` precision/scale, or a datetime that
+cannot be stored without change at the configured `TIMESTAMP` precision, fails
+closed with `ImportPostStateError`. Posting must never rely on database rounding
+or truncation.
+
 ### Date conversion
 
 `TransactionModel.date` is a naive database timestamp.

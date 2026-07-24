@@ -5,13 +5,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.common import MONEY, TIMESTAMP
 from app.db.models.enums import (
     ImportRowStatus,
     ImportStatus,
@@ -72,6 +73,22 @@ def _optional_metadata(canonical: dict[str, Any], field: str) -> str | None:
     return value
 
 
+def _posting_amount(value: Decimal) -> Decimal:
+    precision = MONEY.precision
+    scale = MONEY.scale
+    if precision is None or scale is None:
+        raise RuntimeError("Canonical MONEY must define precision and scale.")
+    quantum = Decimal(1).scaleb(-scale)
+    try:
+        scaled = value.quantize(quantum)
+    except InvalidOperation as exc:
+        raise ImportPostStateError() from exc
+    limit = Decimal(10) ** (precision - scale)
+    if not value.is_finite() or value != scaled or abs(value) >= limit:
+        raise ImportPostStateError()
+    return value
+
+
 def _posting_date(value: str) -> datetime:
     try:
         if len(value) == 10:
@@ -84,9 +101,13 @@ def _posting_date(value: str) -> datetime:
             raise ImportPostStateError()
     except (TypeError, ValueError) as exc:
         raise ImportPostStateError() from exc
-    if parsed.tzinfo is None:
-        return parsed
-    return parsed.astimezone(UTC).replace(tzinfo=None)
+    result = parsed if parsed.tzinfo is None else parsed.astimezone(UTC).replace(tzinfo=None)
+    precision = TIMESTAMP.precision
+    if precision is not None:
+        unit = 10 ** (6 - precision)
+        if result.microsecond % unit:
+            raise ImportPostStateError()
+    return result
 
 
 def build_transaction_posting_plan(
@@ -136,7 +157,7 @@ def build_transaction_posting_plan(
         import_batch_id=batch.id,
         source_row_id=row.id,
         date=_posting_date(intent.date),
-        amount=intent.amount,
+        amount=_posting_amount(intent.amount),
         currency=intent.currency,
         transaction_type=intent.transaction_type,
         transaction_classification=intent.transaction_classification,

@@ -236,6 +236,69 @@ async def _assert_no_investment_side_effects() -> None:
     assert counts == [0, 0]
 
 
+async def _assert_representability_rejection(
+    prefix: str,
+    raw_data: dict[str, str],
+) -> None:
+    await _seed(prefix, ImportSource.manual, raw_data)
+    await _prepare(prefix)
+    before_batch, before_row, before_transactions = await _reload(prefix)
+    assert before_transactions == []
+    normalized_snapshot = deepcopy(before_row.normalized_data)
+    key_snapshot = before_row.deduplication_key
+    batch_snapshot = (
+        before_batch.status,
+        before_batch.rows_total,
+        before_batch.rows_imported,
+        before_batch.rows_skipped,
+        before_batch.completed_at,
+    )
+
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        batch = await session.scalar(
+            select(ImportBatchModel)
+            .where(ImportBatchModel.id == f"{prefix}-batch")
+            .with_for_update()
+        )
+        row = await session.scalar(
+            select(ImportRowModel).where(ImportRowModel.id == f"{prefix}-row").with_for_update()
+        )
+        assert batch is not None and row is not None
+        with pytest.raises(ImportPostStateError) as exc_info:
+            await ImportTransactionPostingWriter(session).post_row(
+                account_id=f"{prefix}-account",
+                batch=batch,
+                row=row,
+            )
+        assert exc_info.value.code == "import_post_state_invalid"
+        assert exc_info.value.status_code == 409
+        assert row.status is ImportRowStatus.pending
+        assert row.created_transaction_id is None
+        assert row.created_investment_event_id is None
+        assert row.normalized_data == normalized_snapshot
+        assert row.deduplication_key == key_snapshot
+        await session.rollback()
+    await engine.dispose()
+
+    after_batch, after_row, after_transactions = await _reload(prefix)
+    assert after_transactions == []
+    assert after_row.status is ImportRowStatus.pending
+    assert after_row.created_transaction_id is None
+    assert after_row.created_investment_event_id is None
+    assert after_row.normalized_data == normalized_snapshot
+    assert after_row.deduplication_key == key_snapshot
+    assert (
+        after_batch.status,
+        after_batch.rows_total,
+        after_batch.rows_imported,
+        after_batch.rows_skipped,
+        after_batch.completed_at,
+    ) == batch_snapshot
+    await _assert_no_investment_side_effects()
+
+
 def test_manual_pipeline_persists_exact_transaction_and_row_linkage() -> None:
     prefix = "post-manual"
 
@@ -497,6 +560,133 @@ def test_corrupted_transaction_replay_fails_closed_without_repair() -> None:
         ) == row_snapshot
         assert batch.status is ImportStatus.processing
         assert batch.rows_imported == 0
+        await _assert_no_investment_side_effects()
+
+    asyncio.run(scenario())
+
+
+def test_postgresql_rejects_over_scale_amount_before_mutation() -> None:
+    asyncio.run(
+        _assert_representability_rejection(
+            "post-reject-scale",
+            {
+                "Date": "2026-07-25",
+                "Amount": "0.1234567",
+                "Currency": "EUR",
+                "Type": "income",
+            },
+        )
+    )
+
+
+def test_postgresql_rejects_money_overflow_before_mutation() -> None:
+    asyncio.run(
+        _assert_representability_rejection(
+            "post-reject-overflow",
+            {
+                "Date": "2026-07-25",
+                "Amount": "1000000000000",
+                "Currency": "EUR",
+                "Type": "income",
+            },
+        )
+    )
+
+
+def test_postgresql_rejects_sub_millisecond_timestamp_before_mutation() -> None:
+    asyncio.run(
+        _assert_representability_rejection(
+            "post-reject-timestamp",
+            {
+                "Date": "2026-07-25T10:00:00.123456+00:00",
+                "Amount": "1",
+                "Currency": "EUR",
+                "Type": "income",
+            },
+        )
+    )
+
+
+def test_postgresql_accepts_exact_boundaries_and_replays_without_change() -> None:
+    prefix = "post-exact-boundary"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            ImportSource.manual,
+            {
+                "Date": "2026-07-25T12:00:00.123000+02:00",
+                "Amount": "999999999999.999999",
+                "Currency": "EUR",
+                "Type": "income",
+                "Description": "Boundary",
+                "ID": "boundary-1",
+            },
+        )
+        await _prepare(prefix)
+        before_batch, before_row, before_transactions = await _reload(prefix)
+        assert before_transactions == []
+        normalized_snapshot = deepcopy(before_row.normalized_data)
+        key_snapshot = before_row.deduplication_key
+
+        first_id = await _post(prefix, commit=True)
+        first_batch, first_row, first_transactions = await _reload(prefix)
+        assert len(first_transactions) == 1
+        first = first_transactions[0]
+        assert first.id == first_id
+        assert first.amount == Decimal("999999999999.999999")
+        assert first.date == datetime(2026, 7, 25, 10, 0, 0, 123000)
+        assert first_row.status is ImportRowStatus.imported
+        assert first_row.created_transaction_id == first_id
+        assert first_row.created_investment_event_id is None
+        assert first_row.normalized_data == normalized_snapshot
+        assert first_row.deduplication_key == key_snapshot
+        entity_snapshot = {
+            field: getattr(first, field)
+            for field in (
+                "id",
+                "account_id",
+                "import_batch_id",
+                "date",
+                "amount",
+                "currency",
+                "type",
+                "classification",
+                "description",
+                "external_id",
+                "booking_date",
+                "reporting_amount",
+                "reporting_currency",
+                "note",
+                "counterparty",
+                "category_id",
+                "archived_at",
+                "deleted_at",
+            )
+        }
+
+        replay_id = await _post(prefix, commit=True)
+        replay_batch, replay_row, replay_transactions = await _reload(prefix)
+        assert replay_id == first_id
+        assert len(replay_transactions) == 1
+        assert {
+            field: getattr(replay_transactions[0], field) for field in entity_snapshot
+        } == entity_snapshot
+        assert replay_row.status is ImportRowStatus.imported
+        assert replay_row.created_transaction_id == first_id
+        assert replay_row.created_investment_event_id is None
+        assert replay_row.normalized_data == normalized_snapshot
+        assert replay_row.deduplication_key == key_snapshot
+        assert replay_batch.status is first_batch.status is before_batch.status
+        assert replay_batch.rows_total == first_batch.rows_total == before_batch.rows_total
+        assert (
+            replay_batch.rows_imported
+            == first_batch.rows_imported
+            == before_batch.rows_imported
+            == 0
+        )
+        assert replay_batch.rows_skipped == first_batch.rows_skipped == before_batch.rows_skipped
+        assert replay_batch.completed_at == first_batch.completed_at == before_batch.completed_at
         await _assert_no_investment_side_effects()
 
     asyncio.run(scenario())

@@ -23,6 +23,7 @@ from app.modules.imports.transaction_posting import (
     ImportPostStateError,
     ImportTransactionPostingWriter,
     TransactionPostingPlan,
+    _posting_amount,
     build_transaction_posting_plan,
 )
 
@@ -191,6 +192,60 @@ def _existing(
             TransactionType.income,
             TransactionClassification.real_income,
         ),
+        (
+            ImportSource.manual,
+            "2026-07-25",
+            "1.230000",
+            "income",
+            datetime(2026, 7, 25),
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+        (
+            ImportSource.manual,
+            "2026-07-25",
+            "1.23",
+            "income",
+            datetime(2026, 7, 25),
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+        (
+            ImportSource.manual,
+            "2026-07-25",
+            "999999999999.999999",
+            "income",
+            datetime(2026, 7, 25),
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+        (
+            ImportSource.manual,
+            "2026-07-25",
+            "-999999999999.999999",
+            "expense",
+            datetime(2026, 7, 25),
+            TransactionType.expense,
+            TransactionClassification.real_expense,
+        ),
+        (
+            ImportSource.manual,
+            "2026-07-25T10:00:00.123000",
+            "1",
+            "income",
+            datetime(2026, 7, 25, 10, 0, 0, 123000),
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+        (
+            ImportSource.manual,
+            "2026-07-25T12:00:00.123000+02:00",
+            "1",
+            "income",
+            datetime(2026, 7, 25, 10, 0, 0, 123000),
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
     ],
 )
 def test_build_plan_maps_supported_transactions_with_exact_decimal_and_date(
@@ -223,6 +278,18 @@ def test_build_plan_maps_supported_transactions_with_exact_decimal_and_date(
     assert plan.external_id == "provider-1"
     with pytest.raises(FrozenInstanceError):
         plan.amount = Decimal("1")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("value", ["0", "1", "1.23", "1.230000"])
+def test_money_representability_accepts_general_exact_values(value: str) -> None:
+    amount = Decimal(value)
+    assert _posting_amount(amount) is amount
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_money_representability_rejects_non_finite_values(value: str) -> None:
+    with pytest.raises(ImportPostStateError):
+        _posting_amount(Decimal(value))
 
 
 @pytest.mark.asyncio
@@ -284,6 +351,117 @@ async def test_writer_creates_exact_model_and_preserves_row_and_batch_data() -> 
         batch.rows_skipped,
         batch.completed_at,
     ) == batch_snapshot
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("amount", "0.1234567"),
+        ("amount", "-0.1234567"),
+        ("amount", "1000000000000"),
+        ("amount", "-1000000000000"),
+        ("amount", "1E+100"),
+        ("date", "2026-07-25T10:00:00.123456"),
+        ("date", "2026-07-25T10:00:00.000001+00:00"),
+    ],
+    ids=[
+        "amount-seven-decimals",
+        "amount-negative-seven-decimals",
+        "amount-positive-overflow",
+        "amount-negative-overflow",
+        "amount-large-exponent",
+        "timestamp-sub-millisecond-naive",
+        "timestamp-sub-millisecond-aware",
+    ],
+)
+async def test_unrepresentable_plan_fails_before_any_mutation(
+    field: str,
+    value: str,
+) -> None:
+    canonical = _canonical()
+    canonical[field] = value
+    row = _row(canonical=canonical)
+    batch = _batch()
+    session = _session()
+    normalized_object = row.normalized_data
+    normalized_snapshot = deepcopy(row.normalized_data)
+    raw_object = row.raw_data
+    row_snapshot = (
+        row.status,
+        row.created_transaction_id,
+        row.created_investment_event_id,
+        row.deduplication_key,
+        row.validation_errors,
+        row.error_message,
+    )
+    batch_snapshot = (
+        batch.status,
+        batch.rows_total,
+        batch.rows_imported,
+        batch.rows_skipped,
+        batch.completed_at,
+    )
+
+    with pytest.raises(ImportPostStateError) as exc_info:
+        await ImportTransactionPostingWriter(session).post_row(
+            account_id="account",
+            batch=batch,
+            row=row,
+        )
+
+    assert exc_info.value.code == "import_post_state_invalid"
+    assert exc_info.value.status_code == 409
+    assert row.normalized_data is normalized_object
+    assert row.normalized_data == normalized_snapshot
+    assert row.raw_data is raw_object
+    assert (
+        row.status,
+        row.created_transaction_id,
+        row.created_investment_event_id,
+        row.deduplication_key,
+        row.validation_errors,
+        row.error_message,
+    ) == row_snapshot
+    assert (
+        batch.status,
+        batch.rows_total,
+        batch.rows_imported,
+        batch.rows_skipped,
+        batch.completed_at,
+    ) == batch_snapshot
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exact_replay_accepts_money_and_timestamp_boundary_values() -> None:
+    canonical = _canonical(
+        date="2026-07-25T12:00:00.123000+02:00",
+        amount="999999999999.999999",
+    )
+    batch = _batch()
+    row = _row(canonical=canonical, status=ImportRowStatus.imported)
+    row.created_transaction_id = "transaction"
+    plan = build_transaction_posting_plan(account_id="account", batch=batch, row=row)
+    existing = _existing(plan)
+    session = _session()
+    session.get.return_value = existing
+
+    returned = await ImportTransactionPostingWriter(session).post_row(
+        account_id="account",
+        batch=batch,
+        row=row,
+    )
+
+    assert returned is existing
+    assert returned.amount == Decimal("999999999999.999999")
+    assert returned.date == datetime(2026, 7, 25, 10, 0, 0, 123000)
+    session.get.assert_awaited_once_with(TransactionModel, "transaction")
+    session.add.assert_not_called()
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
 
