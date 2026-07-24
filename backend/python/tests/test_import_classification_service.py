@@ -106,3 +106,34 @@ async def test_service_preserves_normalization_review_without_classifier_call(
 
     assert result.rows_needs_review == 1
     assert row.normalized_data is None and row.deduplication_key is None
+
+
+@pytest.mark.asyncio
+async def test_service_persists_classification_review_with_safe_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    service = ImportClassificationService(session)
+    row = _row(
+        data={
+            "schema_version": 1,
+            "source": "manual",
+            "date": "2026-07-23",
+            "amount": "1",
+            "currency": "EUR",
+            "type": "transfer",
+            "deduplication": {"schema_version": 1, "status": "unique"},
+        }
+    )
+    monkeypatch.setattr("app.modules.imports.classification_service.require_account_access", AsyncMock())
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=_batch()))
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
+
+    response = await service.classify_batch(principal=_principal(), account_id="account", batch_id="batch")
+
+    assert response.rows_needs_review == 1
+    assert row.status is ImportRowStatus.needs_review
+    assert row.normalized_data["posting_intent"]["target"] == "needs_review"
+    assert row.validation_errors == row.normalized_data["posting_intent"]["errors"]
+    assert row.error_message == "Row requires classification review."
