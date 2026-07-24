@@ -5,6 +5,7 @@
 - Milestone: `0.1 - Architecture Locked`
 - Parent: `5G - canonical posting`
 - Dependency: Step 5G-A, merged as `385e83ae14e45d91644cd471197f57dd2c3e98b6`
+- B1 merged as `89d1bd37e5aeabd6a06c06060e70766755f0a43f`
 - Source of truth: persisted investment posting intents and canonical SQLAlchemy asset/ledger models
 - Size: XL before splitting
 
@@ -27,7 +28,7 @@ Investment posting contains three independent risk domains:
 Combining them would make review too broad and would hide whether a failure came from
 financial mapping, identity resolution or persistence. Step 5G-B is split into:
 
-- **5G-B1 – deterministic investment posting plan**
+- **5G-B1 – deterministic investment posting plan** — merged
   - re-derive and validate the persisted investment intent;
   - harden successful intents so every successful target is postable without inference;
   - build immutable event, asset-resolution and ordered movement plans;
@@ -37,7 +38,7 @@ financial mapping, identity resolution or persistence. Step 5G-B is split into:
   - resolve existing provider listings first;
   - resolve a unique compatible ISIN asset when no provider listing exists;
   - create an asset/listing pair only from sufficient canonical evidence;
-  - serialize global provider identity creation with an advisory lock;
+  - serialize provider-symbol and optional ISIN identities with deterministic advisory locks;
   - fail closed on ambiguity or conflicting identity;
   - no investment event creation and no import-row transition.
 - **5G-B3 – investment event and movement writer**
@@ -153,17 +154,25 @@ trading212 -> PriceSource.broker, exchange = trading212
 anycoin    -> PriceSource.exchange, exchange = anycoin
 ```
 
-B2 must prefer an exact provider/provider-symbol/currency listing. When it does not exist,
-a unique compatible ISIN asset may be reused. Global symbol alone is never sufficient to
-merge two assets.
+B2 must prefer an exact provider/provider-symbol/currency listing. A plan without a listing
+currency may reuse that provider symbol only when exactly one listing exists across all
+currencies. When no provider listing exists, one unique compatible ISIN asset may be reused.
+Global symbol alone is never sufficient to merge two assets.
 
 Unknown explicit asset type hints map conservatively to `AssetType.other`; they must not be
 inferred from an ISIN prefix or a company name. Anycoin canonical assets are crypto.
 
-The inherited schema permits nullable and non-unique identity fields. B2 must therefore
-fail closed on multiple compatible candidates and use a provider-identity advisory lock
-before any creation. A migration is not part of B1 and is allowed in B2 only if a concrete
-unavoidable invariant cannot be enforced with locking and existing constraints.
+The inherited schema permits nullable and non-unique identity fields. B2 must therefore:
+
+- lock `provider + provider_symbol` without currency;
+- additionally lock canonical ISIN when present;
+- acquire all advisory locks in deterministic sorted order;
+- fail closed on multiple same-ISIN assets or multiple currency-less provider candidates;
+- require explicit listing and asset currency evidence before creating a listing;
+- never update existing assets/listings to reconcile a conflict.
+
+A migration is not part of B2 unless implementation proves an unavoidable invariant that
+cannot be enforced with transaction advisory locking and inherited unique constraints.
 
 ## Exact database representability
 
@@ -182,15 +191,20 @@ from stored movements and the unchanged posting intent.
 ## Caller-owned transaction
 
 B2 and B3 participate in a transaction owned by 5G-C or a test. They must not commit or
-roll back. B3 may add or validate:
+roll back.
+
+B2 may add or validate:
 
 - zero or one asset;
-- zero or one listing;
+- zero or one provider listing.
+
+B3 may add or validate:
+
 - one investment event;
 - its expected movement set;
 - one import-row transition.
 
-It must not change batch status or counters.
+Neither may change batch status or counters.
 
 ## Exact replay
 
@@ -221,9 +235,9 @@ All 5G-B substeps exclude:
 
 ## Verification
 
-Each substep requires focused unit tests. B1 also requires PostgreSQL composition tests
-that reload classified rows and prove zero entity writes. B2 and B3 require real
-PostgreSQL persistence, rollback, retry, ambiguity and concurrency tests.
+Each substep requires focused unit tests. B1 includes PostgreSQL composition tests that
+reload classified rows and prove zero entity writes. B2 and B3 require real PostgreSQL
+persistence, rollback, retry, ambiguity and concurrency tests.
 
 5G-B is complete only after B1, B2 and B3 are merged and both Trading212 and Anycoin
 successful intents can be posted or exactly replayed without batch finalization.

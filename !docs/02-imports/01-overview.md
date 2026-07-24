@@ -75,6 +75,14 @@ database types. Building a plan performs no I/O and creates no `Asset`,
 Asset/listing resolution belongs to Step 5G-B2 and the investment writer belongs
 to Step 5G-B3.
 
+Step 5G-B2 adds the internal conservative asset/listing resolver used by the
+future investment writer. It serializes provider-symbol identity and, when
+available, ISIN identity with transaction advisory locks; a global symbol alone
+is never a merge key. The resolver may create an `Asset` and `AssetListing`
+only from sufficient canonical evidence, and creates no alias, event or
+movement. Event writing remains Step 5G-B3 and public batch posting remains
+Step 5G-C.
+
 There is no public `POST .../{batch_id}/post` endpoint or batch finalization yet;
 those belong to Step 5G-C. Neither current posting foundation updates holdings
 or snapshots.
