@@ -97,6 +97,8 @@ class ImportClassificationService:
             rows = await self.repository.list_rows_for_update(batch_id)
             if not rows:
                 raise ImportClassifyRowsMissingError()
+            pending_rows: list[ImportRowModel] = []
+            classified_review_rows: list[ImportRowModel] = []
             for row in rows:
                 if (
                     row.created_transaction_id
@@ -111,6 +113,7 @@ class ImportClassificationService:
                         or not _marker_is(row.normalized_data, "unique")
                     ):
                         raise ImportClassifyStateError()
+                    pending_rows.append(row)
                 elif row.status is ImportRowStatus.duplicate:
                     if (
                         not isinstance(row.normalized_data, dict)
@@ -133,6 +136,7 @@ class ImportClassificationService:
                     and row.normalized_data is None
                     and row.deduplication_key is None
                 ):
+                    # Earlier normalization review: intentionally not classifiable.
                     continue
                 elif row.status is ImportRowStatus.needs_review and not isinstance(
                     row.normalized_data, dict
@@ -147,20 +151,34 @@ class ImportClassificationService:
                         or row.error_message != "Row requires classification review."
                     ):
                         raise ImportClassifyStateError()
-            for row in rows:
-                if row.status not in {ImportRowStatus.pending, ImportRowStatus.needs_review}:
-                    continue
+                    if row.normalized_data[_INTENT].get("target") != "needs_review":
+                        raise ImportClassifyStateError()
+                    classified_review_rows.append(row)
+            for row in [*pending_rows, *classified_review_rows]:
                 assert isinstance(row.normalized_data, dict)
                 intent = classify_import_row(
                     source=batch.source, normalized_data=_canonical(row.normalized_data)
                 ).model_dump(mode="json")
                 stored = row.normalized_data.get(_INTENT)
                 if stored is not None:
-                    if stored != intent or (
-                        row.status is ImportRowStatus.needs_review
-                        and (
-                            row.validation_errors != intent.get("errors")
-                            or row.error_message != "Row requires classification review."
+                    expected_targets = (
+                        {"needs_review"}
+                        if row.status is ImportRowStatus.needs_review
+                        else {"transaction", "investment_event"}
+                    )
+                    if (
+                        stored != intent
+                        or intent.get("target") not in expected_targets
+                        or (
+                            row.status is ImportRowStatus.needs_review
+                            and (
+                                row.validation_errors != intent.get("errors")
+                                or row.error_message != "Row requires classification review."
+                            )
+                        )
+                        or (
+                            row.status is ImportRowStatus.pending
+                            and (row.validation_errors is not None or row.error_message is not None)
                         )
                     ):
                         raise ImportClassifyStateError()
