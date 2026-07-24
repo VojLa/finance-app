@@ -171,8 +171,35 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     assert sorted(path for path in schema["paths"] if "import" in path) == [
         "/api/v1/accounts/{account_id}/imports",
         "/api/v1/accounts/{account_id}/imports/{batch_id}",
+        "/api/v1/accounts/{account_id}/imports/{batch_id}/classify",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/deduplicate",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/file",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/normalize",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/parse",
     ]
+
+
+def test_classify_openapi_and_authentication_contract(test_settings: Settings) -> None:
+    app = create_app(test_settings)
+    operation = app.openapi()["paths"]["/api/v1/accounts/{account_id}/imports/{batch_id}/classify"][
+        "post"
+    ]
+    assert "requestBody" not in operation
+    assert operation["security"] == [{"InternalSessionToken": []}]
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ImportClassifyResponse"
+    }
+    with TestClient(app) as client:
+        missing = client.post("/api/v1/accounts/account-a/imports/batch-a/classify")
+        invalid = client.post(
+            "/api/v1/accounts/account-a/imports/batch-a/classify",
+            headers={"Authorization": "Bearer invalid"},
+        )
+    assert (missing.status_code, missing.json()["error"]["code"]) == (
+        401,
+        "authentication_required",
+    )
+    assert (invalid.status_code, invalid.json()["error"]["code"]) == (
+        401,
+        "invalid_session_token",
+    )

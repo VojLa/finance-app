@@ -3,10 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
+from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import (
     ImportBatchCreateRequest,
     ImportBatchResponse,
+    ImportClassifyResponse,
     ImportDeduplicateResponse,
     ImportNormalizeResponse,
     ImportParseResponse,
@@ -112,6 +114,18 @@ async def deduplicate_import_batch(
         principal=principal,
         account_id=account_id,
         batch_id=batch_id,
+    )
+
+
+@router.post("/{batch_id}/classify", response_model=ImportClassifyResponse)
+async def classify_import_batch(
+    account_id: str,
+    batch_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportClassifyResponse:
+    return await ImportClassificationService(session).classify_batch(
+        principal=principal, account_id=account_id, batch_id=batch_id
     )
 
 

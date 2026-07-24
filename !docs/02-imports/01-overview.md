@@ -67,3 +67,7 @@ Batch persistence and workflow belong to Step 5F-C.
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention
 or purge worker, even though the database model reserves retention fields.
+# Import workflow
+
+The persisted pipeline is `register → upload → parse → normalize → deduplicate → classify → post`.
+Classification keeps the batch in `processing`: it stores a JSON-safe `normalizedData.posting_intent` only for deduplicated unique rows. A successful intent remains pending; a classifier review retains canonical data, its unique deduplication key, and a safe review intent. Normalization reviews remain data-less. The operation is idempotent and creates no Transaction, InvestmentEvent, movement, holding, or snapshot; posting belongs to Step 5G.

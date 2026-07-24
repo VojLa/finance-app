@@ -107,3 +107,6 @@ present canonical fee must be strictly positive.
 New source-specific parsers must be deterministic, preserve enough raw context
 for review, and add representative fixture and regression tests. They may not
 perform posting or financial calculation in the parser layer.
+# Workflow metadata
+
+Deduplication adds only `normalizedData.deduplication` with schema version `1` and status `unique` or `duplicate`. Classification then stores `normalizedData.posting_intent`; both are workflow metadata and are removed before re-running the canonical classifier. Provider normalizers must not create either key.

@@ -51,9 +51,27 @@ def _now() -> datetime:
 
 def _is_valid_row_state(row: ImportRowModel) -> bool:
     if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
-        return row.normalized_data is not None and row.deduplication_key is not None
+        if not isinstance(row.normalized_data, dict) or row.deduplication_key is None:
+            return False
+        if "posting_intent" in row.normalized_data:
+            return False
+        if (
+            getattr(row, "created_transaction_id", None) is not None
+            or getattr(row, "created_investment_event_id", None) is not None
+        ):
+            return False
+        marker = row.normalized_data.get("deduplication")
+        return marker is None or marker == {
+            "schema_version": 1,
+            "status": "unique" if row.status is ImportRowStatus.pending else "duplicate",
+        }
     if row.status in {ImportRowStatus.failed, ImportRowStatus.needs_review}:
-        return row.normalized_data is None and row.deduplication_key is None
+        return (
+            row.normalized_data is None
+            and row.deduplication_key is None
+            and getattr(row, "created_transaction_id", None) is None
+            and getattr(row, "created_investment_event_id", None) is None
+        )
     if row.status is ImportRowStatus.skipped:
         return (
             isinstance(row.normalized_data, dict)
@@ -61,6 +79,8 @@ def _is_valid_row_state(row: ImportRowModel) -> bool:
             and row.normalized_data.get("source") == "anycoin"
             and row.normalized_data.get("kind")
             in {"group_member", "fully_refunded_group", "neutral_row"}
+            and "posting_intent" not in row.normalized_data
+            and "deduplication" not in row.normalized_data
             and row.deduplication_key is None
             and row.created_transaction_id is None
             and row.created_investment_event_id is None
@@ -155,6 +175,15 @@ class ImportDeduplicationService:
             for candidate, candidate_batch in candidates:
                 if candidate.status is ImportRowStatus.pending and candidate.id not in winner_ids:
                     candidate.status = ImportRowStatus.duplicate
+                    if isinstance(candidate.normalized_data, dict):
+                        updated = dict(candidate.normalized_data)
+                        updated["deduplication"] = {
+                            "schema_version": 1,
+                            "status": "duplicate",
+                        }
+                        updated.pop("posting_intent", None)
+                        candidate.normalized_data = updated
+                    candidate.validation_errors = None
                     candidate.error_message = "Duplicate normalized import row."
                     duplicate_counts[candidate_batch.id] += 1
                     affected_batches[candidate_batch.id] = candidate_batch
@@ -175,6 +204,20 @@ class ImportDeduplicationService:
                         created_at=_now(),
                     )
                 )
+
+            for row in rows:
+                if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
+                    assert isinstance(row.normalized_data, dict)
+                    updated = dict(row.normalized_data)
+                    updated["deduplication"] = {
+                        "schema_version": 1,
+                        "status": "unique"
+                        if row.status is ImportRowStatus.pending
+                        else "duplicate",
+                    }
+                    if row.status is ImportRowStatus.duplicate:
+                        updated.pop("posting_intent", None)
+                    row.normalized_data = updated
 
             duplicate_count = sum(row.status is ImportRowStatus.duplicate for row in rows)
             needs_review = sum(row.status is ImportRowStatus.needs_review for row in rows)
