@@ -51,7 +51,10 @@ def _row(
         status=status,
         normalized_data=normalized,
         deduplication_key=key,
+        validation_errors=None,
         error_message=None,
+        created_transaction_id=None,
+        created_investment_event_id=None,
     )
 
 
@@ -211,6 +214,20 @@ async def test_service_reconciles_non_winners_across_batches(
     assert current_duplicate.status is ImportRowStatus.duplicate
     assert current_unique.status is ImportRowStatus.pending
     assert later_duplicate.status is ImportRowStatus.duplicate
+    assert current_duplicate.normalized_data["deduplication"] == {
+        "schema_version": 1,
+        "status": "duplicate",
+    }
+    assert current_unique.normalized_data["deduplication"] == {
+        "schema_version": 1,
+        "status": "unique",
+    }
+    assert later_duplicate.normalized_data["deduplication"] == {
+        "schema_version": 1,
+        "status": "duplicate",
+    }
+    assert "posting_intent" not in later_duplicate.normalized_data
+    assert later_duplicate.validation_errors is None
     assert later_batch.rows_skipped == 1
     assert current_batch.rows_skipped == 3
     assert add_log.call_count == 2
@@ -264,6 +281,215 @@ async def test_service_rejects_rows_outside_normalized_boundary(
 
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "initial_marker", "expected_status"),
+    [
+        (ImportRowStatus.pending, None, "unique"),
+        (
+            ImportRowStatus.pending,
+            {"schema_version": 1, "status": "unique"},
+            "unique",
+        ),
+        (ImportRowStatus.duplicate, None, "duplicate"),
+        (
+            ImportRowStatus.duplicate,
+            {"schema_version": 1, "status": "duplicate"},
+            "duplicate",
+        ),
+    ],
+    ids=["first-unique", "repeat-unique", "first-duplicate", "repeat-duplicate"],
+)
+async def test_service_persists_exact_phase_marker_with_new_json_dictionary(
+    monkeypatch: pytest.MonkeyPatch,
+    status: ImportRowStatus,
+    initial_marker: dict | None,
+    expected_status: str,
+) -> None:
+    session = AsyncMock()
+    service = ImportDeduplicationService(session)
+    batch = _batch()
+    row = _row("row", key="a" * 64, status=status)
+    row.normalized_data["provider_field"] = "preserved"
+    if initial_marker is not None:
+        row.normalized_data["deduplication"] = initial_marker
+    original = row.normalized_data
+    monkeypatch.setattr("app.modules.imports.deduplication.require_account_access", _allow_access)
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=batch))
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
+    candidates = [(row, batch)] if status is ImportRowStatus.pending else []
+    monkeypatch.setattr(
+        service.repository,
+        "list_deduplication_candidates_for_update",
+        AsyncMock(return_value=candidates),
+    )
+
+    await service.deduplicate_batch(
+        principal=_principal(), account_id="account-a", batch_id="batch-a"
+    )
+
+    assert row.normalized_data is not original
+    assert row.normalized_data["provider_field"] == "preserved"
+    assert row.normalized_data["deduplication"] == {
+        "schema_version": 1,
+        "status": expected_status,
+    }
+    assert row.deduplication_key == "a" * 64
+    session.commit.assert_awaited_once()
+
+
+def _invalid_deduplication_row(case: str) -> SimpleNamespace:
+    row = _row("invalid", key="a" * 64)
+    if case == "pending-duplicate-marker":
+        row.normalized_data["deduplication"] = {"schema_version": 1, "status": "duplicate"}
+    elif case == "duplicate-unique-marker":
+        row.status = ImportRowStatus.duplicate
+        row.normalized_data["deduplication"] = {"schema_version": 1, "status": "unique"}
+    elif case == "malformed-marker":
+        row.normalized_data["deduplication"] = "unique"
+    elif case == "unsupported-marker-version":
+        row.normalized_data["deduplication"] = {"schema_version": 2, "status": "unique"}
+    elif case in {"pending-intent", "duplicate-intent"}:
+        row.status = (
+            ImportRowStatus.duplicate if case == "duplicate-intent" else ImportRowStatus.pending
+        )
+        if row.status is ImportRowStatus.duplicate:
+            row.normalized_data["deduplication"] = {
+                "schema_version": 1,
+                "status": "duplicate",
+            }
+        row.normalized_data["posting_intent"] = {"schema_version": 1, "target": "transaction"}
+    elif case in {"skipped-intent", "skipped-marker"}:
+        row.status = ImportRowStatus.skipped
+        row.deduplication_key = None
+        row.normalized_data = {"schema_version": 2, "source": "anycoin", "kind": "neutral_row"}
+        row.normalized_data["posting_intent" if case == "skipped-intent" else "deduplication"] = {
+            "schema_version": 1
+        }
+    elif case in {
+        "failed-transaction",
+        "failed-investment",
+        "review-transaction",
+        "review-investment",
+    }:
+        row.status = (
+            ImportRowStatus.failed if case.startswith("failed") else ImportRowStatus.needs_review
+        )
+        row.normalized_data = None
+        row.deduplication_key = None
+        setattr(
+            row,
+            "created_transaction_id"
+            if case.endswith("transaction")
+            else "created_investment_event_id",
+            "created",
+        )
+    elif case in {"pending-transaction", "pending-investment"}:
+        setattr(
+            row,
+            "created_transaction_id"
+            if case.endswith("transaction")
+            else "created_investment_event_id",
+            "created",
+        )
+    else:
+        raise AssertionError(case)
+    return row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "pending-duplicate-marker",
+        "duplicate-unique-marker",
+        "malformed-marker",
+        "unsupported-marker-version",
+        "pending-intent",
+        "duplicate-intent",
+        "skipped-intent",
+        "skipped-marker",
+        "failed-transaction",
+        "failed-investment",
+        "review-transaction",
+        "review-investment",
+        "pending-transaction",
+        "pending-investment",
+    ],
+)
+async def test_service_rejects_invalid_phase_state_without_commit(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    session = AsyncMock()
+    service = ImportDeduplicationService(session)
+    row = _invalid_deduplication_row(case)
+    monkeypatch.setattr("app.modules.imports.deduplication.require_account_access", _allow_access)
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=_batch()))
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=[row]))
+
+    with pytest.raises(ImportDeduplicateStateError):
+        await service.deduplicate_batch(
+            principal=_principal(), account_id="account-a", batch_id="batch-a"
+        )
+
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cross_batch_demotion_removes_intent_and_preserves_canonical_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    session.add = MagicMock()
+    service = ImportDeduplicationService(session)
+    current_batch = _batch("current")
+    later_batch = _batch("later")
+    winner = _row("winner", key="a" * 64)
+    loser = _row("loser", key="a" * 64)
+    loser.normalized_data = {
+        "schema_version": 1,
+        "provider_field": "preserved",
+        "deduplication": {"schema_version": 1, "status": "unique"},
+        "posting_intent": {"schema_version": 1, "target": "transaction"},
+    }
+    loser.validation_errors = [{"field": "type", "code": "stale_review"}]
+    loser.error_message = "Row requires classification review."
+    original = loser.normalized_data
+    monkeypatch.setattr("app.modules.imports.deduplication.require_account_access", _allow_access)
+    monkeypatch.setattr(
+        service.repository, "get_for_account", AsyncMock(return_value=current_batch)
+    )
+    monkeypatch.setattr(service.repository, "lock_deduplication_scope", AsyncMock())
+    monkeypatch.setattr(
+        service.repository, "list_rows_for_update", AsyncMock(return_value=[winner])
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "list_deduplication_candidates_for_update",
+        AsyncMock(return_value=[(winner, current_batch), (loser, later_batch)]),
+    )
+    monkeypatch.setattr(service.repository, "add_log", MagicMock())
+
+    await service.deduplicate_batch(
+        principal=_principal(), account_id="account-a", batch_id="current"
+    )
+
+    assert loser.status is ImportRowStatus.duplicate
+    assert loser.normalized_data is not original
+    assert loser.normalized_data == {
+        "schema_version": 1,
+        "provider_field": "preserved",
+        "deduplication": {"schema_version": 1, "status": "duplicate"},
+    }
+    assert loser.deduplication_key == "a" * 64
+    assert loser.validation_errors is None
+    assert loser.error_message == "Duplicate normalized import row."
+    assert later_batch.rows_skipped == 1
 
 
 @pytest.mark.asyncio

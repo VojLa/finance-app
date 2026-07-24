@@ -183,6 +183,7 @@ class ImportDeduplicationService:
                         }
                         updated.pop("posting_intent", None)
                         candidate.normalized_data = updated
+                    candidate.validation_errors = None
                     candidate.error_message = "Duplicate normalized import row."
                     duplicate_counts[candidate_batch.id] += 1
                     affected_batches[candidate_batch.id] = candidate_batch
