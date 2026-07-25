@@ -12,9 +12,11 @@ from app.modules.imports.models import (
     ImportDeduplicateResponse,
     ImportNormalizeResponse,
     ImportParseResponse,
+    ImportPostResponse,
     ImportUploadResponse,
 )
 from app.modules.imports.normalization import ImportNormalizationService
+from app.modules.imports.posting_service import ImportBatchPostingService, PostImportBatchCommand
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
 
@@ -126,6 +128,22 @@ async def classify_import_batch(
 ) -> ImportClassifyResponse:
     return await ImportClassificationService(session).classify_batch(
         principal=principal, account_id=account_id, batch_id=batch_id
+    )
+
+
+@router.post("/{batch_id}/post", response_model=ImportPostResponse)
+async def post_import_batch(
+    account_id: str,
+    batch_id: str,
+    principal: CurrentPrincipal,
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportPostResponse:
+    return await ImportBatchPostingService(session).post_batch(
+        PostImportBatchCommand(
+            principal=principal,
+            account_id=account_id,
+            batch_id=batch_id,
+        )
     )
 
 

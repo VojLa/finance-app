@@ -1,9 +1,7 @@
 # Imports Overview
 
-The implemented Python import pipeline safely prepares external CSV data for
-canonical posting. An internal transaction-row writer can create one canonical
-transaction inside a caller-owned database transaction; there is not yet a
-public posting workflow.
+The implemented Python import pipeline safely prepares external CSV data and
+atomically posts classified batches into canonical history.
 
 ## Batch lifecycle
 
@@ -14,6 +12,8 @@ public posting workflow.
 | Parse       | `POST .../{batch_id}/parse`                          | Persisted raw rows; batch becomes `processing`                  |
 | Normalize   | `POST .../{batch_id}/normalize`                      | Normalized candidate rows or review issues                      |
 | Deduplicate | `POST .../{batch_id}/deduplicate`                    | Unique candidates retained; repeated matches marked `duplicate` |
+| Classify    | `POST .../{batch_id}/classify`                       | Persisted deterministic posting intents                         |
+| Post        | `POST .../{batch_id}/post`                           | Atomic canonical history and terminal batch counters            |
 
 Registration requires source metadata and a lower-case SHA-256 hexadecimal digest.
 The body upload must be `application/octet-stream`; it is streamed, checked
@@ -87,12 +87,22 @@ Step 5G-B3 adds the internal investment event writer. In its caller-owned
 transaction it rebuilds the persisted B1 plan, resolves the optional B2
 identity, writes one event with its exact movement set, and links the import row.
 Exact replay validates existing history and fails closed on corruption; it never
-commits, rolls back, or changes batch counters or status. Public batch posting
-remains Step 5G-C.
+commits, rolls back, or changes batch counters or status.
 
-There is no public `POST .../{batch_id}/post` endpoint or batch finalization yet;
-those belong to Step 5G-C. Neither current posting foundation updates holdings
-or snapshots.
+Step 5G-C exposes the authenticated batch `post` operation for owner, admin, and
+editor roles. The application service locks the batch and its complete,
+deterministically ordered row set, validates the whole batch before writing, and
+owns one all-or-nothing transaction around the existing transaction and
+investment writers. It derives final counters only after every postable row
+succeeds, sets `completed_at` once, and finishes as `completed` or
+`partially_completed` according to persisted review/failed rows.
+
+A completed batch request is an exact replay, not a shortcut: every imported row
+is revalidated against its canonical entity graph while counters, identity
+records, and the original `completed_at` remain unchanged. Missing or corrupt
+rows, counters, transactions, events, movements, assets, or listings fail
+closed without repair. Posting does not update holdings or snapshots and does
+not run in a background worker.
 
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention

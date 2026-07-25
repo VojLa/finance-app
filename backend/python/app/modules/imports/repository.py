@@ -31,7 +31,7 @@ class ImportBatchRepository:
             ImportBatchModel.account_id == account_id,
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return await self.session.scalar(statement)
 
     async def get_by_checksum(
@@ -63,8 +63,9 @@ class ImportBatchRepository:
         result = await self.session.scalars(
             select(ImportRowModel)
             .where(ImportRowModel.import_batch_id == batch_id)
-            .order_by(ImportRowModel.row_number)
+            .order_by(ImportRowModel.row_number, ImportRowModel.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         return list(result.all())
 

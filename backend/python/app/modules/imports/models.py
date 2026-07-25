@@ -103,3 +103,13 @@ class ImportClassifyResponse(BaseModel):
     rows_duplicate: int
     rows_skipped: int
     rows_failed: int
+
+
+class ImportPostResponse(BaseModel):
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_imported: int
+    rows_skipped: int
+    completed_at: datetime
+    replayed: bool
