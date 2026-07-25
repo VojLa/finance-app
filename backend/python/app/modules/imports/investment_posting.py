@@ -147,6 +147,7 @@ class ImportInvestmentPostingWriter:
                 ImportRowModel.import_batch_id == batch.id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if locked is None:
             raise ImportPostStateError()

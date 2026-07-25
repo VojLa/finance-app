@@ -346,6 +346,27 @@ def test_imported_replay_compares_exact_event_and_movement_multiset(
     with pytest.raises(ImportPostStateError):
         _run(_writer(session).post_row(account_id="account", batch=batch, row=row))
 
+    extra = deepcopy(movements[0])
+    extra.id = "extra"
+    extra.quantity += 1
+    for corrupt_movements in ([*movements, movements[0]], [*movements, extra]):
+        session = _Session(scalar_values=[row, event, resolved.asset, resolved.listing])
+        session.scalars.return_value = _Rows(corrupt_movements)
+        with pytest.raises(ImportPostStateError):
+            _run(_writer(session).post_row(account_id="account", batch=batch, row=row))
+
+    missing_listing = _Session(scalar_values=[row, event, resolved.asset, None])
+    missing_listing.scalars.return_value = _Rows(movements)
+    with pytest.raises(ImportPostStateError):
+        _run(_writer(missing_listing).post_row(account_id="account", batch=batch, row=row))
+
+    wrong_listing = deepcopy(resolved.listing)
+    wrong_listing.asset_id = "other-asset"
+    wrong = _Session(scalar_values=[row, event, resolved.asset, wrong_listing])
+    wrong.scalars.return_value = _Rows(movements)
+    with pytest.raises(ImportPostStateError):
+        _run(_writer(wrong).post_row(account_id="account", batch=batch, row=row))
+
 
 def test_corrupt_replay_event_and_asset_link_are_rejected() -> None:
     row, batch = _row(action="fee", status=ImportRowStatus.imported), _batch()
