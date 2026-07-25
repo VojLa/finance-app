@@ -286,6 +286,34 @@ def test_later_preflight_error_prevents_earlier_writer_call(
     session.rollback.assert_awaited_once()
 
 
+def test_duplicate_persisted_posting_identity_fails_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    first, second = _pending("first"), _pending("second")
+    second.deduplication_key = first.deduplication_key
+    session = _session()
+    writer = AsyncMock()
+
+    class _Writer:
+        def __init__(self, _: object) -> None:
+            pass
+
+        post_row = writer
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportTransactionPostingWriter", _Writer)
+    service = _service(session, _batch(total=2), [first, second])
+
+    with pytest.raises(ImportBatchPostStateError):
+        _run(service.post_batch(_command()))
+
+    writer.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+
+
 def test_commit_failure_rolls_back_all_service_mutations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -29,7 +29,7 @@ from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
-from app.modules.accounts.access import AccountNotFoundError
+from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.normalization import ImportNormalizationService
@@ -455,7 +455,11 @@ def test_partial_batch_finalizes_review_row_without_posting_it() -> None:
         await _prepare(prefix)
         result = await _post(prefix)
         snapshot = await _snapshot(prefix)
+        replay = await _post(prefix)
         assert result.status is ImportStatus.partially_completed
+        assert replay.replayed is True
+        assert result.model_dump() | {"replayed": True} == replay.model_dump()
+        assert await _snapshot(prefix) == snapshot
         assert (result.rows_total, result.rows_imported, result.rows_skipped) == (2, 1, 1)
         assert len(snapshot["transactions"]) == 1
         assert sum(row[1] is ImportRowStatus.needs_review for row in snapshot["rows"]) == 1
@@ -666,6 +670,41 @@ def test_persisted_authorization_owner_succeeds_and_non_member_is_hidden() -> No
         assert await _snapshot(prefix) == before
         result = await _post(prefix, "owner")
         assert result.status is ImportStatus.completed
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [
+        (AccountMemberRole.admin, True),
+        (AccountMemberRole.editor, True),
+        (AccountMemberRole.viewer, False),
+    ],
+)
+def test_persisted_collaborator_authorization_matrix(
+    role: AccountMemberRole,
+    allowed: bool,
+) -> None:
+    prefix = f"g5c-auth-{role.value}"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.manual,
+            rows=[_manual(role.value)],
+            other_role=role,
+        )
+        await _prepare(prefix)
+        before = await _snapshot(prefix)
+        if allowed:
+            result = await _post(prefix, "other")
+            assert result.status is ImportStatus.completed
+            assert result.rows_imported == 1
+        else:
+            with pytest.raises(AccountAccessDeniedError):
+                await _post(prefix, "other")
+            assert await _snapshot(prefix) == before
 
     asyncio.run(scenario())
 
