@@ -32,6 +32,7 @@ from app.db.url import normalize_database_url
 from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
+from app.modules.imports.investment_posting import ImportInvestmentPostingWriter
 from app.modules.imports.normalization import ImportNormalizationService
 from app.modules.imports.posting_common import ImportPostStateError
 from app.modules.imports.posting_service import (
@@ -299,6 +300,27 @@ async def _prepare(prefix: str) -> None:
         await ImportClassificationService(session).classify_batch(
             principal=principal, account_id=account_id, batch_id=batch_id
         )
+    await engine.dispose()
+
+
+async def _remove_asset_identities(provider_symbols: set[str]) -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        asset_ids = set(
+            (
+                await session.scalars(
+                    select(AssetListingModel.asset_id).where(
+                        AssetListingModel.provider_symbol.in_(provider_symbols)
+                    )
+                )
+            ).all()
+        )
+        await session.execute(
+            delete(AssetListingModel).where(AssetListingModel.provider_symbol.in_(provider_symbols))
+        )
+        if asset_ids:
+            await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
+        await session.commit()
     await engine.dispose()
 
 
@@ -739,6 +761,52 @@ def test_later_writer_failure_rolls_back_first_row_and_clean_retry_succeeds() ->
         retry = await _post(prefix)
         assert retry.status is ImportStatus.completed and retry.rows_imported == 2
         assert len((await _snapshot(prefix))["transactions"]) == 2
+
+    asyncio.run(scenario())
+
+
+def test_later_investment_failure_rolls_back_resolver_graph_and_retry_succeeds() -> None:
+    prefix = "g5c-investment-rollback"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.trading212,
+            rows=[
+                _trading_buy("G5CROLLBACKA", "g5c-rollback-a"),
+                _trading_buy("G5CROLLBACKB", "g5c-rollback-b"),
+            ],
+        )
+        await _remove_asset_identities({"G5CROLLBACKA", "G5CROLLBACKB"})
+        await _prepare(prefix)
+        before = await _snapshot(prefix)
+        original = ImportInvestmentPostingWriter.post_row
+        calls = 0
+
+        async def controlled(
+            self, *, account_id: str, batch: ImportBatchModel, row: ImportRowModel
+        ):
+            nonlocal calls
+            calls += 1
+            result = await original(self, account_id=account_id, batch=batch, row=row)
+            if calls == 2:
+                raise RuntimeError("controlled investment rollback")
+            return result
+
+        with patch.object(ImportInvestmentPostingWriter, "post_row", controlled):
+            with pytest.raises(RuntimeError, match="controlled investment"):
+                await _post(prefix)
+        assert await _snapshot(prefix) == before
+
+        retry = await _post(prefix)
+        after = await _snapshot(prefix)
+        assert retry.status is ImportStatus.completed and retry.rows_imported == 2
+        assert len(after["events"]) == 2
+        assert len(after["movements"]) == 4
+        assert after["assets"] == before["assets"] + 2
+        assert after["listings"] == before["listings"] + 2
+        assert after["aliases"] == before["aliases"]
+        assert after["transactions"] == before["transactions"]
 
     asyncio.run(scenario())
 
