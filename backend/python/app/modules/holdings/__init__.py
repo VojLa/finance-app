@@ -1,5 +1,11 @@
 """Pure holding projection contracts."""
 
+from app.modules.holdings.models import HoldingRebuildResponse
+from app.modules.holdings.orchestration import (
+    HoldingRebuildApplicationService,
+    HoldingRebuildUnavailableError,
+    RebuildHoldingsCommand,
+)
 from app.modules.holdings.persistence_projection import (
     ExpectedPersistedHoldingPlan,
     HoldingPersistenceEvent,
@@ -37,11 +43,15 @@ __all__ = [
     "HoldingProjection",
     "HoldingProjectionMovement",
     "HoldingProjectionStateError",
+    "HoldingRebuildApplicationService",
     "HoldingRebuildPlan",
+    "HoldingRebuildResponse",
     "HoldingRebuildResult",
     "HoldingRebuildService",
     "HoldingRebuildStateError",
+    "HoldingRebuildUnavailableError",
     "HoldingUpdatePlan",
+    "RebuildHoldingsCommand",
     "build_holding_persistence_projection",
     "build_holding_projection",
     "build_holding_rebuild_plan",
