@@ -84,3 +84,11 @@ the schema has no opening or dedicated liability-balance evidence. Asset
 transfers also remain fail-closed for net-deposit metrics because counter-account
 identity is not persisted. The adapter returns immutable evidence, never writes
 `AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
+
+Supported 5I-B account types are bank, cash, savings, broker, exchange, and
+crypto wallet. For these types, liability is structurally impossible in the
+account-type snapshot contract, so the exact liability aggregate is zero and
+its native breakdown is empty. This must not be confused with an unknown
+liability balance. Credit-card, loan, and mortgage accounts fail before
+projection because the schema cannot prove opening principal or outstanding
+balance; a future 5I-L canonical liability contract owns that prerequisite.

@@ -13,7 +13,7 @@ from app.modules.snapshots.account_projection import (
     ExpectedAccountSnapshotValuation,
 )
 
-_ERROR_MESSAGE = "Persisted account evidence cannot produce an exact snapshot."
+_ERROR_MESSAGE = "Persisted evidence cannot produce a complete account snapshot."
 
 
 class AccountSnapshotEvidenceStateError(ValueError):

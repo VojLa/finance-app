@@ -112,7 +112,13 @@ async def _snapshot_counts(session: AsyncSession) -> tuple[int, int]:
 
 
 @pytest.mark.asyncio
-async def test_persisted_bank_balance_is_selected_without_snapshot_writes() -> None:
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.bank, AccountType.cash, AccountType.savings],
+)
+async def test_persisted_cash_account_balance_is_read_only(
+    account_type: AccountType,
+) -> None:
     prefix = "i5b-bank"
     await _cleanup(prefix)
     account_id = f"{prefix}-account"
@@ -123,7 +129,7 @@ async def test_persisted_bank_balance_is_selected_without_snapshot_writes() -> N
                 AccountModel(
                     id=account_id,
                     name="Bank",
-                    type=AccountType.bank,
+                    type=account_type,
                     currency="CZK",
                     color=None,
                     notes=None,
@@ -192,6 +198,8 @@ async def test_persisted_bank_balance_is_selected_without_snapshot_writes() -> N
             assert first == second
             assert first.valuation.cash_value == Decimal("75.000000")
             assert first.valuation.total_value == Decimal("75.000000")
+            assert first.valuation.liabilities_value == Decimal(0)
+            assert first.valuation.liabilities_value_by_currency == ()
             assert await _snapshot_counts(session) == before
             await session.rollback()
     finally:
@@ -200,7 +208,13 @@ async def test_persisted_bank_balance_is_selected_without_snapshot_writes() -> N
 
 
 @pytest.mark.asyncio
-async def test_persisted_broker_selects_price_snapshot_fx_and_event_fx() -> None:
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.broker, AccountType.exchange, AccountType.crypto_wallet],
+)
+async def test_persisted_investment_account_selects_price_and_fx_read_only(
+    account_type: AccountType,
+) -> None:
     prefix = "i5b-broker"
     await _cleanup(prefix)
     account_id = f"{prefix}-account"
@@ -213,7 +227,7 @@ async def test_persisted_broker_selects_price_snapshot_fx_and_event_fx() -> None
                 AccountModel(
                     id=account_id,
                     name="Broker",
-                    type=AccountType.broker,
+                    type=account_type,
                     currency="CZK",
                     color=None,
                     notes=None,
@@ -373,6 +387,8 @@ async def test_persisted_broker_selects_price_snapshot_fx_and_event_fx() -> None
             assert result.valuation.investment_value == Decimal("750.000000")
             assert result.valuation.investment_cost_basis == Decimal("500.000000")
             assert result.valuation.cash_value == Decimal("250.000000")
+            assert result.valuation.liabilities_value == Decimal(0)
+            assert result.valuation.liabilities_value_by_currency == ()
             assert result.net_deposits_value == Decimal("200.000000")
             assert result.unrealized_pnl_value == Decimal("250.000000")
             assert result.selected_price_ids == (f"{prefix}-price",)
@@ -494,7 +510,13 @@ async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_persisted_liability_account_fails_without_balance_contract() -> None:
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+)
+async def test_persisted_liability_account_fails_before_projection_without_mutation(
+    account_type: AccountType,
+) -> None:
     prefix = "i5b-liability"
     await _cleanup(prefix)
     account_id = f"{prefix}-account"
@@ -504,8 +526,8 @@ async def test_persisted_liability_account_fails_without_balance_contract() -> N
             session.add(
                 AccountModel(
                     id=account_id,
-                    name="Loan",
-                    type=AccountType.loan,
+                    name="Liability from account name",
+                    type=account_type,
                     currency="CZK",
                     color=None,
                     notes=None,
@@ -515,12 +537,112 @@ async def test_persisted_liability_account_fails_without_balance_contract() -> N
                     updated_at=EVENT_AT,
                 )
             )
+            await session.flush()
+            session.add_all(
+                [
+                    TransactionModel(
+                        id=f"{prefix}-negative-one",
+                        account_id=account_id,
+                        date=EVENT_AT,
+                        booking_date=None,
+                        amount=Decimal("-100.000000"),
+                        currency="CZK",
+                        reporting_amount=None,
+                        reporting_currency=None,
+                        type=TransactionType.expense,
+                        classification=TransactionClassification.real_expense,
+                        description="Outstanding principal",
+                        note=None,
+                        counterparty=None,
+                        external_id=None,
+                        is_reviewed=False,
+                        archived_at=None,
+                        deleted_at=None,
+                        category_id=None,
+                        import_batch_id=None,
+                        created_at=EVENT_AT,
+                        updated_at=EVENT_AT,
+                    ),
+                    TransactionModel(
+                        id=f"{prefix}-negative-two",
+                        account_id=account_id,
+                        date=EVENT_AT,
+                        booking_date=None,
+                        amount=Decimal("-50.000000"),
+                        currency="CZK",
+                        reporting_amount=None,
+                        reporting_currency=None,
+                        type=TransactionType.expense,
+                        classification=TransactionClassification.real_expense,
+                        description=account_type.value,
+                        note=None,
+                        counterparty=None,
+                        external_id=None,
+                        is_reviewed=False,
+                        archived_at=None,
+                        deleted_at=None,
+                        category_id=None,
+                        import_batch_id=None,
+                        created_at=EVENT_AT,
+                        updated_at=EVENT_AT,
+                    ),
+                ]
+            )
             await session.commit()
         async with AsyncSession(engine) as session:
             before = await _snapshot_counts(session)
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotEvidenceService(session).build(_command(account_id))
+            before_transactions = tuple(
+                (
+                    transaction.id,
+                    transaction.amount,
+                    transaction.description,
+                    transaction.updated_at,
+                )
+                for transaction in await session.scalars(
+                    select(TransactionModel)
+                    .where(TransactionModel.account_id == account_id)
+                    .order_by(TransactionModel.id)
+                )
+            )
+            before_holdings = (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(HoldingModel)
+                    .where(HoldingModel.account_id == account_id)
+                )
+                or 0
+            )
+            for _ in range(2):
+                with pytest.raises(
+                    AccountSnapshotEvidenceStateError,
+                    match=r"Persisted evidence cannot produce a complete account snapshot\.",
+                ):
+                    await AccountSnapshotEvidenceService(session).build(_command(account_id))
             assert await _snapshot_counts(session) == before
+            assert (
+                tuple(
+                    (
+                        transaction.id,
+                        transaction.amount,
+                        transaction.description,
+                        transaction.updated_at,
+                    )
+                    for transaction in await session.scalars(
+                        select(TransactionModel)
+                        .where(TransactionModel.account_id == account_id)
+                        .order_by(TransactionModel.id)
+                    )
+                )
+                == before_transactions
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(HoldingModel)
+                    .where(HoldingModel.account_id == account_id)
+                )
+                or 0
+            ) == before_holdings
     finally:
         await engine.dispose()
         await _cleanup(prefix)

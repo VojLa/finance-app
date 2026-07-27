@@ -43,4 +43,5 @@ selects latest unambiguous persisted prices and direct FX, derives active
 account-type-specific balances and lifetime financial metrics, then delegates
 valuation arithmetic to 5I-A. It writes no snapshot rows and owns no transaction.
 Physical projection/writing/public orchestration remain 5I-C–5I-E;
+canonical liability balance support is deferred to 5I-L, and
 `NetWorthSnapshot` remains outside Step 5I.

@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -251,12 +251,19 @@ def _command() -> BuildAccountSnapshotEvidenceCommand:
 
 
 @pytest.mark.asyncio
-async def test_bank_balance_uses_signed_active_transaction_history() -> None:
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.bank, AccountType.cash, AccountType.savings],
+)
+async def test_cash_account_balance_uses_complete_signed_transaction_history(
+    account_type: AccountType,
+) -> None:
     repository = _repository(
+        load_account=_account(account_type),
         load_active_transactions=(
             _transaction("income", "100.000000", TransactionType.income),
             _transaction("expense", "-30.000000", TransactionType.expense),
-        )
+        ),
     )
     session = MagicMock()
 
@@ -267,6 +274,8 @@ async def test_bank_balance_uses_signed_active_transaction_history() -> None:
 
     assert result.valuation.cash_value == Decimal("70.000000")
     assert result.valuation.total_value == Decimal("70.000000")
+    assert result.valuation.liabilities_value == Decimal(0)
+    assert result.valuation.liabilities_value_by_currency == ()
     assert result.net_deposits_value == 0
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
@@ -276,9 +285,15 @@ async def test_bank_balance_uses_signed_active_transaction_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_broker_selects_snapshot_and_event_date_fx_separately() -> None:
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.broker, AccountType.exchange, AccountType.crypto_wallet],
+)
+async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
+    account_type: AccountType,
+) -> None:
     repository = _repository(
-        load_account=_account(AccountType.broker),
+        load_account=_account(account_type),
         load_holdings=_holding_rows(),
         load_active_events=(_event(),),
         load_active_movements=(_movement(),),
@@ -300,6 +315,8 @@ async def test_broker_selects_snapshot_and_event_date_fx_separately() -> None:
     assert result.valuation.investment_value == Decimal("750.000000")
     assert result.valuation.investment_cost_basis == Decimal("500.000000")
     assert result.valuation.cash_value == Decimal("250.000000")
+    assert result.valuation.liabilities_value == Decimal(0)
+    assert result.valuation.liabilities_value_by_currency == ()
     assert result.net_deposits_value == Decimal("200.000000")
     assert result.unrealized_pnl_value == Decimal("250.000000")
     assert result.selected_price_ids == ("selected-price",)
@@ -368,12 +385,44 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
 async def test_liability_accounts_fail_without_complete_balance_evidence(
     account_type: AccountType,
 ) -> None:
-    repository = _repository(load_account=_account(account_type))
-    with pytest.raises(AccountSnapshotEvidenceStateError):
-        await AccountSnapshotEvidenceService(
-            MagicMock(),
-            repository=repository,
-        ).build(_command())
+    negative_one = _transaction("negative-one", "-100.000000", TransactionType.expense)
+    negative_one.description = "Outstanding liability"
+    negative_one.category_id = "liability-category"
+    negative_two = _transaction("negative-two", "-50.000000", TransactionType.expense)
+    negative_two.description = account_type.value
+    repository = _repository(
+        load_account=_account(account_type),
+        load_active_transactions=(negative_one, negative_two),
+    )
+    session = MagicMock()
+    with (
+        patch(
+            "app.modules.snapshots.evidence_service.build_account_snapshot_projection"
+        ) as projection,
+        patch("app.modules.snapshots.evidence_service.build_financial_metrics") as metrics,
+    ):
+        for _ in range(2):
+            with pytest.raises(
+                AccountSnapshotEvidenceStateError,
+                match=r"Persisted evidence cannot produce a complete account snapshot\.",
+            ):
+                await AccountSnapshotEvidenceService(
+                    session,
+                    repository=repository,
+                ).build(_command())
+
+    projection.assert_not_called()
+    metrics.assert_not_called()
+    cast(AsyncMock, repository.load_holdings).assert_not_awaited()
+    cast(AsyncMock, repository.load_active_transactions).assert_not_awaited()
+    cast(AsyncMock, repository.load_active_events).assert_not_awaited()
+    cast(AsyncMock, repository.load_active_movements).assert_not_awaited()
+    cast(AsyncMock, repository.load_price_candidates).assert_not_awaited()
+    cast(AsyncMock, repository.load_exchange_rate_candidates).assert_not_awaited()
+    session.add.assert_not_called()
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
+    session.flush.assert_not_called()
 
 
 @pytest.mark.asyncio
