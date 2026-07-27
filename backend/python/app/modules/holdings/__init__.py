@@ -14,16 +14,36 @@ from app.modules.holdings.projection import (
     HoldingProjectionStateError,
     build_holding_projection,
 )
+from app.modules.holdings.rebuild_service import (
+    HoldingCreatePlan,
+    HoldingDeletePlan,
+    HoldingRebuildPlan,
+    HoldingRebuildResult,
+    HoldingRebuildService,
+    HoldingRebuildStateError,
+    HoldingUpdatePlan,
+    build_holding_rebuild_plan,
+    stable_holding_id,
+)
 
 __all__ = [
     "ExpectedHoldingPlan",
     "ExpectedPersistedHoldingPlan",
+    "HoldingCreatePlan",
+    "HoldingDeletePlan",
     "HoldingPersistenceEvent",
     "HoldingPersistenceMovement",
     "HoldingPersistenceProjection",
     "HoldingProjection",
     "HoldingProjectionMovement",
     "HoldingProjectionStateError",
+    "HoldingRebuildPlan",
+    "HoldingRebuildResult",
+    "HoldingRebuildService",
+    "HoldingRebuildStateError",
+    "HoldingUpdatePlan",
     "build_holding_persistence_projection",
     "build_holding_projection",
+    "build_holding_rebuild_plan",
+    "stable_holding_id",
 ]

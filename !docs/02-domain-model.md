@@ -13,7 +13,7 @@ application service yet.
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
 | Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                       |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; pure quantity and exact cost-basis projections exist, database rebuild is not implemented |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; pure projections and internal atomic rebuild writer implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
 | Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only                                   |
 
@@ -34,12 +34,13 @@ application service yet.
 - Holdings and snapshots are rebuildable read models. They must never replace
   transactions or ledger events as the historical source of truth.
 
-The Python holdings domain now has pure deterministic contracts that validate
-and aggregate active canonical `InvestmentMovement` quantity and produce exact
-weighted-average Holding persistence fields by the physical
-`(accountId, listingId)` identity. Unsupported or incomplete cost evidence fails
-closed. Both contracts perform no database writes; generated IDs, timestamps,
-the rebuild writer, and public orchestration remain deferred.
+The Python holdings domain has pure deterministic contracts that validate and
+aggregate active canonical `InvestmentMovement` quantity and produce exact
+weighted-average persistence fields by `(accountId, listingId)`. Its internal
+caller-transaction-owned rebuild writer explicitly locks canonical history,
+relations, and current Holdings, then atomically creates, updates, or deletes
+the complete account projection. Unsupported evidence and persisted corruption
+fail closed. Authorization and a public rebuild endpoint remain deferred.
 
 ## Money and snapshot invariants
 
