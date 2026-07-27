@@ -15,7 +15,7 @@ application service yet.
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only                                   |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A pure account valuation implemented       |
 
 ## Important relationships
 
@@ -58,5 +58,18 @@ cost basis, net deposits, P&L, fees, taxes, and total value—belong in the
 account's main currency. The accompanying `*ByCurrency` JSON fields preserve
 their native-currency breakdown. Event-date FX is required for deposited and
 invested values; a live value should start from the latest daily snapshot and
-only apply later events. These are documented invariants; the rebuilding
-workflow is not implemented yet.
+only apply later events.
+
+The 5I-A Python contract calculates an exact account valuation from explicit
+caller-selected evidence. It validates an already aligned UTC bucket, complete
+Holding and selected-price identity, direct `base -> account currency` FX,
+account-type-specific cash or positive-liability evidence, physical numeric
+representability, and 0–100 item allocation. It emits immutable, sorted
+valuation and native-currency breakdown tuples without I/O.
+
+The contract deliberately does not claim a persistable `AccountSnapshot`.
+Complete net-deposit, realized/unrealized P&L, fee, and tax evidence is not yet
+adopted by the pure boundary; database defaults are not treated as financial
+proof and these values are not silently zeroed. Price/FX selection, JSONB
+serialization, persistence metadata, writer/orchestration, and all
+`NetWorthSnapshot` work remain later steps.
