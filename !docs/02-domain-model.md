@@ -93,8 +93,11 @@ Those metrics use an explicit unsupported result variant, not zero; descriptions
 categories, counterparties, notes, amount signs, and account type are never used
 to infer them. Future 5I-C must reject unsupported metrics instead of mapping
 them to the physical column defaults. Investment value, cost basis, and
-investment realized/unrealized P/L are structurally zero for bank/cash/savings
-because these account types cannot contain Holdings under the snapshot contract.
+unrealized investment P/L are structurally zero for bank/cash/savings because
+these account types cannot contain Holdings under the snapshot contract.
+Realized investment P/L remains unsupported: the physical schema does not
+constrain InvestmentEvent ownership by Account type, so absence of a Holding
+does not prove a lifetime realized-P/L zero.
 
 Supported 5I-B account types are bank, cash, savings, broker, exchange, and
 crypto wallet. For these types, liability is structurally impossible in the

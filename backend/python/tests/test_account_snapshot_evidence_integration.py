@@ -263,7 +263,9 @@ async def test_persisted_cash_account_balance_is_read_only(
             assert first.taxes == UnsupportedSnapshotMetric(
                 SnapshotMetricUnsupportedReason.tax_classification_unavailable
             )
-            assert first.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+            assert first.realized_pnl == UnsupportedSnapshotMetric(
+                SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+            )
             assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
             assert await _snapshot_counts(session) == before
             assert (

@@ -289,7 +289,9 @@ async def test_cash_account_balance_uses_complete_signed_transaction_history(
     assert result.taxes == UnsupportedSnapshotMetric(
         SnapshotMetricUnsupportedReason.tax_classification_unavailable
     )
-    assert result.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    assert result.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
     assert result.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
@@ -362,9 +364,11 @@ async def test_cash_transaction_semantics_never_infer_unsupported_metrics(
     assert first.taxes == UnsupportedSnapshotMetric(
         SnapshotMetricUnsupportedReason.tax_classification_unavailable
     )
+    assert first.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
     assert isinstance(first.net_deposits, UnsupportedSnapshotMetric)
     assert not hasattr(first.net_deposits, "value")
-    assert first.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
     assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
     metrics.assert_not_called()
 

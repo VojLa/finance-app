@@ -74,6 +74,7 @@ class BuildAccountSnapshotEvidenceCommand:
 
 class SnapshotMetricUnsupportedReason(StrEnum):
     external_cash_flow_classification_unavailable = "external_cash_flow_classification_unavailable"
+    realized_pnl_evidence_unavailable = "realized_pnl_evidence_unavailable"
     fee_classification_unavailable = "fee_classification_unavailable"
     tax_classification_unavailable = "tax_classification_unavailable"
 
@@ -595,7 +596,9 @@ class AccountSnapshotEvidenceService:
                 net_deposits: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
                     SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
                 )
-                realized_pnl: SnapshotFinancialMetric = structural_zero
+                realized_pnl: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
+                    SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+                )
                 unrealized_pnl: SnapshotFinancialMetric = structural_zero
                 fees: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
                     SnapshotMetricUnsupportedReason.fee_classification_unavailable
