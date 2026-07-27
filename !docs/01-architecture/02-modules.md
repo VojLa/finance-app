@@ -13,7 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| snapshots             | Account and net-worth snapshot rebuilding                                  | Database schema only                                |
+| snapshots             | Pure account valuation and future snapshot persistence                      | 5I-A pure account projection implemented            |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
 
@@ -36,3 +36,10 @@ request timestamp, validates the public response, and owns the commit/rollback
 boundary around the unchanged internal writer. Exact projection failures map
 to one generic conflict response. No rebuild is triggered automatically by
 import posting, and no ImportLog is written.
+
+The Python `snapshots` module currently owns only the pure 5I-A valuation
+contract. It accepts explicit account, Holding, selected-price, selected-FX,
+cash, and liability evidence and returns deterministic typed totals and
+snapshot items. It performs no selection queries, persistence, authorization,
+current-time lookup, or provider calls. Physical account-snapshot persistence
+remains 5I-B/5I-C; `NetWorthSnapshot` remains outside Step 5I.
