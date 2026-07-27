@@ -367,14 +367,20 @@ async def _configure_non_posting_batch(prefix: str, states: list[str]) -> None:
                 row.status = ImportRowStatus.failed
                 row.normalized_data = None
                 row.deduplication_key = None
-                row.validation_errors = [{"code": "parse_failed"}]
-                row.error_message = "Parser failed."
+                row.validation_errors = {"code": "blank_row"}
+                row.error_message = "The row is blank."
             elif state == "normalization_review":
                 row.status = ImportRowStatus.needs_review
                 row.normalized_data = None
                 row.deduplication_key = None
-                row.validation_errors = [{"code": "normalization_review"}]
-                row.error_message = "Normalization review."
+                row.validation_errors = [
+                    {
+                        "field": "amount",
+                        "code": "invalid",
+                        "message": "Amount is invalid.",
+                    }
+                ]
+                row.error_message = "Row requires normalization review."
             elif state == "classification_review":
                 canonical: dict[str, Any] = {
                     "schema_version": 1,
@@ -485,6 +491,8 @@ async def _snapshot(prefix: str) -> _Snapshot:
                     row.deduplication_key,
                     row.created_transaction_id,
                     row.created_investment_event_id,
+                    deepcopy(row.validation_errors),
+                    row.error_message,
                 )
                 for row in rows
             ),
@@ -654,6 +662,14 @@ def test_mixed_non_posting_batch_partially_completes_and_replays() -> None:
         ("skipped:group_member", "unsupported_kind"),
         ("skipped:neutral_row", "error_message"),
         ("failed", "created_id"),
+        ("failed", "failed_errors_cleared"),
+        ("failed", "failed_message_cleared"),
+        ("failed", "failed_both_cleared"),
+        ("failed", "failed_evidence_tampered"),
+        ("normalization_review", "normalization_errors_cleared"),
+        ("normalization_review", "normalization_message_cleared"),
+        ("normalization_review", "normalization_message_changed"),
+        ("normalization_review", "normalization_created_id"),
         ("classification_review", "validation_errors"),
         ("classification_review", "review_message"),
     ],
@@ -684,6 +700,28 @@ def test_invalid_non_posting_row_fails_closed_without_canonical_writes(
                 row.error_message = "unexpected"
             elif corruption == "created_id":
                 row.created_transaction_id = "unexpected"
+            elif corruption == "failed_errors_cleared":
+                row.validation_errors = None
+            elif corruption == "failed_message_cleared":
+                row.error_message = None
+            elif corruption == "failed_both_cleared":
+                row.validation_errors = None
+                row.error_message = None
+            elif corruption == "failed_evidence_tampered":
+                row.validation_errors = {
+                    "code": "column_count_mismatch",
+                    "expected": 3,
+                    "actual": 2,
+                }
+                row.error_message = "The row contains more values than the header defines."
+            elif corruption == "normalization_errors_cleared":
+                row.validation_errors = None
+            elif corruption == "normalization_message_cleared":
+                row.error_message = None
+            elif corruption == "normalization_message_changed":
+                row.error_message = "Normalization review."
+            elif corruption == "normalization_created_id":
+                row.created_investment_event_id = "unexpected"
             elif corruption == "validation_errors":
                 row.validation_errors = [{"code": "tampered"}]
             else:
@@ -698,6 +736,72 @@ def test_invalid_non_posting_row_fails_closed_without_canonical_writes(
         assert before["events"] == ()
         assert before["movements"] == ()
         assert before["transactions"] == ()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("state", "corruption"),
+    [
+        ("failed", "failed_errors_cleared"),
+        ("failed", "failed_message_cleared"),
+        ("failed", "failed_both_cleared"),
+        ("failed", "failed_evidence_tampered"),
+        ("normalization_review", "normalization_errors_cleared"),
+        ("normalization_review", "normalization_message_cleared"),
+        ("normalization_review", "normalization_message_changed"),
+        ("normalization_review", "normalization_created_id"),
+    ],
+)
+def test_terminal_failure_evidence_corruption_is_not_repaired_on_replay(
+    state: str,
+    corruption: str,
+) -> None:
+    prefix = f"g5c-terminal-evidence-{corruption}"
+
+    async def scenario() -> None:
+        await _seed(prefix, source=ImportSource.manual, rows=[{"row": corruption}])
+        await _configure_non_posting_batch(prefix, [state])
+        first = await _post(prefix)
+        assert first.status is ImportStatus.partially_completed
+        assert first.rows_imported == 0
+
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            row = await session.get(ImportRowModel, f"{prefix}-row-0")
+            assert row is not None
+            if corruption == "failed_errors_cleared":
+                row.validation_errors = None
+            elif corruption == "failed_message_cleared":
+                row.error_message = None
+            elif corruption == "failed_both_cleared":
+                row.validation_errors = None
+                row.error_message = None
+            elif corruption == "failed_evidence_tampered":
+                row.validation_errors = {
+                    "code": "column_count_mismatch",
+                    "expected": 3,
+                    "actual": 2,
+                }
+                row.error_message = "The row contains more values than the header defines."
+            elif corruption == "normalization_errors_cleared":
+                row.validation_errors = None
+            elif corruption == "normalization_message_cleared":
+                row.error_message = None
+            elif corruption == "normalization_message_changed":
+                row.error_message = "Normalization review."
+            else:
+                row.created_investment_event_id = "unexpected"
+            await session.commit()
+        await engine.dispose()
+
+        tampered = await _snapshot(prefix)
+        with pytest.raises(ImportBatchPostStateError):
+            await _post(prefix)
+        assert await _snapshot(prefix) == tampered
+        assert tampered["events"] == ()
+        assert tampered["movements"] == ()
+        assert tampered["transactions"] == ()
 
     asyncio.run(scenario())
 

@@ -28,6 +28,7 @@ WRITE_ROLES = {AccountMemberRole.owner, AccountMemberRole.admin, AccountMemberRo
 _UNIQUE = {"schema_version": 1, "status": "unique"}
 _DUPLICATE = {"schema_version": 1, "status": "duplicate"}
 _REVIEW_MESSAGE = "Row requires classification review."
+_NORMALIZATION_REVIEW_MESSAGE = "Row requires normalization review."
 _TERMINAL_BATCH_STATUSES = {ImportStatus.completed, ImportStatus.partially_completed}
 
 
@@ -117,10 +118,34 @@ def _valid_skipped(row: ImportRowModel) -> bool:
 
 
 def _valid_failed(row: ImportRowModel) -> bool:
+    errors = row.validation_errors
+    valid_evidence = False
+    if isinstance(errors, dict):
+        if errors == {"code": "blank_row"}:
+            valid_evidence = row.error_message == "The row is blank."
+        elif set(errors) == {"code", "expected", "actual"}:
+            expected = errors.get("expected")
+            actual = errors.get("actual")
+            if (
+                errors.get("code") == "column_count_mismatch"
+                and isinstance(expected, int)
+                and not isinstance(expected, bool)
+                and expected > 0
+                and isinstance(actual, int)
+                and not isinstance(actual, bool)
+                and actual >= 0
+                and actual != expected
+            ):
+                valid_evidence = row.error_message == (
+                    "The row contains more values than the header defines."
+                    if actual > expected
+                    else "The row contains fewer values than the header defines."
+                )
     return (
         row.status is ImportRowStatus.failed
         and row.normalized_data is None
         and row.deduplication_key is None
+        and valid_evidence
         and row.created_transaction_id is None
         and row.created_investment_event_id is None
     )
@@ -131,7 +156,11 @@ def _valid_review(row: ImportRowModel) -> bool:
         return False
     if row.normalized_data is None:
         return (
-            row.deduplication_key is None
+            isinstance(row.validation_errors, list)
+            and bool(row.validation_errors)
+            and all(isinstance(error, dict) and bool(error) for error in row.validation_errors)
+            and row.error_message == _NORMALIZATION_REVIEW_MESSAGE
+            and row.deduplication_key is None
             and row.created_transaction_id is None
             and row.created_investment_event_id is None
         )

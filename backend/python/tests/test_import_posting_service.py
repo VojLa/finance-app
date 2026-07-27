@@ -159,10 +159,10 @@ def _failed(row_id: str = "failed") -> ImportRowModel:
             row_number=5,
             raw_data={"preserved": True},
             normalized_data=None,
-            validation_errors=[{"code": "parse_failed"}],
+            validation_errors={"code": "blank_row"},
             deduplication_key=None,
             status=ImportRowStatus.failed,
-            error_message="Parser failed.",
+            error_message="The row is blank.",
             created_transaction_id=None,
             created_investment_event_id=None,
             created_at=datetime(2026, 7, 25, 10),
@@ -179,10 +179,16 @@ def _review(row_id: str = "review") -> ImportRowModel:
             row_number=6,
             raw_data={"preserved": True},
             normalized_data=None,
-            validation_errors=[{"code": "normalization_review"}],
+            validation_errors=[
+                {
+                    "field": "amount",
+                    "code": "invalid",
+                    "message": "Amount is invalid.",
+                }
+            ],
             deduplication_key=None,
             status=ImportRowStatus.needs_review,
-            error_message="Normalization review.",
+            error_message="Row requires normalization review.",
             created_transaction_id=None,
             created_investment_event_id=None,
             created_at=datetime(2026, 7, 25, 10),
@@ -334,6 +340,40 @@ def test_zero_import_batches_finalize_without_invoking_a_writer(
     session.rollback.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("expected", "actual", "message"),
+    [
+        (3, 2, "The row contains fewer values than the header defines."),
+        (3, 4, "The row contains more values than the header defines."),
+    ],
+)
+def test_parser_column_count_failure_evidence_remains_postable_terminal_state(
+    monkeypatch: pytest.MonkeyPatch,
+    expected: int,
+    actual: int,
+    message: str,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    row = _failed(f"column-count-{actual}")
+    row.validation_errors = {
+        "code": "column_count_mismatch",
+        "expected": expected,
+        "actual": actual,
+    }
+    row.error_message = message
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    session = _session()
+    service = _service(session, _batch(skipped=1), [row])
+
+    result = _run(service.post_batch(_command()))
+
+    assert result.status is ImportStatus.partially_completed
+    assert (result.rows_total, result.rows_imported, result.rows_skipped) == (1, 0, 1)
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+
+
 def test_zero_import_terminal_replay_is_exact_and_does_not_invoke_a_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -398,6 +438,74 @@ def test_malformed_non_posting_terminal_rows_still_fail_closed(
     with pytest.raises(ImportBatchPostStateError):
         _run(service.post_batch(_command()))
 
+    session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("row", "corruption"),
+    [
+        (_failed("failed-errors-cleared"), "errors_cleared"),
+        (_failed("failed-message-cleared"), "message_cleared"),
+        (_failed("failed-both-cleared"), "both_cleared"),
+        (_failed("failed-evidence-tampered"), "evidence_tampered"),
+        (_review("review-errors-cleared"), "errors_cleared"),
+        (_review("review-message-cleared"), "message_cleared"),
+        (_review("review-message-changed"), "message_changed"),
+        (_review("review-created-id"), "created_id"),
+    ],
+)
+def test_invalid_failure_evidence_fails_before_writers_or_batch_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    row: ImportRowModel,
+    corruption: str,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    if corruption == "errors_cleared":
+        row.validation_errors = None
+    elif corruption == "message_cleared":
+        row.error_message = None
+    elif corruption == "both_cleared":
+        row.validation_errors = None
+        row.error_message = None
+    elif corruption == "evidence_tampered":
+        row.validation_errors = {"code": "column_count_mismatch", "expected": 3, "actual": 2}
+        row.error_message = "The row contains more values than the header defines."
+    elif corruption == "message_changed":
+        row.error_message = "Normalization review."
+    else:
+        row.created_investment_event_id = "unexpected"
+
+    class _ForbiddenWriter:
+        def __init__(self, _: object) -> None:
+            raise AssertionError("Invalid terminal evidence must fail before row writers")
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportTransactionPostingWriter", _ForbiddenWriter)
+    monkeypatch.setattr(posting, "ImportInvestmentPostingWriter", _ForbiddenWriter)
+    session = _session()
+    batch = _batch(skipped=1)
+    batch_before = (
+        batch.status,
+        batch.rows_total,
+        batch.rows_imported,
+        batch.rows_skipped,
+        batch.completed_at,
+    )
+    service = _service(session, batch, [row])
+
+    with pytest.raises(ImportBatchPostStateError):
+        _run(service.post_batch(_command()))
+
+    assert (
+        batch.status,
+        batch.rows_total,
+        batch.rows_imported,
+        batch.rows_skipped,
+        batch.completed_at,
+    ) == batch_before
     session.flush.assert_not_awaited()
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once()
