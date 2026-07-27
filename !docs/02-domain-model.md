@@ -73,3 +73,14 @@ adopted by the pure boundary; database defaults are not treated as financial
 proof and these values are not silently zeroed. Price/FX selection, JSONB
 serialization, persistence metadata, writer/orchestration, and all
 `NetWorthSnapshot` work remain later steps.
+
+The 5I-B adapter selects the latest unambiguous persisted price per open
+listing and direct `native -> account currency` FX. Snapshot valuation uses
+snapshot-as-of FX; lifetime net deposits, explicit realized P/L, outgoing fee,
+and outgoing tax evidence use event-as-of FX. Bank/cash/savings balance is the
+active signed Transaction history; investment cash is the active canonical
+cash/fee/tax movement history. Liability accounts remain fail-closed because
+the schema has no opening or dedicated liability-balance evidence. Asset
+transfers also remain fail-closed for net-deposit metrics because counter-account
+identity is not persisted. The adapter returns immutable evidence, never writes
+`AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
