@@ -126,6 +126,70 @@ def _duplicate(row_id: str = "duplicate") -> ImportRowModel:
     )
 
 
+def _skipped(row_id: str = "skipped", kind: str = "group_member") -> ImportRowModel:
+    return cast(
+        ImportRowModel,
+        SimpleNamespace(
+            id=row_id,
+            import_batch_id="batch",
+            row_number=4,
+            raw_data={"preserved": True},
+            normalized_data={
+                "schema_version": 2,
+                "source": "anycoin",
+                "kind": kind,
+            },
+            validation_errors=None,
+            deduplication_key=None,
+            status=ImportRowStatus.skipped,
+            error_message=None,
+            created_transaction_id=None,
+            created_investment_event_id=None,
+            created_at=datetime(2026, 7, 25, 10),
+        ),
+    )
+
+
+def _failed(row_id: str = "failed") -> ImportRowModel:
+    return cast(
+        ImportRowModel,
+        SimpleNamespace(
+            id=row_id,
+            import_batch_id="batch",
+            row_number=5,
+            raw_data={"preserved": True},
+            normalized_data=None,
+            validation_errors=[{"code": "parse_failed"}],
+            deduplication_key=None,
+            status=ImportRowStatus.failed,
+            error_message="Parser failed.",
+            created_transaction_id=None,
+            created_investment_event_id=None,
+            created_at=datetime(2026, 7, 25, 10),
+        ),
+    )
+
+
+def _review(row_id: str = "review") -> ImportRowModel:
+    return cast(
+        ImportRowModel,
+        SimpleNamespace(
+            id=row_id,
+            import_batch_id="batch",
+            row_number=6,
+            raw_data={"preserved": True},
+            normalized_data=None,
+            validation_errors=[{"code": "normalization_review"}],
+            deduplication_key=None,
+            status=ImportRowStatus.needs_review,
+            error_message="Normalization review.",
+            created_transaction_id=None,
+            created_investment_event_id=None,
+            created_at=datetime(2026, 7, 25, 10),
+        ),
+    )
+
+
 def _session() -> MagicMock:
     session = MagicMock(spec=AsyncSession)
     session.commit = AsyncMock()
@@ -223,6 +287,120 @@ def test_completed_replay_preserves_counters_timestamp_and_uses_writer(
     writer.assert_awaited_once()
     session.flush.assert_not_awaited()
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected_status"),
+    [
+        ([_duplicate()], ImportStatus.completed),
+        (
+            [
+                _skipped("group", "group_member"),
+                _skipped("refund", "fully_refunded_group"),
+            ],
+            ImportStatus.completed,
+        ),
+        ([_review(), _failed()], ImportStatus.partially_completed),
+    ],
+)
+def test_zero_import_batches_finalize_without_invoking_a_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[ImportRowModel],
+    expected_status: ImportStatus,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    class _ForbiddenWriter:
+        def __init__(self, _: object) -> None:
+            raise AssertionError("A zero-import batch must not instantiate a row writer")
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportTransactionPostingWriter", _ForbiddenWriter)
+    monkeypatch.setattr(posting, "ImportInvestmentPostingWriter", _ForbiddenWriter)
+    session = _session()
+    batch = _batch(total=len(rows), skipped=len(rows))
+    service = _service(session, batch, rows)
+
+    result = _run(service.post_batch(_command()))
+
+    assert result.status is expected_status
+    assert result.rows_total == len(rows)
+    assert result.rows_imported == 0
+    assert result.rows_skipped == len(rows)
+    assert result.completed_at is batch.completed_at
+    assert result.replayed is False
+    session.flush.assert_awaited_once()
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+
+
+def test_zero_import_terminal_replay_is_exact_and_does_not_invoke_a_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    class _ForbiddenWriter:
+        def __init__(self, _: object) -> None:
+            raise AssertionError("A zero-import replay must not instantiate a row writer")
+
+    completed_at = datetime(2026, 7, 25, 12)
+    batch = _batch(
+        status=ImportStatus.completed,
+        imported=0,
+        skipped=1,
+        completed_at=completed_at,
+    )
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportTransactionPostingWriter", _ForbiddenWriter)
+    monkeypatch.setattr(posting, "ImportInvestmentPostingWriter", _ForbiddenWriter)
+    session = _session()
+    service = _service(session, batch, [_duplicate()])
+
+    result = _run(service.post_batch(_command()))
+
+    assert result.replayed is True
+    assert result.status is ImportStatus.completed
+    assert (result.rows_total, result.rows_imported, result.rows_skipped) == (1, 0, 1)
+    assert result.completed_at == completed_at
+    session.flush.assert_not_awaited()
+    session.commit.assert_awaited_once()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _duplicate("duplicate-no-key"),
+        _skipped("skipped-error"),
+        _failed("failed-created"),
+        _review("review-created"),
+    ],
+)
+def test_malformed_non_posting_terminal_rows_still_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    row: ImportRowModel,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    if row.id == "duplicate-no-key":
+        row.deduplication_key = None
+    elif row.id == "skipped-error":
+        row.error_message = "unexpected"
+    elif row.id == "failed-created":
+        row.created_transaction_id = "unexpected"
+    else:
+        row.created_investment_event_id = "unexpected"
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    session = _session()
+    service = _service(session, _batch(skipped=1), [row])
+
+    with pytest.raises(ImportBatchPostStateError):
+        _run(service.post_batch(_command()))
+
+    session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -364,4 +542,6 @@ def test_access_boundary_receives_write_roles_before_batch_lookup(
         "admin",
         "editor",
     }
+    assert access.await_args.kwargs["for_update"] is True
     service.repository.get_for_account.assert_not_awaited()
+    session.rollback.assert_awaited_once()

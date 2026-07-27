@@ -46,6 +46,7 @@ async def require_account_access(
     account_id: str,
     allowed_roles: Collection[AccountMemberRole] | None = None,
     include_archived: bool = False,
+    for_update: bool = False,
 ) -> AuthorizedAccount:
     """Resolve account membership without revealing foreign account existence."""
 
@@ -63,6 +64,8 @@ async def require_account_access(
     )
     if not include_archived:
         statement = statement.where(AccountModel.is_archived.is_(False))
+    if for_update:
+        statement = statement.with_for_update(of=AccountMemberModel)
 
     row = (await session.execute(statement)).one_or_none()
     if row is None:

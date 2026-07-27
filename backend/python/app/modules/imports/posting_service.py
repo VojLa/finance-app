@@ -238,7 +238,6 @@ def _preflight(
             or batch.completed_at is None
             or batch.rows_imported != imported
             or batch.rows_skipped != skipped
-            or imported == 0
         ):
             raise ImportBatchPostStateError()
     elif (
@@ -247,7 +246,6 @@ def _preflight(
         or batch.rows_imported != imported
         or batch.rows_skipped != skipped
         or imported != 0
-        or not any(row.status is ImportRowStatus.pending for row in rows)
     ):
         raise ImportBatchPostStateError()
     return counts
@@ -259,13 +257,16 @@ class ImportBatchPostingService:
         self.repository = ImportBatchRepository(session)
 
     async def post_batch(self, command: PostImportBatchCommand) -> ImportPostResponse:
-        await require_account_access(
-            session=self.session,
-            principal=command.principal,
-            account_id=command.account_id,
-            allowed_roles=WRITE_ROLES,
-        )
         try:
+            # Lock the persisted membership for the transaction so a concurrent role
+            # revocation cannot commit between authorization and canonical posting.
+            await require_account_access(
+                session=self.session,
+                principal=command.principal,
+                account_id=command.account_id,
+                allowed_roles=WRITE_ROLES,
+                for_update=True,
+            )
             batch = await self.repository.get_for_account(
                 account_id=command.account_id,
                 batch_id=command.batch_id,
@@ -314,7 +315,7 @@ class ImportBatchPostingService:
                     row.status in {ImportRowStatus.failed, ImportRowStatus.needs_review}
                     for row in rows
                 )
-                if imported == 0 or imported + skipped != len(rows):
+                if imported + skipped != len(rows):
                     raise ImportBatchPostStateError()
                 batch.rows_total = len(rows)
                 batch.rows_imported = imported

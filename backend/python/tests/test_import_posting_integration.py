@@ -30,6 +30,7 @@ from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
+from app.modules.imports.classification import classify_import_row
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.investment_posting import ImportInvestmentPostingWriter
@@ -324,6 +325,91 @@ async def _remove_asset_identities(provider_symbols: set[str]) -> None:
     await engine.dispose()
 
 
+async def _configure_non_posting_batch(prefix: str, states: list[str]) -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        batch = await session.get(ImportBatchModel, f"{prefix}-batch")
+        assert batch is not None
+        rows = list(
+            (
+                await session.scalars(
+                    select(ImportRowModel)
+                    .where(ImportRowModel.import_batch_id == batch.id)
+                    .order_by(ImportRowModel.row_number, ImportRowModel.id)
+                )
+            ).all()
+        )
+        assert len(rows) == len(states)
+        for row, state in zip(rows, states, strict=True):
+            row.created_transaction_id = None
+            row.created_investment_event_id = None
+            if state == "duplicate":
+                row.status = ImportRowStatus.duplicate
+                row.normalized_data = {
+                    "schema_version": 1,
+                    "source": batch.source.value,
+                    "deduplication": {"schema_version": 1, "status": "duplicate"},
+                }
+                row.deduplication_key = f"{prefix}-{row.id}-duplicate"
+                row.validation_errors = None
+                row.error_message = "Duplicate normalized import row."
+            elif state.startswith("skipped:"):
+                row.status = ImportRowStatus.skipped
+                row.normalized_data = {
+                    "schema_version": 2,
+                    "source": "anycoin",
+                    "kind": state.removeprefix("skipped:"),
+                }
+                row.deduplication_key = None
+                row.validation_errors = None
+                row.error_message = None
+            elif state == "failed":
+                row.status = ImportRowStatus.failed
+                row.normalized_data = None
+                row.deduplication_key = None
+                row.validation_errors = [{"code": "parse_failed"}]
+                row.error_message = "Parser failed."
+            elif state == "normalization_review":
+                row.status = ImportRowStatus.needs_review
+                row.normalized_data = None
+                row.deduplication_key = None
+                row.validation_errors = [{"code": "normalization_review"}]
+                row.error_message = "Normalization review."
+            elif state == "classification_review":
+                canonical: dict[str, Any] = {
+                    "schema_version": 1,
+                    "source": "manual",
+                    "date": "2026-07-25",
+                    "amount": "10",
+                    "currency": "EUR",
+                    "type": "transfer",
+                    "external_id": row.id,
+                }
+                intent = classify_import_row(
+                    source=ImportSource.manual,
+                    normalized_data=canonical,
+                ).model_dump(mode="json")
+                assert intent["target"] == "needs_review"
+                row.status = ImportRowStatus.needs_review
+                row.normalized_data = {
+                    **canonical,
+                    "deduplication": {"schema_version": 1, "status": "unique"},
+                    "posting_intent": intent,
+                }
+                row.deduplication_key = f"{prefix}-{row.id}-review"
+                row.validation_errors = deepcopy(intent["errors"])
+                row.error_message = "Row requires classification review."
+            else:
+                raise AssertionError(f"Unsupported test state: {state}")
+        batch.status = ImportStatus.processing
+        batch.rows_total = len(rows)
+        batch.rows_imported = 0
+        batch.rows_skipped = len(rows)
+        batch.completed_at = None
+        await session.commit()
+    await engine.dispose()
+
+
 async def _post(prefix: str, user: str = "owner"):
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -415,6 +501,205 @@ async def _snapshot(prefix: str) -> _Snapshot:
         }
     await engine.dispose()
     return value
+
+
+async def _assert_zero_import_roundtrip(
+    prefix: str,
+    *,
+    expected_status: ImportStatus,
+    total: int,
+) -> None:
+    before = await _snapshot(prefix)
+    first = await _post(prefix)
+    after_first = await _snapshot(prefix)
+    second = await _post(prefix)
+    after_second = await _snapshot(prefix)
+
+    assert first.status is expected_status
+    assert first.replayed is False
+    assert (first.rows_total, first.rows_imported, first.rows_skipped) == (total, 0, total)
+    assert first.completed_at is not None
+    assert second.model_dump() == first.model_copy(update={"replayed": True}).model_dump()
+    assert after_first == after_second
+    assert after_first["batch"] == (
+        expected_status,
+        total,
+        0,
+        total,
+        first.completed_at,
+    )
+    assert after_first["rows"] == before["rows"]
+    for key in ("events", "movements", "transactions", "assets", "listings", "aliases"):
+        assert after_first[key] == before[key]
+
+
+def test_duplicate_only_batch_finalizes_and_replays_without_canonical_writes() -> None:
+    prefix = "g5c-zero-duplicate"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.manual,
+            rows=[_manual("duplicate-a"), _manual("duplicate-b")],
+        )
+        await _configure_non_posting_batch(prefix, ["duplicate", "duplicate"])
+        await _assert_zero_import_roundtrip(
+            prefix,
+            expected_status=ImportStatus.completed,
+            total=2,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_skipped_only_batch_finalizes_and_replays_without_canonical_writes() -> None:
+    prefix = "g5c-zero-skipped"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.anycoin,
+            rows=[{"row": kind} for kind in ("group", "refund", "neutral")],
+        )
+        await _configure_non_posting_batch(
+            prefix,
+            [
+                "skipped:group_member",
+                "skipped:fully_refunded_group",
+                "skipped:neutral_row",
+            ],
+        )
+        await _assert_zero_import_roundtrip(
+            prefix,
+            expected_status=ImportStatus.completed,
+            total=3,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_needs_review_only_batch_partially_completes_and_replays() -> None:
+    prefix = "g5c-zero-review"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.manual,
+            rows=[_manual("review-a"), _manual("review-b")],
+        )
+        await _configure_non_posting_batch(
+            prefix,
+            ["classification_review", "classification_review"],
+        )
+        await _assert_zero_import_roundtrip(
+            prefix,
+            expected_status=ImportStatus.partially_completed,
+            total=2,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_failed_only_batch_partially_completes_and_replays() -> None:
+    prefix = "g5c-zero-failed"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.manual,
+            rows=[_manual("failed-a"), _manual("failed-b")],
+        )
+        await _configure_non_posting_batch(prefix, ["failed", "failed"])
+        await _assert_zero_import_roundtrip(
+            prefix,
+            expected_status=ImportStatus.partially_completed,
+            total=2,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_mixed_non_posting_batch_partially_completes_and_replays() -> None:
+    prefix = "g5c-zero-mixed"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.anycoin,
+            rows=[{"row": str(index)} for index in range(4)],
+        )
+        await _configure_non_posting_batch(
+            prefix,
+            [
+                "duplicate",
+                "skipped:neutral_row",
+                "normalization_review",
+                "failed",
+            ],
+        )
+        await _assert_zero_import_roundtrip(
+            prefix,
+            expected_status=ImportStatus.partially_completed,
+            total=4,
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("state", "corruption"),
+    [
+        ("duplicate", "missing_key"),
+        ("duplicate", "posting_intent"),
+        ("skipped:group_member", "unsupported_kind"),
+        ("skipped:neutral_row", "error_message"),
+        ("failed", "created_id"),
+        ("classification_review", "validation_errors"),
+        ("classification_review", "review_message"),
+    ],
+)
+def test_invalid_non_posting_row_fails_closed_without_canonical_writes(
+    state: str,
+    corruption: str,
+) -> None:
+    prefix = f"g5c-zero-invalid-{corruption}"
+
+    async def scenario() -> None:
+        source = ImportSource.anycoin if state.startswith("skipped:") else ImportSource.manual
+        await _seed(prefix, source=source, rows=[{"row": corruption}])
+        await _configure_non_posting_batch(prefix, [state])
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            row = await session.get(ImportRowModel, f"{prefix}-row-0")
+            assert row is not None
+            if corruption == "missing_key":
+                row.deduplication_key = None
+            elif corruption == "posting_intent":
+                assert isinstance(row.normalized_data, dict)
+                row.normalized_data = {**row.normalized_data, "posting_intent": {"target": "x"}}
+            elif corruption == "unsupported_kind":
+                assert isinstance(row.normalized_data, dict)
+                row.normalized_data = {**row.normalized_data, "kind": "unsupported"}
+            elif corruption == "error_message":
+                row.error_message = "unexpected"
+            elif corruption == "created_id":
+                row.created_transaction_id = "unexpected"
+            elif corruption == "validation_errors":
+                row.validation_errors = [{"code": "tampered"}]
+            else:
+                row.error_message = "tampered"
+            await session.commit()
+        await engine.dispose()
+
+        before = await _snapshot(prefix)
+        with pytest.raises(ImportBatchPostStateError):
+            await _post(prefix)
+        assert await _snapshot(prefix) == before
+        assert before["events"] == ()
+        assert before["movements"] == ()
+        assert before["transactions"] == ()
+
+    asyncio.run(scenario())
 
 
 def test_manual_batch_posts_atomically_and_exact_replay_is_stable() -> None:
@@ -727,6 +1012,76 @@ def test_persisted_collaborator_authorization_matrix(
             with pytest.raises(AccountAccessDeniedError):
                 await _post(prefix, "other")
             assert await _snapshot(prefix) == before
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_role_revocation_blocks_posting_and_is_revalidated() -> None:
+    prefix = "g5c-auth-revocation"
+
+    async def scenario() -> None:
+        await _seed(
+            prefix,
+            source=ImportSource.manual,
+            rows=[_manual("revocation")],
+            other_role=AccountMemberRole.editor,
+        )
+        await _prepare(prefix)
+        before = await _snapshot(prefix)
+        engine = _engine()
+
+        async with (
+            AsyncSession(engine) as revocation_session,
+            AsyncSession(engine) as posting_session,
+        ):
+            membership = await revocation_session.scalar(
+                select(AccountMemberModel)
+                .where(AccountMemberModel.id == f"{prefix}-other-member")
+                .with_for_update()
+            )
+            assert membership is not None
+            membership.role = AccountMemberRole.viewer
+            await revocation_session.flush()
+
+            posting_pid = int(await posting_session.scalar(text("SELECT pg_backend_pid()")))
+            posting_task = asyncio.create_task(
+                ImportBatchPostingService(posting_session).post_batch(
+                    PostImportBatchCommand(
+                        principal=_principal(f"{prefix}-other"),
+                        account_id=f"{prefix}-account",
+                        batch_id=f"{prefix}-batch",
+                    )
+                )
+            )
+
+            blocked = False
+            async with AsyncSession(engine) as inspector:
+                for _ in range(100):
+                    state = (
+                        await inspector.execute(
+                            text(
+                                "SELECT cardinality(pg_blocking_pids(:pid)), wait_event_type "
+                                "FROM pg_stat_activity WHERE pid = :pid"
+                            ),
+                            {"pid": posting_pid},
+                        )
+                    ).one()
+                    if int(state[0] or 0) and state[1] == "Lock":
+                        blocked = True
+                        break
+                    await asyncio.sleep(0.02)
+            assert blocked
+
+            await revocation_session.commit()
+            result = await asyncio.wait_for(
+                asyncio.gather(posting_task, return_exceptions=True),
+                timeout=10,
+            )
+
+        await engine.dispose()
+        assert len(result) == 1
+        assert isinstance(result[0], AccountAccessDeniedError)
+        assert await _snapshot(prefix) == before
 
     asyncio.run(scenario())
 
