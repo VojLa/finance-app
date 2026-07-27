@@ -73,3 +73,36 @@ adopted by the pure boundary; database defaults are not treated as financial
 proof and these values are not silently zeroed. Price/FX selection, JSONB
 serialization, persistence metadata, writer/orchestration, and all
 `NetWorthSnapshot` work remain later steps.
+
+The 5I-B adapter selects the latest unambiguous persisted price per open
+listing and direct `native -> account currency` FX. Snapshot valuation uses
+snapshot-as-of FX; lifetime net deposits, explicit realized P/L, outgoing fee,
+and outgoing tax evidence use event-as-of FX. Bank/cash/savings balance is the
+active signed Transaction history; investment cash is the active canonical
+cash/fee/tax movement history. Liability accounts remain fail-closed because
+the schema has no opening or dedicated liability-balance evidence. Asset
+transfers also remain fail-closed for net-deposit metrics because counter-account
+identity is not persisted. The adapter returns immutable evidence, never writes
+`AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
+
+`TransactionType` and `TransactionClassification` do not persist explicit
+external-deposit, external-withdrawal, bank-fee, tax, interest, or dividend
+semantics. Consequently, ordinary income/expense and transfer classifications
+may affect a cash-account balance but cannot prove net deposits, fees, or taxes.
+Those metrics use an explicit unsupported result variant, not zero; descriptions,
+categories, counterparties, notes, amount signs, and account type are never used
+to infer them. Future 5I-C must reject unsupported metrics instead of mapping
+them to the physical column defaults. Investment value, cost basis, and
+unrealized investment P/L are structurally zero for bank/cash/savings because
+these account types cannot contain Holdings under the snapshot contract.
+Realized investment P/L remains unsupported: the physical schema does not
+constrain InvestmentEvent ownership by Account type, so absence of a Holding
+does not prove a lifetime realized-P/L zero.
+
+Supported 5I-B account types are bank, cash, savings, broker, exchange, and
+crypto wallet. For these types, liability is structurally impossible in the
+account-type snapshot contract, so the exact liability aggregate is zero and
+its native breakdown is empty. This must not be confused with an unknown
+liability balance. Credit-card, loan, and mortgage accounts fail before
+projection because the schema cannot prove opening principal or outstanding
+balance; a future 5I-L canonical liability contract owns that prerequisite.
