@@ -13,8 +13,13 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.enums import ImportSource, ImportStatus
 from app.main import create_app
-from app.modules.imports.models import ImportBatchResponse
-from app.modules.imports.service import ImportBatchService
+from app.modules.accounts.access import AccountNotFoundError
+from app.modules.imports.models import ImportBatchResponse, ImportPostResponse
+from app.modules.imports.posting_service import (
+    ImportBatchPostingService,
+    ImportBatchPostStateError,
+)
+from app.modules.imports.service import ImportBatchNotFoundError, ImportBatchService
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -36,6 +41,18 @@ def _batch() -> ImportBatchResponse:
         rows_skipped=None,
         created_at=datetime(2026, 7, 19, 18, 0, 0),
         completed_at=None,
+    )
+
+
+def _post_response() -> ImportPostResponse:
+    return ImportPostResponse(
+        batch_id="batch-a",
+        status=ImportStatus.completed,
+        rows_total=2,
+        rows_imported=1,
+        rows_skipped=1,
+        completed_at=datetime(2026, 7, 25, 12),
+        replayed=False,
     )
 
 
@@ -61,6 +78,7 @@ def _client(test_settings: Settings) -> TestClient:
         ),
         ("get", "/api/v1/accounts/account-a/imports", None),
         ("get", "/api/v1/accounts/account-a/imports/batch-a", None),
+        ("post", "/api/v1/accounts/account-a/imports/batch-a/post", None),
     ],
 )
 def test_import_batch_endpoints_require_authentication(
@@ -86,6 +104,7 @@ def test_import_batch_endpoints_require_authentication(
         ),
         ("get", "/api/v1/accounts/account-a/imports", None),
         ("get", "/api/v1/accounts/account-a/imports/batch-a", None),
+        ("post", "/api/v1/accounts/account-a/imports/batch-a/post", None),
     ],
 )
 def test_import_batch_endpoints_reject_invalid_authentication(
@@ -176,7 +195,75 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
         "/api/v1/accounts/{account_id}/imports/{batch_id}/file",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/normalize",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/parse",
+        "/api/v1/accounts/{account_id}/imports/{batch_id}/post",
     ]
+
+
+def test_post_import_batch_endpoint_is_thin_and_stable(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    post_batch = AsyncMock(return_value=_post_response())
+    monkeypatch.setattr(ImportBatchPostingService, "post_batch", post_batch)
+
+    with _client(test_settings) as client:
+        response = client.post("/api/v1/accounts/account-a/imports/batch-a/post")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "batch_id": "batch-a",
+        "status": "completed",
+        "rows_total": 2,
+        "rows_imported": 1,
+        "rows_skipped": 1,
+        "completed_at": "2026-07-25T12:00:00",
+        "replayed": False,
+    }
+    assert post_batch.await_args is not None
+    command = post_batch.await_args.args[0]
+    assert command.principal.user_id == "user-a"
+    assert command.account_id == "account-a"
+    assert command.batch_id == "batch-a"
+
+
+def test_post_import_batch_openapi_contract(test_settings: Settings) -> None:
+    operation = create_app(test_settings).openapi()["paths"][
+        "/api/v1/accounts/{account_id}/imports/{batch_id}/post"
+    ]["post"]
+
+    assert operation["security"] == [{"InternalSessionToken": []}]
+    assert "requestBody" not in operation
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ImportPostResponse"
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (AccountNotFoundError(), 404, "account_not_found"),
+        (ImportBatchNotFoundError(), 404, "import_batch_not_found"),
+        (ImportBatchPostStateError(), 409, "import_post_batch_state_invalid"),
+    ],
+)
+def test_post_import_batch_maps_domain_failures(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status_code: int,
+    code: str,
+) -> None:
+    monkeypatch.setattr(
+        ImportBatchPostingService,
+        "post_batch",
+        AsyncMock(side_effect=error),
+    )
+
+    with _client(test_settings) as client:
+        response = client.post("/api/v1/accounts/account-a/imports/batch-a/post")
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
 
 
 def test_classify_openapi_and_authentication_contract(test_settings: Settings) -> None:

@@ -2,6 +2,7 @@ from typing import NamedTuple, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
@@ -175,3 +176,31 @@ async def test_require_account_access_can_include_archived_without_weakening_mem
     assert '"AccountMember"."userId" = \'user-a\'' in compiled
     assert 'public."Account".id = public."AccountMember"."accountId"' in compiled
     assert '"Account"."isArchived"' not in compiled
+
+
+@pytest.mark.asyncio
+async def test_require_account_access_can_lock_only_the_membership_row() -> None:
+    session, execute = _session(
+        _MembershipRow(
+            account_id="account-a",
+            role=AccountMemberRole.editor,
+            relation_type=AccountRelationType.collaborator,
+        )
+    )
+
+    await require_account_access(
+        session=session,
+        principal=_principal(),
+        account_id="account-a",
+        allowed_roles={AccountMemberRole.editor},
+        for_update=True,
+    )
+
+    assert execute.await_args is not None
+    compiled = str(
+        execute.await_args.args[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert 'FOR UPDATE OF "AccountMember"' in compiled
