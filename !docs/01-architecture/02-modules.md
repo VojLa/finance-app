@@ -12,7 +12,7 @@ thin and shared database infrastructure lives outside modules.
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX | Basic read endpoint implemented                     |
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
-| holdings              | Rebuild holdings from canonical history                                    | Database schema only; portfolio reads existing rows |
+| holdings              | Project and later rebuild holdings from canonical history                  | Pure quantity projection implemented; database rebuild not implemented |
 | snapshots             | Account and net-worth snapshot rebuilding                                  | Database schema only                                |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |

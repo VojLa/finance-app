@@ -13,7 +13,7 @@ application service yet.
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
 | Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                       |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; rebuild is not implemented |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; pure quantity projection exists, database rebuild is not implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
 | Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only                                   |
 
@@ -33,6 +33,12 @@ application service yet.
   account and source.
 - Holdings and snapshots are rebuildable read models. They must never replace
   transactions or ledger events as the historical source of truth.
+
+The Python holdings domain now has a pure deterministic contract that validates
+and aggregates active canonical `InvestmentMovement` quantity by the physical
+`(accountId, listingId)` identity. It performs no database writes. Cost basis,
+required persistence metadata, the rebuild writer, and public orchestration
+remain deferred.
 
 ## Money and snapshot invariants
 
