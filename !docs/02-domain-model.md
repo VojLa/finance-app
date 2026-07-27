@@ -15,7 +15,7 @@ application service yet.
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A pure account valuation implemented       |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-C valuation/evidence/physical projections implemented |
 
 ## Important relationships
 
@@ -91,8 +91,8 @@ semantics. Consequently, ordinary income/expense and transfer classifications
 may affect a cash-account balance but cannot prove net deposits, fees, or taxes.
 Those metrics use an explicit unsupported result variant, not zero; descriptions,
 categories, counterparties, notes, amount signs, and account type are never used
-to infer them. Future 5I-C must reject unsupported metrics instead of mapping
-them to the physical column defaults. Investment value, cost basis, and
+to infer them. The 5I-C physical projection rejects unsupported metrics instead
+of mapping them to the physical column defaults. Investment value, cost basis, and
 unrealized investment P/L are structurally zero for bank/cash/savings because
 these account types cannot contain Holdings under the snapshot contract.
 Realized investment P/L remains unsupported: the physical schema does not
@@ -106,3 +106,16 @@ its native breakdown is empty. This must not be confused with an unknown
 liability balance. Credit-card, loan, and mortgage accounts fail before
 projection because the schema cannot prove opening principal or outstanding
 balance; a future 5I-L canonical liability contract owns that prerequisite.
+
+The pure 5I-C adapter maps exact 5I-B evidence to every physical snapshot and
+item column without ORM construction or database access. Snapshot identity is
+deterministic by account, millisecond timestamp, output currency, and
+granularity; item identity is deterministic by snapshot and listing. JSONB
+currency breakdowns use sorted uppercase keys and fixed-scale decimal strings.
+An empty exact breakdown is `{}`, while an unavailable native breakdown is
+`null`. The versioned exchange-rate audit stores full consumed snapshot-rate
+evidence and selected historical rate IDs. Selected price IDs remain immutable
+non-row audit metadata because the physical schema has no price-evidence
+column. The physical schema likewise has no liability-breakdown column.
+Database mutation, replay/upsert behavior, locks, and authorization remain
+5I-D and 5I-E.
