@@ -13,7 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| snapshots             | Exact account valuation evidence and future snapshot persistence             | 5I-A valuation plus 5I-B read-only evidence selection implemented |
+| snapshots             | Exact account valuation evidence and physical persistence plans                | 5I-A–5I-C pure/read-only boundaries implemented |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
 
@@ -37,8 +37,9 @@ boundary around the unchanged internal writer. Exact projection failures map
 to one generic conflict response. No rebuild is triggered automatically by
 import posting, and no ImportLog is written.
 
-The Python `snapshots` module owns the pure 5I-A valuation contract and the
-read-only, caller-transaction-owned 5I-B persisted-evidence adapter. The adapter
+The Python `snapshots` module owns the pure 5I-A valuation contract, the
+read-only, caller-transaction-owned 5I-B persisted-evidence adapter, and the
+pure 5I-C physical projection. The adapter
 selects latest unambiguous persisted prices and direct FX, derives active
 account-type-specific balances, and derives lifetime financial metrics only
 where persisted classifications prove completeness, then delegates valuation
@@ -46,7 +47,9 @@ arithmetic to 5I-A. Cash-account net deposits, realized investment P/L, fees,
 and taxes are tagged unsupported rather than silently zeroed because persisted
 evidence does not prove them complete. Cash-account unrealized P/L is
 structurally zero because Holdings are forbidden. It writes no snapshot rows
-and owns no transaction.
-Physical projection/writing/public orchestration remain 5I-C–5I-E;
+and owns no transaction. 5I-C rejects every unsupported physical metric,
+generates deterministic snapshot/item UUIDv5 identities, serializes exact
+fixed-scale JSONB evidence, and maps every ORM column without constructing ORM
+entities. Database writing/public orchestration remain 5I-D–5I-E;
 canonical liability balance support is deferred to 5I-L, and
 `NetWorthSnapshot` remains outside Step 5I.
