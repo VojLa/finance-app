@@ -13,7 +13,7 @@ application service yet.
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
 | Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                       |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; pure projections and internal atomic rebuild writer implemented |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
 | Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | Schema only                                   |
 
@@ -40,7 +40,11 @@ weighted-average persistence fields by `(accountId, listingId)`. Its internal
 caller-transaction-owned rebuild writer explicitly locks canonical history,
 relations, and current Holdings, then atomically creates, updates, or deletes
 the complete account projection. Unsupported evidence and persisted corruption
-fail closed. Authorization and a public rebuild endpoint remain deferred.
+fail closed. The public account-scoped rebuild boundary allows persisted
+owner/admin/editor memberships, locks the calling membership through commit,
+and returns only aggregate rebuild counts. Viewer, foreign, removed, and
+archived access is rejected without mutation. Replay remains read-only and
+automatic post-import rebuild remains deferred.
 
 ## Money and snapshot invariants
 

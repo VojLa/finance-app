@@ -12,7 +12,7 @@ thin and shared database infrastructure lives outside modules.
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX | Basic read endpoint implemented                     |
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
-| holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections and internal atomic writer implemented; public orchestration deferred |
+| holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | snapshots             | Account and net-worth snapshot rebuilding                                  | Database schema only                                |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
@@ -27,5 +27,12 @@ serializes one account with a dedicated transaction advisory lock, then acquires
 all existing 5G account/source posting locks before locking active events,
 movements, current Holdings, and their explicit Asset/Listing evidence.
 Identical history is a read-only replay; changes use a deterministic UUIDv5
-Holding identity and one caller-supplied `TIMESTAMP(3)` value. The module has no
-authorization or FastAPI boundary; those remain 5H-D.
+Holding identity and one caller-supplied `TIMESTAMP(3)` value.
+
+The thin public `POST /api/v1/accounts/{account_id}/holdings/rebuild` adapter
+delegates to an application service. That service locks the authenticated
+principal's persisted membership, permits owner/admin/editor, supplies one
+request timestamp, validates the public response, and owns the commit/rollback
+boundary around the unchanged internal writer. Exact projection failures map
+to one generic conflict response. No rebuild is triggered automatically by
+import posting, and no ImportLog is written.
