@@ -31,6 +31,7 @@ from app.db.models.transactions import TransactionModel
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     CashBalanceEvidence,
+    CurrencyAmount,
     ExpectedAccountSnapshotValuation,
     build_account_snapshot_projection,
 )
@@ -42,6 +43,9 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
     CompleteAccountSnapshotEvidence,
+    ExactSnapshotMetric,
+    SnapshotMetricUnsupportedReason,
+    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
@@ -276,12 +280,93 @@ async def test_cash_account_balance_uses_complete_signed_transaction_history(
     assert result.valuation.total_value == Decimal("70.000000")
     assert result.valuation.liabilities_value == Decimal(0)
     assert result.valuation.liabilities_value_by_currency == ()
-    assert result.net_deposits_value == 0
+    assert result.net_deposits == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+    )
+    assert result.fees == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.fee_classification_unavailable
+    )
+    assert result.taxes == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.tax_classification_unavailable
+    )
+    assert result.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    assert result.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
     session.flush.assert_not_called()
     session.begin.assert_not_called()
     session.begin_nested.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transaction_type", "classification", "amount"),
+    [
+        (TransactionType.income, TransactionClassification.real_income, "100.000000"),
+        (TransactionType.expense, TransactionClassification.real_expense, "-10.000000"),
+        (
+            TransactionType.transfer,
+            TransactionClassification.internal_transfer,
+            "-5.000000",
+        ),
+        (
+            TransactionType.transfer,
+            TransactionClassification.investment_transfer,
+            "-5.000000",
+        ),
+        (
+            TransactionType.transfer,
+            TransactionClassification.cash_exchange,
+            "-5.000000",
+        ),
+        (
+            TransactionType.transfer,
+            TransactionClassification.credit_card_payment,
+            "-5.000000",
+        ),
+        (
+            TransactionType.transfer,
+            TransactionClassification.loan_repayment,
+            "-5.000000",
+        ),
+    ],
+)
+async def test_cash_transaction_semantics_never_infer_unsupported_metrics(
+    transaction_type: TransactionType,
+    classification: TransactionClassification,
+    amount: str,
+) -> None:
+    transaction = _transaction("transaction", amount, transaction_type)
+    transaction.classification = classification
+    transaction.description = "external deposit withdrawal bank fee tax"
+    transaction.category_id = "category-that-must-not-classify-the-row"
+    repository = _repository(load_active_transactions=(transaction,))
+
+    with patch("app.modules.snapshots.evidence_service.build_financial_metrics") as metrics:
+        first = await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command())
+        second = await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command())
+
+    assert first == second
+    assert first.net_deposits == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+    )
+    assert first.fees == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.fee_classification_unavailable
+    )
+    assert first.taxes == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.tax_classification_unavailable
+    )
+    assert isinstance(first.net_deposits, UnsupportedSnapshotMetric)
+    assert not hasattr(first.net_deposits, "value")
+    assert first.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    metrics.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -317,8 +402,14 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
     assert result.valuation.cash_value == Decimal("250.000000")
     assert result.valuation.liabilities_value == Decimal(0)
     assert result.valuation.liabilities_value_by_currency == ()
-    assert result.net_deposits_value == Decimal("200.000000")
-    assert result.unrealized_pnl_value == Decimal("250.000000")
+    assert result.net_deposits == ExactSnapshotMetric(
+        Decimal("200.000000"),
+        (CurrencyAmount("EUR", Decimal("10.000000")),),
+    )
+    assert result.unrealized_pnl == ExactSnapshotMetric(
+        Decimal("250.000000"),
+        (CurrencyAmount("EUR", Decimal("10.000000")),),
+    )
     assert result.selected_price_ids == ("selected-price",)
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-rate",)
     assert result.selected_historical_exchange_rate_ids == ("event-rate",)
@@ -580,23 +671,18 @@ def test_financial_metrics_reject_negative_fee_and_float() -> None:
 def test_complete_result_is_frozen() -> None:
     result = CompleteAccountSnapshotEvidence(
         valuation=_empty_valuation(),
-        net_deposits_value=Decimal(0),
-        realized_pnl_value=Decimal(0),
-        unrealized_pnl_value=Decimal(0),
-        fees_value=Decimal(0),
-        taxes_value=Decimal(0),
-        net_deposits_by_currency=(),
-        realized_pnl_by_currency=(),
-        unrealized_pnl_by_currency=(),
-        fees_by_currency=(),
-        taxes_by_currency=(),
+        net_deposits=ExactSnapshotMetric(Decimal(0), ()),
+        realized_pnl=ExactSnapshotMetric(Decimal(0), ()),
+        unrealized_pnl=ExactSnapshotMetric(Decimal(0), ()),
+        fees=ExactSnapshotMetric(Decimal(0), ()),
+        taxes=ExactSnapshotMetric(Decimal(0), ()),
         selected_price_ids=(),
         selected_snapshot_exchange_rate_ids=(),
         selected_historical_exchange_rate_ids=(),
     )
-    field_name = "net_deposits_value"
+    field_name = "net_deposits"
     with pytest.raises(FrozenInstanceError):
-        setattr(result, field_name, Decimal(1))
+        setattr(result, field_name, ExactSnapshotMetric(Decimal(1), ()))
 
 
 def test_financial_metric_input_is_not_mutated_and_is_deterministic() -> None:

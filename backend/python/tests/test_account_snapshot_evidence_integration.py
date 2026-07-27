@@ -30,9 +30,13 @@ from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.url import normalize_database_url
+from app.modules.snapshots.account_projection import CurrencyAmount
 from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
+    ExactSnapshotMetric,
+    SnapshotMetricUnsupportedReason,
+    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import AccountSnapshotEvidenceStateError
 
@@ -104,6 +108,39 @@ def _command(account_id: str) -> BuildAccountSnapshotEvidenceCommand:
     )
 
 
+def _transaction(
+    *,
+    transaction_id: str,
+    account_id: str,
+    amount: str,
+    transaction_type: TransactionType,
+    classification: TransactionClassification,
+) -> TransactionModel:
+    return TransactionModel(
+        id=transaction_id,
+        account_id=account_id,
+        date=EVENT_AT,
+        booking_date=None,
+        amount=Decimal(amount),
+        currency="CZK",
+        reporting_amount=None,
+        reporting_currency=None,
+        type=transaction_type,
+        classification=classification,
+        description="external deposit withdrawal bank fee tax",
+        note=None,
+        counterparty=None,
+        external_id=None,
+        is_reviewed=False,
+        archived_at=None,
+        deleted_at=None,
+        category_id=None,
+        import_batch_id=None,
+        created_at=EVENT_AT,
+        updated_at=EVENT_AT,
+    )
+
+
 async def _snapshot_counts(session: AsyncSession) -> tuple[int, int]:
     return (
         await session.scalar(select(func.count()).select_from(AccountSnapshotModel)) or 0,
@@ -141,51 +178,54 @@ async def test_persisted_cash_account_balance_is_read_only(
             )
             session.add_all(
                 [
-                    TransactionModel(
-                        id=f"{prefix}-income",
+                    _transaction(
+                        transaction_id=f"{prefix}-income",
                         account_id=account_id,
-                        date=EVENT_AT,
-                        booking_date=None,
-                        amount=Decimal("100.000000"),
-                        currency="CZK",
-                        reporting_amount=None,
-                        reporting_currency=None,
-                        type=TransactionType.income,
+                        amount="100.000000",
+                        transaction_type=TransactionType.income,
                         classification=TransactionClassification.real_income,
-                        description=None,
-                        note=None,
-                        counterparty=None,
-                        external_id=None,
-                        is_reviewed=False,
-                        archived_at=None,
-                        deleted_at=None,
-                        category_id=None,
-                        import_batch_id=None,
-                        created_at=EVENT_AT,
-                        updated_at=EVENT_AT,
                     ),
-                    TransactionModel(
-                        id=f"{prefix}-expense",
+                    _transaction(
+                        transaction_id=f"{prefix}-expense",
                         account_id=account_id,
-                        date=EVENT_AT,
-                        booking_date=None,
-                        amount=Decimal("-25.000000"),
-                        currency="CZK",
-                        reporting_amount=None,
-                        reporting_currency=None,
-                        type=TransactionType.expense,
+                        amount="-25.000000",
+                        transaction_type=TransactionType.expense,
                         classification=TransactionClassification.real_expense,
-                        description=None,
-                        note=None,
-                        counterparty=None,
-                        external_id=None,
-                        is_reviewed=False,
-                        archived_at=None,
-                        deleted_at=None,
-                        category_id=None,
-                        import_batch_id=None,
-                        created_at=EVENT_AT,
-                        updated_at=EVENT_AT,
+                    ),
+                    _transaction(
+                        transaction_id=f"{prefix}-internal",
+                        account_id=account_id,
+                        amount="-1.000000",
+                        transaction_type=TransactionType.transfer,
+                        classification=TransactionClassification.internal_transfer,
+                    ),
+                    _transaction(
+                        transaction_id=f"{prefix}-investment",
+                        account_id=account_id,
+                        amount="-1.000000",
+                        transaction_type=TransactionType.transfer,
+                        classification=TransactionClassification.investment_transfer,
+                    ),
+                    _transaction(
+                        transaction_id=f"{prefix}-exchange",
+                        account_id=account_id,
+                        amount="-1.000000",
+                        transaction_type=TransactionType.transfer,
+                        classification=TransactionClassification.cash_exchange,
+                    ),
+                    _transaction(
+                        transaction_id=f"{prefix}-credit-card",
+                        account_id=account_id,
+                        amount="-1.000000",
+                        transaction_type=TransactionType.transfer,
+                        classification=TransactionClassification.credit_card_payment,
+                    ),
+                    _transaction(
+                        transaction_id=f"{prefix}-loan",
+                        account_id=account_id,
+                        amount="-1.000000",
+                        transaction_type=TransactionType.transfer,
+                        classification=TransactionClassification.loan_repayment,
                     ),
                 ]
             )
@@ -193,14 +233,56 @@ async def test_persisted_cash_account_balance_is_read_only(
 
         async with AsyncSession(engine) as session:
             before = await _snapshot_counts(session)
+            before_transactions = tuple(
+                (
+                    transaction.id,
+                    transaction.amount,
+                    transaction.classification,
+                    transaction.description,
+                    transaction.updated_at,
+                )
+                for transaction in await session.scalars(
+                    select(TransactionModel)
+                    .where(TransactionModel.account_id == account_id)
+                    .order_by(TransactionModel.id)
+                )
+            )
             first = await AccountSnapshotEvidenceService(session).build(_command(account_id))
             second = await AccountSnapshotEvidenceService(session).build(_command(account_id))
             assert first == second
-            assert first.valuation.cash_value == Decimal("75.000000")
-            assert first.valuation.total_value == Decimal("75.000000")
+            assert first.valuation.cash_value == Decimal("70.000000")
+            assert first.valuation.total_value == Decimal("70.000000")
             assert first.valuation.liabilities_value == Decimal(0)
             assert first.valuation.liabilities_value_by_currency == ()
+            assert first.net_deposits == UnsupportedSnapshotMetric(
+                SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+            )
+            assert first.fees == UnsupportedSnapshotMetric(
+                SnapshotMetricUnsupportedReason.fee_classification_unavailable
+            )
+            assert first.taxes == UnsupportedSnapshotMetric(
+                SnapshotMetricUnsupportedReason.tax_classification_unavailable
+            )
+            assert first.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+            assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
             assert await _snapshot_counts(session) == before
+            assert (
+                tuple(
+                    (
+                        transaction.id,
+                        transaction.amount,
+                        transaction.classification,
+                        transaction.description,
+                        transaction.updated_at,
+                    )
+                    for transaction in await session.scalars(
+                        select(TransactionModel)
+                        .where(TransactionModel.account_id == account_id)
+                        .order_by(TransactionModel.id)
+                    )
+                )
+                == before_transactions
+            )
             await session.rollback()
     finally:
         await engine.dispose()
@@ -389,8 +471,14 @@ async def test_persisted_investment_account_selects_price_and_fx_read_only(
             assert result.valuation.cash_value == Decimal("250.000000")
             assert result.valuation.liabilities_value == Decimal(0)
             assert result.valuation.liabilities_value_by_currency == ()
-            assert result.net_deposits_value == Decimal("200.000000")
-            assert result.unrealized_pnl_value == Decimal("250.000000")
+            assert result.net_deposits == ExactSnapshotMetric(
+                Decimal("200.000000"),
+                (CurrencyAmount("EUR", Decimal("10.000000")),),
+            )
+            assert result.unrealized_pnl == ExactSnapshotMetric(
+                Decimal("250.000000"),
+                (CurrencyAmount("EUR", Decimal("10.000000")),),
+            )
             assert result.selected_price_ids == (f"{prefix}-price",)
             assert result.selected_snapshot_exchange_rate_ids == (f"{prefix}-snapshot-rate",)
             assert result.selected_historical_exchange_rate_ids == (f"{prefix}-event-rate",)

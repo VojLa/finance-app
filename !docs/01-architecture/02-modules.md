@@ -40,8 +40,13 @@ import posting, and no ImportLog is written.
 The Python `snapshots` module owns the pure 5I-A valuation contract and the
 read-only, caller-transaction-owned 5I-B persisted-evidence adapter. The adapter
 selects latest unambiguous persisted prices and direct FX, derives active
-account-type-specific balances and lifetime financial metrics, then delegates
-valuation arithmetic to 5I-A. It writes no snapshot rows and owns no transaction.
+account-type-specific balances, and derives lifetime financial metrics only
+where persisted classifications prove completeness, then delegates valuation
+arithmetic to 5I-A. Cash-account net deposits, fees, and taxes are tagged
+unsupported rather than silently zeroed because Transaction has no external
+deposit/withdrawal, bank-fee, or tax classification. Cash-account investment
+P/L is structurally zero because Holdings are forbidden. It writes no snapshot
+rows and owns no transaction.
 Physical projection/writing/public orchestration remain 5I-C–5I-E;
 canonical liability balance support is deferred to 5I-L, and
 `NetWorthSnapshot` remains outside Step 5I.

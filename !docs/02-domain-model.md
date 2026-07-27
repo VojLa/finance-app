@@ -85,6 +85,17 @@ transfers also remain fail-closed for net-deposit metrics because counter-accoun
 identity is not persisted. The adapter returns immutable evidence, never writes
 `AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
 
+`TransactionType` and `TransactionClassification` do not persist explicit
+external-deposit, external-withdrawal, bank-fee, tax, interest, or dividend
+semantics. Consequently, ordinary income/expense and transfer classifications
+may affect a cash-account balance but cannot prove net deposits, fees, or taxes.
+Those metrics use an explicit unsupported result variant, not zero; descriptions,
+categories, counterparties, notes, amount signs, and account type are never used
+to infer them. Future 5I-C must reject unsupported metrics instead of mapping
+them to the physical column defaults. Investment value, cost basis, and
+investment realized/unrealized P/L are structurally zero for bank/cash/savings
+because these account types cannot contain Holdings under the snapshot contract.
+
 Supported 5I-B account types are bank, cash, savings, broker, exchange, and
 crypto wallet. For these types, liability is structurally impossible in the
 account-type snapshot contract, so the exact liability aggregate is zero and

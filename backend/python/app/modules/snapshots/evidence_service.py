@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,19 +72,34 @@ class BuildAccountSnapshotEvidenceCommand:
     calculation_version: int
 
 
+class SnapshotMetricUnsupportedReason(StrEnum):
+    external_cash_flow_classification_unavailable = "external_cash_flow_classification_unavailable"
+    fee_classification_unavailable = "fee_classification_unavailable"
+    tax_classification_unavailable = "tax_classification_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class ExactSnapshotMetric:
+    value: Decimal
+    breakdown: tuple[CurrencyAmount, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnsupportedSnapshotMetric:
+    reason: SnapshotMetricUnsupportedReason
+
+
+type SnapshotFinancialMetric = ExactSnapshotMetric | UnsupportedSnapshotMetric
+
+
 @dataclass(frozen=True, slots=True)
 class CompleteAccountSnapshotEvidence:
     valuation: ExpectedAccountSnapshotValuation
-    net_deposits_value: Decimal
-    realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
-    fees_value: Decimal
-    taxes_value: Decimal
-    net_deposits_by_currency: tuple[CurrencyAmount, ...]
-    realized_pnl_by_currency: tuple[CurrencyAmount, ...]
-    unrealized_pnl_by_currency: tuple[CurrencyAmount, ...] | None
-    fees_by_currency: tuple[CurrencyAmount, ...]
-    taxes_by_currency: tuple[CurrencyAmount, ...]
+    net_deposits: SnapshotFinancialMetric
+    realized_pnl: SnapshotFinancialMetric
+    unrealized_pnl: SnapshotFinancialMetric
+    fees: SnapshotFinancialMetric
+    taxes: SnapshotFinancialMetric
     selected_price_ids: tuple[str, ...]
     selected_snapshot_exchange_rate_ids: tuple[str, ...]
     selected_historical_exchange_rate_ids: tuple[str, ...]
@@ -574,28 +590,59 @@ class AccountSnapshotEvidenceService:
                     liabilities=(),
                 )
             )
-            metrics: ExactFinancialMetrics = build_financial_metrics(
-                valuation=valuation,
-                historical_evidence=historical_evidence,
-                historical_rates=tuple(historical_rates),
-            )
+            if account.type in _CASH_ACCOUNT_TYPES:
+                structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
+                net_deposits: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
+                    SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+                )
+                realized_pnl: SnapshotFinancialMetric = structural_zero
+                unrealized_pnl: SnapshotFinancialMetric = structural_zero
+                fees: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
+                    SnapshotMetricUnsupportedReason.fee_classification_unavailable
+                )
+                taxes: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
+                    SnapshotMetricUnsupportedReason.tax_classification_unavailable
+                )
+                selected_historical_rate_ids: tuple[str, ...] = ()
+            else:
+                metrics: ExactFinancialMetrics = build_financial_metrics(
+                    valuation=valuation,
+                    historical_evidence=historical_evidence,
+                    historical_rates=tuple(historical_rates),
+                )
+                net_deposits = ExactSnapshotMetric(
+                    value=metrics.net_deposits_value,
+                    breakdown=metrics.net_deposits_by_currency,
+                )
+                realized_pnl = ExactSnapshotMetric(
+                    value=metrics.realized_pnl_value,
+                    breakdown=metrics.realized_pnl_by_currency,
+                )
+                unrealized_pnl = ExactSnapshotMetric(
+                    value=metrics.unrealized_pnl_value,
+                    breakdown=metrics.unrealized_pnl_by_currency,
+                )
+                fees = ExactSnapshotMetric(
+                    value=metrics.fees_value,
+                    breakdown=metrics.fees_by_currency,
+                )
+                taxes = ExactSnapshotMetric(
+                    value=metrics.taxes_value,
+                    breakdown=metrics.taxes_by_currency,
+                )
+                selected_historical_rate_ids = metrics.selected_historical_rate_ids
             return CompleteAccountSnapshotEvidence(
                 valuation=valuation,
-                net_deposits_value=metrics.net_deposits_value,
-                realized_pnl_value=metrics.realized_pnl_value,
-                unrealized_pnl_value=metrics.unrealized_pnl_value,
-                fees_value=metrics.fees_value,
-                taxes_value=metrics.taxes_value,
-                net_deposits_by_currency=metrics.net_deposits_by_currency,
-                realized_pnl_by_currency=metrics.realized_pnl_by_currency,
-                unrealized_pnl_by_currency=metrics.unrealized_pnl_by_currency,
-                fees_by_currency=metrics.fees_by_currency,
-                taxes_by_currency=metrics.taxes_by_currency,
+                net_deposits=net_deposits,
+                realized_pnl=realized_pnl,
+                unrealized_pnl=unrealized_pnl,
+                fees=fees,
+                taxes=taxes,
                 selected_price_ids=tuple(sorted(item.price_id for item in prices)),
                 selected_snapshot_exchange_rate_ids=tuple(
                     sorted(item.rate_id for item in snapshot_rates)
                 ),
-                selected_historical_exchange_rate_ids=(metrics.selected_historical_rate_ids),
+                selected_historical_exchange_rate_ids=selected_historical_rate_ids,
             )
         except AccountSnapshotEvidenceStateError:
             raise
