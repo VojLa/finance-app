@@ -14,6 +14,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
+| net_worth             | Pure aggregation of coherent exact account snapshots                        | 5J-A pure projection implemented |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E and liability integration implemented |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
@@ -93,3 +94,13 @@ documented narrow race. Canonical liability evidence selection exists in
 5I-L1, the internal atomic observation writer in 5I-L2A, and authorized manual
 snapshot consumption in 5I-L2B. Public liability ingestion remains deferred.
 `NetWorthSnapshot` remains outside Step 5I.
+
+The Python `net_worth` module implements only the pure 5J-A projection. It
+accepts immutable exact AccountSnapshot evidence for the currently physically
+supported investment and liability account types, requires one exact
+timestamp/granularity/currency, validates duplicate identities and both
+net-worth formulas, and returns sorted account and account-type contributions.
+Native currency breakdowns remain typed tuples; unavailable evidence remains
+`None`. The module has no database, ORM, writer, authorization, HTTP, clock,
+FX-selection, or scheduling dependency. Persisted evidence selection starts in
+5J-B.
