@@ -14,7 +14,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth             | Pure aggregation and persisted evidence selection for exact account snapshots | 5J-A/5J-B implemented |
+| net_worth             | Pure aggregation, persisted evidence selection, and physical row projection | 5J-A/5J-B implemented; 5J-C after merge |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E and liability integration implemented |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
@@ -114,5 +114,24 @@ The multi-query adapter requires an already active `REPEATABLE READ` or
 no begin, commit, rollback, savepoint, flush, or write. This prevents a
 concurrently committed Account or AccountSnapshot from producing a mixed view.
 The physical AccountSnapshot has no liability-breakdown field, so unavailable
-liability native evidence remains `None`. NetWorthSnapshot persistence,
+liability native evidence remains `None`.
+
+The pure 5J-C persistence projection maps complete 5J-B evidence into all and
+only physical `NetWorthSnapshotModel` fields. It uses deterministic UUIDv5
+identity over `(userId, timestamp, currency, granularity)`, explicit
+caller-supplied persistence timestamps/source, scalar MONEY values, and
+category-specific fixed-scale native JSON strings. SQL NULL and exact empty
+JSON remain distinct, `exchangeRates` stays NULL because 5J performs no FX,
+and selected AccountSnapshot lineage remains an immutable non-persisted audit
+because the schema has no lineage columns. The projection constructs no ORM
+object and performs no I/O. Database writes, replay/conflict handling,
 authorization, HTTP, FX conversion, and scheduling remain unimplemented.
+
+Before JSON serialization, 5J-C independently rederives the total native
+breakdown as cash plus portfolio minus liabilities with exact QUANTITY
+arithmetic and requires equality with the supplied 5J-A total. It mirrors
+5J-A availability exactly: unavailable cash always makes the total
+unavailable; unavailable zero portfolio/liability may act as neutral only for
+the calculation; and nonzero unavailable portfolio/liability makes the total
+unavailable. Exact zero currency entries remain present. No FX conversion,
+rounding, or missing-evidence inference occurs.
