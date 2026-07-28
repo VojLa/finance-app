@@ -12,6 +12,7 @@ from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.enums import (
     AccountMemberRole,
@@ -31,6 +32,13 @@ from app.modules.net_worth.evidence_service import (
     BuildNetWorthEvidenceCommand,
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
+)
+from app.modules.net_worth.manual_service import (
+    ManualNetWorthSnapshotService,
+    NetWorthSnapshotConflictError,
+    NetWorthSnapshotUnavailableError,
+    RecalculateNetWorthSnapshotCommand,
+    RecalculateNetWorthSnapshotResult,
 )
 from app.modules.net_worth.persistence_projection import (
     NetWorthSnapshotPersistenceMetadata,
@@ -119,6 +127,9 @@ def _source_snapshot(
     portfolio: Decimal | None = None,
     liability: Decimal | None = None,
     portfolio_breakdown: dict[str, str] | None = None,
+    granularity: SnapshotGranularity = SnapshotGranularity.day,
+    currency: str = "CZK",
+    calculation_version: int = 1,
 ) -> AccountSnapshotModel:
     snapshot_at = timestamp or _snapshot_at(prefix)
     liability_account = account.type in {
@@ -138,9 +149,9 @@ def _source_snapshot(
         id=f"{prefix}-source-{account.id}{suffix}",
         account_id=account.id,
         timestamp=snapshot_at,
-        granularity=SnapshotGranularity.day,
+        granularity=granularity,
         source=SnapshotSource.manual_recalculation,
-        currency="CZK",
+        currency=currency,
         cash_value=cash_value,
         investment_value=portfolio_value,
         investment_cost_basis=investment_cost_basis,
@@ -148,7 +159,7 @@ def _source_snapshot(
         total_value=cash_value + portfolio_value - liabilities_value,
         is_recalculated=True,
         calculated_at=snapshot_at,
-        calculation_version=1,
+        calculation_version=calculation_version,
         created_at=snapshot_at,
         net_deposits_value=Decimal(0),
         realized_pnl_value=Decimal(0),
@@ -1124,6 +1135,252 @@ async def test_first_statement_sets_serializable_isolation() -> None:
         assert result.disposition is NetWorthSnapshotWriteDisposition.created
         assert statements
         assert statements[0].strip().upper() == ("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+def _principal(prefix: str) -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        user_id=_user_id(prefix),
+        email=f"{prefix}@example.com",
+        name=prefix,
+    )
+
+
+def _manual_source_snapshot(
+    prefix: str,
+    account: AccountModel,
+) -> AccountSnapshotModel:
+    return _source_snapshot(
+        prefix,
+        account,
+        granularity=SnapshotGranularity.minute,
+    )
+
+
+async def _manual_recalculate(
+    prefix: str,
+    *,
+    writer_factory: Any = NetWorthSnapshotWriter,
+) -> RecalculateNetWorthSnapshotResult:
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            # Mirror CurrentPrincipal: authentication resolves the persisted User
+            # and leaves the request session in an active read transaction.
+            authenticated = await session.scalar(
+                select(UserModel).where(UserModel.id == _user_id(prefix))
+            )
+            assert authenticated is not None
+            return await ManualNetWorthSnapshotService(
+                session,
+                clock=lambda: _snapshot_at(prefix),
+                writer_factory=writer_factory,
+            ).recalculate(RecalculateNetWorthSnapshotCommand(principal=_principal(prefix)))
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_service_creates_then_replays_exact_snapshot() -> None:
+    prefix = "j5e-manual-replay"
+    account = _account(prefix, "broker", AccountType.broker)
+    await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
+    before = await _state(prefix)
+    try:
+        first = await _manual_recalculate(prefix)
+        second = await _manual_recalculate(prefix)
+
+        assert first.status == "created"
+        assert second.status == "replayed"
+        assert first.snapshot_id == second.snapshot_id
+        assert first.currency == "CZK"
+        assert first.account_count == 1
+        assert first.selected_account_snapshot_count == 1
+        rows = await _rows(prefix)
+        assert len(rows) == 1
+        assert rows[0].source is SnapshotSource.manual_recalculation
+        assert rows[0].timestamp == _snapshot_at(prefix)
+        after = await _state(prefix)
+        assert before[:-1] == after[:-1]
+    finally:
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_manual_service_uses_only_authenticated_principal_memberships() -> None:
+    first_prefix = "j5e-principal-a"
+    second_prefix = "j5e-principal-b"
+    first_account = _account(first_prefix, "broker", AccountType.broker)
+    second_account = _account(second_prefix, "broker", AccountType.broker)
+    await _seed(
+        first_prefix,
+        (first_account,),
+        (_manual_source_snapshot(first_prefix, first_account),),
+    )
+    await _seed(
+        second_prefix,
+        (second_account,),
+        (_manual_source_snapshot(second_prefix, second_account),),
+    )
+    try:
+        result = await _manual_recalculate(first_prefix)
+
+        assert result.account_count == 1
+        assert len(await _rows(first_prefix)) == 1
+        assert await _rows(second_prefix) == ()
+        assert not hasattr(result, "selected_account_ids")
+    finally:
+        await _cleanup(first_prefix)
+        await _cleanup(second_prefix)
+
+
+@pytest.mark.asyncio
+async def test_manual_service_missing_source_fails_without_creating_source_or_target() -> None:
+    prefix = "j5e-missing-source"
+    account = _account(prefix, "broker", AccountType.broker)
+    account_id = account.id
+    await _seed(prefix, (account,), ())
+    try:
+        with pytest.raises(NetWorthSnapshotUnavailableError):
+            await _manual_recalculate(prefix)
+
+        assert await _rows(prefix) == ()
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            source_count = await session.scalar(
+                select(func.count())
+                .select_from(AccountSnapshotModel)
+                .where(AccountSnapshotModel.account_id == account_id)
+            )
+        await engine.dispose()
+        assert source_count == 0
+    finally:
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.bank, AccountType.cash, AccountType.savings],
+)
+async def test_manual_service_unsupported_active_account_fails_complete_user(
+    account_type: AccountType,
+) -> None:
+    prefix = f"j5e-unsupported-{account_type.value}"
+    account = _account(prefix, account_type.value, account_type)
+    await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
+    try:
+        with pytest.raises(NetWorthSnapshotUnavailableError):
+            await _manual_recalculate(prefix)
+        assert await _rows(prefix) == ()
+    finally:
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_manual_service_base_currency_race_fails_on_serializable_revalidation() -> None:
+    prefix = "j5e-currency-race"
+    account = _account(prefix, "broker", AccountType.broker)
+    await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
+    engine = _engine()
+
+    class CurrencyChangingWriter:
+        def __init__(self, session: AsyncSession) -> None:
+            self.session = session
+
+        async def write(
+            self,
+            command: WriteNetWorthSnapshotCommand,
+        ) -> NetWorthSnapshotWriteResult:
+            async with AsyncSession(engine) as other:
+                persisted = await other.get(UserModel, command.user_id)
+                assert persisted is not None
+                persisted.base_currency = "EUR"
+                await other.commit()
+            return await NetWorthSnapshotWriter(self.session).write(command)
+
+    try:
+        with pytest.raises(NetWorthSnapshotUnavailableError):
+            await _manual_recalculate(prefix, writer_factory=CurrencyChangingWriter)
+        assert await _rows(prefix) == ()
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_manual_service_maps_existing_physical_corruption_to_conflict_without_repair() -> (
+    None
+):
+    prefix = "j5e-conflict"
+    account = _account(prefix, "broker", AccountType.broker)
+    await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
+    try:
+        first = await _manual_recalculate(prefix)
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            persisted = await session.get(NetWorthSnapshotModel, first.snapshot_id)
+            assert persisted is not None
+            persisted.cash_value = Decimal("999.000000")
+            await session.commit()
+        await engine.dispose()
+
+        with pytest.raises(NetWorthSnapshotConflictError):
+            await _manual_recalculate(prefix)
+
+        rows = await _rows(prefix)
+        assert len(rows) == 1
+        assert rows[0].cash_value == Decimal("999.000000")
+    finally:
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_manual_service_writer_transaction_starts_with_serializable_after_handoff() -> None:
+    prefix = "j5e-handoff-isolation"
+    account = _account(prefix, "broker", AccountType.broker)
+    await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
+    engine = _engine()
+    writer_statements: list[str] = []
+
+    def capture(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        writer_statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with AsyncSession(engine) as session:
+            authenticated = await session.scalar(
+                select(UserModel).where(UserModel.id == _user_id(prefix))
+            )
+            assert authenticated is not None
+
+            def factory(received: AsyncSession) -> NetWorthSnapshotWriter:
+                assert received is session
+                assert received.in_transaction() is False
+                writer_statements.clear()
+                return NetWorthSnapshotWriter(received)
+
+            result = await ManualNetWorthSnapshotService(
+                session,
+                clock=lambda: _snapshot_at(prefix),
+                writer_factory=factory,
+            ).recalculate(RecalculateNetWorthSnapshotCommand(principal=_principal(prefix)))
+
+        assert result.status == "created"
+        assert writer_statements
+        assert writer_statements[0].strip().upper() == (
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        )
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         await engine.dispose()

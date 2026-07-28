@@ -25,6 +25,7 @@ from app.modules.net_worth.evidence_service import (
     NetWorthEvidenceStateError,
 )
 from app.modules.net_worth.projection import (
+    NetWorthProjectionInput,
     NetWorthProjectionStateError,
     build_net_worth_projection,
 )
@@ -252,6 +253,50 @@ async def test_invalid_command_fails_before_repository_access(command: object) -
         await service.build(cast(Any, command))
 
     assert repository.isolation_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base_currency", ["EUR", "czk", " CZK", "CZ"])
+async def test_persisted_base_currency_mismatch_or_corruption_fails_before_projection(
+    base_currency: str,
+) -> None:
+    repository = FakeRepository(user=_user())
+    assert repository.user is not None
+    repository.user.base_currency = base_currency
+    projection = Mock()
+    service, _ = _service(repository, projection_builder=projection)
+
+    with pytest.raises(
+        NetWorthEvidenceStateError,
+        match=r"Persisted evidence cannot produce a complete net worth snapshot\.",
+    ):
+        await service.build(_command(currency="CZK"))
+
+    assert repository.user_calls == 1
+    assert repository.account_calls == 0
+    projection.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_matching_persisted_base_currency_reaches_projection() -> None:
+    projection = Mock(
+        return_value=build_net_worth_projection(
+            NetWorthProjectionInput(
+                user_id="user-1",
+                timestamp=NOW,
+                granularity=SnapshotGranularity.day,
+                currency="CZK",
+                calculation_version=1,
+                account_snapshots=(),
+            )
+        )
+    )
+    service, _ = _service(FakeRepository(user=_user()), projection_builder=projection)
+
+    result = await service.build(_command())
+
+    assert result.projection.currency == "CZK"
+    projection.assert_called_once()
 
 
 @pytest.mark.asyncio

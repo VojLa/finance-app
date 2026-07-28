@@ -14,7 +14,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth             | Pure aggregation, persisted evidence selection, physical projection, and atomic write | 5J-A–5J-C implemented; 5J-D after merge                                     |
+| net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-D implemented; 5J-E after merge                                     |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I-A–5I-E and liability integration implemented                             |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -151,4 +151,22 @@ whole operation at most three times after rollback. Evidence and domain
 failures are never retried, and a unique violation alone is never replay
 evidence. Source User, Account, membership, AccountSnapshot, and item rows are
 read-only. Source-snapshot lineage remains ephemeral because the schema has no
-lineage columns. Public authorization and orchestration remain 5J-E.
+lineage columns.
+
+The thin 5J-E adapter exposes only
+`POST /api/v1/net-worth/snapshots/recalculate`. It takes the target user solely
+from `AuthenticatedPrincipal`, resolves output currency from the exact
+persisted `User.baseCurrency`, commits the authentication/read transaction,
+and invokes 5J-D once on the now-idle request session. The server owns an exact
+UTC minute bucket, manual source, recalculation flag, and calculation version.
+5J-B reloads the User inside SERIALIZABLE and rejects a stale command currency,
+including a base-currency change between public preflight and the writer.
+
+The endpoint has no body, path/query user selector, arbitrary currency, or
+financial input. It returns only created/replayed identity metadata and counts;
+source account/snapshot identities and financial evidence remain private.
+Missing, ambiguous, unsupported, or corrupt source AccountSnapshots produce
+one generic unavailable conflict, while physical target differences produce a
+generic persisted-data conflict. The operation never creates missing account
+snapshots and adds no scheduler, worker, background task, or historical read
+API.

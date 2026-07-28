@@ -381,6 +381,7 @@ class NetWorthEvidenceService:
                 user is None
                 or not isinstance(user, UserModel)
                 or _nonblank(user.id) != canonical.user_id
+                or _currency(user.base_currency) != canonical.currency
             ):
                 raise _fail()
             accesses = await self.repository.load_account_accesses(canonical.user_id)

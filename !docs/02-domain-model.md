@@ -258,4 +258,20 @@ serialization failure, deadlock, or concurrent unique violation retries the
 entire transaction at most three times; all evidence, projection, validation,
 conflict, and other SQL failures remain single-attempt failures. Persisted
 source-snapshot lineage is still unavailable without an intentional future
-schema change, and public authorization remains 5J-E.
+schema change. Public authorization and orchestration are owned by 5J-E.
+
+The 5J-E manual operation authorizes only the authenticated principal and
+derives the snapshot currency from that principal's persisted
+`User.baseCurrency`. It closes the authentication read transaction before
+entering 5J-D, while 5J-B reloads and revalidates the same currency inside the
+new SERIALIZABLE transaction. The public minute bucket is the single timestamp
+for identity, calculation, and creation metadata, making unchanged same-minute
+requests exact replays.
+
+Manual net-worth recalculation requires one already-persisted exact
+`AccountSnapshot` for every current active supported account. Missing evidence
+fails the whole user projection; no account is omitted and no source snapshot
+is created. The response deliberately excludes user identity, account/source
+snapshot lineage, JSON evidence, and financial values. Scheduled generation,
+automatic account-snapshot orchestration, and historical net-worth reads remain
+unimplemented.

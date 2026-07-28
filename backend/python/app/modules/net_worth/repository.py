@@ -31,7 +31,9 @@ class NetWorthEvidenceRepository:
 
     async def load_user(self, user_id: str) -> UserModel | None:
         return await self.session.scalar(
-            select(UserModel).where(UserModel.id == user_id).execution_options(autoflush=False)
+            select(UserModel)
+            .where(UserModel.id == user_id)
+            .execution_options(autoflush=False, populate_existing=True)
         )
 
     async def load_account_accesses(
