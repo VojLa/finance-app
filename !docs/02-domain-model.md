@@ -16,7 +16,7 @@ application service yet.
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-E through authorized manual account-snapshot persistence |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection |
 
 ## Important relationships
 
@@ -167,3 +167,25 @@ Authorization lookup completes before the writer receives an idle session, and
 the writer revalidates Account state under lock. Membership revocation in the
 narrow interval between request-time authorization and writer commit remains a
 documented non-atomic boundary.
+
+The 5J-A net-worth contract is a pure user-level aggregation of a complete,
+coherent tuple of exact AccountSnapshot evidence. It currently accepts broker,
+exchange, crypto-wallet, credit-card, loan, and mortgage snapshots; bank, cash,
+and savings fail rather than being omitted. Every snapshot must use the same
+exact bucket timestamp, granularity, and output currency, and account and
+snapshot identities must be unique. Each Account currency remains canonical
+but may differ from the already-converted snapshot/output currency; 5J-A never
+selects FX or performs conversion.
+
+For each account, assets are signed cash plus nonnegative investment market
+value, positive liability is subtracted, and the result must equal the persisted
+account `totalValue`. Across the user, `assets = cash + portfolio`,
+`net worth = assets - liabilities`, and that result must also equal the sum of
+all account totals. Negative investment cash reduces assets without becoming a
+liability. Explicit zero debt remains a counted liability account.
+
+All values and intermediate aggregates use exact `NUMERIC(18,6)` Decimal
+semantics. Native cash, portfolio, liability, and total breakdowns are
+preserved only when complete; unavailable evidence remains distinct from an
+empty exact breakdown. 5J-A performs no database selection, FX conversion,
+persistence, authorization, or scheduling. Those boundaries begin with 5J-B.
