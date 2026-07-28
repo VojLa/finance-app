@@ -4,19 +4,19 @@ The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                            |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------- |
-| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                   |
-| Accounts               | `Account`                                                              | —                                                            | Implemented                                   |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer |
-| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                   |
-| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                   |
-| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                       |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
+| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                  |
+| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                         |
+| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                         |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                      |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                         |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                         |
+| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                         |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                                                             |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
-| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
 
 ## Important relationships
 
@@ -236,5 +236,26 @@ Selected account and AccountSnapshot identities are revalidated against every
 projection contribution and returned only as immutable ephemeral audit
 metadata. The physical schema has no source-snapshot lineage columns, so 5J-C
 does not hide those IDs in unrelated JSON. It creates no ORM model and performs
-no database access; atomic persistence, locking, replay, and conflicts remain
-5J-D.
+no database access.
+
+The 5J-D writer is the sole transaction owner for one internal net-worth write.
+It starts every attempt at PostgreSQL `SERIALIZABLE`, then takes a
+transaction-scoped advisory lock namespaced by the full physical snapshot key.
+5J-B evidence and the 5J-C row are rebuilt once inside each attempt before any
+target-row decision. Different users and timestamps use different locks.
+
+An existing target row is replayed only when all 19 physical values match the
+new exact projection. This includes deterministic ID, financial scalars,
+source, calculation version, persistence timestamps, recalculation flag,
+fixed-scale JSON strings, and SQL NULL versus exact empty JSON. A difference
+or deterministic-ID collision fails closed; no existing net-worth snapshot is
+updated, repaired, replaced, or upserted.
+
+A new target is inserted once, flushed, reloaded, and compared in full before
+commit. Failure rolls back the attempt without changing source Users,
+Accounts, memberships, AccountSnapshots, or AccountSnapshotItems. PostgreSQL
+serialization failure, deadlock, or concurrent unique violation retries the
+entire transaction at most three times; all evidence, projection, validation,
+conflict, and other SQL failures remain single-attempt failures. Persisted
+source-snapshot lineage is still unavailable without an intentional future
+schema change, and public authorization remains 5J-E.
