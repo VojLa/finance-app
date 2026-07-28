@@ -184,11 +184,18 @@ account `totalValue`. Across the user, `assets = cash + portfolio`,
 all account totals. Negative investment cash reduces assets without becoming a
 liability. Explicit zero debt remains a counted liability account.
 
-All values and intermediate aggregates use exact `NUMERIC(18,6)` Decimal
-semantics. Native cash, portfolio, liability, and total breakdowns are
-preserved only when complete; unavailable evidence remains distinct from an
-empty exact breakdown. 5J-A performs no database selection, FX conversion,
-persistence, authorization, or scheduling.
+Scalar values and their intermediate aggregates use exact MONEY
+`NUMERIC(18,6)` Decimal semantics. Native cash and liability breakdowns also
+use MONEY, while native portfolio and total-net-worth breakdowns use QUANTITY
+`NUMERIC(28,10)`. The total-native contract preserves portfolio precision when
+calculating cash plus portfolio minus liability; there is no rounding or
+truncation. Native breakdowns are preserved only when complete; unavailable
+evidence remains distinct from an empty exact breakdown. An unavailable
+nonnegative portfolio or liability breakdown with an exact zero scalar may act
+as a neutral total-native contribution without changing its category output
+from `None`; any nonzero unavailable amount still makes the total unavailable.
+5J-A performs no database selection, FX conversion, persistence,
+authorization, or scheduling.
 
 The read-only 5J-B adapter proves the complete current user/account coverage
 through persisted `AccountMember` rows. Validly archived accounts are excluded;

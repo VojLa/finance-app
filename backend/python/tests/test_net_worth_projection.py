@@ -20,6 +20,7 @@ from app.modules.net_worth import (
 
 NOW = datetime(2026, 7, 27)
 MONEY_MAX = Decimal("999999999999.999999")
+QUANTITY_AGGREGATE_PART = Decimal("600000000000000000.0000000000")
 
 
 def _amount(currency: str, value: str | Decimal) -> NetWorthCurrencyAmount:
@@ -477,12 +478,105 @@ def test_currency_breakdowns_are_aggregated_and_sorted_exactly() -> None:
     )
 
 
+def test_portfolio_and_total_native_breakdowns_preserve_quantity_scale() -> None:
+    result = build_net_worth_projection(
+        _input(
+            _investment(
+                cash=Decimal(0),
+                investment=Decimal("0.123456"),
+                cash_breakdown=(),
+                investment_breakdown=(_amount("USD", "0.1234567890"),),
+            )
+        )
+    )
+
+    assert result.portfolio_value_by_currency == (_amount("USD", "0.1234567890"),)
+    assert result.total_net_worth_by_currency == (_amount("USD", "0.1234567890"),)
+
+
+def test_mixed_native_net_worth_uses_exact_quantity_arithmetic() -> None:
+    result = build_net_worth_projection(
+        _input(
+            _investment(
+                cash=Decimal("1.000001"),
+                investment=Decimal("2.123456"),
+                cash_breakdown=(_amount("CZK", "1.000001"),),
+                investment_breakdown=(_amount("CZK", "2.1234567890"),),
+            ),
+            _liability(
+                liability=Decimal("0.500001"),
+                liability_breakdown=(_amount("CZK", "0.500001"),),
+            ),
+        )
+    )
+
+    assert result.total_net_worth_by_currency == (_amount("CZK", "2.6234567890"),)
+
+
+def test_portfolio_breakdown_rejects_quantity_over_scale() -> None:
+    with pytest.raises(NetWorthProjectionStateError):
+        build_net_worth_projection(
+            _input(
+                _investment(
+                    investment_breakdown=(_amount("USD", "0.12345678901"),),
+                )
+            )
+        )
+
+
+def test_portfolio_breakdown_aggregate_overflow_fails_closed() -> None:
+    with pytest.raises(NetWorthProjectionStateError):
+        build_net_worth_projection(
+            _input(
+                _investment(
+                    "one",
+                    investment_breakdown=(_amount("USD", QUANTITY_AGGREGATE_PART),),
+                ),
+                _investment(
+                    "two",
+                    investment_breakdown=(_amount("USD", QUANTITY_AGGREGATE_PART),),
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        _investment(cash_breakdown=(_amount("CZK", "1.0000001"),)),
+        _liability(liability_breakdown=(_amount("CZK", "250.0000001"),)),
+    ],
+)
+def test_money_native_breakdowns_still_reject_scale_above_six(
+    snapshot: AccountNetWorthEvidence,
+) -> None:
+    with pytest.raises(NetWorthProjectionStateError):
+        build_net_worth_projection(_input(snapshot))
+
+
 def test_unavailable_native_breakdown_remains_unavailable_not_empty() -> None:
     result = build_net_worth_projection(_input(_liability(liability_breakdown=None)))
 
     assert result.liabilities_value == Decimal("250")
     assert result.liabilities_value_by_currency is None
     assert result.total_net_worth_by_currency is None
+
+
+def test_zero_unavailable_liability_is_neutral_without_becoming_empty() -> None:
+    result = build_net_worth_projection(
+        _input(
+            _investment(
+                cash=Decimal(0),
+                investment=Decimal("0.123456"),
+                cash_breakdown=(),
+                investment_breakdown=(_amount("USD", "0.1234567890"),),
+                liability_breakdown=None,
+            )
+        )
+    )
+
+    assert result.liabilities_value_by_currency is None
+    assert result.total_net_worth_by_currency == (_amount("USD", "0.1234567890"),)
 
 
 @pytest.mark.parametrize(

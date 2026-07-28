@@ -37,6 +37,7 @@ from app.modules.net_worth.evidence_service import (
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
 )
+from app.modules.net_worth.projection import NetWorthCurrencyAmount
 from app.modules.net_worth.repository import NetWorthEvidenceRepository
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -380,6 +381,37 @@ async def test_one_broker_maps_exact_persisted_values() -> None:
     assert result.projection.net_worth_value == Decimal("500.000000")
     assert result.selected_account_ids == (account.id,)
     assert result.selected_account_snapshot_ids == (snapshot.id,)
+    assert await _state(prefix) == before
+    await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_scale_ten_portfolio_breakdown_survives_persisted_composition() -> None:
+    prefix = "j5b-quantity-scale"
+    await _cleanup(prefix)
+    account = _account(prefix, "broker", AccountType.broker)
+    snapshot = _snapshot(
+        prefix,
+        account,
+        cash="0",
+        investment="0.123456",
+    )
+    snapshot.investment_value_by_currency = {"USD": "0.1234567890"}
+    snapshot.investment_cost_basis = Decimal("0.123456")
+    snapshot.investment_cost_basis_by_currency = {"USD": "0.1234567890"}
+    snapshot.unrealized_pnl_value = Decimal(0)
+    snapshot.unrealized_pnl_by_currency = {}
+    await _seed(prefix, (account,), (snapshot,))
+    before = await _state(prefix)
+    engine = _engine()
+    try:
+        result = await _build(engine, prefix)
+    finally:
+        await engine.dispose()
+
+    expected = (NetWorthCurrencyAmount(currency="USD", amount=Decimal("0.1234567890")),)
+    assert result.projection.portfolio_value_by_currency == expected
+    assert result.projection.total_net_worth_by_currency == expected
     assert await _state(prefix) == before
     await _cleanup(prefix)
 

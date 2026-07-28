@@ -103,6 +103,12 @@ and batch-selects one exact timestamp/granularity/currency/version
 AccountSnapshot per eligible account. It strictly parses physical JSONB
 breakdowns and delegates all aggregation to 5J-A exactly once.
 
+Native breakdown precision is category-specific: cash and liability use
+MONEY (`NUMERIC(18,6)`), portfolio uses QUANTITY (`NUMERIC(28,10)`), and total
+native net worth also uses QUANTITY because it combines the other three
+categories. Scalar net-worth values remain MONEY. The adapter and projection
+never round or truncate scale-10 portfolio evidence.
+
 The multi-query adapter requires an already active `REPEATABLE READ` or
 `SERIALIZABLE` transaction and verifies that boundary before reading. It owns
 no begin, commit, rollback, savepoint, flush, or write. This prevents a

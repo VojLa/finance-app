@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 
+from sqlalchemy import Numeric
+
+from app.db.models.common import MONEY, QUANTITY
 from app.db.models.enums import AccountType, SnapshotGranularity
 
 _ERROR_MESSAGE = "Account snapshots cannot produce a complete net worth projection."
-_MONEY_PRECISION = 18
-_MONEY_SCALE = 6
 _TIMESTAMP_PRECISION = 3
 _POSTGRES_INTEGER_MAX = 2_147_483_647
 _INVESTMENT_ACCOUNT_TYPES = {
@@ -130,33 +131,42 @@ def _currency(value: object) -> str:
     return currency
 
 
-def _money(value: object) -> Decimal:
+def _exact(value: object, numeric: Numeric) -> Decimal:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise _fail()
-    quantum = Decimal(1).scaleb(-_MONEY_SCALE)
+    precision, scale = numeric.precision, numeric.scale
+    if precision is None or scale is None:
+        raise RuntimeError("Canonical numeric types must define precision and scale.")
+    quantum = Decimal(1).scaleb(-scale)
     try:
         with localcontext() as context:
-            context.prec = _MONEY_PRECISION * 4
+            context.prec = max(precision * 4, 112)
             scaled = value.quantize(quantum)
     except InvalidOperation as exc:
         raise _fail() from exc
-    if value != scaled or abs(value) >= Decimal(10) ** (_MONEY_PRECISION - _MONEY_SCALE):
+    if value != scaled or abs(value) >= Decimal(10) ** (precision - scale):
         raise _fail()
     return value
 
 
-def _add(left: Decimal, right: Decimal) -> Decimal:
+def _add(left: Decimal, right: Decimal, *, numeric: Numeric) -> Decimal:
+    precision = numeric.precision
+    if precision is None:
+        raise RuntimeError("Canonical numeric types must define precision.")
     with localcontext() as context:
-        context.prec = _MONEY_PRECISION * 4
-        result = left + right
-    return _money(result)
+        context.prec = max(precision * 4, 112)
+        result = _exact(left, numeric) + _exact(right, numeric)
+    return _exact(result, numeric)
 
 
-def _subtract(left: Decimal, right: Decimal) -> Decimal:
+def _subtract(left: Decimal, right: Decimal, *, numeric: Numeric) -> Decimal:
+    precision = numeric.precision
+    if precision is None:
+        raise RuntimeError("Canonical numeric types must define precision.")
     with localcontext() as context:
-        context.prec = _MONEY_PRECISION * 4
-        result = left - right
-    return _money(result)
+        context.prec = max(precision * 4, 112)
+        result = _exact(left, numeric) - _exact(right, numeric)
+    return _exact(result, numeric)
 
 
 def _timestamp(value: object) -> datetime:
@@ -201,6 +211,7 @@ def _calculation_version(value: object) -> int:
 def _breakdown(
     value: object,
     *,
+    numeric: Numeric,
     nonnegative: bool,
 ) -> tuple[NetWorthCurrencyAmount, ...] | None:
     if value is None:
@@ -212,7 +223,7 @@ def _breakdown(
         if not isinstance(item, NetWorthCurrencyAmount):
             raise _fail()
         currency = _currency(item.currency)
-        amount = _money(item.amount)
+        amount = _exact(item.amount, numeric)
         if currency in amounts or (nonnegative and amount < 0):
             raise _fail()
         amounts[currency] = amount
@@ -224,6 +235,8 @@ def _breakdown(
 
 def _merge_breakdowns(
     breakdowns: list[tuple[NetWorthCurrencyAmount, ...] | None],
+    *,
+    numeric: Numeric,
 ) -> tuple[NetWorthCurrencyAmount, ...] | None:
     if any(breakdown is None for breakdown in breakdowns):
         return None
@@ -231,7 +244,11 @@ def _merge_breakdowns(
     for breakdown in breakdowns:
         assert breakdown is not None
         for item in breakdown:
-            amounts[item.currency] = _add(amounts.get(item.currency, Decimal(0)), item.amount)
+            amounts[item.currency] = _add(
+                amounts.get(item.currency, Decimal(0)),
+                item.amount,
+                numeric=numeric,
+            )
     return tuple(
         NetWorthCurrencyAmount(currency=currency, amount=amounts[currency])
         for currency in sorted(amounts)
@@ -242,16 +259,35 @@ def _net_breakdown(
     cash: tuple[NetWorthCurrencyAmount, ...] | None,
     portfolio: tuple[NetWorthCurrencyAmount, ...] | None,
     liabilities: tuple[NetWorthCurrencyAmount, ...] | None,
+    *,
+    portfolio_value: Decimal,
+    liabilities_value: Decimal,
 ) -> tuple[NetWorthCurrencyAmount, ...] | None:
+    if portfolio is None and portfolio_value == 0:
+        portfolio = ()
+    if liabilities is None and liabilities_value == 0:
+        liabilities = ()
     if cash is None or portfolio is None or liabilities is None:
         return None
     amounts: dict[str, Decimal] = {}
     for item in cash:
-        amounts[item.currency] = _add(amounts.get(item.currency, Decimal(0)), item.amount)
+        amounts[item.currency] = _add(
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            numeric=QUANTITY,
+        )
     for item in portfolio:
-        amounts[item.currency] = _add(amounts.get(item.currency, Decimal(0)), item.amount)
+        amounts[item.currency] = _add(
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            numeric=QUANTITY,
+        )
     for item in liabilities:
-        amounts[item.currency] = _subtract(amounts.get(item.currency, Decimal(0)), item.amount)
+        amounts[item.currency] = _subtract(
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            numeric=QUANTITY,
+        )
     return tuple(
         NetWorthCurrencyAmount(currency=currency, amount=amounts[currency])
         for currency in sorted(amounts)
@@ -285,24 +321,30 @@ def _validate_evidence(
     ):
         raise _fail()
 
-    cash = _money(evidence.cash_value)
-    portfolio = _money(evidence.investment_value)
-    liabilities = _money(evidence.liabilities_value)
-    total = _money(evidence.total_value)
+    cash = _exact(evidence.cash_value, MONEY)
+    portfolio = _exact(evidence.investment_value, MONEY)
+    liabilities = _exact(evidence.liabilities_value, MONEY)
+    total = _exact(evidence.total_value, MONEY)
     if portfolio < 0 or liabilities < 0:
         raise _fail()
-    assets = _add(cash, portfolio)
-    net = _subtract(assets, liabilities)
+    assets = _add(cash, portfolio, numeric=MONEY)
+    net = _subtract(assets, liabilities, numeric=MONEY)
     if net != total:
         raise _fail()
 
-    cash_breakdown = _breakdown(evidence.cash_value_by_currency, nonnegative=False)
+    cash_breakdown = _breakdown(
+        evidence.cash_value_by_currency,
+        numeric=MONEY,
+        nonnegative=False,
+    )
     portfolio_breakdown = _breakdown(
         evidence.investment_value_by_currency,
+        numeric=QUANTITY,
         nonnegative=True,
     )
     liability_breakdown = _breakdown(
         evidence.liabilities_value_by_currency,
+        numeric=MONEY,
         nonnegative=True,
     )
 
@@ -401,22 +443,38 @@ def build_net_worth_projection(evidence: NetWorthProjectionInput) -> ExpectedNet
     account_net_total = Decimal(0)
     by_type: dict[AccountType, tuple[Decimal, Decimal, Decimal]] = {}
     for contribution in accounts:
-        cash_value = _add(cash_value, contribution.cash_value)
-        portfolio_value = _add(portfolio_value, contribution.portfolio_value)
-        liabilities_value = _add(liabilities_value, contribution.liabilities_value)
-        account_net_total = _add(account_net_total, contribution.net_value)
+        cash_value = _add(cash_value, contribution.cash_value, numeric=MONEY)
+        portfolio_value = _add(
+            portfolio_value,
+            contribution.portfolio_value,
+            numeric=MONEY,
+        )
+        liabilities_value = _add(
+            liabilities_value,
+            contribution.liabilities_value,
+            numeric=MONEY,
+        )
+        account_net_total = _add(
+            account_net_total,
+            contribution.net_value,
+            numeric=MONEY,
+        )
         type_assets, type_liabilities, type_net = by_type.get(
             contribution.account_type,
             (Decimal(0), Decimal(0), Decimal(0)),
         )
         by_type[contribution.account_type] = (
-            _add(type_assets, contribution.assets_value),
-            _add(type_liabilities, contribution.liabilities_value),
-            _add(type_net, contribution.net_value),
+            _add(type_assets, contribution.assets_value, numeric=MONEY),
+            _add(
+                type_liabilities,
+                contribution.liabilities_value,
+                numeric=MONEY,
+            ),
+            _add(type_net, contribution.net_value, numeric=MONEY),
         )
 
-    assets_value = _add(cash_value, portfolio_value)
-    net_worth_value = _subtract(assets_value, liabilities_value)
+    assets_value = _add(cash_value, portfolio_value, numeric=MONEY)
+    net_worth_value = _subtract(assets_value, liabilities_value, numeric=MONEY)
     if net_worth_value != account_net_total:
         raise _fail()
     account_type_breakdown = tuple(
@@ -428,9 +486,15 @@ def build_net_worth_projection(evidence: NetWorthProjectionInput) -> ExpectedNet
         )
         for account_type, values in sorted(by_type.items(), key=lambda item: item[0].value)
     )
-    aggregate_cash_breakdown = _merge_breakdowns(cash_breakdowns)
-    aggregate_portfolio_breakdown = _merge_breakdowns(portfolio_breakdowns)
-    aggregate_liability_breakdown = _merge_breakdowns(liability_breakdowns)
+    aggregate_cash_breakdown = _merge_breakdowns(cash_breakdowns, numeric=MONEY)
+    aggregate_portfolio_breakdown = _merge_breakdowns(
+        portfolio_breakdowns,
+        numeric=QUANTITY,
+    )
+    aggregate_liability_breakdown = _merge_breakdowns(
+        liability_breakdowns,
+        numeric=MONEY,
+    )
 
     return ExpectedNetWorthProjection(
         user_id=user_id,
@@ -453,5 +517,7 @@ def build_net_worth_projection(evidence: NetWorthProjectionInput) -> ExpectedNet
             aggregate_cash_breakdown,
             aggregate_portfolio_breakdown,
             aggregate_liability_breakdown,
+            portfolio_value=portfolio_value,
+            liabilities_value=liabilities_value,
         ),
     )
