@@ -4,20 +4,20 @@ The Python code is organized under `backend/python/app/modules`. A module owns
 its API adapter, service layer, and repository where those exist; routers stay
 thin and shared database infrastructure lives outside modules.
 
-| Module                | Responsibility                                                             | Status                                              |
-| --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------- |
-| `auth`                | Verify a trusted HS256 session-bridge token and resolve its user           | Implemented                                         |
-| `accounts`            | Account lifecycle, memberships, and invitations                            | Implemented                                         |
-| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B |
-| `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches     | Implemented through duplicate detection             |
-| `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX | Basic read endpoint implemented                     |
-| transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
-| ledger                | Investment events and movements                                            | Database schema only                                |
-| holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth             | Pure aggregation, persisted evidence selection, and physical row projection | 5J-A/5J-B implemented; 5J-C after merge |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E and liability integration implemented |
-| prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
-| dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
+| Module                | Responsibility                                                                        | Status                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                      | Implemented                                                                 |
+| `accounts`            | Account lifecycle, memberships, and invitations                                       | Implemented                                                                 |
+| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
+| `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
+| `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
+| transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
+| ledger                | Investment events and movements                                                       | Database schema only                                                        |
+| holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
+| net_worth             | Pure aggregation, persisted evidence selection, physical projection, and atomic write | 5J-A–5J-C implemented; 5J-D after merge                                     |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I-A–5I-E and liability integration implemented                             |
+| prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
+| dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -135,3 +135,20 @@ unavailable; unavailable zero portfolio/liability may act as neutral only for
 the calculation; and nonzero unavailable portfolio/liability makes the total
 unavailable. Exact zero currency entries remain present. No FX conversion,
 rounding, or missing-evidence inference occurs.
+
+The internal 5J-D writer owns bounded complete `SERIALIZABLE` transaction
+attempts and rejects caller-active sessions. The first SQL statement sets the
+isolation level; a transaction advisory lock then serializes only the exact
+`(userId, timestamp, currency, granularity)` key. The writer composes 5J-B and
+5J-C inside that transaction before loading an existing target with
+`FOR UPDATE`. Creation inserts, flushes, reloads, and verifies every physical
+field. Exact state is a read-only replay; any scalar, metadata, JSONB,
+NULL/empty, or deterministic-ID difference is a conflict with no update or
+repair.
+
+Serialization failure, deadlock, and concurrent unique violation restart the
+whole operation at most three times after rollback. Evidence and domain
+failures are never retried, and a unique violation alone is never replay
+evidence. Source User, Account, membership, AccountSnapshot, and item rows are
+read-only. Source-snapshot lineage remains ephemeral because the schema has no
+lineage columns. Public authorization and orchestration remain 5J-E.
