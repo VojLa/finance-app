@@ -8,13 +8,13 @@ thin and shared database infrastructure lives outside modules.
 | --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------- |
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user           | Implemented                                         |
 | `accounts`            | Account lifecycle, memberships, and invitations                            | Implemented                                         |
-| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence | 5I-L1 selection and 5I-L2A internal writer implemented |
+| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches     | Implemented through duplicate detection             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX | Basic read endpoint implemented                     |
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E implemented; liability integration deferred |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E and liability integration implemented |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
 
@@ -65,6 +65,15 @@ session. Server-owned minute-bucket metadata makes repeated calls within one
 minute exact replays. Evidence/state failures and physical conflicts use generic
 409 responses without exposing financial evidence.
 
+For credit-card, loan, and mortgage accounts, the snapshot adapter composes the
+canonical liability selector exactly once and bypasses Holdings, prices, FX,
+Transactions, and investment history. The positive selected balance is stored
+in scalar `liabilitiesValue`, `totalValue` is its exact negative, and there are
+no items. The schema has no liability-breakdown column; this is sufficient for
+the enforced single-currency contract because liability and Account currencies
+must match. Same-minute exact state replays, while changed evidence conflicts
+without overwrite. Bank, cash, and savings remain non-persistable.
+
 The `liabilities` module exposes a caller-transaction-owned, read-only
 latest-as-of selector and an internal transaction-owning append writer over
 canonical `LiabilityBalance` observations. Both validate supported account
@@ -74,13 +83,13 @@ timestamp/source and optional external-identity transaction advisory scopes,
 and inserts one deterministic UUIDv5 row or validates an exact read-only
 replay. Conflicts are never updated or repaired; any failure rolls back the
 single writer-owned transaction. Neither boundary derives debt from ordinary
-Transactions or falls back to zero. No public liability endpoint exists, and
-5I snapshot integration remains deferred to 5I-L2B.
+Transactions or falls back to zero. No public liability-observation endpoint
+exists.
 
 Authorization is established at request time under the current application
 contract; the Account itself is revalidated by the writer under lock, while a
 membership revocation between authorization and writer commit remains a
 documented narrow race. Canonical liability evidence selection exists in
-5I-L1 and the internal atomic observation writer in 5I-L2A, while
-authorization/import and snapshot integration remain deferred to 5I-L2B.
+5I-L1, the internal atomic observation writer in 5I-L2A, and authorized manual
+snapshot consumption in 5I-L2B. Public liability ingestion remains deferred.
 `NetWorthSnapshot` remains outside Step 5I.

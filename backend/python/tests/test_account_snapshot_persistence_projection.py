@@ -15,6 +15,7 @@ from app.db.models.enums import (
     AccountType,
     AssetType,
     ExchangeRateSource,
+    LiabilityBalanceSource,
     PriceSource,
     SnapshotGranularity,
     SnapshotSource,
@@ -31,6 +32,7 @@ from app.modules.snapshots.account_projection import (
     CashBalanceEvidence,
     CurrencyAmount,
     ExpectedAccountSnapshotValuation,
+    LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
     SnapshotHoldingEvidence,
@@ -143,6 +145,60 @@ def _valuation(
             ),
             liabilities=(),
         )
+    )
+
+
+def _liability_valuation(
+    *,
+    account_type: AccountType = AccountType.loan,
+    amount: Decimal = Decimal("115.000000"),
+) -> ExpectedAccountSnapshotValuation:
+    return build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id="account-1",
+            account_type=account_type,
+            account_currency="CZK",
+            output_currency="CZK",
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=1,
+            holdings=(),
+            prices=(),
+            exchange_rates=(),
+            cash_balances=(),
+            liabilities=(
+                LiabilityBalanceEvidence(
+                    liability_id="liability-balance-1",
+                    account_id="account-1",
+                    currency="CZK",
+                    amount=amount,
+                    timestamp=datetime(2026, 7, 27, 10, 0),
+                ),
+            ),
+        )
+    )
+
+
+def _liability_evidence(
+    *,
+    account_type: AccountType = AccountType.loan,
+    amount: Decimal = Decimal("115.000000"),
+) -> CompleteAccountSnapshotEvidence:
+    zero = ExactSnapshotMetric(Decimal(0), ())
+    return CompleteAccountSnapshotEvidence(
+        valuation=_liability_valuation(account_type=account_type, amount=amount),
+        net_deposits=zero,
+        realized_pnl=zero,
+        unrealized_pnl=zero,
+        fees=zero,
+        taxes=zero,
+        selected_price_ids=(),
+        selected_snapshot_exchange_rate_ids=(),
+        selected_historical_exchange_rate_ids=(),
+        selected_liability_balance_id="liability-balance-1",
+        selected_liability_effective_at=datetime(2026, 7, 27, 10, 0),
+        selected_liability_source=LiabilityBalanceSource.statement,
     )
 
 
@@ -297,6 +353,58 @@ def test_exact_investment_snapshot_maps_every_physical_field() -> None:
     assert item.cost_currency == "CZK"
     assert item.allocation_pct == Decimal("100")
     assert item.created_at == CREATED_AT
+
+
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+)
+def test_liability_snapshot_maps_positive_liability_and_negative_total(
+    account_type: AccountType,
+) -> None:
+    result = _project(_liability_evidence(account_type=account_type))
+
+    assert result.items == ()
+    assert result.snapshot.cash_value == Decimal(0)
+    assert result.snapshot.investment_value == Decimal(0)
+    assert result.snapshot.investment_cost_basis == Decimal(0)
+    assert result.snapshot.liabilities_value == Decimal("115.000000")
+    assert result.snapshot.total_value == Decimal("-115.000000")
+    assert result.snapshot.net_deposits_value == Decimal(0)
+    assert result.snapshot.realized_pnl_value == Decimal(0)
+    assert result.snapshot.unrealized_pnl_value == Decimal(0)
+    assert result.snapshot.fees_value == Decimal(0)
+    assert result.snapshot.taxes_value == Decimal(0)
+    assert result.snapshot.exchange_rates.to_json() == {
+        "version": 1,
+        "snapshotRates": [],
+        "historicalRateIds": [],
+    }
+    assert result.audit.selected_price_ids == ()
+    assert result.audit.selected_liability_balance_id == "liability-balance-1"
+    assert result.audit.selected_liability_effective_at == datetime(2026, 7, 27, 10, 0)
+    assert result.audit.selected_liability_source is LiabilityBalanceSource.statement
+
+
+def test_fully_repaid_liability_is_distinct_from_missing_evidence() -> None:
+    result = _project(_liability_evidence(amount=Decimal(0)))
+
+    assert result.snapshot.liabilities_value == Decimal(0)
+    assert result.snapshot.total_value == Decimal(0)
+    assert result.items == ()
+    assert result.audit.selected_liability_balance_id == "liability-balance-1"
+
+
+def test_liability_physical_invariant_tamper_fails_closed() -> None:
+    evidence = _liability_evidence()
+
+    with pytest.raises(AccountSnapshotPersistenceProjectionError):
+        _project(
+            replace(
+                evidence,
+                valuation=replace(evidence.valuation, total_value=Decimal("115")),
+            )
+        )
 
 
 def test_multiple_items_are_sorted_and_ids_are_deterministic() -> None:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.db.models.enums import (
     AccountType,
     InvestmentEventType,
     InvestmentMovementKind,
+    LiabilityBalanceSource,
     MovementDirection,
     SnapshotGranularity,
     SnapshotSource,
@@ -22,12 +24,21 @@ from app.db.models.enums import (
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
+from app.modules.liabilities.evidence_service import (
+    LiabilityBalanceEvidence as SelectedLiabilityBalanceEvidence,
+)
+from app.modules.liabilities.evidence_service import (
+    LiabilityBalanceEvidenceService,
+    LiabilityBalanceEvidenceStateError,
+    SelectLiabilityBalanceCommand,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
     CurrencyAmount,
     ExpectedAccountSnapshotValuation,
+    LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
     SnapshotHoldingEvidence,
@@ -104,6 +115,16 @@ class CompleteAccountSnapshotEvidence:
     selected_price_ids: tuple[str, ...]
     selected_snapshot_exchange_rate_ids: tuple[str, ...]
     selected_historical_exchange_rate_ids: tuple[str, ...]
+    selected_liability_balance_id: str | None = None
+    selected_liability_effective_at: datetime | None = None
+    selected_liability_source: LiabilityBalanceSource | None = None
+
+
+class _LiabilityEvidenceSelector(Protocol):
+    async def select(
+        self,
+        command: SelectLiabilityBalanceCommand,
+    ) -> SelectedLiabilityBalanceEvidence: ...
 
 
 def _fail() -> AccountSnapshotEvidenceStateError:
@@ -438,6 +459,62 @@ def _investment_history(
     return balances, tuple(sorted(metrics, key=lambda item: (item.timestamp, item.evidence_id)))
 
 
+def _liability_complete_evidence(
+    *,
+    command: BuildAccountSnapshotEvidenceCommand,
+    account_id: str,
+    account_type: AccountType,
+    output_currency: str,
+    selected: SelectedLiabilityBalanceEvidence,
+) -> CompleteAccountSnapshotEvidence:
+    if (
+        selected.account_id != account_id
+        or selected.currency != output_currency
+        or selected.effective_at > command.snapshot_timestamp
+    ):
+        raise _fail()
+    valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id=account_id,
+            account_type=account_type,
+            account_currency=output_currency,
+            output_currency=output_currency,
+            snapshot_timestamp=command.snapshot_timestamp,
+            granularity=command.granularity,
+            source=command.source,
+            calculation_version=command.calculation_version,
+            holdings=(),
+            prices=(),
+            exchange_rates=(),
+            cash_balances=(),
+            liabilities=(
+                LiabilityBalanceEvidence(
+                    liability_id=selected.balance_id,
+                    account_id=selected.account_id,
+                    currency=selected.currency,
+                    amount=selected.total_outstanding,
+                    timestamp=selected.effective_at,
+                ),
+            ),
+        )
+    )
+    structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
+    return CompleteAccountSnapshotEvidence(
+        valuation=valuation,
+        net_deposits=structural_zero,
+        realized_pnl=structural_zero,
+        unrealized_pnl=structural_zero,
+        fees=structural_zero,
+        taxes=structural_zero,
+        selected_price_ids=(),
+        selected_snapshot_exchange_rate_ids=(),
+        selected_historical_exchange_rate_ids=(),
+        selected_liability_balance_id=selected.balance_id,
+        selected_liability_effective_at=selected.effective_at,
+        selected_liability_source=selected.source,
+    )
+
+
 class AccountSnapshotEvidenceService:
     """Build complete immutable evidence without owning the transaction."""
 
@@ -446,9 +523,13 @@ class AccountSnapshotEvidenceService:
         session: AsyncSession,
         *,
         repository: AccountSnapshotEvidenceRepository | None = None,
+        liability_evidence_service: _LiabilityEvidenceSelector | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or AccountSnapshotEvidenceRepository(session)
+        self.liability_evidence_service = (
+            liability_evidence_service or LiabilityBalanceEvidenceService(session)
+        )
 
     async def build(
         self,
@@ -472,8 +553,19 @@ class AccountSnapshotEvidenceService:
                 raise _fail()
             output_currency = canonical_currency(account.currency)
             if account.type in _LIABILITY_ACCOUNT_TYPES:
-                # No persisted opening balance or dedicated liability balance exists.
-                raise _fail()
+                selected_liability = await self.liability_evidence_service.select(
+                    SelectLiabilityBalanceCommand(
+                        account_id=account_id,
+                        snapshot_timestamp=snapshot_timestamp,
+                    )
+                )
+                return _liability_complete_evidence(
+                    command=command,
+                    account_id=account_id,
+                    account_type=account.type,
+                    output_currency=output_currency,
+                    selected=selected_liability,
+                )
             if account.type not in _CASH_ACCOUNT_TYPES | _INVESTMENT_ACCOUNT_TYPES:
                 raise _fail()
 
@@ -649,5 +741,7 @@ class AccountSnapshotEvidenceService:
             )
         except AccountSnapshotEvidenceStateError:
             raise
+        except LiabilityBalanceEvidenceStateError as exc:
+            raise _fail() from exc
         except AccountSnapshotProjectionStateError as exc:
             raise _fail() from exc

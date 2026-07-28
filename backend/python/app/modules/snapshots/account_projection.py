@@ -328,7 +328,14 @@ def _validate_account_shape(evidence: AccountSnapshotProjectionInput) -> tuple[s
     elif account_type in _INVESTMENT_ACCOUNT_TYPES:
         invalid = bool(evidence.liabilities)
     elif account_type in _LIABILITY_ACCOUNT_TYPES:
-        invalid = bool(evidence.holdings or evidence.prices or evidence.cash_balances)
+        invalid = bool(
+            evidence.holdings
+            or evidence.prices
+            or evidence.cash_balances
+            or evidence.exchange_rates
+            or len(evidence.liabilities) != 1
+            or _currency(evidence.liabilities[0].currency) != output_currency
+        )
     else:
         raise _fail()
     if invalid:
@@ -570,7 +577,9 @@ def _balances(
             raise _fail()
         liability_ids.add(liability_id)
         liability_currencies.add(currency)
-        amount = _exact(liability.amount, MONEY, positive=True)
+        amount = _exact(liability.amount, MONEY)
+        if amount < 0:
+            raise _fail()
         liabilities_by_currency[currency] = amount
         liabilities_converted.append(
             _convert(

@@ -621,15 +621,45 @@ def test_liability_account_uses_positive_magnitude_and_subtracts_it() -> None:
     result = build_account_snapshot_projection(
         _input(
             account_type=AccountType.loan,
-            liabilities=(
-                _liability("USD", Decimal("10")),
-                _liability("CZK", Decimal("100")),
-            ),
-            exchange_rates=(_rate("USD", value=Decimal("20")),),
+            liabilities=(_liability("CZK", Decimal("300")),),
         )
     )
     assert result.liabilities_value == Decimal("300")
     assert result.total_value == Decimal("-300")
+    assert result.items == ()
+    assert result.exchange_rates == ()
+
+
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+)
+def test_liability_accounts_accept_explicit_zero_observation(
+    account_type: AccountType,
+) -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_type=account_type,
+            liabilities=(_liability("CZK", Decimal(0)),),
+        )
+    )
+    assert result.liabilities_value == Decimal(0)
+    assert result.total_value == Decimal(0)
+    assert result.liabilities_value_by_currency == (
+        CurrencyAmount(currency="CZK", amount=Decimal(0)),
+    )
+    assert result.items == ()
+
+
+def test_liability_maximum_money_boundary_negates_exactly() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_type=AccountType.mortgage,
+            liabilities=(_liability("CZK", Decimal("999999999999.999999")),),
+        )
+    )
+    assert result.liabilities_value == Decimal("999999999999.999999")
+    assert result.total_value == Decimal("-999999999999.999999")
 
 
 @pytest.mark.parametrize(
@@ -679,8 +709,13 @@ def test_malformed_liability_evidence_fails_closed(
         _input(account_type=AccountType.broker, liabilities=(_liability(),)),
         _input(account_type=AccountType.loan, cash_balances=(_cash(),)),
         _input(account_type=AccountType.loan, holdings=(_holding(),), prices=(_price(),)),
-        _input(account_type=AccountType.loan, liabilities=(_liability(amount=Decimal(0)),)),
         _input(account_type=AccountType.loan, liabilities=(_liability(amount=Decimal("-1")),)),
+        _input(account_type=AccountType.loan, liabilities=(_liability("USD"),)),
+        _input(
+            account_type=AccountType.loan,
+            liabilities=(_liability(),),
+            exchange_rates=(_rate("USD"),),
+        ),
         _input(account_type=AccountType.loan, liabilities=(_liability(account_id="other"),)),
         _input(account_type=AccountType.bank, cash_balances=(_cash(account_id="other"),)),
         _input(
