@@ -15,7 +15,7 @@ application service yet.
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-C valuation/evidence/physical projections implemented |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-D through atomic internal account-snapshot persistence |
 
 ## Important relationships
 
@@ -117,5 +117,14 @@ An empty exact breakdown is `{}`, while an unavailable native breakdown is
 evidence and selected historical rate IDs. Selected price IDs remain immutable
 non-row audit metadata because the physical schema has no price-evidence
 column. The physical schema likewise has no liability-breakdown column.
-Database mutation, replay/upsert behavior, locks, and authorization remain
-5I-D and 5I-E.
+
+The internal 5I-D writer owns one outer transaction for one immutable command.
+It locks account metadata, the exact snapshot identity, all compatible
+account/source canonical history scopes, canonical rows, current Holdings and
+their Listing/Asset evidence, then takes compatible `SHARE` locks over price
+and FX tables before 5I-B selection. This preserves one coherent
+`READ COMMITTED` view while allowing a waiter to see a predecessor's commit.
+It then builds the 5I-C plan and inserts, flushes, reloads, and validates the
+complete physical graph. Exact state is a read-only replay; any physical or
+evidence difference is a conflict with no update, delete, upsert, or repair.
+Authorization and the public endpoint remain 5I-E.

@@ -24,6 +24,14 @@ from app.modules.snapshots.persistence_projection import (
     ExpectedAccountSnapshotRow,
     build_account_snapshot_persistence_projection,
 )
+from app.modules.snapshots.writer import (
+    AccountSnapshotWriteConflictError,
+    AccountSnapshotWriteDisposition,
+    AccountSnapshotWriter,
+    AccountSnapshotWriteResult,
+    AccountSnapshotWriteStateError,
+    WriteAccountSnapshotCommand,
+)
 
 __all__ = [
     "AccountSnapshotPersistenceAudit",
@@ -31,6 +39,11 @@ __all__ = [
     "AccountSnapshotPersistenceProjectionError",
     "AccountSnapshotProjectionInput",
     "AccountSnapshotProjectionStateError",
+    "AccountSnapshotWriteConflictError",
+    "AccountSnapshotWriteDisposition",
+    "AccountSnapshotWriteResult",
+    "AccountSnapshotWriteStateError",
+    "AccountSnapshotWriter",
     "CanonicalJsonObject",
     "CashBalanceEvidence",
     "ConsumedExchangeRate",
@@ -44,6 +57,7 @@ __all__ = [
     "SelectedExchangeRateEvidence",
     "SelectedPriceEvidence",
     "SnapshotHoldingEvidence",
+    "WriteAccountSnapshotCommand",
     "build_account_snapshot_persistence_projection",
     "build_account_snapshot_projection",
 ]
