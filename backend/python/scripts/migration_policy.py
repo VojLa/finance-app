@@ -474,6 +474,11 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
         source = database_workflow.read_text(encoding="utf-8")
         if "npm run db:prisma:archive:verify" not in source:
             raise RuntimeError("Database CI must use the restricted Prisma archive wrapper.")
+        head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
+        if source.count(head_schema_check) != 2:
+            raise RuntimeError(
+                "Database CI must verify the current head artifact after upgrade and bootstrap."
+            )
 
 
 def verify_policy() -> PrismaArchiveState:
