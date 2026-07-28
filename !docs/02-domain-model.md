@@ -188,4 +188,20 @@ All values and intermediate aggregates use exact `NUMERIC(18,6)` Decimal
 semantics. Native cash, portfolio, liability, and total breakdowns are
 preserved only when complete; unavailable evidence remains distinct from an
 empty exact breakdown. 5J-A performs no database selection, FX conversion,
-persistence, authorization, or scheduling. Those boundaries begin with 5J-B.
+persistence, authorization, or scheduling.
+
+The read-only 5J-B adapter proves the complete current user/account coverage
+through persisted `AccountMember` rows. Validly archived accounts are excluded;
+the schema has no historical activation intervals, so historical membership or
+archive reconstruction is not claimed. Any active bank, cash, or savings
+account invalidates the whole result. Every supported account requires exactly
+one physical AccountSnapshot at the requested timestamp, granularity, currency,
+and calculation version.
+
+5J-B validates persisted ownership, financial scalars, and canonical fixed-scale
+JSONB breakdowns, then invokes 5J-A once. AccountSnapshot has no physical
+liability-breakdown column, so that optional native evidence remains
+unavailable rather than inferred. The adapter requires a caller-owned
+`REPEATABLE READ` or `SERIALIZABLE` transaction; it rejects `READ COMMITTED` and
+owns no transaction or write. NetWorthSnapshot physical projection begins in
+5J-C.
