@@ -13,7 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| snapshots             | Exact account valuation evidence and atomic physical snapshot persistence       | 5I-A–5I-D implemented; public orchestration deferred |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E implemented; liability support deferred |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
 
@@ -54,7 +54,18 @@ entities. The writer owns one outer transaction, uses an identity advisory
 lock, reuses sorted import account/source locks, row-locks canonical and Holding
 evidence, and takes compatible PriceSnapshot/ExchangeRate `SHARE` locks before
 selecting evidence. It inserts one complete graph or performs an exact
-read-only replay; persisted differences fail without repair. Public
-authorization and orchestration remain 5I-E;
-canonical liability balance support is deferred to 5I-L, and
-`NetWorthSnapshot` remains outside Step 5I.
+read-only replay; persisted differences fail without repair. The public
+snapshot adapter exposes only
+`POST /api/v1/accounts/{account_id}/snapshots/recalculate`. A thin router
+delegates to an application service that permits persisted owner/admin/editor
+memberships, hides viewer/foreign/missing/archived accounts, closes the
+authentication lookup transaction, and calls the atomic writer once on an idle
+session. Server-owned minute-bucket metadata makes repeated calls within one
+minute exact replays. Evidence/state failures and physical conflicts use generic
+409 responses without exposing financial evidence.
+
+Authorization is established at request time under the current application
+contract; the Account itself is revalidated by the writer under lock, while a
+membership revocation between authorization and writer commit remains a
+documented narrow race. Canonical liability balance support is deferred to
+5I-L, and `NetWorthSnapshot` remains outside Step 5I.

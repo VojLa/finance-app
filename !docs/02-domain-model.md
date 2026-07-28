@@ -15,7 +15,7 @@ application service yet.
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                   |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection       |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-D through atomic internal account-snapshot persistence |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I-A–5I-E through authorized manual account-snapshot persistence |
 
 ## Important relationships
 
@@ -127,4 +127,13 @@ and FX tables before 5I-B selection. This preserves one coherent
 It then builds the 5I-C plan and inserts, flushes, reloads, and validates the
 complete physical graph. Exact state is a read-only replay; any physical or
 evidence difference is a conflict with no update, delete, upsert, or repair.
-Authorization and the public endpoint remain 5I-E.
+The 5I-E public boundary adds an authenticated no-body manual recalculation
+operation. Owner, admin, and editor memberships are allowed; viewer, foreign,
+missing, and archived accounts share a concealed 404 contract. The server
+captures one deterministic minute bucket and owns source, granularity,
+calculation version, recalculation flag, and all timestamps. Created and exact
+replay outcomes use one stable HTTP 200 response without financial evidence.
+Authorization lookup completes before the writer receives an idle session, and
+the writer revalidates Account state under lock. Membership revocation in the
+narrow interval between request-time authorization and writer commit remains a
+documented non-atomic boundary.

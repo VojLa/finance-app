@@ -14,6 +14,14 @@ from app.modules.snapshots.account_projection import (
     SnapshotHoldingEvidence,
     build_account_snapshot_projection,
 )
+from app.modules.snapshots.manual_service import (
+    CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION,
+    AccountSnapshotConflictError,
+    AccountSnapshotUnavailableError,
+    ManualAccountSnapshotService,
+    RecalculateAccountSnapshotCommand,
+    RecalculateAccountSnapshotResult,
+)
 from app.modules.snapshots.persistence_projection import (
     AccountSnapshotPersistenceAudit,
     AccountSnapshotPersistenceMetadata,
@@ -34,11 +42,14 @@ from app.modules.snapshots.writer import (
 )
 
 __all__ = [
+    "CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION",
+    "AccountSnapshotConflictError",
     "AccountSnapshotPersistenceAudit",
     "AccountSnapshotPersistenceMetadata",
     "AccountSnapshotPersistenceProjectionError",
     "AccountSnapshotProjectionInput",
     "AccountSnapshotProjectionStateError",
+    "AccountSnapshotUnavailableError",
     "AccountSnapshotWriteConflictError",
     "AccountSnapshotWriteDisposition",
     "AccountSnapshotWriteResult",
@@ -54,6 +65,9 @@ __all__ = [
     "ExpectedAccountSnapshotRow",
     "ExpectedAccountSnapshotValuation",
     "LiabilityBalanceEvidence",
+    "ManualAccountSnapshotService",
+    "RecalculateAccountSnapshotCommand",
+    "RecalculateAccountSnapshotResult",
     "SelectedExchangeRateEvidence",
     "SelectedPriceEvidence",
     "SnapshotHoldingEvidence",
