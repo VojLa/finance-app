@@ -1,5 +1,13 @@
-"""Pure net-worth domain and physical persistence projection contracts."""
+"""Net-worth domain, persistence, and manual orchestration contracts."""
 
+from app.modules.net_worth.manual_service import (
+    CURRENT_NET_WORTH_CALCULATION_VERSION,
+    ManualNetWorthSnapshotService,
+    NetWorthSnapshotConflictError,
+    NetWorthSnapshotUnavailableError,
+    RecalculateNetWorthSnapshotCommand,
+    RecalculateNetWorthSnapshotResult,
+)
 from app.modules.net_worth.persistence_projection import (
     CanonicalNetWorthJsonObject,
     ExpectedNetWorthSnapshotPersistence,
@@ -29,24 +37,30 @@ from app.modules.net_worth.writer import (
 )
 
 __all__ = [
+    "CURRENT_NET_WORTH_CALCULATION_VERSION",
     "AccountNetWorthEvidence",
     "CanonicalNetWorthJsonObject",
     "ExpectedNetWorthAccountContribution",
     "ExpectedNetWorthProjection",
     "ExpectedNetWorthSnapshotPersistence",
     "ExpectedNetWorthSnapshotRow",
+    "ManualNetWorthSnapshotService",
     "NetWorthAccountTypeAmount",
     "NetWorthCurrencyAmount",
     "NetWorthProjectionInput",
     "NetWorthProjectionStateError",
+    "NetWorthSnapshotConflictError",
     "NetWorthSnapshotPersistenceAudit",
     "NetWorthSnapshotPersistenceMetadata",
     "NetWorthSnapshotPersistenceProjectionError",
+    "NetWorthSnapshotUnavailableError",
     "NetWorthSnapshotWriteConflictError",
     "NetWorthSnapshotWriteDisposition",
     "NetWorthSnapshotWriteResult",
     "NetWorthSnapshotWriteStateError",
     "NetWorthSnapshotWriter",
+    "RecalculateNetWorthSnapshotCommand",
+    "RecalculateNetWorthSnapshotResult",
     "WriteNetWorthSnapshotCommand",
     "build_net_worth_projection",
     "build_net_worth_snapshot_persistence_projection",

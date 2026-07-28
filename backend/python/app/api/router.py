@@ -6,6 +6,7 @@ from app.modules.accounts.api import router as accounts_router
 from app.modules.accounts.invitations import router as account_invitation_router
 from app.modules.holdings.api import router as holdings_router
 from app.modules.imports.api import router as imports_router
+from app.modules.net_worth.api import router as net_worth_router
 from app.modules.portfolio.api import router as portfolio_router
 from app.modules.snapshots.api import router as snapshots_router
 
@@ -16,6 +17,7 @@ api_router.include_router(accounts_router)
 api_router.include_router(account_invitation_router)
 api_router.include_router(holdings_router)
 api_router.include_router(imports_router)
+api_router.include_router(net_worth_router)
 api_router.include_router(portfolio_router)
 api_router.include_router(snapshots_router)
 
