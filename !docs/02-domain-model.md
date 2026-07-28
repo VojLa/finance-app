@@ -210,5 +210,20 @@ JSONB breakdowns, then invokes 5J-A once. AccountSnapshot has no physical
 liability-breakdown column, so that optional native evidence remains
 unavailable rather than inferred. The adapter requires a caller-owned
 `REPEATABLE READ` or `SERIALIZABLE` transaction; it rejects `READ COMMITTED` and
-owns no transaction or write. NetWorthSnapshot physical projection begins in
-5J-C.
+owns no transaction or write.
+
+The pure 5J-C contract maps that complete evidence to every physical
+`NetWorthSnapshot` field. Snapshot identity is a deterministic UUIDv5 over the
+physical unique key `(userId, timestamp, currency, granularity)`. Scalar
+financial values remain exact MONEY; native JSONB values use fixed-scale
+strings with MONEY precision for cash/liability and QUANTITY precision for
+portfolio/total. Unavailable breakdowns persist as SQL NULL and exact empty
+breakdowns as `{}`. `exchangeRates` is NULL because 5J performs no FX
+conversion.
+
+Selected account and AccountSnapshot identities are revalidated against every
+projection contribution and returned only as immutable ephemeral audit
+metadata. The physical schema has no source-snapshot lineage columns, so 5J-C
+does not hide those IDs in unrelated JSON. It creates no ORM model and performs
+no database access; atomic persistence, locking, replay, and conflicts remain
+5J-D.
