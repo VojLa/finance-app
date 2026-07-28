@@ -4,23 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
-from app.db.models.common import MONEY, TIMESTAMP
 from app.db.models.enums import AccountType, LiabilityBalanceSource
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.modules.liabilities.repository import LiabilityBalanceEvidenceRepository
+from app.modules.liabilities.validation import (
+    LIABILITY_ACCOUNT_TYPES,
+    LiabilityBalanceValidationError,
+    canonical_currency,
+    canonical_external_id,
+    canonical_money,
+    canonical_nonblank,
+    canonical_timestamp,
+    canonical_total,
+)
 
 _ERROR_MESSAGE = "Liability balance evidence is unavailable."
-_LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
-    AccountType.loan,
-    AccountType.mortgage,
-}
 
 
 class LiabilityBalanceEvidenceStateError(ValueError):
@@ -63,56 +67,38 @@ def _fail() -> LiabilityBalanceEvidenceStateError:
 
 
 def _nonblank(value: object) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise _fail()
-    return value
+    try:
+        return canonical_nonblank(value)
+    except LiabilityBalanceValidationError as exc:
+        raise _fail() from exc
 
 
 def _timestamp(value: object) -> datetime:
-    precision = TIMESTAMP.precision
-    if (
-        not isinstance(value, datetime)
-        or value.tzinfo is not None
-        or precision is None
-        or not 0 <= precision <= 6
-        or value.microsecond % (10 ** (6 - precision))
-    ):
-        raise _fail()
-    return value
+    try:
+        return canonical_timestamp(value)
+    except LiabilityBalanceValidationError as exc:
+        raise _fail() from exc
 
 
 def _currency(value: object) -> str:
-    currency = _nonblank(value)
-    if len(currency) != 3 or currency != currency.upper() or not currency.isalpha():
-        raise _fail()
-    return currency
+    try:
+        return canonical_currency(value)
+    except LiabilityBalanceValidationError as exc:
+        raise _fail() from exc
 
 
 def _money(value: object) -> Decimal:
-    if not isinstance(value, Decimal) or not value.is_finite():
-        raise _fail()
-    precision, scale = MONEY.precision, MONEY.scale
-    if precision is None or scale is None:
-        raise RuntimeError("Canonical MONEY must define precision and scale.")
     try:
-        with localcontext() as context:
-            context.prec = max(precision * 4, 84)
-            scaled = value.quantize(Decimal(1).scaleb(-scale))
-    except InvalidOperation as exc:
+        return canonical_money(value)
+    except LiabilityBalanceValidationError as exc:
         raise _fail() from exc
-    if value != scaled or abs(value) >= Decimal(10) ** (precision - scale):
-        raise _fail()
-    return value
 
 
 def _total(principal: Decimal, interest: Decimal, fees: Decimal) -> Decimal:
     try:
-        with localcontext() as context:
-            context.prec = 84
-            result = principal + interest + fees
-    except (InvalidOperation, OverflowError) as exc:
+        return canonical_total(principal, interest, fees)
+    except LiabilityBalanceValidationError as exc:
         raise _fail() from exc
-    return _money(result)
 
 
 def _validate_account(account: object, account_id: str) -> AccountModel:
@@ -120,7 +106,7 @@ def _validate_account(account: object, account_id: str) -> AccountModel:
         not isinstance(account, AccountModel)
         or _nonblank(account.id) != account_id
         or not isinstance(account.type, AccountType)
-        or account.type not in _LIABILITY_ACCOUNT_TYPES
+        or account.type not in LIABILITY_ACCOUNT_TYPES
         or account.is_archived
         or account.archived_at is not None
     ):
@@ -155,12 +141,10 @@ def _validate_balance(
         raise _fail()
     if not isinstance(row.source, LiabilityBalanceSource):
         raise _fail()
-    if row.external_id is not None and (
-        not isinstance(row.external_id, str)
-        or not row.external_id
-        or row.external_id != row.external_id.strip()
-    ):
-        raise _fail()
+    try:
+        canonical_external_id(row.external_id)
+    except LiabilityBalanceValidationError as exc:
+        raise _fail() from exc
     return LiabilityBalanceEvidence(
         balance_id=balance_id,
         account_id=account.id,

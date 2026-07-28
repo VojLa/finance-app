@@ -8,7 +8,7 @@ application service yet.
 | ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------- |
 | Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                   |
 | Accounts               | `Account`                                                              | —                                                            | Implemented                                   |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only evidence selection implemented      |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer |
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                   |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                   |
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
@@ -118,8 +118,12 @@ timestamp and requires exactly one row at that timestamp; missing, ambiguous,
 future-only, malformed, or archived-account evidence fails without a zero
 fallback. The read-only selector owns no transaction and writes no snapshot.
 Account-type validation is application-owned because a cross-table PostgreSQL
-`CHECK` would be misleading. Liability writes and 5I snapshot integration
-remain a later 5I-L2 boundary.
+`CHECK` would be misleading. The 5I-L2A writer appends one exact deterministic
+observation in its own outer transaction. It locks the Account and both
+physical identity domains, returns an exact replay only when every physical
+field (including deterministic ID and created timestamp) matches, and rejects
+all differences without update or repair. Liability authorization/import and
+5I snapshot integration remain the later 5I-L2B boundary.
 
 The pure 5I-C adapter maps exact 5I-B evidence to every physical snapshot and
 item column without ORM construction or database access. Snapshot identity is
