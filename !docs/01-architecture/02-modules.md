@@ -14,7 +14,7 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
 | ledger                | Investment events and movements                                            | Database schema only                                |
 | holdings              | Project and rebuild holdings from active canonical investment history       | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth             | Pure aggregation of coherent exact account snapshots                        | 5J-A pure projection implemented |
+| net_worth             | Pure aggregation and persisted evidence selection for exact account snapshots | 5J-A/5J-B implemented |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation       | 5I-A–5I-E and liability integration implemented |
 | prices / FX           | Provider refresh and price persistence                                     | Schema only; portfolio reads existing FX rows       |
 | dashboard / reporting | Dashboard read models                                                      | Not implemented in Python                           |
@@ -95,12 +95,24 @@ documented narrow race. Canonical liability evidence selection exists in
 snapshot consumption in 5I-L2B. Public liability ingestion remains deferred.
 `NetWorthSnapshot` remains outside Step 5I.
 
-The Python `net_worth` module implements only the pure 5J-A projection. It
-accepts immutable exact AccountSnapshot evidence for the currently physically
-supported investment and liability account types, requires one exact
-timestamp/granularity/currency, validates duplicate identities and both
-net-worth formulas, and returns sorted account and account-type contributions.
-Native currency breakdowns remain typed tuples; unavailable evidence remains
-`None`. The module has no database, ORM, writer, authorization, HTTP, clock,
-FX-selection, or scheduling dependency. Persisted evidence selection starts in
-5J-B.
+The Python `net_worth` module contains the pure 5J-A projection plus the
+caller-transaction-owned 5J-B persisted-evidence adapter. The adapter discovers
+the User's full current membership/account set, excludes consistently archived
+accounts, fails if any active account type is not physically snapshot-capable,
+and batch-selects one exact timestamp/granularity/currency/version
+AccountSnapshot per eligible account. It strictly parses physical JSONB
+breakdowns and delegates all aggregation to 5J-A exactly once.
+
+Native breakdown precision is category-specific: cash and liability use
+MONEY (`NUMERIC(18,6)`), portfolio uses QUANTITY (`NUMERIC(28,10)`), and total
+native net worth also uses QUANTITY because it combines the other three
+categories. Scalar net-worth values remain MONEY. The adapter and projection
+never round or truncate scale-10 portfolio evidence.
+
+The multi-query adapter requires an already active `REPEATABLE READ` or
+`SERIALIZABLE` transaction and verifies that boundary before reading. It owns
+no begin, commit, rollback, savepoint, flush, or write. This prevents a
+concurrently committed Account or AccountSnapshot from producing a mixed view.
+The physical AccountSnapshot has no liability-breakdown field, so unavailable
+liability native evidence remains `None`. NetWorthSnapshot persistence,
+authorization, HTTP, FX conversion, and scheduling remain unimplemented.
