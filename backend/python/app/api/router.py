@@ -7,6 +7,7 @@ from app.modules.accounts.invitations import router as account_invitation_router
 from app.modules.holdings.api import router as holdings_router
 from app.modules.imports.api import router as imports_router
 from app.modules.portfolio.api import router as portfolio_router
+from app.modules.snapshots.api import router as snapshots_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health_router)
@@ -16,6 +17,7 @@ api_router.include_router(account_invitation_router)
 api_router.include_router(holdings_router)
 api_router.include_router(imports_router)
 api_router.include_router(portfolio_router)
+api_router.include_router(snapshots_router)
 
 legacy_router = APIRouter(include_in_schema=False)
 legacy_router.include_router(health_router)
