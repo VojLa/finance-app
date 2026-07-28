@@ -8,7 +8,7 @@ thin and shared database infrastructure lives outside modules.
 | --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------- |
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user           | Implemented                                         |
 | `accounts`            | Account lifecycle, memberships, and invitations                            | Implemented                                         |
-| `liabilities`         | Canonical positive liability observations and latest-as-of evidence         | 5I-L1 read-only selection implemented               |
+| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence | 5I-L1 selection and 5I-L2A internal writer implemented |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches     | Implemented through duplicate detection             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX | Basic read endpoint implemented                     |
 | transactions          | Cash transaction lifecycle and classification                              | Database schema only                                |
@@ -66,16 +66,21 @@ minute exact replays. Evidence/state failures and physical conflicts use generic
 409 responses without exposing financial evidence.
 
 The `liabilities` module exposes a caller-transaction-owned, read-only
-latest-as-of selector over canonical `LiabilityBalance` observations. It
-validates supported account type, account currency, exact MONEY components,
-the total formula, timestamp precision, and a single unambiguous latest
-observation. It never derives debt from ordinary Transactions, never falls back
-to zero, and owns no writer or public endpoint. 5I snapshot integration remains
-deferred to a future 5I-L2 boundary.
+latest-as-of selector and an internal transaction-owning append writer over
+canonical `LiabilityBalance` observations. Both validate supported account
+type, account currency, exact MONEY components, the total formula, and
+timestamp precision. The writer locks the Account, then sorted
+timestamp/source and optional external-identity transaction advisory scopes,
+and inserts one deterministic UUIDv5 row or validates an exact read-only
+replay. Conflicts are never updated or repaired; any failure rolls back the
+single writer-owned transaction. Neither boundary derives debt from ordinary
+Transactions or falls back to zero. No public liability endpoint exists, and
+5I snapshot integration remains deferred to 5I-L2B.
 
 Authorization is established at request time under the current application
 contract; the Account itself is revalidated by the writer under lock, while a
 membership revocation between authorization and writer commit remains a
 documented narrow race. Canonical liability evidence selection exists in
-5I-L1, while its write boundary and snapshot integration remain deferred to
-5I-L2. `NetWorthSnapshot` remains outside Step 5I.
+5I-L1 and the internal atomic observation writer in 5I-L2A, while
+authorization/import and snapshot integration remain deferred to 5I-L2B.
+`NetWorthSnapshot` remains outside Step 5I.
