@@ -6,8 +6,8 @@ from scripts.sqlalchemy_schema import compare_snapshots, local_snapshot, normali
 def test_local_snapshot_contains_complete_schema() -> None:
     snapshot = local_snapshot()
 
-    assert len(snapshot["tables"]) == 30
-    assert len(snapshot["enums"]) == 27
+    assert len(snapshot["tables"]) == 31
+    assert len(snapshot["enums"]) == 28
 
 
 def test_schema_comparison_accepts_identical_snapshots(capsys) -> None:

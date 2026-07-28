@@ -33,6 +33,7 @@ from app.db.models.enums import (
     ImportStatus,
     InvestmentEventType,
     InvestmentMovementKind,
+    LiabilityBalanceSource,
     MovementDirection,
     PriceSource,
     RuleField,
@@ -45,6 +46,7 @@ from app.db.models.enums import (
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
@@ -102,6 +104,8 @@ __all__ = [
     "InvestmentEventType",
     "InvestmentMovementKind",
     "InvestmentMovementModel",
+    "LiabilityBalanceModel",
+    "LiabilityBalanceSource",
     "MovementDirection",
     "NetWorthSnapshotModel",
     "PriceSnapshotModel",

@@ -10,7 +10,7 @@ The governing decision is ADR 0006 in `!planning/decisions`.
 - current migration owner: Alembic
 - target migration owner: Alembic
 - cutover status: completed
-- SQLAlchemy mirror: complete for all 30 application tables and 27 PostgreSQL enum types
+- SQLAlchemy mirror: complete for all 31 application tables and 28 PostgreSQL enum types
 - Alembic revision graph: inherited baseline `3d0001base` followed by ownership marker
   `3e0001cutover`
 - active deployment runner: `scripts/database_migrate.py`
@@ -84,7 +84,7 @@ For a new empty PostgreSQL database:
 npm run db:bootstrap
 ```
 
-Bootstrap loads the canonical baseline, stamps `3d0001base`, upgrades to `3e0001cutover`, and
+Bootstrap loads the canonical baseline, stamps `3d0001base`, upgrades to the current head, and
 verifies the result. It refuses a non-empty `public` schema.
 
 ## Frozen Prisma archive
@@ -105,8 +105,8 @@ schema is a runtime compatibility mirror, not the migration source of truth.
 
 The complete SQLAlchemy mirror covers:
 
-- 30 application tables,
-- 27 PostgreSQL enum types,
+- 31 application tables,
+- 28 PostgreSQL enum types,
 - columns, names, types, nullability, and server defaults,
 - primary keys, foreign keys, and delete behavior,
 - unique constraints and indexes,
@@ -145,7 +145,8 @@ update SQLAlchemy metadata and must update `schema.prisma` when Prisma Client-vi
 affected. The frozen Prisma migration directory and canonical inherited baseline must not be
 rewritten to represent later changes.
 
-The next database milestone is Step 3F: the first real Alembic-owned schema migration.
+The first post-cutover schema change was Step 3F. New changes continue as
+single-head Alembic revisions with revision-specific schema artifacts.
 
 ## Canonical baseline maintenance
 
@@ -156,3 +157,8 @@ for ordinary post-cutover Alembic revisions.
 ## First Alembic-owned schema change
 
 Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.
+
+Revision `3g0001liabbal` adds the canonical `LiabilityBalance` observation
+contract and dedicated `LiabilityBalanceSource` enum. It advances the physical
+schema to 31 application tables and 28 enums without modifying the frozen
+Prisma migration archive or inherited baseline.

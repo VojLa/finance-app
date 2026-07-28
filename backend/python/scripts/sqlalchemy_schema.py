@@ -230,7 +230,7 @@ def compare_snapshots(expected: dict[str, Any], actual: dict[str, Any]) -> int:
     expected_text = render(expected)
     actual_text = render(actual)
     if expected_text == actual_text:
-        print("SQLAlchemy metadata matches the Prisma-migrated PostgreSQL schema.")
+        print("SQLAlchemy metadata matches the live PostgreSQL schema.")
         return 0
 
     print("SQLAlchemy metadata drift detected:", file=sys.stderr)

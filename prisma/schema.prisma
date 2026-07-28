@@ -46,6 +46,7 @@ model Account {
   budgetLinks         BudgetAccount[]
   importBatches       ImportBatch[]
   snapshots           AccountSnapshot[]
+  liabilityBalances   LiabilityBalance[]
   invites             AccountInvite[]
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -127,6 +128,33 @@ enum AccountType {
   credit_card
   loan
   mortgage
+}
+
+enum LiabilityBalanceSource {
+  manual
+  statement
+  provider
+  import
+  migration
+}
+
+model LiabilityBalance {
+  id                   String                 @id @default(cuid())
+  accountId            String
+  account              Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  effectiveAt          DateTime               @db.Timestamp(3)
+  currency             String
+  outstandingPrincipal Decimal                @db.Decimal(18, 6)
+  accruedInterest      Decimal                @db.Decimal(18, 6)
+  feesOutstanding      Decimal                @db.Decimal(18, 6)
+  totalOutstanding     Decimal                @db.Decimal(18, 6)
+  source               LiabilityBalanceSource
+  externalId           String?
+  createdAt            DateTime               @db.Timestamp(3)
+
+  @@unique([accountId, effectiveAt, source])
+  @@unique([accountId, source, externalId])
+  @@index([accountId, effectiveAt])
 }
 
 // ─── Transaction Domain ───────────────────────────────────────────────────────

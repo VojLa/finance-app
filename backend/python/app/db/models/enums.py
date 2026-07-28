@@ -47,6 +47,14 @@ class AccountType(StrEnum):
     mortgage = "mortgage"
 
 
+class LiabilityBalanceSource(StrEnum):
+    manual = "manual"
+    statement = "statement"
+    provider = "provider"
+    import_ = "import"
+    migration = "migration"
+
+
 class TransactionType(StrEnum):
     income = "income"
     expense = "expense"
@@ -246,6 +254,10 @@ ACCOUNT_MEMBER_ROLE_DB = postgres_enum(AccountMemberRole, name="AccountMemberRol
 ACCOUNT_RELATION_TYPE_DB = postgres_enum(AccountRelationType, name="AccountRelationType")
 ACCOUNT_INVITE_STATUS_DB = postgres_enum(AccountInviteStatus, name="AccountInviteStatus")
 ACCOUNT_TYPE_DB = postgres_enum(AccountType, name="AccountType")
+LIABILITY_BALANCE_SOURCE_DB = postgres_enum(
+    LiabilityBalanceSource,
+    name="LiabilityBalanceSource",
+)
 TRANSACTION_TYPE_DB = postgres_enum(TransactionType, name="TransactionType")
 TRANSACTION_CLASSIFICATION_DB = postgres_enum(
     TransactionClassification,

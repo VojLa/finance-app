@@ -14,7 +14,7 @@ FastAPI startup never runs Alembic commands, stamps revisions, or changes the ph
 
 ## Schema metadata
 
-The metadata contains all 30 application tables and all 27 PostgreSQL enum types. Models are split
+The metadata contains all 31 application tables and all 28 PostgreSQL enum types. Models are split
 by domain under `models/` and preserve:
 
 - physical table and column names,
@@ -63,3 +63,7 @@ migration runner, never by application startup.
 ## First Alembic-owned schema change
 
 Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.
+
+Revision `3g0001liabbal` adds the explicit `LiabilityBalance` model and
+dedicated source enum. The model mirrors canonical MONEY and TIMESTAMP types,
+component checks, account foreign key, uniqueness, and lookup index.

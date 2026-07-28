@@ -1,4 +1,4 @@
-schema_version = 7
+schema_version = 8
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -14,6 +14,7 @@ cutover_status = "alembic_owned"
 [objects.tables]
 users = ["User"]
 accounts = ["Account", "AccountMember", "AccountInvite"]
+liabilities = ["LiabilityBalance"]
 transactions = ["Transaction", "TransactionPair", "TransactionSplit"]
 counterparties = ["Counterparty", "CounterpartyAlias"]
 categories = ["Category", "CategoryRule"]
@@ -27,6 +28,7 @@ snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
 
 [objects.enums]
 accounts = ["AccountMemberRole", "AccountRelationType", "AccountInviteStatus", "AccountType"]
+liabilities = ["LiabilityBalanceSource"]
 transactions = ["TransactionType", "TransactionClassification"]
 counterparties = ["CounterpartyType", "AliasMatchType"]
 categories = ["CategoryType", "RuleField", "RuleOperator"]
@@ -38,8 +40,8 @@ imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", 
 snapshots = ["SnapshotGranularity", "SnapshotSource"]
 
 [python_usage]
-read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate"]
-read_enums = []
+read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate", "LiabilityBalance"]
+read_enums = ["LiabilityBalanceSource"]
 transitive_read_tables = ["User", "Asset", "AssetListing"]
 transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "PriceSource", "AssetType", "ExchangeRateSource"]
 
@@ -51,6 +53,7 @@ tables = [
   "Account",
   "AccountMember",
   "AccountInvite",
+  "LiabilityBalance",
   "Transaction",
   "TransactionPair",
   "TransactionSplit",
@@ -83,6 +86,7 @@ enums = [
   "AccountRelationType",
   "AccountInviteStatus",
   "AccountType",
+  "LiabilityBalanceSource",
   "TransactionType",
   "TransactionClassification",
   "CounterpartyType",
@@ -121,9 +125,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 3
+revision_count = 4
 head_count = 1
-head_revision = "3f0001acctnote"
+head_revision = "3g0001liabbal"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -143,14 +147,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3f0001acctnote"
-revision_count = 3
+head_revision = "3g0001liabbal"
+revision_count = 4
 head_count = 1
 
 [current_schema]
-revision = "3f0001acctnote"
-schema_source = "database/revisions/3f0001acctnote/schema.sql"
-checksum_source = "database/revisions/3f0001acctnote/schema.sha256"
+revision = "3g0001liabbal"
+schema_source = "database/revisions/3g0001liabbal/schema.sql"
+checksum_source = "database/revisions/3g0001liabbal/schema.sha256"
 
 [cutover]
 phase = "completed"

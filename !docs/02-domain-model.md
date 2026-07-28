@@ -1,6 +1,6 @@
 # Domain Model
 
-The PostgreSQL schema contains 30 application tables. SQLAlchemy has a complete
+The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
@@ -8,6 +8,7 @@ application service yet.
 | ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------- |
 | Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                   |
 | Accounts               | `Account`                                                              | —                                                            | Implemented                                   |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only evidence selection implemented      |
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                   |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                   |
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                   |
@@ -80,7 +81,7 @@ snapshot-as-of FX; lifetime net deposits, explicit realized P/L, outgoing fee,
 and outgoing tax evidence use event-as-of FX. Bank/cash/savings balance is the
 active signed Transaction history; investment cash is the active canonical
 cash/fee/tax movement history. Liability accounts remain fail-closed because
-the schema has no opening or dedicated liability-balance evidence. Asset
+5I-B does not yet consume the later 5I-L1 liability observation contract. Asset
 transfers also remain fail-closed for net-deposit metrics because counter-account
 identity is not persisted. The adapter returns immutable evidence, never writes
 `AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
@@ -105,7 +106,20 @@ account-type snapshot contract, so the exact liability aggregate is zero and
 its native breakdown is empty. This must not be confused with an unknown
 liability balance. Credit-card, loan, and mortgage accounts fail before
 projection because the schema cannot prove opening principal or outstanding
-balance; a future 5I-L canonical liability contract owns that prerequisite.
+balance. Step 5I-L1 now owns a separate canonical observation contract, but it
+does not yet enable liability snapshots.
+
+`LiabilityBalance` stores positive amounts owed for credit-card, loan, and
+mortgage accounts. Principal, accrued interest, fees outstanding, and total
+use exact `NUMERIC(18,6)`, remain nonnegative, and satisfy
+`total = principal + interest + fees`. Currency must match the Account.
+Latest-as-of selection uses the maximum `effectiveAt` not after the requested
+timestamp and requires exactly one row at that timestamp; missing, ambiguous,
+future-only, malformed, or archived-account evidence fails without a zero
+fallback. The read-only selector owns no transaction and writes no snapshot.
+Account-type validation is application-owned because a cross-table PostgreSQL
+`CHECK` would be misleading. Liability writes and 5I snapshot integration
+remain a later 5I-L2 boundary.
 
 The pure 5I-C adapter maps exact 5I-B evidence to every physical snapshot and
 item column without ORM construction or database access. Snapshot identity is

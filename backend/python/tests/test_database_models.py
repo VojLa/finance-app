@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "ImportRow",
     "InvestmentEvent",
     "InvestmentMovement",
+    "LiabilityBalance",
     "NetWorthSnapshot",
     "PriceSnapshot",
     "Transaction",
@@ -128,6 +129,7 @@ EXPECTED_ENUMS = {
         "adjustment",
     ],
     "InvestmentMovementKind": ["asset", "cash", "fee", "tax"],
+    "LiabilityBalanceSource": ["manual", "statement", "provider", "import", "migration"],
     "MovementDirection": ["in", "out"],
     "PriceSource": [
         "coingecko",
@@ -185,7 +187,7 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 30
+    assert len(tables) == 31
     assert all(table.schema == "public" for table in tables.values())
     assert all(
         [column.name for column in table.primary_key.columns] == ["id"] for table in tables.values()
@@ -211,7 +213,7 @@ def test_all_foreign_keys_target_mapped_tables() -> None:
 def test_complete_schema_mirror_reuses_all_postgresql_enums() -> None:
     enums = mapped_enums()
 
-    assert len(enums) == 27
+    assert len(enums) == 28
     assert {name: enum.enums for name, enum in enums.items()} == EXPECTED_ENUMS
     assert all(enum.create_type is False for enum in enums.values())
 
@@ -225,6 +227,10 @@ def test_financial_numeric_precision_matches_postgresql_schema() -> None:
         ("AccountSnapshotItem", "allocationPct"): (8, 4),
         ("AccountSnapshotItem", "value"): (18, 6),
         ("InvestmentMovement", "pricePerUnit"): (28, 10),
+        ("LiabilityBalance", "outstandingPrincipal"): (18, 6),
+        ("LiabilityBalance", "accruedInterest"): (18, 6),
+        ("LiabilityBalance", "feesOutstanding"): (18, 6),
+        ("LiabilityBalance", "totalOutstanding"): (18, 6),
     }
 
     for (table_name, column_name), precision in expected.items():

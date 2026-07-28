@@ -25,9 +25,12 @@ ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 OWNERSHIP_MANIFEST = PROJECT_ROOT / "database" / "schema_ownership.toml"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
-HEAD_REVISION = "3f0001acctnote"
-EXPECTED_TABLE_COUNT = 30
-EXPECTED_ENUM_COUNT = 27
+PREVIOUS_HEAD_REVISION = "3f0001acctnote"
+HEAD_REVISION = "3g0001liabbal"
+EXPECTED_TABLE_COUNT = 31
+EXPECTED_ENUM_COUNT = 28
+INHERITED_TABLE_COUNT = 30
+INHERITED_ENUM_COUNT = 27
 
 
 @dataclass(frozen=True)
@@ -47,8 +50,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 3:
-        raise RuntimeError(f"Expected exactly three Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 4:
+        raise RuntimeError(f"Expected exactly four Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -57,20 +60,23 @@ def verify_revision_graph() -> None:
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
+    previous_head = by_revision.get(PREVIOUS_HEAD_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
         raise RuntimeError("The Alembic ownership cutover revision graph is invalid.")
-    if head is None or head.down_revision != CUTOVER_REVISION:
+    if previous_head is None or previous_head.down_revision != CUTOVER_REVISION:
         raise RuntimeError("The first Alembic schema revision must follow the cutover marker.")
+    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+        raise RuntimeError("The liability schema revision must follow the previous head.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 7:
+    if manifest.get("schema_version") != 8:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 7 after the first schema change."
+            "Ownership manifest schema_version must be 8 after the liability schema change."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -100,7 +106,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 3,
+        "revision_count": 4,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -168,12 +174,16 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 
 def verify_database_state(state: DatabaseState) -> None:
-    if state.table_count != EXPECTED_TABLE_COUNT:
+    revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
+    at_liability_head = revision == HEAD_REVISION
+    expected_tables = EXPECTED_TABLE_COUNT if at_liability_head else INHERITED_TABLE_COUNT
+    expected_enums = EXPECTED_ENUM_COUNT if at_liability_head else INHERITED_ENUM_COUNT
+    if state.table_count != expected_tables:
         raise RuntimeError(
-            f"Expected {EXPECTED_TABLE_COUNT} application tables, found {state.table_count}."
+            f"Expected {expected_tables} application tables, found {state.table_count}."
         )
-    if state.enum_count != EXPECTED_ENUM_COUNT:
-        raise RuntimeError(f"Expected {EXPECTED_ENUM_COUNT} enums, found {state.enum_count}.")
+    if state.enum_count != expected_enums:
+        raise RuntimeError(f"Expected {expected_enums} enums, found {state.enum_count}.")
 
     directory = ScriptDirectory.from_config(alembic_config())
     known = {revision.revision for revision in directory.walk_revisions()}

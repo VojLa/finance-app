@@ -172,4 +172,4 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
 def test_policy_revision_boundary_is_stable() -> None:
     assert BASELINE_REVISION == "3d0001base"
     assert CUTOVER_REVISION == "3e0001cutover"
-    assert HEAD_REVISION == "3f0001acctnote"
+    assert HEAD_REVISION == "3g0001liabbal"
