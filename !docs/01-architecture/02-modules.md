@@ -126,3 +126,12 @@ and selected AccountSnapshot lineage remains an immutable non-persisted audit
 because the schema has no lineage columns. The projection constructs no ORM
 object and performs no I/O. Database writes, replay/conflict handling,
 authorization, HTTP, FX conversion, and scheduling remain unimplemented.
+
+Before JSON serialization, 5J-C independently rederives the total native
+breakdown as cash plus portfolio minus liabilities with exact QUANTITY
+arithmetic and requires equality with the supplied 5J-A total. It mirrors
+5J-A availability exactly: unavailable cash always makes the total
+unavailable; unavailable zero portfolio/liability may act as neutral only for
+the calculation; and nonzero unavailable portfolio/liability makes the total
+unavailable. Exact zero currency entries remain present. No FX conversion,
+rounding, or missing-evidence inference occurs.

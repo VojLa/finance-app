@@ -412,16 +412,34 @@ def test_breakdown_serialization_preserves_category_scales() -> None:
 
 
 @pytest.mark.parametrize(
-    "field",
+    ("field", "changes"),
     [
-        "cash_value_by_currency",
-        "portfolio_value_by_currency",
-        "liabilities_value_by_currency",
-        "total_net_worth_by_currency",
+        (
+            "cash_value_by_currency",
+            {
+                "cash_value_by_currency": None,
+                "total_net_worth_by_currency": None,
+            },
+        ),
+        (
+            "portfolio_value_by_currency",
+            {
+                "portfolio_value_by_currency": None,
+                "total_net_worth_by_currency": None,
+            },
+        ),
+        ("liabilities_value_by_currency", {"liabilities_value_by_currency": None}),
+        (
+            "total_net_worth_by_currency",
+            {
+                "cash_value_by_currency": None,
+                "total_net_worth_by_currency": None,
+            },
+        ),
     ],
 )
-def test_none_serializes_to_sql_null(field: str) -> None:
-    result = _project(_with_projection(_evidence(_investment()), **{field: None}))
+def test_none_serializes_to_sql_null(field: str, changes: dict[str, object]) -> None:
+    result = _project(_with_projection(_evidence(_investment()), **changes))
 
     assert result.snapshot.model_values()[field] is None
 
@@ -511,6 +529,203 @@ def test_breakdown_input_must_be_deterministically_sorted() -> None:
 
     with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
         _project(_with_projection(evidence, cash_value_by_currency=reversed_breakdown))
+
+
+def _multicurrency_evidence() -> CompleteNetWorthEvidence:
+    return _evidence(
+        _investment(
+            cash_breakdown=(
+                _amount("EUR", "1.000000"),
+                _amount("USD", "2.000000"),
+            ),
+            portfolio_breakdown=(
+                _amount("EUR", "0.1234567890"),
+                _amount("USD", "3.0000000000"),
+            ),
+        ),
+        _liability(
+            liability_breakdown=(_amount("CZK", "250.000000"),),
+        ),
+    )
+
+
+def test_forged_multicurrency_total_amount_fails_closed() -> None:
+    evidence = _multicurrency_evidence()
+    forged = (
+        _amount("CZK", "-250.0000000000"),
+        _amount("EUR", "1.1234567890"),
+        _amount("USD", "6.0000000000"),
+    )
+
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(_with_projection(evidence, total_net_worth_by_currency=forged))
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        (
+            _amount("CZK", "-250.0000000000"),
+            _amount("EUR", "1.1234567890"),
+        ),
+        (
+            _amount("CZK", "-250.0000000000"),
+            _amount("EUR", "1.1234567890"),
+            _amount("JPY", "1.0000000000"),
+            _amount("USD", "5.0000000000"),
+        ),
+        (
+            _amount("EUR", "1.1234567890"),
+            _amount("JPY", "-250.0000000000"),
+            _amount("USD", "5.0000000000"),
+        ),
+    ],
+)
+def test_forged_total_currency_set_fails_closed(
+    forged: tuple[NetWorthCurrencyAmount, ...],
+) -> None:
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(
+            _with_projection(
+                _multicurrency_evidence(),
+                total_net_worth_by_currency=forged,
+            )
+        )
+
+
+def test_complete_native_categories_require_available_total() -> None:
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(
+            _with_projection(
+                _multicurrency_evidence(),
+                total_net_worth_by_currency=None,
+            )
+        )
+
+
+def test_exact_empty_native_categories_require_exact_empty_total() -> None:
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(
+            _with_projection(
+                _evidence(),
+                total_net_worth_by_currency=None,
+            )
+        )
+
+
+@pytest.mark.parametrize("cash", [Decimal("100"), Decimal(0)])
+def test_unavailable_cash_requires_unavailable_total_even_when_cash_is_zero(
+    cash: Decimal,
+) -> None:
+    evidence = _evidence(_investment(cash=cash))
+    unavailable = _with_projection(
+        evidence,
+        cash_value_by_currency=None,
+        total_net_worth_by_currency=None,
+    )
+
+    result = _project(unavailable)
+
+    assert result.snapshot.cash_value_by_currency is None
+    assert result.snapshot.total_net_worth_by_currency is None
+    for forged in ((), (_amount("USD", "1.0000000000"),)):
+        with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+            _project(
+                _with_projection(
+                    evidence,
+                    cash_value_by_currency=None,
+                    total_net_worth_by_currency=forged,
+                )
+            )
+
+
+def test_unavailable_zero_portfolio_is_neutral_only_for_total_calculation() -> None:
+    result = _project(_evidence(_investment(portfolio=Decimal(0))))
+
+    assert result.snapshot.portfolio_value_by_currency is None
+    assert result.snapshot.model_values()["total_net_worth_by_currency"] == {
+        "CZK": "100.0000000000"
+    }
+
+
+def test_unavailable_zero_liability_is_neutral_only_for_total_calculation() -> None:
+    result = _project(_evidence(_investment(liability_breakdown=None)))
+
+    assert result.snapshot.liabilities_value_by_currency is None
+    assert result.snapshot.model_values()["total_net_worth_by_currency"] == {
+        "CZK": "500.0000000000"
+    }
+
+
+@pytest.mark.parametrize("category", ["portfolio", "liabilities"])
+def test_unavailable_nonzero_category_requires_unavailable_total(category: str) -> None:
+    if category == "portfolio":
+        account = replace(_investment(), investment_value_by_currency=None)
+        category_changes = {"portfolio_value_by_currency": None}
+    else:
+        account = replace(_liability(), liabilities_value_by_currency=None)
+        category_changes = {"liabilities_value_by_currency": None}
+    evidence = _evidence(account)
+
+    result = _project(evidence)
+
+    assert result.snapshot.total_net_worth_by_currency is None
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(
+            _with_projection(
+                evidence,
+                **category_changes,
+                total_net_worth_by_currency=(_amount("USD", "1.0000000000"),),
+            )
+        )
+
+
+def test_native_total_cancellation_preserves_exact_zero_currency_entry() -> None:
+    evidence = _evidence(
+        _investment(
+            cash=Decimal(1),
+            portfolio=Decimal(0),
+            cash_breakdown=(_amount("CZK", "1.000000"),),
+        ),
+        _liability(
+            liability=Decimal(1),
+            liability_breakdown=(_amount("CZK", "1.000000"),),
+        ),
+    )
+
+    assert _project(evidence).snapshot.model_values()["total_net_worth_by_currency"] == {
+        "CZK": "0.0000000000"
+    }
+
+
+def test_native_total_quantity_intermediate_overflow_fails_closed() -> None:
+    evidence = _evidence(_investment())
+    forged = _with_projection(
+        evidence,
+        cash_value_by_currency=(_amount("USD", MONEY_MAX),),
+        portfolio_value_by_currency=(_amount("USD", QUANTITY_MAX),),
+        liabilities_value_by_currency=(),
+        total_net_worth_by_currency=(_amount("USD", QUANTITY_MAX),),
+    )
+
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(forged)
+
+
+def test_supplied_total_order_must_match_canonical_native_order() -> None:
+    evidence = _multicurrency_evidence()
+    supplied = cast(
+        tuple[NetWorthCurrencyAmount, ...],
+        evidence.projection.total_net_worth_by_currency,
+    )
+
+    with pytest.raises(NetWorthSnapshotPersistenceProjectionError):
+        _project(
+            _with_projection(
+                evidence,
+                total_net_worth_by_currency=tuple(reversed(supplied)),
+            )
+        )
 
 
 def test_valid_lineage_is_preserved_only_in_ephemeral_audit() -> None:

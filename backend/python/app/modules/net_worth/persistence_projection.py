@@ -245,19 +245,19 @@ def _decimal_string(value: Decimal, numeric: Numeric) -> str:
     return f"{value:.{scale}f}"
 
 
-def _breakdown(
+def _validated_breakdown(
     value: object,
     *,
     numeric: Numeric,
     scalar: Decimal,
     output_currency: str,
     nonnegative: bool,
-) -> CanonicalNetWorthJsonObject | None:
+) -> tuple[NetWorthCurrencyAmount, ...] | None:
     if value is None:
         return None
     if not isinstance(value, tuple):
         raise _fail()
-    entries: list[tuple[str, str]] = []
+    entries: list[NetWorthCurrencyAmount] = []
     currencies: list[str] = []
     amounts: list[Decimal] = []
     for item in value:
@@ -269,14 +269,68 @@ def _breakdown(
             raise _fail()
         currencies.append(currency)
         amounts.append(amount)
-        entries.append((currency, _decimal_string(amount, numeric)))
+        entries.append(NetWorthCurrencyAmount(currency=currency, amount=amount))
     if currencies != sorted(currencies):
         raise _fail()
     if not entries and scalar != 0:
         raise _fail()
     if len(entries) == 1 and currencies[0] == output_currency and amounts[0] != scalar:
         raise _fail()
-    return CanonicalNetWorthJsonObject(tuple(entries))
+    return tuple(entries)
+
+
+def _expected_total_breakdown(
+    cash: tuple[NetWorthCurrencyAmount, ...] | None,
+    portfolio: tuple[NetWorthCurrencyAmount, ...] | None,
+    liabilities: tuple[NetWorthCurrencyAmount, ...] | None,
+    *,
+    portfolio_value: Decimal,
+    liabilities_value: Decimal,
+) -> tuple[NetWorthCurrencyAmount, ...] | None:
+    if portfolio is None and portfolio_value == 0:
+        portfolio = ()
+    if liabilities is None and liabilities_value == 0:
+        liabilities = ()
+    if cash is None or portfolio is None or liabilities is None:
+        return None
+    amounts: dict[str, Decimal] = {}
+    for item in cash:
+        amounts[item.currency] = _calculate(
+            "add",
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            QUANTITY,
+        )
+    for item in portfolio:
+        amounts[item.currency] = _calculate(
+            "add",
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            QUANTITY,
+        )
+    for item in liabilities:
+        amounts[item.currency] = _calculate(
+            "subtract",
+            amounts.get(item.currency, Decimal(0)),
+            item.amount,
+            QUANTITY,
+        )
+    return tuple(
+        NetWorthCurrencyAmount(currency=currency, amount=amounts[currency])
+        for currency in sorted(amounts)
+    )
+
+
+def _serialize_breakdown(
+    value: tuple[NetWorthCurrencyAmount, ...] | None,
+    *,
+    numeric: Numeric,
+) -> CanonicalNetWorthJsonObject | None:
+    if value is None:
+        return None
+    return CanonicalNetWorthJsonObject(
+        tuple((item.currency, _decimal_string(item.amount, numeric)) for item in value)
+    )
 
 
 def _validate_contributions(
@@ -399,34 +453,47 @@ def _validate_projection(
         or _sum(tuple(item.net_value for item in accounts)) != total
     ):
         raise _fail()
-    cash_breakdown = _breakdown(
+    cash_values = _validated_breakdown(
         value.cash_value_by_currency,
         numeric=MONEY,
         scalar=cash,
         output_currency=currency,
         nonnegative=False,
     )
-    portfolio_breakdown = _breakdown(
+    portfolio_values = _validated_breakdown(
         value.portfolio_value_by_currency,
         numeric=QUANTITY,
         scalar=portfolio,
         output_currency=currency,
         nonnegative=True,
     )
-    liability_breakdown = _breakdown(
+    liability_values = _validated_breakdown(
         value.liabilities_value_by_currency,
         numeric=MONEY,
         scalar=liabilities,
         output_currency=currency,
         nonnegative=True,
     )
-    total_breakdown = _breakdown(
+    total_values = _validated_breakdown(
         value.total_net_worth_by_currency,
         numeric=QUANTITY,
         scalar=total,
         output_currency=currency,
         nonnegative=False,
     )
+    expected_total_values = _expected_total_breakdown(
+        cash_values,
+        portfolio_values,
+        liability_values,
+        portfolio_value=portfolio,
+        liabilities_value=liabilities,
+    )
+    if total_values != expected_total_values:
+        raise _fail()
+    cash_breakdown = _serialize_breakdown(cash_values, numeric=MONEY)
+    portfolio_breakdown = _serialize_breakdown(portfolio_values, numeric=QUANTITY)
+    liability_breakdown = _serialize_breakdown(liability_values, numeric=MONEY)
+    total_breakdown = _serialize_breakdown(total_values, numeric=QUANTITY)
     canonical = ExpectedNetWorthProjection(
         user_id=user_id,
         timestamp=timestamp,
@@ -441,10 +508,10 @@ def _validate_projection(
         account_count=value.account_count,
         accounts=accounts,
         account_type_breakdown=value.account_type_breakdown,
-        cash_value_by_currency=value.cash_value_by_currency,
-        portfolio_value_by_currency=value.portfolio_value_by_currency,
-        liabilities_value_by_currency=value.liabilities_value_by_currency,
-        total_net_worth_by_currency=value.total_net_worth_by_currency,
+        cash_value_by_currency=cash_values,
+        portfolio_value_by_currency=portfolio_values,
+        liabilities_value_by_currency=liability_values,
+        total_net_worth_by_currency=total_values,
     )
     return (
         canonical,

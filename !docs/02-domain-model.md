@@ -221,6 +221,17 @@ portfolio/total. Unavailable breakdowns persist as SQL NULL and exact empty
 breakdowns as `{}`. `exchangeRates` is NULL because 5J performs no FX
 conversion.
 
+5J-C validates the native categories before serialization and rederives total
+native net worth as cash plus portfolio minus liabilities using QUANTITY for
+every intermediate operation. The supplied total must match exactly,
+including `None` versus an exact tuple, currencies, deterministic order,
+amounts, signs, and zero entries. Unavailable cash always propagates to an
+unavailable total. Unavailable portfolio or liability evidence is neutral
+only when its scalar is exactly zero and remains SQL NULL in its own physical
+field; nonzero unavailable evidence makes the total unavailable. The
+rederivation performs no FX conversion and never rounds or drops a
+cancellation-to-zero currency.
+
 Selected account and AccountSnapshot identities are revalidated against every
 projection contribution and returned only as immutable ephemeral audit
 metadata. The physical schema has no source-snapshot lineage columns, so 5J-C
