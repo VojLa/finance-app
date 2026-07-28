@@ -80,9 +80,9 @@ listing and direct `native -> account currency` FX. Snapshot valuation uses
 snapshot-as-of FX; lifetime net deposits, explicit realized P/L, outgoing fee,
 and outgoing tax evidence use event-as-of FX. Bank/cash/savings balance is the
 active signed Transaction history; investment cash is the active canonical
-cash/fee/tax movement history. Liability accounts remain fail-closed because
-5I-B does not yet consume the later 5I-L1 liability observation contract. Asset
-transfers also remain fail-closed for net-deposit metrics because counter-account
+cash/fee/tax movement history. Liability accounts consume one exact latest-as-of
+5I-L1 `LiabilityBalance` observation in Account currency. Asset transfers
+remain fail-closed for net-deposit metrics because counter-account
 identity is not persisted. The adapter returns immutable evidence, never writes
 `AccountSnapshot`, and leaves coherent locking plus persistence to 5I-D.
 
@@ -100,14 +100,14 @@ Realized investment P/L remains unsupported: the physical schema does not
 constrain InvestmentEvent ownership by Account type, so absence of a Holding
 does not prove a lifetime realized-P/L zero.
 
-Supported 5I-B account types are bank, cash, savings, broker, exchange, and
-crypto wallet. For these types, liability is structurally impossible in the
+Supported 5I-B account types are bank, cash, savings, broker, exchange, crypto
+wallet, credit card, loan, and mortgage. For the non-liability types, liability
+is structurally impossible in the
 account-type snapshot contract, so the exact liability aggregate is zero and
 its native breakdown is empty. This must not be confused with an unknown
-liability balance. Credit-card, loan, and mortgage accounts fail before
-projection because the schema cannot prove opening principal or outstanding
-balance. Step 5I-L1 now owns a separate canonical observation contract, but it
-does not yet enable liability snapshots.
+liability balance. Credit-card, loan, and mortgage accounts require one
+unambiguous eligible canonical observation; missing evidence never becomes
+zero.
 
 `LiabilityBalance` stores positive amounts owed for credit-card, loan, and
 mortgage accounts. Principal, accrued interest, fees outstanding, and total
@@ -122,8 +122,9 @@ Account-type validation is application-owned because a cross-table PostgreSQL
 observation in its own outer transaction. It locks the Account and both
 physical identity domains, returns an exact replay only when every physical
 field (including deterministic ID and created timestamp) matches, and rejects
-all differences without update or repair. Liability authorization/import and
-5I snapshot integration remain the later 5I-L2B boundary.
+all differences without update or repair. 5I-L2B consumes selected observations
+in authorized manual snapshots; public liability authorization/import remains
+deferred.
 
 The pure 5I-C adapter maps exact 5I-B evidence to every physical snapshot and
 item column without ORM construction or database access. Snapshot identity is
@@ -136,12 +137,23 @@ evidence and selected historical rate IDs. Selected price IDs remain immutable
 non-row audit metadata because the physical schema has no price-evidence
 column. The physical schema likewise has no liability-breakdown column.
 
+For a liability account, the 5I-L2B physical contract is a zero-item snapshot:
+cash, investment value, and investment cost basis are zero;
+`liabilitiesValue` is the positive selected `totalOutstanding`; and
+`totalValue = -liabilitiesValue`. Because 5I-L1 requires observation currency
+to equal Account/snapshot currency, the scalar is complete despite the absent
+breakdown column. Selected balance ID, effective timestamp, and source remain
+immutable non-row audit metadata. An explicit zero observation means fully
+repaid; missing, future-only, ambiguous, or corrupt evidence fails.
+
 The internal 5I-D writer owns one outer transaction for one immutable command.
-It locks account metadata, the exact snapshot identity, all compatible
-account/source canonical history scopes, canonical rows, current Holdings and
-their Listing/Asset evidence, then takes compatible `SHARE` locks over price
-and FX tables before 5I-B selection. This preserves one coherent
-`READ COMMITTED` view while allowing a waiter to see a predecessor's commit.
+It locks account metadata and the exact snapshot identity. Investment accounts
+then lock all compatible account/source canonical history scopes, canonical
+rows, current Holdings and their Listing/Asset evidence, and take compatible
+`SHARE` locks over price and FX tables before 5I-B selection. Liability
+accounts skip those unrelated locks. Their observations are append-only and
+5I-L1 loads all eligible rows in one SQL statement, so `READ COMMITTED` sees
+one complete old or new evidence set rather than mixed components.
 It then builds the 5I-C plan and inserts, flushes, reloads, and validates the
 complete physical graph. Exact state is a read-only replay; any physical or
 evidence difference is a conflict with no update, delete, upsert, or repair.

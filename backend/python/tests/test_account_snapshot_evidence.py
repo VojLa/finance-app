@@ -17,6 +17,7 @@ from app.db.models.enums import (
     ExchangeRateSource,
     InvestmentEventType,
     InvestmentMovementKind,
+    LiabilityBalanceSource,
     MovementDirection,
     PriceSource,
     SnapshotGranularity,
@@ -28,6 +29,12 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
+from app.modules.liabilities.evidence_service import (
+    LiabilityBalanceEvidence as SelectedLiabilityBalanceEvidence,
+)
+from app.modules.liabilities.evidence_service import (
+    LiabilityBalanceEvidenceStateError,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     CashBalanceEvidence,
@@ -477,37 +484,44 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
     "account_type",
     [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
 )
-async def test_liability_accounts_fail_without_complete_balance_evidence(
+async def test_liability_accounts_use_selected_canonical_balance_once(
     account_type: AccountType,
 ) -> None:
-    negative_one = _transaction("negative-one", "-100.000000", TransactionType.expense)
-    negative_one.description = "Outstanding liability"
-    negative_one.category_id = "liability-category"
-    negative_two = _transaction("negative-two", "-50.000000", TransactionType.expense)
-    negative_two.description = account_type.value
-    repository = _repository(
-        load_account=_account(account_type),
-        load_active_transactions=(negative_one, negative_two),
+    repository = _repository(load_account=_account(account_type))
+    selector = SimpleNamespace(
+        select=AsyncMock(
+            return_value=SelectedLiabilityBalanceEvidence(
+                balance_id="liability-balance-1",
+                account_id="account-1",
+                effective_at=EARLIER,
+                currency="CZK",
+                outstanding_principal=Decimal("100.000000"),
+                accrued_interest=Decimal("10.000000"),
+                fees_outstanding=Decimal("5.000000"),
+                total_outstanding=Decimal("115.000000"),
+                source=LiabilityBalanceSource.statement,
+            )
+        )
     )
     session = MagicMock()
-    with (
-        patch(
-            "app.modules.snapshots.evidence_service.build_account_snapshot_projection"
-        ) as projection,
-        patch("app.modules.snapshots.evidence_service.build_financial_metrics") as metrics,
-    ):
-        for _ in range(2):
-            with pytest.raises(
-                AccountSnapshotEvidenceStateError,
-                match=r"Persisted evidence cannot produce a complete account snapshot\.",
-            ):
-                await AccountSnapshotEvidenceService(
-                    session,
-                    repository=repository,
-                ).build(_command())
+    result = await AccountSnapshotEvidenceService(
+        session,
+        repository=repository,
+        liability_evidence_service=selector,
+    ).build(_command())
 
-    projection.assert_not_called()
-    metrics.assert_not_called()
+    selector.select.assert_awaited_once()
+    assert result.valuation.liabilities_value == Decimal("115.000000")
+    assert result.valuation.total_value == Decimal("-115.000000")
+    assert result.valuation.items == ()
+    assert result.net_deposits == ExactSnapshotMetric(Decimal(0), ())
+    assert result.realized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    assert result.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    assert result.fees == ExactSnapshotMetric(Decimal(0), ())
+    assert result.taxes == ExactSnapshotMetric(Decimal(0), ())
+    assert result.selected_liability_balance_id == "liability-balance-1"
+    assert result.selected_liability_effective_at == EARLIER
+    assert result.selected_liability_source is LiabilityBalanceSource.statement
     cast(AsyncMock, repository.load_holdings).assert_not_awaited()
     cast(AsyncMock, repository.load_active_transactions).assert_not_awaited()
     cast(AsyncMock, repository.load_active_events).assert_not_awaited()
@@ -518,6 +532,25 @@ async def test_liability_accounts_fail_without_complete_balance_evidence(
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
     session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_liability_evidence_maps_to_generic_snapshot_error() -> None:
+    repository = _repository(load_account=_account(AccountType.loan))
+    selector = SimpleNamespace(select=AsyncMock(side_effect=LiabilityBalanceEvidenceStateError()))
+
+    with pytest.raises(
+        AccountSnapshotEvidenceStateError,
+        match=r"Persisted evidence cannot produce a complete account snapshot\.",
+    ):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+            liability_evidence_service=selector,
+        ).build(_command())
+
+    selector.select.assert_awaited_once()
+    cast(AsyncMock, repository.load_holdings).assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ import pytest
 from app.db.models.accounts import AccountModel
 from app.db.models.enums import (
     AccountType,
+    LiabilityBalanceSource,
     PriceSource,
     SnapshotGranularity,
     SnapshotSource,
@@ -248,6 +249,44 @@ def _projection() -> ExpectedAccountSnapshotPersistence:
     )
 
 
+def _liability_projection(
+    amount: Decimal = Decimal("115.000000"),
+) -> ExpectedAccountSnapshotPersistence:
+    base = _projection()
+    return ExpectedAccountSnapshotPersistence(
+        snapshot=replace(
+            base.snapshot,
+            cash_value=Decimal(0),
+            investment_value=Decimal(0),
+            investment_cost_basis=Decimal(0),
+            liabilities_value=amount,
+            total_value=-amount,
+            net_deposits_value=Decimal(0),
+            realized_pnl_value=Decimal(0),
+            unrealized_pnl_value=Decimal(0),
+            fees_value=Decimal(0),
+            taxes_value=Decimal(0),
+            cash_value_by_currency=CanonicalJsonObject(()),
+            investment_value_by_currency=CanonicalJsonObject(()),
+            investment_cost_basis_by_currency=CanonicalJsonObject(()),
+            net_deposits_by_currency=CanonicalJsonObject(()),
+            realized_pnl_by_currency=CanonicalJsonObject(()),
+            unrealized_pnl_by_currency=CanonicalJsonObject(()),
+            fees_by_currency=CanonicalJsonObject(()),
+            taxes_by_currency=CanonicalJsonObject(()),
+        ),
+        items=(),
+        audit=AccountSnapshotPersistenceAudit(
+            selected_price_ids=(),
+            selected_snapshot_exchange_rate_ids=(),
+            selected_historical_exchange_rate_ids=(),
+            selected_liability_balance_id="liability-balance-1",
+            selected_liability_effective_at=datetime(2026, 7, 27),
+            selected_liability_source=LiabilityBalanceSource.statement,
+        ),
+    )
+
+
 def _persisted(
     projection: ExpectedAccountSnapshotPersistence,
 ) -> tuple[AccountSnapshotModel, tuple[AccountSnapshotItemModel, ...]]:
@@ -356,6 +395,70 @@ async def test_exact_replay_inserts_nothing_and_returns_replayed() -> None:
     assert repository.inserted_items == ()
     assert repository.flush_count == 0
     assert session.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_liability_zero_item_create_and_replay_skip_investment_locks() -> None:
+    projection = _liability_projection()
+    writer, session, repository, _, _ = _writer(projection=projection)
+    repository.account.type = AccountType.loan
+
+    created = await writer.write(_command())
+
+    assert created.disposition is AccountSnapshotWriteDisposition.created
+    assert created.item_count == 0
+    assert repository.inserted_items == ()
+    assert repository.calls[:2] == ["account", "snapshot_lock"]
+    assert "canonical_locks" not in repository.calls
+    assert "market_locks" not in repository.calls
+    assert session.commit_count == 1
+
+    replay_writer, replay_session, replay_repository, _, _ = _writer(projection=projection)
+    replay_repository.account.type = AccountType.loan
+    replay_repository.existing, replay_repository.existing_items = _persisted(projection)
+
+    replayed = await replay_writer.write(_command())
+
+    assert replayed.disposition is AccountSnapshotWriteDisposition.replayed
+    assert replayed.item_count == 0
+    assert replay_repository.inserted_snapshot is None
+    assert replay_repository.flush_count == 0
+    assert replay_session.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_liability_snapshot_rejects_unexpected_existing_item() -> None:
+    projection = _liability_projection()
+    writer, session, repository, _, _ = _writer(projection=projection)
+    repository.account.type = AccountType.credit_card
+    repository.existing, _ = _persisted(projection)
+    repository.existing_items = _persisted(_projection())[1]
+
+    with pytest.raises(AccountSnapshotWriteConflictError):
+        await writer.write(_command())
+
+    assert repository.inserted_snapshot is None
+    assert repository.flush_count == 0
+    assert session.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_changed_liability_amount_conflicts_without_repair() -> None:
+    projection = _liability_projection()
+    writer, session, repository, _, _ = _writer(projection=projection)
+    repository.account.type = AccountType.mortgage
+    persisted_snapshot, persisted_items = _persisted(projection)
+    persisted_snapshot.liabilities_value = Decimal("114.000000")
+    persisted_snapshot.total_value = Decimal("-114.000000")
+    repository.existing = persisted_snapshot
+    repository.existing_items = persisted_items
+
+    with pytest.raises(AccountSnapshotWriteConflictError):
+        await writer.write(_command())
+
+    assert persisted_snapshot.liabilities_value == Decimal("114.000000")
+    assert repository.flush_count == 0
+    assert session.rollback_count == 1
 
 
 @pytest.mark.parametrize(

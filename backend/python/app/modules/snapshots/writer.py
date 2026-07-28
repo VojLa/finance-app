@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
 from app.db.models.common import TIMESTAMP
-from app.db.models.enums import SnapshotGranularity, SnapshotSource
+from app.db.models.enums import AccountType, SnapshotGranularity, SnapshotSource
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
@@ -38,6 +38,11 @@ from app.modules.snapshots.writer_repository import AccountSnapshotWriterReposit
 _STATE_MESSAGE = "Account snapshot could not be persisted."
 _CONFLICT_MESSAGE = "Account snapshot conflicts with persisted state."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_LIABILITY_ACCOUNT_TYPES = {
+    AccountType.credit_card,
+    AccountType.loan,
+    AccountType.mortgage,
+}
 
 
 class AccountSnapshotWriteStateError(RuntimeError):
@@ -277,15 +282,16 @@ class AccountSnapshotWriter:
         account = await self.repository.load_account_for_share(command.account_id)
         if account is None:
             raise _fail()
-        currency = _validate_account(account, command.account_id)
+        currency, account_type = _validate_account(account, command.account_id)
         await self.repository.acquire_snapshot_lock(
             account_id=command.account_id,
             timestamp=command.snapshot_timestamp,
             currency=currency,
             granularity=command.granularity,
         )
-        await self.repository.lock_canonical_evidence(command.account_id)
-        await self.repository.lock_market_evidence_tables()
+        if account_type not in _LIABILITY_ACCOUNT_TYPES:
+            await self.repository.lock_canonical_evidence(command.account_id)
+            await self.repository.lock_market_evidence_tables()
         evidence = await self.evidence_service.build(
             BuildAccountSnapshotEvidenceCommand(
                 account_id=command.account_id,
@@ -343,10 +349,15 @@ class AccountSnapshotWriter:
         return _result(projection, AccountSnapshotWriteDisposition.created)
 
 
-def _validate_account(account: AccountModel, account_id: str) -> str:
-    if account.id != account_id or account.is_archived or account.archived_at is not None:
+def _validate_account(account: AccountModel, account_id: str) -> tuple[str, AccountType]:
+    if (
+        account.id != account_id
+        or account.is_archived
+        or account.archived_at is not None
+        or not isinstance(account.type, AccountType)
+    ):
         raise _fail()
     try:
-        return canonical_currency(account.currency)
+        return canonical_currency(account.currency), account.type
     except AccountSnapshotEvidenceStateError as exc:
         raise _fail() from exc

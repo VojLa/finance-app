@@ -24,17 +24,28 @@ from app.db.models.enums import (
     ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
+    LiabilityBalanceSource,
     MovementDirection,
     PriceSource,
+    SnapshotGranularity,
+    SnapshotSource,
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
+from app.modules.liabilities.evidence_service import LiabilityBalanceEvidenceService
+from app.modules.liabilities.repository import LiabilityBalanceEvidenceRepository
+from app.modules.liabilities.writer import (
+    LiabilityBalanceWriter,
+    WriteLiabilityBalanceCommand,
+)
 from app.modules.snapshots.api import get_snapshot_clock
+from app.modules.snapshots.evidence_service import AccountSnapshotEvidenceService
 from app.modules.snapshots.manual_service import (
     AccountSnapshotUnavailableError,
     ManualAccountSnapshotService,
@@ -86,6 +97,11 @@ async def _cleanup(prefix: str) -> None:
                 )
             )
         if account_ids:
+            await session.execute(
+                delete(LiabilityBalanceModel).where(
+                    LiabilityBalanceModel.account_id.in_(account_ids)
+                )
+            )
             await session.execute(
                 delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
             )
@@ -394,6 +410,39 @@ async def _seed_account(
     return account_id, user_id
 
 
+async def _seed_liability_balance(
+    prefix: str,
+    account_id: str,
+    *,
+    effective_at: datetime = NOW,
+    principal: Decimal = Decimal("100.000000"),
+    interest: Decimal = Decimal("10.000000"),
+    fees: Decimal = Decimal("5.000000"),
+    source: LiabilityBalanceSource = LiabilityBalanceSource.statement,
+) -> str:
+    balance_id = f"{prefix}-balance-{source.value}-{effective_at:%H%M%S}"
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        session.add(
+            LiabilityBalanceModel(
+                id=balance_id,
+                account_id=account_id,
+                effective_at=effective_at,
+                currency="CZK",
+                outstanding_principal=principal,
+                accrued_interest=interest,
+                fees_outstanding=fees,
+                total_outstanding=principal + interest + fees,
+                source=source,
+                external_id=f"{prefix}-{source.value}-{effective_at.isoformat()}",
+                created_at=effective_at,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+    return balance_id
+
+
 async def _add_nonmember(prefix: str) -> str:
     user_id = f"{prefix}-foreign"
     engine = _engine()
@@ -455,6 +504,20 @@ async def _counts(account_id: str) -> tuple[int, int]:
         return snapshots, items
 
 
+async def _snapshots(account_id: str) -> tuple[AccountSnapshotModel, ...]:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        rows = tuple(
+            await session.scalars(
+                select(AccountSnapshotModel)
+                .where(AccountSnapshotModel.account_id == account_id)
+                .order_by(AccountSnapshotModel.timestamp, AccountSnapshotModel.id)
+            )
+        )
+    await engine.dispose()
+    return rows
+
+
 @pytest.mark.parametrize(
     "role",
     [AccountMemberRole.owner, AccountMemberRole.admin, AccountMemberRole.editor],
@@ -512,7 +575,7 @@ def test_hidden_account_matrix_creates_nothing(
         asyncio.run(_cleanup(prefix))
 
 
-@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.credit_card])
+@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.cash, AccountType.savings])
 def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
     account_type: AccountType,
 ) -> None:
@@ -528,6 +591,281 @@ def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
             "request_id": response.headers["x-request-id"],
         }
         assert asyncio.run(_counts(account_id)) == (0, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+@pytest.mark.parametrize(
+    ("account_type", "role", "principal", "interest", "fees"),
+    [
+        (
+            AccountType.credit_card,
+            AccountMemberRole.owner,
+            Decimal("100.000000"),
+            Decimal("10.000000"),
+            Decimal("5.000000"),
+        ),
+        (
+            AccountType.loan,
+            AccountMemberRole.editor,
+            Decimal("120000.000000"),
+            Decimal("2000.000000"),
+            Decimal("300.000000"),
+        ),
+        (
+            AccountType.mortgage,
+            AccountMemberRole.owner,
+            Decimal("999999999999.999999"),
+            Decimal(0),
+            Decimal(0),
+        ),
+    ],
+)
+def test_liability_accounts_create_exact_zero_item_snapshots_and_replay(
+    account_type: AccountType,
+    role: AccountMemberRole,
+    principal: Decimal,
+    interest: Decimal,
+    fees: Decimal,
+) -> None:
+    prefix = f"i5l2b-{account_type.value}"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=account_type, role=role))
+    asyncio.run(
+        _seed_liability_balance(
+            prefix,
+            account_id,
+            principal=principal,
+            interest=interest,
+            fees=fees,
+        )
+    )
+    try:
+        first = _call(account_id, user_id)
+        replay = _call(account_id, user_id, now=NOW + timedelta(seconds=30))
+
+        assert first.status_code == replay.status_code == 200
+        assert first.json()["status"] == "created"
+        assert first.json()["itemCount"] == 0
+        assert replay.json()["status"] == "replayed"
+        assert first.json()["snapshotId"] == replay.json()["snapshotId"]
+        rows = asyncio.run(_snapshots(account_id))
+        assert len(rows) == 1
+        assert rows[0].cash_value == Decimal(0)
+        assert rows[0].investment_value == Decimal(0)
+        assert rows[0].investment_cost_basis == Decimal(0)
+        assert rows[0].liabilities_value == principal + interest + fees
+        assert rows[0].total_value == -(principal + interest + fees)
+        assert asyncio.run(_counts(account_id)) == (1, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+def test_explicit_zero_liability_is_persisted_but_missing_or_future_is_unavailable() -> None:
+    prefix = "i5l2b-zero-missing-future"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.credit_card))
+    try:
+        missing = _call(account_id, user_id)
+        assert missing.status_code == 409
+        assert asyncio.run(_counts(account_id)) == (0, 0)
+
+        asyncio.run(
+            _seed_liability_balance(
+                prefix,
+                account_id,
+                effective_at=NOW + timedelta(seconds=30),
+                principal=Decimal(0),
+                interest=Decimal(0),
+                fees=Decimal(0),
+            )
+        )
+        future = _call(account_id, user_id)
+        assert future.status_code == 409
+        assert asyncio.run(_counts(account_id)) == (0, 0)
+
+        exact = _call(account_id, user_id, now=NOW + timedelta(minutes=1))
+        assert exact.status_code == 200
+        rows = asyncio.run(_snapshots(account_id))
+        assert len(rows) == 1
+        assert rows[0].liabilities_value == Decimal(0)
+        assert rows[0].total_value == Decimal(0)
+        assert asyncio.run(_counts(account_id)) == (1, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+def test_ambiguous_latest_liability_is_generic_and_writes_nothing() -> None:
+    prefix = "i5l2b-ambiguous"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.loan))
+    asyncio.run(_seed_liability_balance(prefix, account_id))
+    asyncio.run(
+        _seed_liability_balance(
+            prefix,
+            account_id,
+            source=LiabilityBalanceSource.manual,
+        )
+    )
+    try:
+        response = _call(account_id, user_id)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "account_snapshot_unavailable"
+        assert asyncio.run(_counts(account_id)) == (0, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+def test_same_bucket_new_liability_conflicts_and_next_bucket_creates() -> None:
+    prefix = "i5l2b-same-bucket"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.mortgage))
+    asyncio.run(
+        _seed_liability_balance(
+            prefix,
+            account_id,
+            effective_at=NOW - timedelta(minutes=1),
+            principal=Decimal("100"),
+            interest=Decimal(0),
+            fees=Decimal(0),
+        )
+    )
+    try:
+        first = _call(account_id, user_id)
+        assert first.status_code == 200
+
+        asyncio.run(
+            _seed_liability_balance(
+                prefix,
+                account_id,
+                effective_at=NOW,
+                principal=Decimal("120"),
+                interest=Decimal(0),
+                fees=Decimal(0),
+            )
+        )
+        conflict = _call(account_id, user_id, now=NOW + timedelta(seconds=30))
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "account_snapshot_conflict"
+        rows = asyncio.run(_snapshots(account_id))
+        assert len(rows) == 1
+        assert rows[0].liabilities_value == Decimal("100")
+
+        second = _call(account_id, user_id, now=NOW + timedelta(minutes=1))
+        assert second.status_code == 200
+        assert second.json()["status"] == "created"
+        rows = asyncio.run(_snapshots(account_id))
+        assert [row.liabilities_value for row in rows] == [
+            Decimal("100"),
+            Decimal("120"),
+        ]
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+async def _run_concurrent_liability_write_and_snapshot(
+    account_id: str,
+) -> tuple[Decimal, Decimal]:
+    engine = _engine()
+    query_complete = asyncio.Event()
+    release_snapshot = asyncio.Event()
+
+    class PausingLiabilityRepository(LiabilityBalanceEvidenceRepository):
+        async def load_eligible_balances(
+            self,
+            selected_account_id: str,
+            *,
+            through: datetime,
+        ) -> tuple[LiabilityBalanceModel, ...]:
+            rows = await super().load_eligible_balances(
+                selected_account_id,
+                through=through,
+            )
+            query_complete.set()
+            await release_snapshot.wait()
+            return rows
+
+    async with (
+        AsyncSession(engine) as snapshot_session,
+        AsyncSession(engine) as liability_session,
+    ):
+        liability_selector = LiabilityBalanceEvidenceService(
+            snapshot_session,
+            repository=PausingLiabilityRepository(snapshot_session),
+        )
+        evidence_service = AccountSnapshotEvidenceService(
+            snapshot_session,
+            liability_evidence_service=liability_selector,
+        )
+        snapshot_task = asyncio.create_task(
+            AccountSnapshotWriter(
+                snapshot_session,
+                evidence_service=evidence_service,
+            ).write(
+                WriteAccountSnapshotCommand(
+                    account_id=account_id,
+                    snapshot_timestamp=NOW,
+                    granularity=SnapshotGranularity.minute,
+                    source=SnapshotSource.manual_recalculation,
+                    calculation_version=1,
+                    calculated_at=NOW,
+                    created_at=NOW,
+                    is_recalculated=True,
+                )
+            )
+        )
+        await asyncio.wait_for(query_complete.wait(), timeout=10)
+        liability_result = await asyncio.wait_for(
+            LiabilityBalanceWriter(liability_session).write(
+                WriteLiabilityBalanceCommand(
+                    account_id=account_id,
+                    effective_at=NOW,
+                    currency="CZK",
+                    outstanding_principal=Decimal("200.000000"),
+                    accrued_interest=Decimal("20.000000"),
+                    fees_outstanding=Decimal("2.000000"),
+                    source=LiabilityBalanceSource.statement,
+                    external_id="concurrent-new",
+                    created_at=NOW,
+                )
+            ),
+            timeout=10,
+        )
+        release_snapshot.set()
+        snapshot_result = await asyncio.wait_for(snapshot_task, timeout=10)
+
+    async with AsyncSession(engine) as verify_session:
+        snapshot_value = await verify_session.scalar(
+            select(AccountSnapshotModel.liabilities_value).where(
+                AccountSnapshotModel.id == snapshot_result.snapshot_id
+            )
+        )
+    await engine.dispose()
+    assert snapshot_value is not None
+    return Decimal(snapshot_value), liability_result.total_outstanding
+
+
+def test_concurrent_liability_append_yields_coherent_old_snapshot_without_deadlock() -> None:
+    prefix = "i5l2b-concurrent"
+    asyncio.run(_cleanup(prefix))
+    account_id, _ = asyncio.run(_seed_account(prefix, account_type=AccountType.loan))
+    asyncio.run(
+        _seed_liability_balance(
+            prefix,
+            account_id,
+            effective_at=NOW - timedelta(minutes=1),
+            principal=Decimal("100.000000"),
+            interest=Decimal("10.000000"),
+            fees=Decimal("1.000000"),
+        )
+    )
+    try:
+        snapshot_value, new_balance = asyncio.run(
+            _run_concurrent_liability_write_and_snapshot(account_id)
+        )
+        assert snapshot_value == Decimal("111.000000")
+        assert new_balance == Decimal("222.000000")
+        assert asyncio.run(_counts(account_id)) == (1, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 

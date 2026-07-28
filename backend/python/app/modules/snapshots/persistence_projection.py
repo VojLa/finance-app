@@ -12,6 +12,7 @@ from sqlalchemy import Numeric
 from app.db.models.common import MONEY, PERCENTAGE, QUANTITY, RATE, TIMESTAMP
 from app.db.models.enums import (
     ExchangeRateSource,
+    LiabilityBalanceSource,
     PriceSource,
     SnapshotGranularity,
     SnapshotSource,
@@ -178,6 +179,9 @@ class AccountSnapshotPersistenceAudit:
     selected_price_ids: tuple[str, ...]
     selected_snapshot_exchange_rate_ids: tuple[str, ...]
     selected_historical_exchange_rate_ids: tuple[str, ...]
+    selected_liability_balance_id: str | None = None
+    selected_liability_effective_at: datetime | None = None
+    selected_liability_source: LiabilityBalanceSource | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +506,52 @@ def _items(
     return tuple(sorted(rows, key=lambda row: (row.listing_id, row.id)))
 
 
+def _liability_audit(
+    evidence: CompleteAccountSnapshotEvidence,
+    *,
+    valuation: ExpectedAccountSnapshotValuation,
+    items: tuple[ExpectedAccountSnapshotItemRow, ...],
+    price_ids: tuple[str, ...],
+    snapshot_rate_ids: tuple[str, ...],
+    historical_rate_ids: tuple[str, ...],
+    metrics: tuple[tuple[Decimal, CanonicalJsonObject | None], ...],
+) -> tuple[str | None, datetime | None, LiabilityBalanceSource | None]:
+    balance_id = evidence.selected_liability_balance_id
+    effective_at = evidence.selected_liability_effective_at
+    source = evidence.selected_liability_source
+    values = (balance_id, effective_at, source)
+    if all(value is None for value in values):
+        if valuation.liabilities_value != 0 or valuation.liabilities_value_by_currency:
+            raise _fail()
+        return None, None, None
+    if any(value is None for value in values):
+        raise _fail()
+    selected_id = _nonblank(balance_id)
+    selected_at = _timestamp(effective_at)
+    selected_source = _enum(source, LiabilityBalanceSource)
+    if (
+        selected_at > valuation.timestamp
+        or items
+        or price_ids
+        or snapshot_rate_ids
+        or historical_rate_ids
+        or valuation.cash_value != 0
+        or valuation.investment_value != 0
+        or valuation.investment_cost_basis != 0
+        or valuation.total_value != -valuation.liabilities_value
+        or valuation.liabilities_value_by_currency
+        != (
+            CurrencyAmount(
+                currency=valuation.currency,
+                amount=valuation.liabilities_value,
+            ),
+        )
+        or any(value != 0 or breakdown != CanonicalJsonObject(()) for value, breakdown in metrics)
+    ):
+        raise _fail()
+    return selected_id, selected_at, selected_source
+
+
 def build_account_snapshot_persistence_projection(
     evidence: CompleteAccountSnapshotEvidence,
     metadata: AccountSnapshotPersistenceMetadata,
@@ -607,6 +657,21 @@ def build_account_snapshot_persistence_projection(
             snapshot_id=snapshot_id,
             created_at=created_at,
         )
+        liability_balance_id, liability_effective_at, liability_source = _liability_audit(
+            evidence,
+            valuation=valuation,
+            items=items,
+            price_ids=snapshot_price_ids,
+            snapshot_rate_ids=snapshot_rate_ids,
+            historical_rate_ids=historical_rate_ids,
+            metrics=(
+                (net_deposits, net_deposits_breakdown),
+                (realized_pnl, realized_pnl_breakdown),
+                (unrealized_pnl, unrealized_pnl_breakdown),
+                (fees, fees_breakdown),
+                (taxes, taxes_breakdown),
+            ),
+        )
 
         cash_breakdown = _breakdown(
             valuation.cash_value_by_currency,
@@ -676,6 +741,9 @@ def build_account_snapshot_persistence_projection(
                 selected_price_ids=snapshot_price_ids,
                 selected_snapshot_exchange_rate_ids=snapshot_rate_ids,
                 selected_historical_exchange_rate_ids=historical_rate_ids,
+                selected_liability_balance_id=liability_balance_id,
+                selected_liability_effective_at=liability_effective_at,
+                selected_liability_source=liability_source,
             ),
         )
     except AccountSnapshotPersistenceProjectionError:
