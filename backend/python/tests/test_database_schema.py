@@ -17,6 +17,7 @@ REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
+CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3g0001liabbal" / "schema.sql"
 SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
 PRISMA_SCHEMA_PATH = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 
@@ -62,6 +63,14 @@ def baseline_objects() -> tuple[set[str], set[str]]:
     return tables, enums
 
 
+def current_objects() -> tuple[set[str], set[str]]:
+    current = CURRENT_SCHEMA_PATH.read_text(encoding="utf-8")
+    return (
+        set(BASELINE_TABLE_PATTERN.findall(current)),
+        set(BASELINE_ENUM_PATTERN.findall(current)),
+    )
+
+
 def sqlalchemy_objects() -> tuple[set[str], set[str]]:
     tables = {table.name for table in Base.metadata.tables.values()}
     enums = {
@@ -81,20 +90,20 @@ def test_ownership_manifest_matches_prisma_models_and_enums() -> None:
     assert set(manifest_enums) == prisma_enums
 
 
-def test_baseline_matches_ownership_manifest() -> None:
+def test_current_schema_matches_ownership_manifest() -> None:
     manifest_tables, manifest_enums = manifest_objects()
-    baseline_tables, baseline_enums = baseline_objects()
+    current_tables, current_enums = current_objects()
 
-    assert baseline_tables == set(manifest_tables)
-    assert baseline_enums == set(manifest_enums)
-    assert "_prisma_migrations" not in baseline_tables
-    assert "alembic_version" not in baseline_tables
+    assert current_tables == set(manifest_tables)
+    assert current_enums == set(manifest_enums)
+    assert "_prisma_migrations" not in current_tables
+    assert "alembic_version" not in current_tables
 
 
 def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 7
+    assert manifest["schema_version"] == 8
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
@@ -113,8 +122,8 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "state": "sole_migration_owner",
         "baseline_revision": "3d0001base",
         "cutover_revision": "3e0001cutover",
-        "head_revision": "3f0001acctnote",
-        "revision_count": 3,
+        "head_revision": "3g0001liabbal",
+        "revision_count": 4,
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
@@ -132,8 +141,9 @@ def test_python_persistence_slice_is_explicit() -> None:
         "AccountMember",
         "ExchangeRate",
         "Holding",
+        "LiabilityBalance",
     }
-    assert usage["read_enums"] == []
+    assert set(usage["read_enums"]) == {"LiabilityBalanceSource"}
     assert set(usage["transitive_read_tables"]) == {
         "Asset",
         "AssetListing",
@@ -154,12 +164,12 @@ def test_sqlalchemy_mirror_has_complete_schema_coverage() -> None:
     mirror = manifest["sqlalchemy_mirror"]
     mapped_tables, mapped_enums = sqlalchemy_objects()
     manifest_tables, manifest_enums = manifest_objects()
-    baseline_tables, baseline_enums = baseline_objects()
+    current_tables, current_enums = current_objects()
 
     assert mirror["state"] == "mirrored_in_sqlalchemy"
     assert mirror["coverage"] == "complete"
-    assert set(mirror["tables"]) == mapped_tables == set(manifest_tables) == baseline_tables
-    assert set(mirror["enums"]) == mapped_enums == set(manifest_enums) == baseline_enums
+    assert set(mirror["tables"]) == mapped_tables == set(manifest_tables) == current_tables
+    assert set(mirror["enums"]) == mapped_enums == set(manifest_enums) == current_enums
 
 
 def test_sqlalchemy_parity_policy_is_explicit() -> None:
@@ -191,6 +201,7 @@ def test_schema_revision_registry_preserves_inherited_baseline_and_head_snapshot
     assert registry["version"] == 1
     assert registry["revisions"]["3e0001cutover"]["inherits_schema_from"] == "3d0001base"
     assert registry["revisions"]["3f0001acctnote"]["schema_change"] is True
+    assert registry["revisions"]["3g0001liabbal"]["schema_change"] is True
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:

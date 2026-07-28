@@ -161,7 +161,12 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     workflow = workflows / "database-schema.yml"
-    workflow.write_text("run: npm run db:prisma:archive:verify\n", encoding="utf-8")
+    workflow.write_text(
+        "run: npm run db:prisma:archive:verify\n"
+        "run: python scripts/database_schema.py --check --revision 3g0001liabbal\n"
+        "run: python scripts/database_schema.py --check --revision 3g0001liabbal\n",
+        encoding="utf-8",
+    )
     verify_workflow_policy(workflows)
 
     workflow.write_text("run: npx prisma migrate deploy\n", encoding="utf-8")
@@ -169,7 +174,14 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
         verify_workflow_policy(workflows)
 
 
+def test_database_workflow_verifies_current_head_artifact() -> None:
+    workflow = BACKEND_ROOT.parents[1] / ".github" / "workflows" / "database-schema.yml"
+    source = workflow.read_text(encoding="utf-8")
+
+    assert source.count("python scripts/database_schema.py --check --revision 3g0001liabbal") == 2
+
+
 def test_policy_revision_boundary_is_stable() -> None:
     assert BASELINE_REVISION == "3d0001base"
     assert CUTOVER_REVISION == "3e0001cutover"
-    assert HEAD_REVISION == "3f0001acctnote"
+    assert HEAD_REVISION == "3g0001liabbal"

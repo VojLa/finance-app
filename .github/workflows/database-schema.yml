@@ -45,7 +45,7 @@ permissions:
 
 jobs:
   verify-schema:
-    name: Verify first Alembic-owned schema migration
+    name: Verify Alembic-owned schema
     runs-on: ubuntu-24.04
 
     services:
@@ -114,7 +114,7 @@ jobs:
         working-directory: backend/python
         run: uv run python scripts/migration_policy.py --check
 
-      - name: Verify inherited canonical schema before the first real migration
+      - name: Verify inherited canonical schema
         working-directory: backend/python
         run: |
           uv run python scripts/database_schema.py --check --revision 3d0001base
@@ -133,7 +133,7 @@ jobs:
           tests/test_migration_policy.py
           tests/test_database_migrate.py
 
-      - name: Verify first migration lifecycle and protected downgrade
+      - name: Verify migration lifecycle and protected downgrade
         working-directory: backend/python
         run: uv run pytest tests/test_alembic_integration.py -v
 
@@ -157,7 +157,7 @@ jobs:
         run: |
           uv run alembic -c alembic.ini current --check-heads
           uv run alembic -c alembic.ini check
-          uv run python scripts/database_schema.py --check --revision 3f0001acctnote
+          uv run python scripts/database_schema.py --check --revision 3g0001liabbal
           uv run python scripts/sqlalchemy_schema.py --check
           uv run python scripts/alembic_baseline.py --verify
 
@@ -170,5 +170,5 @@ jobs:
           export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
           uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3f0001acctnote
+          uv run python scripts/database_schema.py --check --revision 3g0001liabbal
           uv run python scripts/sqlalchemy_schema.py --check

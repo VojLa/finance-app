@@ -31,10 +31,14 @@ CUTOVER_REVISION_PATH = (
 PACKAGE_JSON = REPOSITORY_ROOT / "package.json"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
-HEAD_REVISION = "3f0001acctnote"
+PREVIOUS_HEAD_REVISION = "3f0001acctnote"
+HEAD_REVISION = "3g0001liabbal"
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
+)
+LIABILITY_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3g0001liabbal_add_liability_balances.py"
 )
 PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
@@ -193,7 +197,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 7,
+        "schema_version": 8,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -232,7 +236,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 3,
+        "revision_count": 4,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -240,8 +244,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3f0001acctnote/schema.sql",
-        "checksum_source": "database/revisions/3f0001acctnote/schema.sha256",
+        "schema_source": "database/revisions/3g0001liabbal/schema.sql",
+        "checksum_source": "database/revisions/3g0001liabbal/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -281,19 +285,22 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 3:
-        raise RuntimeError("The first schema migration requires exactly three Alembic revisions.")
+    if len(revisions) != 4:
+        raise RuntimeError("The liability schema requires exactly four Alembic revisions.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
+    first_head = by_revision.get(PREVIOUS_HEAD_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
         raise RuntimeError("The Alembic ownership marker must follow the inherited baseline.")
-    if head is None or head.down_revision != CUTOVER_REVISION:
+    if first_head is None or first_head.down_revision != CUTOVER_REVISION:
         raise RuntimeError("The first Alembic schema revision must follow the ownership marker.")
+    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+        raise RuntimeError("The liability balance revision must follow the previous head.")
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -307,8 +314,8 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         if getattr(cutover_module, key, None) != value:
             raise RuntimeError(f"Cutover revision metadata is invalid for {key}.")
 
-    head_module = head.module
-    expected_head_metadata = {
+    first_head_module = first_head.module
+    expected_first_head_metadata = {
         "schema_change": True,
         "schema_change_kind": "add_nullable_column",
         "affected_tables": ("Account",),
@@ -316,8 +323,8 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "prisma_schema_impact": "required",
         "data_migration": False,
     }
-    for key, value in expected_head_metadata.items():
-        if getattr(head_module, key, None) != value:
+    for key, value in expected_first_head_metadata.items():
+        if getattr(first_head_module, key, None) != value:
             raise RuntimeError(f"First schema revision metadata is invalid for {key}.")
 
     cutover_source = CUTOVER_REVISION_PATH.read_text(encoding="utf-8")
@@ -330,6 +337,30 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
             raise RuntimeError(f"First schema revision is missing required token {token}.")
     if 'WHERE "notes" IS NOT NULL' not in head_source:
         raise RuntimeError("Account notes downgrade must guard against data loss.")
+
+    liability_module = head.module
+    expected_liability_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_liability_balance_contract",
+        "affected_tables": ("LiabilityBalance",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_liability_metadata.items():
+        if getattr(liability_module, key, None) != value:
+            raise RuntimeError(f"Liability schema revision metadata is invalid for {key}.")
+    liability_source = LIABILITY_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "op.create_table(",
+        '"LiabilityBalance"',
+        '"LiabilityBalanceSource"',
+        "op.drop_table",
+        "source_enum.drop",
+    ):
+        if token not in liability_source:
+            raise RuntimeError(f"Liability revision is missing required token {token}.")
+    if 'SELECT EXISTS (SELECT 1 FROM "public"."LiabilityBalance")' not in liability_source:
+        raise RuntimeError("Liability downgrade must guard canonical evidence against data loss.")
 
 
 def verify_schema_registry(
@@ -368,6 +399,26 @@ def verify_schema_registry(
     account_end = prisma_source.index("\n}", account_start)
     if "notes" not in prisma_source[account_start:account_end]:
         raise RuntimeError("Prisma Account model must expose the notes compatibility field.")
+    liability_start = prisma_source.index("model LiabilityBalance {")
+    liability_end = prisma_source.index("\n}", liability_start)
+    liability_model = prisma_source[liability_start:liability_end]
+    for field in (
+        "accountId",
+        "effectiveAt",
+        "outstandingPrincipal",
+        "accruedInterest",
+        "feesOutstanding",
+        "totalOutstanding",
+        "source",
+        "externalId",
+        "createdAt",
+    ):
+        if field not in liability_model:
+            raise RuntimeError(
+                f"Prisma LiabilityBalance model is missing compatibility field {field}."
+            )
+    if "enum LiabilityBalanceSource {" not in prisma_source:
+        raise RuntimeError("Prisma must mirror the LiabilityBalanceSource enum.")
 
 
 def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
@@ -423,6 +474,11 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
         source = database_workflow.read_text(encoding="utf-8")
         if "npm run db:prisma:archive:verify" not in source:
             raise RuntimeError("Database CI must use the restricted Prisma archive wrapper.")
+        head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
+        if source.count(head_schema_check) != 2:
+            raise RuntimeError(
+                "Database CI must verify the current head artifact after upgrade and bootstrap."
+            )
 
 
 def verify_policy() -> PrismaArchiveState:

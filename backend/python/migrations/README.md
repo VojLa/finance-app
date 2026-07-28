@@ -22,7 +22,7 @@ historical boundaries rather than reversible application schema operations.
 ## Current policy
 
 - Alembic owns all future production schema changes.
-- All 30 application tables and 27 PostgreSQL enums are tracked as `alembic_owned`.
+- All 31 application tables and 28 PostgreSQL enums are tracked as `alembic_owned`.
 - Prisma migration creation and deployment are disabled.
 - The frozen Prisma history is retained only for a restricted historical CI bootstrap.
 - Prisma Client remains a runtime compatibility layer.
@@ -49,3 +49,8 @@ See `database/README.md`, `database/cutover/README.md`, and
 ## First Alembic-owned schema change
 
 Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical schema change owned by Alembic. The inherited baseline remains immutable; the current head is verified through `database/schema_revisions.toml` and the revision-specific schema artifact.
+
+Revision `3g0001liabbal` adds `LiabilityBalance` and
+`LiabilityBalanceSource`. Its downgrade refuses to discard existing canonical
+liability evidence. The runtime Prisma schema mirrors the new objects while
+the frozen Prisma migration archive remains unchanged.
