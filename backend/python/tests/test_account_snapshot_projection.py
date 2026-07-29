@@ -289,9 +289,14 @@ def test_permuted_inputs_are_deterministic_frozen_and_not_mutated() -> None:
     )
     price_a = _price(listing_id="a", price_id="a")
     price_b = _price(listing_id="b", price_id="b", asset_id="asset-b", symbol="BTC")
-    cash = (_cash("USD", Decimal("2")), _cash("CZK", Decimal("3")))
-    rates = (_rate("USD", value=Decimal("20")), _rate("EUR"))
+    cash = (_cash("USD", Decimal("2")), _cash("CHF", Decimal("3")))
+    rates = (
+        _rate("USD", quote="EUR", value=Decimal("0.9")),
+        _rate("CHF", quote="EUR", value=Decimal("1.05")),
+    )
     evidence = _input(
+        account_currency="USD",
+        output_currency="EUR",
         holdings=(holding_b, holding_a),
         prices=(price_b, price_a),
         exchange_rates=rates,
@@ -386,7 +391,8 @@ def test_invalid_snapshot_metadata_enum_and_version_fail(
         "nonpositive_quantity",
         "malformed_average",
         "bad_cost_currency",
-        "output_currency_mismatch",
+        "bad_account_currency",
+        "bad_output_currency",
         "bad_version",
     ],
 )
@@ -426,8 +432,10 @@ def test_holding_and_snapshot_identity_corruption_fails_complete_projection(
         changes["holdings"] = (replace(holding, average_buy_price=cast(Decimal, 1.5)),)
     elif corruption == "bad_cost_currency":
         changes["holdings"] = (replace(holding, cost_currency="eur"),)
-    elif corruption == "output_currency_mismatch":
-        changes["output_currency"] = "EUR"
+    elif corruption == "bad_account_currency":
+        changes["account_currency"] = "czk"
+    elif corruption == "bad_output_currency":
+        changes["output_currency"] = "eur"
     else:
         changes["calculation_version"] = 0
     with pytest.raises(AccountSnapshotProjectionStateError):
@@ -527,6 +535,155 @@ def test_same_currency_values_require_no_fx_evidence() -> None:
     assert result.investment_value == Decimal("200")
 
 
+def test_empty_mixed_currency_account_requires_no_synthetic_fx_rate() -> None:
+    result = build_account_snapshot_projection(
+        _input(account_currency="USD", output_currency="EUR")
+    )
+
+    assert (
+        result.currency,
+        result.cash_value,
+        result.investment_value,
+        result.investment_cost_basis,
+        result.liabilities_value,
+        result.total_value,
+        result.exchange_rates,
+    ) == (
+        "EUR",
+        Decimal(0),
+        Decimal(0),
+        Decimal(0),
+        Decimal(0),
+        Decimal(0),
+        (),
+    )
+
+
+def test_account_currency_difference_alone_does_not_require_fx() -> None:
+    result = _one_holding(
+        account_currency="USD",
+        output_currency="EUR",
+        holding=_holding(cost_currency="EUR"),
+        price=_price(currency="EUR"),
+        exchange_rates=(),
+    )
+
+    assert result.currency == "EUR"
+    assert result.investment_value == Decimal("200")
+    assert result.investment_cost_basis == Decimal("160")
+    assert result.exchange_rates == ()
+
+
+def test_mixed_currency_broker_converts_actual_native_evidence_to_output_currency() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_currency="USD",
+            output_currency="EUR",
+            holdings=(_holding(cost_currency="USD", average_buy_price=Decimal("80")),),
+            prices=(_price(currency="USD", price=Decimal("100")),),
+            cash_balances=(_cash("USD", Decimal("50")),),
+            exchange_rates=(_rate("USD", quote="EUR", value=Decimal("0.9")),),
+        )
+    )
+
+    assert (
+        result.currency,
+        result.cash_value,
+        result.investment_value,
+        result.investment_cost_basis,
+        result.total_value,
+    ) == (
+        "EUR",
+        Decimal("45"),
+        Decimal("180"),
+        Decimal("144"),
+        Decimal("225"),
+    )
+    assert result.cash_value_by_currency == (CurrencyAmount(currency="USD", amount=Decimal("50")),)
+    assert result.investment_value_by_currency == (
+        CurrencyAmount(currency="USD", amount=Decimal("200")),
+    )
+    assert result.investment_cost_basis_by_currency == (
+        CurrencyAmount(currency="USD", amount=Decimal("160")),
+    )
+    item = result.items[0]
+    assert (
+        item.native_value,
+        item.value_currency,
+        item.value,
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.cost_basis,
+        item.cost_currency,
+    ) == (
+        Decimal("200"),
+        "USD",
+        Decimal("180"),
+        Decimal("160"),
+        "USD",
+        Decimal("144"),
+        "EUR",
+    )
+    assert [(rate.base_currency, rate.quote_currency) for rate in result.exchange_rates] == [
+        ("USD", "EUR")
+    ]
+
+
+def test_mixed_currency_broker_requires_each_actual_native_pair_in_sorted_order() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_currency="USD",
+            output_currency="EUR",
+            holdings=(_holding(cost_currency="USD"),),
+            prices=(_price(currency="GBP"),),
+            cash_balances=(_cash("CHF", Decimal("10")),),
+            exchange_rates=(
+                _rate("USD", quote="EUR", value=Decimal("0.9")),
+                _rate("CHF", quote="EUR", value=Decimal("1.05")),
+                _rate("GBP", quote="EUR", value=Decimal("1.2")),
+            ),
+        )
+    )
+
+    assert result.investment_value == Decimal("240")
+    assert result.investment_cost_basis == Decimal("144")
+    assert result.cash_value == Decimal("10.5")
+    assert [(rate.base_currency, rate.quote_currency) for rate in result.exchange_rates] == [
+        ("CHF", "EUR"),
+        ("GBP", "EUR"),
+        ("USD", "EUR"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        (),
+        (_rate("EUR", quote="USD", value=Decimal("1.1")),),
+        (
+            _rate("USD", quote="CZK", value=Decimal("20")),
+            _rate("CZK", quote="EUR", value=Decimal("0.04")),
+        ),
+        (
+            _rate("USD", quote="EUR", value=Decimal("0.9")),
+            _rate("GBP", quote="EUR", value=Decimal("1.2")),
+        ),
+    ],
+)
+def test_mixed_currency_broker_rejects_missing_reverse_chained_and_extra_rates(
+    rates: tuple[SelectedExchangeRateEvidence, ...],
+) -> None:
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        build_account_snapshot_projection(
+            _input(
+                account_currency="USD",
+                output_currency="EUR",
+                cash_balances=(_cash("USD", Decimal("100")),),
+                exchange_rates=rates,
+            )
+        )
+
+
 @pytest.mark.parametrize(
     "corruption",
     [
@@ -617,6 +774,28 @@ def test_cash_evidence_supports_multiple_currencies_zero_and_negative_without_re
     assert result.total_value == Decimal("-200")
 
 
+def test_cash_account_converts_native_balances_to_distinct_output_currency() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_type=AccountType.cash,
+            account_currency="USD",
+            output_currency="EUR",
+            cash_balances=(
+                _cash("USD", Decimal("100")),
+                _cash("EUR", Decimal("20")),
+            ),
+            exchange_rates=(_rate("USD", quote="EUR", value=Decimal("0.9")),),
+        )
+    )
+
+    assert result.currency == "EUR"
+    assert result.cash_value == Decimal("110")
+    assert result.cash_value_by_currency == (
+        CurrencyAmount(currency="EUR", amount=Decimal("20")),
+        CurrencyAmount(currency="USD", amount=Decimal("100")),
+    )
+
+
 def test_liability_account_uses_positive_magnitude_and_subtracts_it() -> None:
     result = build_account_snapshot_projection(
         _input(
@@ -628,6 +807,67 @@ def test_liability_account_uses_positive_magnitude_and_subtracts_it() -> None:
     assert result.total_value == Decimal("-300")
     assert result.items == ()
     assert result.exchange_rates == ()
+
+
+def test_mixed_currency_liability_converts_scalar_and_preserves_native_breakdown() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_type=AccountType.loan,
+            account_currency="USD",
+            output_currency="EUR",
+            liabilities=(_liability("USD", Decimal("100")),),
+            exchange_rates=(_rate("USD", quote="EUR", value=Decimal("0.9")),),
+        )
+    )
+
+    assert result.currency == "EUR"
+    assert result.liabilities_value == Decimal("90")
+    assert result.total_value == Decimal("-90")
+    assert result.liabilities_value_by_currency == (
+        CurrencyAmount(currency="USD", amount=Decimal("100")),
+    )
+    assert [(rate.base_currency, rate.quote_currency) for rate in result.exchange_rates] == [
+        ("USD", "EUR")
+    ]
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        (),
+        (_rate("EUR", quote="USD", value=Decimal("1.1")),),
+        (
+            _rate("USD", quote="CZK", value=Decimal("20")),
+            _rate("CZK", quote="EUR", value=Decimal("0.04")),
+        ),
+    ],
+)
+def test_mixed_currency_liability_rejects_missing_reverse_and_chained_rates(
+    rates: tuple[SelectedExchangeRateEvidence, ...],
+) -> None:
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        build_account_snapshot_projection(
+            _input(
+                account_type=AccountType.loan,
+                account_currency="USD",
+                output_currency="EUR",
+                liabilities=(_liability("USD", Decimal("100")),),
+                exchange_rates=rates,
+            )
+        )
+
+
+def test_liability_currency_must_equal_persisted_account_currency() -> None:
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        build_account_snapshot_projection(
+            _input(
+                account_type=AccountType.loan,
+                account_currency="USD",
+                output_currency="EUR",
+                liabilities=(_liability("GBP", Decimal("100")),),
+                exchange_rates=(_rate("GBP", quote="EUR", value=Decimal("1.2")),),
+            )
+        )
 
 
 @pytest.mark.parametrize(
