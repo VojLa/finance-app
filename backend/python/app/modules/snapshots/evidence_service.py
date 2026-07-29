@@ -10,8 +10,10 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.accounts import AccountModel
 from app.db.models.enums import (
     AccountType,
+    ExchangeRateSource,
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
@@ -81,6 +83,7 @@ class BuildAccountSnapshotEvidenceCommand:
     granularity: SnapshotGranularity
     source: SnapshotSource
     calculation_version: int
+    output_currency: str | None = None
 
 
 class SnapshotMetricUnsupportedReason(StrEnum):
@@ -135,6 +138,28 @@ def _nonblank(value: object) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise _fail()
     return value
+
+
+def _aligned_snapshot_timestamp(
+    value: object,
+    granularity: SnapshotGranularity,
+) -> datetime:
+    timestamp = canonical_timestamp(value)
+    if granularity is SnapshotGranularity.minute:
+        aligned = timestamp.second == 0 and timestamp.microsecond == 0
+    elif granularity is SnapshotGranularity.hour:
+        aligned = timestamp.minute == 0 and timestamp.second == 0 and timestamp.microsecond == 0
+    elif granularity is SnapshotGranularity.day:
+        aligned = timestamp.time() == datetime.min.time()
+    elif granularity is SnapshotGranularity.week:
+        aligned = timestamp.weekday() == 0 and timestamp.time() == datetime.min.time()
+    elif granularity is SnapshotGranularity.month:
+        aligned = timestamp.day == 1 and timestamp.time() == datetime.min.time()
+    else:
+        raise _fail()
+    if not aligned:
+        raise _fail()
+    return timestamp
 
 
 def _select_latest_price(
@@ -195,9 +220,99 @@ def _select_latest_rate(
     if len(latest) != 1:
         raise _fail()
     selected = latest[0]
-    _nonblank(selected.id)
+    if (
+        not isinstance(selected, ExchangeRateModel)
+        or _nonblank(selected.id) == ""
+        or canonical_currency(selected.from_currency) != base_currency
+        or canonical_currency(selected.to_currency) != quote_currency
+        or not isinstance(selected.source, ExchangeRateSource)
+        or canonical_timestamp(selected.date) > through
+    ):
+        raise _fail()
     exact_rate(selected.rate)
     return selected
+
+
+def _validate_rate_candidates(
+    candidates: object,
+    *,
+    base_currencies: tuple[str, ...],
+    quote_currency: str,
+    through: datetime,
+) -> tuple[ExchangeRateModel, ...]:
+    if not isinstance(candidates, tuple):
+        raise _fail()
+    allowed_bases = set(base_currencies)
+    ids: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, ExchangeRateModel):
+            raise _fail()
+        rate_id = _nonblank(candidate.id)
+        if (
+            rate_id in ids
+            or canonical_currency(candidate.from_currency) not in allowed_bases
+            or canonical_currency(candidate.to_currency) != quote_currency
+            or canonical_timestamp(candidate.date) > through
+            or not isinstance(candidate.source, ExchangeRateSource)
+        ):
+            raise _fail()
+        ids.add(rate_id)
+        exact_rate(candidate.rate)
+    return candidates
+
+
+def _selected_snapshot_rate(
+    candidates: tuple[ExchangeRateModel, ...],
+    *,
+    base_currency: str,
+    quote_currency: str,
+    through: datetime,
+) -> SelectedExchangeRateEvidence:
+    selected = _select_latest_rate(
+        candidates,
+        base_currency=base_currency,
+        quote_currency=quote_currency,
+        through=through,
+    )
+    return SelectedExchangeRateEvidence(
+        rate_id=selected.id,
+        base_currency=base_currency,
+        quote_currency=quote_currency,
+        rate=selected.rate,
+        source=selected.source,
+        timestamp=selected.date,
+    )
+
+
+def _validate_snapshot_rate_audit(
+    valuation: ExpectedAccountSnapshotValuation,
+    *,
+    output_currency: str,
+    snapshot_rates: tuple[SelectedExchangeRateEvidence, ...],
+) -> tuple[str, ...]:
+    selected_ids = tuple(sorted(rate.rate_id for rate in snapshot_rates))
+    consumed_ids = tuple(sorted(rate.rate_id for rate in valuation.exchange_rates))
+    if valuation.currency != output_currency or selected_ids != consumed_ids:
+        raise _fail()
+    return consumed_ids
+
+
+def _validate_persisted_account(
+    account: object,
+    *,
+    account_id: str,
+) -> tuple[AccountType, str]:
+    if (
+        not isinstance(account, AccountModel)
+        or _nonblank(account.id) != account_id
+        or not isinstance(account.type, AccountType)
+        or account.type
+        not in _CASH_ACCOUNT_TYPES | _INVESTMENT_ACCOUNT_TYPES | _LIABILITY_ACCOUNT_TYPES
+        or account.is_archived is not False
+        or account.archived_at is not None
+    ):
+        raise _fail()
+    return account.type, canonical_currency(account.currency)
 
 
 def _holding_evidence(
@@ -464,20 +579,25 @@ def _liability_complete_evidence(
     command: BuildAccountSnapshotEvidenceCommand,
     account_id: str,
     account_type: AccountType,
+    account_currency: str,
     output_currency: str,
     selected: SelectedLiabilityBalanceEvidence,
+    snapshot_rates: tuple[SelectedExchangeRateEvidence, ...],
 ) -> CompleteAccountSnapshotEvidence:
     if (
-        selected.account_id != account_id
-        or selected.currency != output_currency
-        or selected.effective_at > command.snapshot_timestamp
+        not isinstance(selected, SelectedLiabilityBalanceEvidence)
+        or _nonblank(selected.balance_id) == ""
+        or selected.account_id != account_id
+        or canonical_currency(selected.currency) != account_currency
+        or canonical_timestamp(selected.effective_at) > command.snapshot_timestamp
+        or not isinstance(selected.source, LiabilityBalanceSource)
     ):
         raise _fail()
     valuation = build_account_snapshot_projection(
         AccountSnapshotProjectionInput(
             account_id=account_id,
             account_type=account_type,
-            account_currency=output_currency,
+            account_currency=account_currency,
             output_currency=output_currency,
             snapshot_timestamp=command.snapshot_timestamp,
             granularity=command.granularity,
@@ -485,7 +605,7 @@ def _liability_complete_evidence(
             calculation_version=command.calculation_version,
             holdings=(),
             prices=(),
-            exchange_rates=(),
+            exchange_rates=snapshot_rates,
             cash_balances=(),
             liabilities=(
                 LiabilityBalanceEvidence(
@@ -498,6 +618,11 @@ def _liability_complete_evidence(
             ),
         )
     )
+    selected_snapshot_rate_ids = _validate_snapshot_rate_audit(
+        valuation,
+        output_currency=output_currency,
+        snapshot_rates=snapshot_rates,
+    )
     structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
     return CompleteAccountSnapshotEvidence(
         valuation=valuation,
@@ -507,7 +632,7 @@ def _liability_complete_evidence(
         fees=structural_zero,
         taxes=structural_zero,
         selected_price_ids=(),
-        selected_snapshot_exchange_rate_ids=(),
+        selected_snapshot_exchange_rate_ids=selected_snapshot_rate_ids,
         selected_historical_exchange_rate_ids=(),
         selected_liability_balance_id=selected.balance_id,
         selected_liability_effective_at=selected.effective_at,
@@ -539,42 +664,74 @@ class AccountSnapshotEvidenceService:
             if not isinstance(command, BuildAccountSnapshotEvidenceCommand):
                 raise _fail()
             account_id = _nonblank(command.account_id)
-            snapshot_timestamp = canonical_timestamp(command.snapshot_timestamp)
             if (
                 not isinstance(command.granularity, SnapshotGranularity)
                 or not isinstance(command.source, SnapshotSource)
                 or not isinstance(command.calculation_version, int)
                 or isinstance(command.calculation_version, bool)
                 or command.calculation_version <= 0
+                or command.calculation_version > 2_147_483_647
             ):
                 raise _fail()
+            snapshot_timestamp = _aligned_snapshot_timestamp(
+                command.snapshot_timestamp,
+                command.granularity,
+            )
+            requested_output_currency = (
+                None
+                if command.output_currency is None
+                else canonical_currency(command.output_currency)
+            )
             account = await self.repository.load_account(account_id)
-            if account is None or account.is_archived or account.archived_at is not None:
-                raise _fail()
-            output_currency = canonical_currency(account.currency)
-            if account.type in _LIABILITY_ACCOUNT_TYPES:
+            account_type, account_currency = _validate_persisted_account(
+                account,
+                account_id=account_id,
+            )
+            output_currency = requested_output_currency or account_currency
+            if account_type in _LIABILITY_ACCOUNT_TYPES:
                 selected_liability = await self.liability_evidence_service.select(
                     SelectLiabilityBalanceCommand(
                         account_id=account_id,
                         snapshot_timestamp=snapshot_timestamp,
                     )
                 )
+                liability_snapshot_rates: tuple[SelectedExchangeRateEvidence, ...] = ()
+                if account_currency != output_currency:
+                    loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
+                        (account_currency,),
+                        output_currency,
+                        through=snapshot_timestamp,
+                    )
+                    rate_candidates = _validate_rate_candidates(
+                        loaded_rate_candidates,
+                        base_currencies=(account_currency,),
+                        quote_currency=output_currency,
+                        through=snapshot_timestamp,
+                    )
+                    liability_snapshot_rates = (
+                        _selected_snapshot_rate(
+                            rate_candidates,
+                            base_currency=account_currency,
+                            quote_currency=output_currency,
+                            through=snapshot_timestamp,
+                        ),
+                    )
                 return _liability_complete_evidence(
                     command=command,
                     account_id=account_id,
-                    account_type=account.type,
+                    account_type=account_type,
+                    account_currency=account_currency,
                     output_currency=output_currency,
                     selected=selected_liability,
+                    snapshot_rates=liability_snapshot_rates,
                 )
-            if account.type not in _CASH_ACCOUNT_TYPES | _INVESTMENT_ACCOUNT_TYPES:
-                raise _fail()
 
             persisted_holdings = await self.repository.load_holdings(account_id)
             holdings = _holding_evidence(persisted_holdings, account_id=account_id)
-            if account.type in _CASH_ACCOUNT_TYPES and holdings:
+            if account_type in _CASH_ACCOUNT_TYPES and holdings:
                 raise _fail()
 
-            if account.type in _CASH_ACCOUNT_TYPES:
+            if account_type in _CASH_ACCOUNT_TYPES:
                 transactions = await self.repository.load_active_transactions(
                     account_id,
                     through=snapshot_timestamp,
@@ -622,27 +779,26 @@ class AccountSnapshotEvidenceService:
             historical_currencies = {item.currency for item in historical_evidence} - {
                 output_currency
             }
-            rate_candidates = await self.repository.load_exchange_rate_candidates(
-                tuple(sorted(snapshot_currencies | historical_currencies)),
+            required_currencies = tuple(sorted(snapshot_currencies | historical_currencies))
+            loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
+                required_currencies,
                 output_currency,
+                through=snapshot_timestamp,
+            )
+            rate_candidates = _validate_rate_candidates(
+                loaded_rate_candidates,
+                base_currencies=required_currencies,
+                quote_currency=output_currency,
                 through=snapshot_timestamp,
             )
             snapshot_rates: list[SelectedExchangeRateEvidence] = []
             for currency in sorted(snapshot_currencies):
-                selected = _select_latest_rate(
-                    rate_candidates,
-                    base_currency=currency,
-                    quote_currency=output_currency,
-                    through=snapshot_timestamp,
-                )
                 snapshot_rates.append(
-                    SelectedExchangeRateEvidence(
-                        rate_id=selected.id,
+                    _selected_snapshot_rate(
+                        rate_candidates,
                         base_currency=currency,
                         quote_currency=output_currency,
-                        rate=selected.rate,
-                        source=selected.source,
-                        timestamp=selected.date,
+                        through=snapshot_timestamp,
                     )
                 )
             historical_rates: list[SelectedHistoricalRate] = []
@@ -669,8 +825,8 @@ class AccountSnapshotEvidenceService:
             valuation = build_account_snapshot_projection(
                 AccountSnapshotProjectionInput(
                     account_id=account_id,
-                    account_type=account.type,
-                    account_currency=output_currency,
+                    account_type=account_type,
+                    account_currency=account_currency,
                     output_currency=output_currency,
                     snapshot_timestamp=snapshot_timestamp,
                     granularity=command.granularity,
@@ -683,7 +839,12 @@ class AccountSnapshotEvidenceService:
                     liabilities=(),
                 )
             )
-            if account.type in _CASH_ACCOUNT_TYPES:
+            selected_snapshot_rate_ids = _validate_snapshot_rate_audit(
+                valuation,
+                output_currency=output_currency,
+                snapshot_rates=tuple(snapshot_rates),
+            )
+            if account_type in _CASH_ACCOUNT_TYPES:
                 structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
                 net_deposits: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
                     SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
@@ -734,9 +895,7 @@ class AccountSnapshotEvidenceService:
                 fees=fees,
                 taxes=taxes,
                 selected_price_ids=tuple(sorted(item.price_id for item in prices)),
-                selected_snapshot_exchange_rate_ids=tuple(
-                    sorted(item.rate_id for item in snapshot_rates)
-                ),
+                selected_snapshot_exchange_rate_ids=selected_snapshot_rate_ids,
                 selected_historical_exchange_rate_ids=selected_historical_rate_ids,
             )
         except AccountSnapshotEvidenceStateError:

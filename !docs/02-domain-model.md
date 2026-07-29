@@ -83,6 +83,27 @@ currency while their breakdowns remain native. A liability observation must
 still use Account currency, even when its scalar value is converted to a
 different output currency.
 
+The read-only 5K-C2 evidence command optionally requests that distinct output
+currency. `None` resolves to persisted `Account.currency`, preserving every
+existing writer caller. Explicit metadata owns only output currency; the
+persisted Account independently owns account currency and supported
+account-type/archive state. No User or membership evidence participates in
+this internal boundary.
+
+Persisted direct candidates are queried only for actual current price, Holding
+cost, cash, liability, and historical metric currencies. Current valuation
+selects the latest unambiguous direct row through the snapshot timestamp.
+Lifetime net deposits, realized P/L, fees, and taxes independently select the
+latest direct row through each evidence event timestamp. Snapshot-rate and
+historical-rate IDs are audited separately and contain only consumed evidence.
+There is no inverse, chain, bridge currency, source priority, or Account-currency
+fallback.
+
+Canonical liabilities remain positive observations in Account currency. When
+output differs, 5K-C2 selects one latest direct Account-currency-to-output rate,
+converts only through 5K-C1, and preserves the native liability breakdown plus
+observation identity. Empty mixed-currency accounts require no rate.
+
 The contract deliberately does not claim a persistable `AccountSnapshot`.
 Complete net-deposit, realized/unrealized P&L, fee, and tax evidence is not yet
 adopted by the pure boundary; database defaults are not treated as financial
@@ -314,10 +335,10 @@ granularity, output currency, and calculation version. It cannot run until all
 write-capable and reuse-only targets are satisfied. This is only a declarative
 dependency: 5K-A reads no database state, invokes no writer, and performs no
 financial calculation. The current AccountSnapshot writer remains
-account-currency-only. Pure 5K-C1 establishes the calculation contract, while
-5K-C2 through 5K-C5 must add persisted FX selection, physical projection,
-writer identity/replay, and manual-orchestration compatibility before
-mixed-currency coordinated execution.
+account-currency-only. 5K-C1 establishes pure calculation and 5K-C2 read-only
+persisted evidence selection. 5K-C3 through 5K-C5 must still add physical
+projection, writer identity/replay, and manual-orchestration compatibility
+before mixed-currency coordinated execution.
 
 The read-only 5K-B boundary turns persisted current state into immutable
 coverage evidence. The persisted User exclusively supplies the output/base
