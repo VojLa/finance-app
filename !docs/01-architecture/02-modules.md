@@ -16,7 +16,7 @@ thin and shared database infrastructure lives outside modules.
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
 | snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency valuation/evidence added through 5K-C2          |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency pure persistence projection added through 5K-C3 |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
@@ -229,7 +229,23 @@ snapshot and historical rate IDs remain separate deterministic audits.
 Liability observations remain in Account currency and use one direct
 Account-currency-to-output rate only when needed. The adapter remains
 caller-transaction-owned and read-only and returns no ORM rows. Physical
-projection mapping, writer identity/locking/replay changes, and manual
-orchestration compatibility remain 5K-C3 through 5K-C5. The existing writer
-does not request a distinct output currency, so no mixed-currency
-AccountSnapshot is yet reachable through an application service.
+projection mapping is owned by pure 5K-C3; writer identity/locking/replay
+changes and manual orchestration compatibility remain 5K-C4 and 5K-C5.
+
+The pure 5K-C3 projection uses the valuation output currency for every physical
+AccountSnapshot scalar and for its existing deterministic identity. Changing
+only output currency therefore changes the snapshot ID and all derived item
+IDs. Investment items preserve native price/value/cost evidence while
+converted value and cost fields use output currency. Native breakdowns remain
+fixed-scale JSON and consumed direct rates remain in the existing version-1
+exchange-rate audit.
+
+Liability projection validates exactly one native breakdown. A same-currency
+liability consumes no rate; a mixed-currency liability proves its scalar with
+one direct native-to-output consumed rate, including an explicit zero
+observation. The physical schema has no liability-native-breakdown column, so
+that breakdown is validated but not copied into an unrelated JSONB field; the
+selected liability identity remains nonphysical audit metadata. 5K-C3 creates
+no ORM row, performs no I/O, and adds no migration. The existing writer still
+does not request a distinct output currency, so mixed-currency AccountSnapshot
+creation remains unreachable until 5K-C4.

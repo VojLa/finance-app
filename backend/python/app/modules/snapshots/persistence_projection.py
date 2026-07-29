@@ -515,13 +515,18 @@ def _liability_audit(
     snapshot_rate_ids: tuple[str, ...],
     historical_rate_ids: tuple[str, ...],
     metrics: tuple[tuple[Decimal, CanonicalJsonObject | None], ...],
+    liability_breakdown: CanonicalJsonObject,
 ) -> tuple[str | None, datetime | None, LiabilityBalanceSource | None]:
     balance_id = evidence.selected_liability_balance_id
     effective_at = evidence.selected_liability_effective_at
     source = evidence.selected_liability_source
     values = (balance_id, effective_at, source)
     if all(value is None for value in values):
-        if valuation.liabilities_value != 0 or valuation.liabilities_value_by_currency:
+        if (
+            valuation.liabilities_value != 0
+            or valuation.liabilities_value_by_currency
+            or liability_breakdown != CanonicalJsonObject(())
+        ):
             raise _fail()
         return None, None, None
     if any(value is None for value in values):
@@ -529,23 +534,56 @@ def _liability_audit(
     selected_id = _nonblank(balance_id)
     selected_at = _timestamp(effective_at)
     selected_source = _enum(source, LiabilityBalanceSource)
+    native_breakdown = valuation.liabilities_value_by_currency
+    if (
+        not isinstance(native_breakdown, tuple)
+        or len(native_breakdown) != 1
+        or not isinstance(native_breakdown[0], CurrencyAmount)
+    ):
+        raise _fail()
+    native_currency = _currency(native_breakdown[0].currency)
+    native_amount = _exact(native_breakdown[0].amount, MONEY, nonnegative=True)
+    if liability_breakdown != CanonicalJsonObject(
+        ((native_currency, _decimal_string(native_amount, MONEY)),)
+    ):
+        raise _fail()
+
+    if native_currency == valuation.currency:
+        valid_conversion = (
+            not valuation.exchange_rates
+            and not snapshot_rate_ids
+            and native_amount == valuation.liabilities_value
+        )
+    else:
+        if len(valuation.exchange_rates) != 1 or len(snapshot_rate_ids) != 1:
+            raise _fail()
+        rate = valuation.exchange_rates[0]
+        if not isinstance(rate, ConsumedExchangeRate):
+            raise _fail()
+        rate_id = _nonblank(rate.rate_id)
+        valid_conversion = (
+            _currency(rate.base_currency) == native_currency
+            and _currency(rate.quote_currency) == valuation.currency
+            and native_currency != valuation.currency
+            and snapshot_rate_ids == (rate_id,)
+            and _calculated(
+                "multiply",
+                native_amount,
+                _exact(rate.rate, RATE, positive=True),
+                MONEY,
+            )
+            == valuation.liabilities_value
+        )
     if (
         selected_at > valuation.timestamp
         or items
         or price_ids
-        or snapshot_rate_ids
         or historical_rate_ids
         or valuation.cash_value != 0
         or valuation.investment_value != 0
         or valuation.investment_cost_basis != 0
         or valuation.total_value != -valuation.liabilities_value
-        or valuation.liabilities_value_by_currency
-        != (
-            CurrencyAmount(
-                currency=valuation.currency,
-                amount=valuation.liabilities_value,
-            ),
-        )
+        or not valid_conversion
         or any(value != 0 or breakdown != CanonicalJsonObject(()) for value, breakdown in metrics)
     ):
         raise _fail()
@@ -657,6 +695,15 @@ def build_account_snapshot_persistence_projection(
             snapshot_id=snapshot_id,
             created_at=created_at,
         )
+        liability_breakdown = _breakdown(
+            valuation.liabilities_value_by_currency,
+            numeric=MONEY,
+            converted_value=liabilities_value,
+            output_currency=currency,
+            nonnegative=True,
+        )
+        if liability_breakdown is None:
+            raise _fail()
         liability_balance_id, liability_effective_at, liability_source = _liability_audit(
             evidence,
             valuation=valuation,
@@ -671,6 +718,7 @@ def build_account_snapshot_persistence_projection(
                 (fees, fees_breakdown),
                 (taxes, taxes_breakdown),
             ),
+            liability_breakdown=liability_breakdown,
         )
 
         cash_breakdown = _breakdown(
@@ -690,13 +738,6 @@ def build_account_snapshot_persistence_projection(
             valuation.investment_cost_basis_by_currency,
             numeric=QUANTITY,
             converted_value=investment_cost_basis,
-            output_currency=currency,
-            nonnegative=True,
-        )
-        _breakdown(
-            valuation.liabilities_value_by_currency,
-            numeric=MONEY,
-            converted_value=liabilities_value,
             output_currency=currency,
             nonnegative=True,
         )

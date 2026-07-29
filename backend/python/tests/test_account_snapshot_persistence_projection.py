@@ -100,14 +100,16 @@ def _rate(
     value: Decimal,
     *,
     rate_id: str | None = None,
+    quote_currency: str = "CZK",
+    timestamp: datetime = datetime(2026, 7, 27, 9, 0),
 ) -> SelectedExchangeRateEvidence:
     return SelectedExchangeRateEvidence(
         rate_id=rate_id or f"rate-{currency.lower()}",
         base_currency=currency,
-        quote_currency="CZK",
+        quote_currency=quote_currency,
         rate=value,
         source=ExchangeRateSource.ecb,
-        timestamp=datetime(2026, 7, 27, 9, 0),
+        timestamp=timestamp,
     )
 
 
@@ -199,6 +201,121 @@ def _liability_evidence(
         selected_liability_balance_id="liability-balance-1",
         selected_liability_effective_at=datetime(2026, 7, 27, 10, 0),
         selected_liability_source=LiabilityBalanceSource.statement,
+    )
+
+
+def _mixed_liability_evidence(
+    *,
+    account_type: AccountType = AccountType.loan,
+    amount: Decimal = Decimal("100.000000"),
+    rate: Decimal = Decimal("0.90000000"),
+) -> CompleteAccountSnapshotEvidence:
+    valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id="account-1",
+            account_type=account_type,
+            account_currency="USD",
+            output_currency="EUR",
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=1,
+            holdings=(),
+            prices=(),
+            exchange_rates=(
+                _rate(
+                    "USD",
+                    rate,
+                    rate_id="usd-eur",
+                    quote_currency="EUR",
+                    timestamp=datetime(2026, 7, 27, 9, 0),
+                ),
+            ),
+            cash_balances=(),
+            liabilities=(
+                LiabilityBalanceEvidence(
+                    liability_id="liability-balance-1",
+                    account_id="account-1",
+                    currency="USD",
+                    amount=amount,
+                    timestamp=datetime(2026, 7, 27, 10, 0),
+                ),
+            ),
+        )
+    )
+    zero = ExactSnapshotMetric(Decimal(0), ())
+    return CompleteAccountSnapshotEvidence(
+        valuation=valuation,
+        net_deposits=zero,
+        realized_pnl=zero,
+        unrealized_pnl=zero,
+        fees=zero,
+        taxes=zero,
+        selected_price_ids=(),
+        selected_snapshot_exchange_rate_ids=("usd-eur",),
+        selected_historical_exchange_rate_ids=(),
+        selected_liability_balance_id="liability-balance-1",
+        selected_liability_effective_at=datetime(2026, 7, 27, 10, 0),
+        selected_liability_source=LiabilityBalanceSource.statement,
+    )
+
+
+def _mixed_investment_evidence(
+    *,
+    output_currency: str = "EUR",
+) -> CompleteAccountSnapshotEvidence:
+    valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id="account-1",
+            account_type=AccountType.broker,
+            account_currency="USD",
+            output_currency=output_currency,
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=1,
+            holdings=(
+                _holding(
+                    quantity=Decimal("2"),
+                    average_buy_price=Decimal("10"),
+                    currency="USD",
+                ),
+            ),
+            prices=(
+                _price(
+                    price=Decimal("15"),
+                    currency="GBP",
+                ),
+            ),
+            exchange_rates=(
+                _rate(
+                    "GBP",
+                    Decimal("1.20000000"),
+                    rate_id="gbp-eur",
+                    quote_currency=output_currency,
+                ),
+                _rate(
+                    "USD",
+                    Decimal("0.90000000"),
+                    rate_id="usd-eur",
+                    quote_currency=output_currency,
+                ),
+            ),
+            cash_balances=(),
+            liabilities=(),
+        )
+    )
+    zero = ExactSnapshotMetric(Decimal(0), ())
+    return CompleteAccountSnapshotEvidence(
+        valuation=valuation,
+        net_deposits=zero,
+        realized_pnl=zero,
+        unrealized_pnl=ExactSnapshotMetric(Decimal("18.000000"), None),
+        fees=zero,
+        taxes=zero,
+        selected_price_ids=("price-1",),
+        selected_snapshot_exchange_rate_ids=("gbp-eur", "usd-eur"),
+        selected_historical_exchange_rate_ids=(),
     )
 
 
@@ -355,6 +472,76 @@ def test_exact_investment_snapshot_maps_every_physical_field() -> None:
     assert item.created_at == CREATED_AT
 
 
+def test_mixed_currency_investment_maps_native_and_converted_physical_fields() -> None:
+    evidence = _mixed_investment_evidence()
+    before = deepcopy(evidence)
+
+    result = _project(evidence)
+    row = result.snapshot
+    item = result.items[0]
+
+    assert evidence == before
+    assert row.currency == "EUR"
+    assert row.investment_value == Decimal("36.000000")
+    assert row.investment_cost_basis == Decimal("18.000000")
+    assert row.unrealized_pnl_value == Decimal("18.000000")
+    assert row.total_value == Decimal("36.000000")
+    assert row.investment_value_by_currency.to_json() == {"GBP": "30.0000000000"}
+    assert row.investment_cost_basis_by_currency.to_json() == {"USD": "20.0000000000"}
+    assert item.price_currency == "GBP"
+    assert item.value_currency == "GBP"
+    assert item.native_value == Decimal("30")
+    assert item.value == Decimal("36.000000")
+    assert item.native_cost_currency == "USD"
+    assert item.native_cost_basis == Decimal("20")
+    assert item.cost_currency == "EUR"
+    assert item.cost_basis == Decimal("18.000000")
+    assert result.audit.selected_price_ids == ("price-1",)
+    assert result.audit.selected_snapshot_exchange_rate_ids == (
+        "gbp-eur",
+        "usd-eur",
+    )
+    assert row.exchange_rates.to_json() == {
+        "version": 1,
+        "snapshotRates": [
+            {
+                "rateId": "gbp-eur",
+                "from": "GBP",
+                "to": "EUR",
+                "rate": "1.20000000",
+                "timestamp": "2026-07-27T09:00:00.000",
+                "source": "ecb",
+            },
+            {
+                "rateId": "usd-eur",
+                "from": "USD",
+                "to": "EUR",
+                "rate": "0.90000000",
+                "timestamp": "2026-07-27T09:00:00.000",
+                "source": "ecb",
+            },
+        ],
+        "historicalRateIds": [],
+    }
+
+
+def test_output_currency_changes_snapshot_and_item_identity_only_at_currency_boundary() -> None:
+    eur = _project(_mixed_investment_evidence(output_currency="EUR"))
+    czk = _project(_mixed_investment_evidence(output_currency="CZK"))
+    eur_repeated = _project(_mixed_investment_evidence(output_currency="EUR"))
+
+    assert eur.snapshot.id == eur_repeated.snapshot.id
+    assert eur.items[0].id == eur_repeated.items[0].id
+    assert eur.snapshot.id != czk.snapshot.id
+    assert eur.items[0].id != czk.items[0].id
+    assert eur.snapshot.account_id == czk.snapshot.account_id == "account-1"
+    assert eur.snapshot.timestamp == czk.snapshot.timestamp == SNAPSHOT_AT
+    assert eur.snapshot.granularity is czk.snapshot.granularity
+    assert eur.items[0].listing_id == czk.items[0].listing_id == "listing-1"
+    assert eur.snapshot.id == "3fddbf1b-f738-577f-a835-e9feb2d79ada"
+    assert eur.items[0].id == "a14af172-cf94-598b-bcde-67b719476681"
+
+
 @pytest.mark.parametrize(
     "account_type",
     [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
@@ -386,6 +573,63 @@ def test_liability_snapshot_maps_positive_liability_and_negative_total(
     assert result.audit.selected_liability_source is LiabilityBalanceSource.statement
 
 
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+)
+def test_mixed_currency_liability_maps_one_direct_rate_and_native_breakdown(
+    account_type: AccountType,
+) -> None:
+    evidence = _mixed_liability_evidence(account_type=account_type)
+    result = _project(evidence)
+
+    assert result.items == ()
+    assert result.snapshot.currency == "EUR"
+    assert result.snapshot.liabilities_value == Decimal("90.000000")
+    assert result.snapshot.total_value == Decimal("-90.000000")
+    assert result.snapshot.cash_value == Decimal(0)
+    assert result.snapshot.investment_value == Decimal(0)
+    assert result.snapshot.investment_cost_basis == Decimal(0)
+    assert result.audit.selected_price_ids == ()
+    assert result.audit.selected_snapshot_exchange_rate_ids == ("usd-eur",)
+    assert result.audit.selected_historical_exchange_rate_ids == ()
+    assert result.audit.selected_liability_balance_id == "liability-balance-1"
+    assert result.snapshot.exchange_rates.to_json() == {
+        "version": 1,
+        "snapshotRates": [
+            {
+                "rateId": "usd-eur",
+                "from": "USD",
+                "to": "EUR",
+                "rate": "0.90000000",
+                "timestamp": "2026-07-27T09:00:00.000",
+                "source": "ecb",
+            }
+        ],
+        "historicalRateIds": [],
+    }
+
+
+def test_fully_repaid_mixed_currency_liability_retains_direct_rate_and_audit() -> None:
+    result = _project(_mixed_liability_evidence(amount=Decimal(0)))
+
+    assert result.snapshot.liabilities_value == Decimal(0)
+    assert result.snapshot.total_value == Decimal(0)
+    assert result.items == ()
+    assert result.audit.selected_snapshot_exchange_rate_ids == ("usd-eur",)
+    assert result.audit.selected_liability_balance_id == "liability-balance-1"
+    assert result.snapshot.exchange_rates.to_json()["snapshotRates"] == [
+        {
+            "rateId": "usd-eur",
+            "from": "USD",
+            "to": "EUR",
+            "rate": "0.90000000",
+            "timestamp": "2026-07-27T09:00:00.000",
+            "source": "ecb",
+        }
+    ]
+
+
 def test_fully_repaid_liability_is_distinct_from_missing_evidence() -> None:
     result = _project(_liability_evidence(amount=Decimal(0)))
 
@@ -393,6 +637,183 @@ def test_fully_repaid_liability_is_distinct_from_missing_evidence() -> None:
     assert result.snapshot.total_value == Decimal(0)
     assert result.items == ()
     assert result.audit.selected_liability_balance_id == "liability-balance-1"
+
+
+def test_same_currency_liability_rejects_snapshot_fx_evidence() -> None:
+    evidence = _liability_evidence()
+    rate = _mixed_liability_evidence().valuation.exchange_rates[0]
+
+    with pytest.raises(AccountSnapshotPersistenceProjectionError):
+        _project(
+            replace(
+                evidence,
+                valuation=replace(evidence.valuation, exchange_rates=(rate,)),
+                selected_snapshot_exchange_rate_ids=(rate.rate_id,),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda evidence: replace(
+            evidence,
+            selected_liability_balance_id=None,
+            selected_liability_effective_at=None,
+            selected_liability_source=None,
+        ),
+        lambda evidence: replace(evidence, selected_liability_balance_id=None),
+        lambda evidence: replace(evidence, selected_liability_effective_at=None),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value_by_currency=cast(Any, None),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(evidence.valuation, liabilities_value_by_currency=()),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value_by_currency=(
+                    CurrencyAmount("USD", Decimal("100")),
+                    CurrencyAmount("GBP", Decimal("1")),
+                ),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(evidence.valuation, exchange_rates=()),
+            selected_snapshot_exchange_rate_ids=(),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                exchange_rates=(
+                    replace(
+                        evidence.valuation.exchange_rates[0],
+                        base_currency="EUR",
+                        quote_currency="USD",
+                    ),
+                ),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                exchange_rates=(
+                    evidence.valuation.exchange_rates[0],
+                    replace(
+                        evidence.valuation.exchange_rates[0],
+                        rate_id="gbp-eur",
+                        base_currency="GBP",
+                    ),
+                ),
+            ),
+            selected_snapshot_exchange_rate_ids=("usd-eur", "gbp-eur"),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                exchange_rates=(
+                    evidence.valuation.exchange_rates[0],
+                    evidence.valuation.exchange_rates[0],
+                ),
+            ),
+            selected_snapshot_exchange_rate_ids=("usd-eur", "usd-eur"),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                exchange_rates=(
+                    evidence.valuation.exchange_rates[0],
+                    replace(
+                        evidence.valuation.exchange_rates[0],
+                        rate_id="usd-eur-other",
+                    ),
+                ),
+            ),
+            selected_snapshot_exchange_rate_ids=("usd-eur", "usd-eur-other"),
+        ),
+        lambda evidence: replace(
+            evidence,
+            selected_snapshot_exchange_rate_ids=("other-rate",),
+        ),
+        lambda evidence: replace(
+            evidence,
+            selected_historical_exchange_rate_ids=("historical-rate",),
+        ),
+        lambda evidence: replace(
+            evidence,
+            selected_price_ids=("price-1",),
+        ),
+        lambda evidence: replace(
+            evidence,
+            net_deposits=ExactSnapshotMetric(Decimal("1"), (CurrencyAmount("EUR", Decimal("1")),)),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value=Decimal("91"),
+                total_value=Decimal("-91"),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value_by_currency=(CurrencyAmount("USD", Decimal("101")),),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                exchange_rates=(replace(evidence.valuation.exchange_rates[0], rate=Decimal("0")),),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value_by_currency=(CurrencyAmount("usd", Decimal("100")),),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                liabilities_value_by_currency=cast(
+                    Any,
+                    (CurrencyAmount("USD", cast(Any, 100.0)),),
+                ),
+            ),
+        ),
+        lambda evidence: replace(
+            evidence,
+            valuation=replace(
+                evidence.valuation,
+                items=_mixed_investment_evidence().valuation.items,
+            ),
+            selected_price_ids=("price-1",),
+        ),
+    ],
+)
+def test_mixed_currency_liability_corruption_fails_closed(corrupt: Any) -> None:
+    with pytest.raises(
+        AccountSnapshotPersistenceProjectionError,
+        match=r"^Account snapshot evidence is not physically persistable\.$",
+    ):
+        _project(corrupt(_mixed_liability_evidence()))
 
 
 def test_liability_physical_invariant_tamper_fails_closed() -> None:
@@ -466,7 +887,38 @@ def test_each_unsupported_metric_rejects_the_complete_projection(field_name: str
 
 
 def test_cash_account_evidence_with_structural_unrealized_zero_is_not_persistable() -> None:
-    valuation = _valuation(holdings=(), prices=(), rates=(), cash=Decimal("75"))
+    valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id="account-1",
+            account_type=AccountType.cash,
+            account_currency="USD",
+            output_currency="EUR",
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=1,
+            holdings=(),
+            prices=(),
+            exchange_rates=(
+                _rate(
+                    "USD",
+                    Decimal("0.90000000"),
+                    rate_id="usd-eur",
+                    quote_currency="EUR",
+                ),
+            ),
+            cash_balances=(
+                CashBalanceEvidence(
+                    balance_id="cash-usd",
+                    account_id="account-1",
+                    currency="USD",
+                    amount=Decimal("75"),
+                    timestamp=SNAPSHOT_AT,
+                ),
+            ),
+            liabilities=(),
+        )
+    )
     unsupported = UnsupportedSnapshotMetric(
         SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
     )
