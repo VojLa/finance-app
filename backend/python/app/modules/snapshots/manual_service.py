@@ -20,7 +20,10 @@ from app.modules.accounts.access import (
     AccountNotFoundError,
     require_account_access,
 )
-from app.modules.snapshots.financial_metrics import AccountSnapshotEvidenceStateError
+from app.modules.snapshots.financial_metrics import (
+    AccountSnapshotEvidenceStateError,
+    canonical_currency,
+)
 from app.modules.snapshots.persistence_projection import (
     AccountSnapshotPersistenceProjectionError,
 )
@@ -66,6 +69,7 @@ class AccountSnapshotConflictError(ApplicationError):
 class RecalculateAccountSnapshotCommand:
     principal: AuthenticatedPrincipal
     account_id: str
+    output_currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +104,13 @@ def canonical_manual_snapshot_bucket(value: datetime) -> datetime:
     return normalized.replace(second=0, microsecond=0)
 
 
+def _canonical_output_currency(value: object) -> str:
+    result = canonical_currency(value)
+    if len(result) != 3 or not result.isascii() or not result.isalpha():
+        raise AccountSnapshotEvidenceStateError()
+    return result
+
+
 class ManualAccountSnapshotService:
     def __init__(
         self,
@@ -114,16 +125,25 @@ class ManualAccountSnapshotService:
 
     async def recalculate(
         self,
-        command: RecalculateAccountSnapshotCommand,
+        command: object,
     ) -> RecalculateAccountSnapshotResult:
+        if not isinstance(command, RecalculateAccountSnapshotCommand):
+            await self._close_authorization_transaction()
+            raise AccountSnapshotUnavailableError()
         if (
-            not isinstance(command, RecalculateAccountSnapshotCommand)
-            or not isinstance(command.account_id, str)
+            not isinstance(command.account_id, str)
             or not command.account_id
             or command.account_id != command.account_id.strip()
         ):
             await self._close_authorization_transaction()
             raise AccountNotFoundError()
+        output_currency: str | None = None
+        if command.output_currency is not None:
+            try:
+                output_currency = _canonical_output_currency(command.output_currency)
+            except AccountSnapshotEvidenceStateError as exc:
+                await self._close_authorization_transaction()
+                raise AccountSnapshotUnavailableError() from exc
 
         try:
             await require_account_access(
@@ -156,6 +176,7 @@ class ManualAccountSnapshotService:
             calculated_at=bucket,
             created_at=bucket,
             is_recalculated=True,
+            output_currency=output_currency,
         )
         try:
             result = await self.writer_factory(self.session).write(writer_command)

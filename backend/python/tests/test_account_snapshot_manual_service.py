@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_principal
@@ -26,7 +28,10 @@ from app.modules.snapshots.manual_service import (
     RecalculateAccountSnapshotCommand,
     canonical_manual_snapshot_bucket,
 )
-from app.modules.snapshots.models import AccountSnapshotRecalculateResponse
+from app.modules.snapshots.models import (
+    AccountSnapshotRecalculateRequest,
+    AccountSnapshotRecalculateResponse,
+)
 from app.modules.snapshots.persistence_projection import (
     AccountSnapshotPersistenceProjectionError,
 )
@@ -60,6 +65,8 @@ def _principal(user_id: str = "user-a") -> AuthenticatedPrincipal:
 
 def _write_result(
     disposition: AccountSnapshotWriteDisposition = AccountSnapshotWriteDisposition.created,
+    *,
+    currency: str = "CZK",
 ) -> AccountSnapshotWriteResult:
     return AccountSnapshotWriteResult(
         snapshot_id="snapshot-a",
@@ -68,7 +75,7 @@ def _write_result(
         item_count=2,
         timestamp=NOW,
         granularity=SnapshotGranularity.minute,
-        currency="CZK",
+        currency=currency,
     )
 
 
@@ -129,6 +136,70 @@ async def test_write_roles_authorize_then_call_writer_once_with_idle_session(
     assert command.is_recalculated is True
     assert command.output_currency is None
     clock.assert_called_once_with()
+
+
+async def test_explicit_output_currency_is_forwarded_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    access = AsyncMock()
+    writer = Mock(write=AsyncMock(return_value=_write_result(currency="EUR")))
+    factory = Mock(return_value=writer)
+    clock = Mock(return_value=RAW_NOW)
+    monkeypatch.setattr(manual_service, "require_account_access", access)
+
+    result = await ManualAccountSnapshotService(
+        session,
+        clock=clock,
+        writer_factory=factory,
+    ).recalculate(
+        RecalculateAccountSnapshotCommand(
+            principal=_principal(),
+            account_id="account-a",
+            output_currency="EUR",
+        )
+    )
+
+    assert result.currency == "EUR"
+    access.assert_awaited_once()
+    factory.assert_called_once_with(session)
+    writer.write.assert_awaited_once()
+    assert writer.write.await_args.args[0].output_currency == "EUR"
+    clock.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "output_currency",
+    ["", " ", "eur", "EuR", " EUR", "EUR ", "EU", "EURO", "ČES", 123, True, [], {}],
+)
+async def test_invalid_direct_output_currency_fails_before_authorization_and_writer(
+    output_currency: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    access = AsyncMock()
+    factory = Mock()
+    clock = Mock(return_value=RAW_NOW)
+    monkeypatch.setattr(manual_service, "require_account_access", access)
+
+    with pytest.raises(AccountSnapshotUnavailableError):
+        await ManualAccountSnapshotService(
+            session,
+            clock=clock,
+            writer_factory=factory,
+        ).recalculate(
+            RecalculateAccountSnapshotCommand(
+                principal=_principal(),
+                account_id="account-a",
+                output_currency=cast(Any, output_currency),
+            )
+        )
+
+    cast(Any, session.rollback).assert_awaited_once_with()
+    cast(Any, session.commit).assert_not_awaited()
+    access.assert_not_awaited()
+    factory.assert_not_called()
+    clock.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -266,14 +337,73 @@ def _client(test_settings: Settings) -> tuple[TestClient, AsyncSession]:
     return TestClient(app), session
 
 
-def test_endpoint_openapi_contract_has_post_no_body_and_authentication(
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({}, None),
+        ({"outputCurrency": None}, None),
+        ({"outputCurrency": "EUR"}, "EUR"),
+    ],
+)
+def test_request_model_accepts_optional_exact_output_currency(
+    payload: dict[str, object],
+    expected: str | None,
+) -> None:
+    request = AccountSnapshotRecalculateRequest.model_validate(payload)
+    assert request.output_currency == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"outputCurrency": ""},
+        {"outputCurrency": " "},
+        {"outputCurrency": "eur"},
+        {"outputCurrency": "EuR"},
+        {"outputCurrency": " EUR"},
+        {"outputCurrency": "EUR "},
+        {"outputCurrency": "EU"},
+        {"outputCurrency": "EURO"},
+        {"outputCurrency": "ČES"},
+        {"outputCurrency": 123},
+        {"outputCurrency": True},
+        {"outputCurrency": []},
+        {"outputCurrency": {}},
+        {"outputCurrency": "EUR", "unknown": True},
+        {"output_currency": "EUR"},
+    ],
+)
+def test_request_model_rejects_noncanonical_or_extra_input(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        AccountSnapshotRecalculateRequest.model_validate(payload)
+
+
+def test_endpoint_openapi_contract_has_optional_body_and_authentication(
     test_settings: Settings,
 ) -> None:
-    operation = create_app(test_settings).openapi()["paths"][
-        "/api/v1/accounts/{account_id}/snapshots/recalculate"
-    ]["post"]
+    schema = create_app(test_settings).openapi()
+    operation = schema["paths"]["/api/v1/accounts/{account_id}/snapshots/recalculate"]["post"]
 
-    assert "requestBody" not in operation
+    assert "required" not in operation["requestBody"]
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/AccountSnapshotRecalculateRequest"},
+            {"type": "null"},
+        ],
+        "title": "Request",
+    }
+    assert schema["components"]["schemas"]["AccountSnapshotRecalculateRequest"]["properties"] == {
+        "outputCurrency": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "title": "Outputcurrency",
+        }
+    }
+    assert (
+        schema["components"]["schemas"]["AccountSnapshotRecalculateRequest"]["additionalProperties"]
+        is False
+    )
     assert operation["tags"] == ["snapshots"]
     assert operation["security"] == [{"InternalSessionToken": []}]
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
@@ -333,6 +463,83 @@ def test_endpoint_is_thin_and_serializes_public_camel_case_response(
     command = recalculate.await_args.args[0]
     assert command.account_id == "account-a"
     assert command.principal.user_id == "user-a"
+    assert command.output_currency is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({}, None),
+        (None, None),
+        ({"outputCurrency": None}, None),
+        ({"outputCurrency": "EUR"}, "EUR"),
+    ],
+)
+def test_endpoint_forwards_optional_output_currency_exactly(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, object] | None,
+    expected: str | None,
+) -> None:
+    result = manual_service.RecalculateAccountSnapshotResult(
+        snapshot_id="snapshot-a",
+        account_id="account-a",
+        status="created",
+        item_count=2,
+        timestamp=NOW,
+        granularity=SnapshotGranularity.minute,
+        currency="EUR" if expected == "EUR" else "CZK",
+    )
+    recalculate = AsyncMock(return_value=result)
+    monkeypatch.setattr(ManualAccountSnapshotService, "recalculate", recalculate)
+    client, _ = _client(test_settings)
+
+    with client:
+        response = client.post(
+            "/api/v1/accounts/account-a/snapshots/recalculate",
+            json=body,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["currency"] == ("EUR" if expected == "EUR" else "CZK")
+    recalculate.assert_awaited_once()
+    assert recalculate.await_args is not None
+    assert recalculate.await_args.args[0].output_currency == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"outputCurrency": ""},
+        {"outputCurrency": "eur"},
+        {"outputCurrency": "EUR "},
+        {"outputCurrency": "EU"},
+        {"outputCurrency": "EURO"},
+        {"outputCurrency": "ČES"},
+        {"outputCurrency": 123},
+        {"outputCurrency": True},
+        {"outputCurrency": []},
+        {"outputCurrency": {}},
+        {"outputCurrency": "EUR", "unknown": True},
+    ],
+)
+def test_endpoint_rejects_invalid_body_before_service(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, object],
+) -> None:
+    recalculate = AsyncMock()
+    monkeypatch.setattr(ManualAccountSnapshotService, "recalculate", recalculate)
+    client, _ = _client(test_settings)
+
+    with client:
+        response = client.post(
+            "/api/v1/accounts/account-a/snapshots/recalculate",
+            json=body,
+        )
+
+    assert response.status_code == 422
+    recalculate.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -384,3 +591,28 @@ def test_response_contract_rejects_internal_evidence() -> None:
                 "selected_price_ids": ["secret"],
             }
         )
+
+
+def test_application_command_and_result_are_frozen() -> None:
+    command = RecalculateAccountSnapshotCommand(
+        principal=_principal(),
+        account_id="account-a",
+        output_currency="EUR",
+    )
+    result = manual_service.RecalculateAccountSnapshotResult(
+        snapshot_id="snapshot-a",
+        account_id="account-a",
+        status="created",
+        item_count=0,
+        timestamp=NOW,
+        granularity=SnapshotGranularity.minute,
+        currency="EUR",
+    )
+
+    def mutate(value: object, attribute: str) -> None:
+        setattr(value, attribute, "USD")
+
+    with pytest.raises(FrozenInstanceError):
+        mutate(command, "output_currency")
+    with pytest.raises(FrozenInstanceError):
+        mutate(result, "currency")

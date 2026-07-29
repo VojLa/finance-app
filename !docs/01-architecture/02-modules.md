@@ -16,7 +16,7 @@ thin and shared database infrastructure lives outside modules.
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
 | snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency writer support added through 5K-C4               |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
@@ -60,15 +60,17 @@ selecting evidence. Its optional output currency resolves to persisted Account
 currency when omitted and otherwise scopes the physical advisory identity,
 evidence request, projection verification, and replay lookup. It inserts one
 complete graph or performs an exact read-only replay; persisted differences
-fail without repair. The public
-snapshot adapter exposes only
+fail without repair. The public snapshot adapter exposes only
 `POST /api/v1/accounts/{account_id}/snapshots/recalculate`. A thin router
-delegates to an application service that permits persisted owner/admin/editor
-memberships, hides viewer/foreign/missing/archived accounts, closes the
-authentication lookup transaction, and calls the atomic writer once on an idle
-session. Server-owned minute-bucket metadata makes repeated calls within one
-minute exact replays. Evidence/state failures and physical conflicts use generic
-409 responses without exposing financial evidence.
+accepts an optional body containing only an exact canonical `outputCurrency`
+and delegates to an application service that permits persisted
+owner/admin/editor memberships, hides viewer/foreign/missing/archived accounts,
+closes the authentication lookup transaction, and calls the atomic writer once
+on an idle session. Missing or null currency preserves Account-currency
+behavior; another explicit currency selects a separate physical identity.
+Server-owned minute-bucket metadata makes repeated calls within one minute
+exact replays. Evidence/state failures and physical conflicts use generic 409
+responses without exposing financial or FX evidence.
 
 For credit-card, loan, and mortgage accounts, the snapshot writer stabilizes
 canonical observations with a `LiabilityBalance` table `SHARE` lock and
@@ -193,10 +195,9 @@ requiring later exact FX evidence; 5K-A selects no rates and performs no
 conversion. The final net-worth target declaratively depends on an exact
 same-bucket, same-granularity, same-output-currency, same-version
 AccountSnapshot for every active account, including `reuse_only` accounts.
-The current AccountSnapshot writer still emits Account currency and is
-unchanged. Persisted coverage selection, output-currency writer support,
-execution/recovery, authorization, import hooks, and scheduling belong to
-5K-B through 5K-E.
+The AccountSnapshot writer supports an explicit output currency, but the plan
+does not invoke it. Execution/recovery, coordinated authorization, import hooks,
+and scheduling belong to 5K-D and 5K-E.
 
 The read-only 5K-B adapter requires a caller-owned `REPEATABLE READ` or
 `SERIALIZABLE` transaction and verifies it before loading persisted evidence.
@@ -235,8 +236,8 @@ snapshot and historical rate IDs remain separate deterministic audits.
 Liability observations remain in Account currency and use one direct
 Account-currency-to-output rate only when needed. The adapter remains
 caller-transaction-owned and read-only and returns no ORM rows. Physical
-projection mapping is owned by pure 5K-C3; writer identity/locking/replay
-changes and manual orchestration compatibility remain 5K-C4 and 5K-C5.
+projection mapping is owned by pure 5K-C3, writer identity/locking/replay by
+5K-C4, and manual compatibility by 5K-C5.
 
 The pure 5K-C3 projection uses the valuation output currency for every physical
 AccountSnapshot scalar and for its existing deterministic identity. Changing
@@ -262,5 +263,14 @@ for the same account, timestamp, and granularity therefore coexist and replay
 independently. Liability writes take the observation-table `SHARE` lock;
 mixed-currency liabilities also take the existing market-evidence lock before
 FX selection. The writer still owns exactly one outer transaction. Manual
-orchestration continues to omit output currency until 5K-C5, while coordinated
-execution remains 5K-D.
+orchestration composes its optional explicit currency in 5K-C5, while
+coordinated execution remains 5K-D.
+
+The 5K-C5 adapter keeps the existing route and response schema. Its optional
+body accepts only `outputCurrency`; omission, `{}`, or null forwards `None`,
+while an exact three-letter uppercase ASCII value is passed unchanged to the
+writer. It performs no Account, User, or FX lookup and never substitutes
+`User.baseCurrency`. Existing owner/admin/editor authorization, concealed
+viewer/inaccessible behavior, authorization-transaction handoff, one-clock
+minute bucket, and generic conflict mapping are unchanged. No API exposes FX
+evidence, and coordinated User-base-currency execution remains 5K-D.

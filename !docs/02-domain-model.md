@@ -57,11 +57,12 @@ calculation and define currency and rounding explicitly.
 For account snapshots, all aggregate values—including cash, investment value,
 cost basis, net deposits, P&L, fees, taxes, and total value—belong in one
 explicit output currency. The internal writer can persist an explicitly
-requested canonical output currency, while current manual orchestration still
-omits it and therefore selects the account's main currency. The accompanying
-`*ByCurrency` JSON fields preserve their native-currency breakdown. Event-date
-FX is required for deposited and invested values; a live value should start
-from the latest daily snapshot and only apply later events.
+requested canonical output currency, and manual orchestration accepts that
+currency as one optional exact request field. Omission still selects the
+account's main currency. The accompanying `*ByCurrency` JSON fields preserve
+their native-currency breakdown. Event-date FX is required for deposited and
+invested values; a live value should start from the latest daily snapshot and
+only apply later events.
 
 The 5I-A Python contract, extended by pure 5K-C1, calculates an exact account
 valuation from explicit caller-selected evidence. It validates an already
@@ -141,6 +142,23 @@ market lock before direct FX selection. Concurrent observation or FX inserts
 cannot split a single physical write across evidence states. The writer still
 owns one outer transaction, and changed evidence for an existing identity
 conflicts without overwrite or repair.
+
+The 5K-C5 manual endpoint exposes that optional writer field without changing
+the route or response. No body, `{}`, JSON null, and an explicit null preserve
+`None`; an explicit `outputCurrency` must be exactly three uppercase ASCII
+letters. The API rejects normalization, non-string input, and extra fields
+before the service. The service repeats the invariant for direct internal
+calls, preserves owner/admin/editor authorization and concealed inaccessible
+accounts, closes the authorization transaction, captures one minute bucket,
+and invokes the writer once.
+
+No User lookup participates in this account operation:
+`User.baseCurrency` is never an implicit fallback. Omitted output currency
+resolves to persisted `Account.currency`; explicit Account currency replays the
+same identity, and a distinct currency creates or replays its own physical
+identity. Missing FX remains a generic unavailable conflict with no rate or
+currency-pair disclosure. Coordinated User-base-currency execution remains
+5K-D.
 
 The contract deliberately does not claim a persistable `AccountSnapshot`.
 Complete net-deposit, realized/unrealized P&L, fee, and tax evidence is not yet
@@ -231,9 +249,10 @@ one complete old or new evidence set rather than mixed components.
 It then builds the 5I-C plan and inserts, flushes, reloads, and validates the
 complete physical graph. Exact state is a read-only replay; any physical or
 evidence difference is a conflict with no update, delete, upsert, or repair.
-The 5I-E public boundary adds an authenticated no-body manual recalculation
-operation. Owner, admin, and editor memberships are allowed; viewer, foreign,
-missing, and archived accounts share a concealed 404 contract. The server
+The 5I-E public boundary added authenticated manual recalculation; 5K-C5 later
+added its optional output-currency body without changing the operation.
+Owner, admin, and editor memberships are allowed; viewer, foreign, missing,
+and archived accounts share a concealed 404 contract. The server
 captures one deterministic minute bucket and owns source, granularity,
 calculation version, recalculation flag, and all timestamps. Created and exact
 replay outcomes use one stable HTTP 200 response without financial evidence.
@@ -374,9 +393,8 @@ write-capable and reuse-only targets are satisfied. This is only a declarative
 dependency: 5K-A reads no database state, invokes no writer, and performs no
 financial calculation. 5K-C1 establishes pure calculation, 5K-C2 read-only
 persisted evidence selection, 5K-C3 pure physical projection, and 5K-C4
-output-currency writer identity, locking, and replay. 5K-C5 must still add
-manual-orchestration compatibility before mixed-currency coordinated
-execution.
+output-currency writer identity, locking, and replay. 5K-C5 exposes optional
+manual output currency. Mixed-currency coordinated execution remains 5K-D.
 
 The read-only 5K-B boundary turns persisted current state into immutable
 coverage evidence. The persisted User exclusively supplies the output/base
