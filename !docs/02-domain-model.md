@@ -301,3 +301,23 @@ dependency: 5K-A reads no database state, invokes no writer, and performs no
 financial calculation. The current AccountSnapshot writer remains
 account-currency-only; 5K-C must establish exact output-currency support before
 mixed-currency coordinated execution.
+
+The read-only 5K-B boundary turns persisted current state into immutable
+coverage evidence. The persisted User exclusively supplies the output/base
+currency, while each persisted AccountMember supplies role, relation, and
+acceptance. Every joined row is retained for 5K-A validation; SQL does not
+filter archived, unsupported, or incomplete evidence.
+
+After one pure 5K-A call, owner/admin/editor targets remain future writer
+targets regardless of existing rows. Viewer targets require exactly one
+AccountSnapshot matching account, timestamp, granularity, User base currency,
+and calculation version. Existing source and persistence timestamps are
+structurally validated but source equality with the orchestration is not
+required. The selected output contains only immutable account/snapshot
+identities, never ORM or financial values.
+
+This coverage proof is intentionally not financial validation. A structurally
+eligible reused AccountSnapshot may still be financially corrupt, which must
+fail later in the complete 5J-B validation. 5K-B requires coherent
+`REPEATABLE READ` or `SERIALIZABLE`, owns no transaction or lock, disables
+autoflush, and performs no write.
