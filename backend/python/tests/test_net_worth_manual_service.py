@@ -17,7 +17,10 @@ from app.db.connection import get_db_session
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
 from app.db.models.users import UserModel
 from app.main import create_app
-from app.modules.net_worth.evidence_service import NetWorthEvidenceStateError
+from app.modules.net_worth.evidence_service import (
+    NetWorthEvidenceStateError,
+    SelectedAccountSnapshotIdentity,
+)
 from app.modules.net_worth.manual_service import (
     CURRENT_NET_WORTH_CALCULATION_VERSION,
     ManualNetWorthSnapshotService,
@@ -145,6 +148,7 @@ async def test_principal_user_and_persisted_currency_build_exact_writer_command(
     assert command.calculated_at == BUCKET
     assert command.created_at == BUCKET
     assert command.is_recalculated is True
+    assert command.required_account_snapshot_identities is None
     assert result.currency == "EUR"
     assert result.status == "created"
     clock.assert_called_once_with()
@@ -338,8 +342,21 @@ async def test_unexpected_writer_failure_propagates_unchanged() -> None:
 
 async def test_replayed_result_maps_counts_without_orm_or_identity_leakage() -> None:
     session = _session()
+    internal_identities = (SelectedAccountSnapshotIdentity("account-a", "source-a"),)
     writer = Mock(
-        write=AsyncMock(return_value=_write_result(NetWorthSnapshotWriteDisposition.replayed))
+        write=AsyncMock(
+            return_value=NetWorthSnapshotWriteResult(
+                snapshot_id="snapshot-a",
+                user_id="user-a",
+                disposition=NetWorthSnapshotWriteDisposition.replayed,
+                timestamp=BUCKET,
+                granularity=SnapshotGranularity.minute,
+                currency="CZK",
+                account_count=1,
+                selected_account_snapshot_count=1,
+                selected_account_snapshot_identities=internal_identities,
+            )
+        )
     )
 
     result = await ManualNetWorthSnapshotService(
@@ -350,10 +367,11 @@ async def test_replayed_result_maps_counts_without_orm_or_identity_leakage() -> 
     ).recalculate(RecalculateNetWorthSnapshotCommand(principal=_principal()))
 
     assert result.status == "replayed"
-    assert result.account_count == 3
-    assert result.selected_account_snapshot_count == 3
+    assert result.account_count == 1
+    assert result.selected_account_snapshot_count == 1
     assert not hasattr(result, "user_id")
     assert not hasattr(result, "selected_account_ids")
+    assert not hasattr(result, "selected_account_snapshot_identities")
     with pytest.raises(FrozenInstanceError):
         result.__setattr__("status", "created")
 
@@ -504,6 +522,10 @@ def test_endpoint_returns_only_generic_409_errors(
         ("userId", "user-a"),
         ("selectedAccountIds", ["account-a"]),
         ("selectedAccountSnapshotIds", ["source-a"]),
+        (
+            "selectedAccountSnapshotIdentities",
+            [{"accountId": "account-a", "snapshotId": "source-a"}],
+        ),
         ("projection", {}),
         ("audit", {}),
     ],
