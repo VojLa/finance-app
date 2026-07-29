@@ -70,6 +70,7 @@ class WriteAccountSnapshotCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    output_currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,12 @@ def _validate_command(command: object) -> WriteAccountSnapshotCommand:
     snapshot_timestamp = _timestamp(command.snapshot_timestamp)
     calculated_at = _timestamp(command.calculated_at)
     created_at = _timestamp(command.created_at)
+    output_currency: str | None = None
+    if command.output_currency is not None:
+        try:
+            output_currency = canonical_currency(command.output_currency)
+        except AccountSnapshotEvidenceStateError as exc:
+            raise _fail() from exc
     if (
         not isinstance(command.granularity, SnapshotGranularity)
         or not isinstance(command.source, SnapshotSource)
@@ -142,6 +149,7 @@ def _validate_command(command: object) -> WriteAccountSnapshotCommand:
         calculated_at=calculated_at,
         created_at=created_at,
         is_recalculated=command.is_recalculated,
+        output_currency=output_currency,
     )
 
 
@@ -239,6 +247,27 @@ def _result(
     )
 
 
+def _validate_projection_identity(
+    projection: ExpectedAccountSnapshotPersistence,
+    *,
+    command: WriteAccountSnapshotCommand,
+    output_currency: str,
+) -> None:
+    snapshot = projection.snapshot
+    if (
+        snapshot.account_id != command.account_id
+        or snapshot.timestamp != command.snapshot_timestamp
+        or snapshot.granularity is not command.granularity
+        or snapshot.currency != output_currency
+        or snapshot.source is not command.source
+        or snapshot.calculation_version != command.calculation_version
+        or snapshot.calculated_at != command.calculated_at
+        or snapshot.created_at != command.created_at
+        or snapshot.is_recalculated is not command.is_recalculated
+    ):
+        raise _fail()
+
+
 class AccountSnapshotWriter:
     """Own one outer transaction and persist or replay one exact snapshot."""
 
@@ -282,14 +311,21 @@ class AccountSnapshotWriter:
         account = await self.repository.load_account_for_share(command.account_id)
         if account is None:
             raise _fail()
-        currency, account_type = _validate_account(account, command.account_id)
+        account_currency, account_type = _validate_account(account, command.account_id)
+        output_currency = (
+            account_currency if command.output_currency is None else command.output_currency
+        )
         await self.repository.acquire_snapshot_lock(
             account_id=command.account_id,
             timestamp=command.snapshot_timestamp,
-            currency=currency,
+            currency=output_currency,
             granularity=command.granularity,
         )
-        if account_type not in _LIABILITY_ACCOUNT_TYPES:
+        if account_type in _LIABILITY_ACCOUNT_TYPES:
+            await self.repository.lock_liability_evidence_table()
+            if account_currency != output_currency:
+                await self.repository.lock_market_evidence_tables()
+        else:
             await self.repository.lock_canonical_evidence(command.account_id)
             await self.repository.lock_market_evidence_tables()
         evidence = await self.evidence_service.build(
@@ -299,6 +335,7 @@ class AccountSnapshotWriter:
                 granularity=command.granularity,
                 source=command.source,
                 calculation_version=command.calculation_version,
+                output_currency=output_currency,
             )
         )
         projection = self.projection_builder(
@@ -309,16 +346,16 @@ class AccountSnapshotWriter:
                 is_recalculated=command.is_recalculated,
             ),
         )
-        if (
-            projection.snapshot.account_id != command.account_id
-            or projection.snapshot.currency != currency
-        ):
-            raise _fail()
+        _validate_projection_identity(
+            projection,
+            command=command,
+            output_currency=output_currency,
+        )
 
         existing = await self.repository.load_existing_snapshot(
             account_id=command.account_id,
             timestamp=command.snapshot_timestamp,
-            currency=currency,
+            currency=output_currency,
             granularity=command.granularity,
         )
         if existing is not None:

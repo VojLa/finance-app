@@ -56,9 +56,9 @@ calculation and define currency and rounding explicitly.
 
 For account snapshots, all aggregate values—including cash, investment value,
 cost basis, net deposits, P&L, fees, taxes, and total value—belong in one
-explicit output currency. Current persisted orchestration still selects the
-account's main currency as that output currency; the pure 5K-C1 valuation
-contract can also accept a distinct output currency. The accompanying
+explicit output currency. The internal writer can persist an explicitly
+requested canonical output currency, while current manual orchestration still
+omits it and therefore selects the account's main currency. The accompanying
 `*ByCurrency` JSON fields preserve their native-currency breakdown. Event-date
 FX is required for deposited and invested values; a live value should start
 from the latest daily snapshot and only apply later events.
@@ -124,6 +124,23 @@ requires that direct rate when currencies differ.
 validates that native evidence without hiding it in another JSON field, while
 retaining the liability observation identity in the nonphysical persistence
 audit. No schema or ORM change is required.
+
+The 5K-C4 writer resolves an optional command output currency after locking and
+validating the persisted Account. `None` preserves Account-currency behavior.
+The resolved output currency is part of the complete physical identity used by
+the existing SHA-256 advisory-lock scope, the evidence command, projected-row
+validation, and the exact replay query. The projection must also match all
+command-owned source, version, timestamp, and recalculation metadata before
+replay or insertion. Different output currencies therefore coexist and replay
+independently under distinct deterministic snapshot and item IDs.
+
+Investment writes retain canonical ledger/Holding locks and compatible market
+table `SHARE` locks. Liability writes take a `LiabilityBalance` table `SHARE`
+lock before evidence selection; mixed-currency liability writes also take the
+market lock before direct FX selection. Concurrent observation or FX inserts
+cannot split a single physical write across evidence states. The writer still
+owns one outer transaction, and changed evidence for an existing identity
+conflicts without overwrite or repair.
 
 The contract deliberately does not claim a persistable `AccountSnapshot`.
 Complete net-deposit, realized/unrealized P&L, fee, and tax evidence is not yet
@@ -355,11 +372,11 @@ deterministic order and depends on exact AccountSnapshots sharing its timestamp,
 granularity, output currency, and calculation version. It cannot run until all
 write-capable and reuse-only targets are satisfied. This is only a declarative
 dependency: 5K-A reads no database state, invokes no writer, and performs no
-financial calculation. The current AccountSnapshot writer remains
-account-currency-only. 5K-C1 establishes pure calculation, 5K-C2 read-only
-persisted evidence selection, and 5K-C3 pure physical projection. 5K-C4 and
-5K-C5 must still add writer identity/replay and manual-orchestration
-compatibility before mixed-currency coordinated execution.
+financial calculation. 5K-C1 establishes pure calculation, 5K-C2 read-only
+persisted evidence selection, 5K-C3 pure physical projection, and 5K-C4
+output-currency writer identity, locking, and replay. 5K-C5 must still add
+manual-orchestration compatibility before mixed-currency coordinated
+execution.
 
 The read-only 5K-B boundary turns persisted current state into immutable
 coverage evidence. The persisted User exclusively supplies the output/base

@@ -16,7 +16,7 @@ thin and shared database infrastructure lives outside modules.
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
 | snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency pure persistence projection added through 5K-C3 |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency writer support added through 5K-C4               |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
@@ -56,8 +56,11 @@ fixed-scale JSONB evidence, and maps every ORM column without constructing ORM
 entities. The writer owns one outer transaction, uses an identity advisory
 lock, reuses sorted import account/source locks, row-locks canonical and Holding
 evidence, and takes compatible PriceSnapshot/ExchangeRate `SHARE` locks before
-selecting evidence. It inserts one complete graph or performs an exact
-read-only replay; persisted differences fail without repair. The public
+selecting evidence. Its optional output currency resolves to persisted Account
+currency when omitted and otherwise scopes the physical advisory identity,
+evidence request, projection verification, and replay lookup. It inserts one
+complete graph or performs an exact read-only replay; persisted differences
+fail without repair. The public
 snapshot adapter exposes only
 `POST /api/v1/accounts/{account_id}/snapshots/recalculate`. A thin router
 delegates to an application service that permits persisted owner/admin/editor
@@ -67,9 +70,12 @@ session. Server-owned minute-bucket metadata makes repeated calls within one
 minute exact replays. Evidence/state failures and physical conflicts use generic
 409 responses without exposing financial evidence.
 
-For credit-card, loan, and mortgage accounts, the snapshot adapter composes the
-canonical liability selector exactly once and bypasses Holdings, prices, FX,
-Transactions, and investment history. The positive selected balance is stored
+For credit-card, loan, and mortgage accounts, the snapshot writer stabilizes
+canonical observations with a `LiabilityBalance` table `SHARE` lock and
+composes the liability selector exactly once. Same-currency writes bypass
+Holdings, prices, FX, Transactions, and investment history; mixed-currency
+writes additionally stabilize the PriceSnapshot/ExchangeRate tables before
+selecting their direct FX evidence. The positive selected balance is stored
 in scalar `liabilitiesValue`, `totalValue` is its exact negative, and there are
 no items. The schema has no liability-breakdown column; this is sufficient for
 the enforced single-currency contract because liability and Account currencies
@@ -246,6 +252,15 @@ one direct native-to-output consumed rate, including an explicit zero
 observation. The physical schema has no liability-native-breakdown column, so
 that breakdown is validated but not copied into an unrelated JSONB field; the
 selected liability identity remains nonphysical audit metadata. 5K-C3 creates
-no ORM row, performs no I/O, and adds no migration. The existing writer still
-does not request a distinct output currency, so mixed-currency AccountSnapshot
-creation remains unreachable until 5K-C4.
+no ORM row, performs no I/O, and adds no migration.
+
+The 5K-C4 writer extension accepts an optional canonical output currency.
+Omission preserves Account-currency behavior. The resolved output currency is
+used consistently by the unchanged advisory-lock algorithm, evidence command,
+complete projected identity validation, and replay query. Different currencies
+for the same account, timestamp, and granularity therefore coexist and replay
+independently. Liability writes take the observation-table `SHARE` lock;
+mixed-currency liabilities also take the existing market-evidence lock before
+FX selection. The writer still owns exactly one outer transaction. Manual
+orchestration continues to omit output currency until 5K-C5, while coordinated
+execution remains 5K-D.

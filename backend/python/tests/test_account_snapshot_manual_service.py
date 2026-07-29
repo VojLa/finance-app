@@ -127,6 +127,7 @@ async def test_write_roles_authorize_then_call_writer_once_with_idle_session(
     assert command.source is SnapshotSource.manual_recalculation
     assert command.calculation_version == CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION
     assert command.is_recalculated is True
+    assert command.output_currency is None
     clock.assert_called_once_with()
 
 

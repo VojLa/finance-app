@@ -108,6 +108,9 @@ class AccountSnapshotWriterRepository:
             text('LOCK TABLE public."PriceSnapshot", public."ExchangeRate" IN SHARE MODE')
         )
 
+    async def lock_liability_evidence_table(self) -> None:
+        await self.session.execute(text('LOCK TABLE public."LiabilityBalance" IN SHARE MODE'))
+
     async def load_existing_snapshot(
         self,
         *,

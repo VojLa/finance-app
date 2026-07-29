@@ -36,6 +36,10 @@ from app.modules.snapshots.writer import (
     AccountSnapshotWriteStateError,
     WriteAccountSnapshotCommand,
 )
+from app.modules.snapshots.writer_repository import (
+    AccountSnapshotWriterRepository,
+    account_snapshot_lock_scope,
+)
 
 SNAPSHOT_AT = datetime(2026, 7, 28)
 CALCULATED_AT = datetime(2026, 7, 28, 0, 1)
@@ -97,13 +101,16 @@ class _Repository:
         self.projection = projection
         self.reload_mismatch = False
         self.flush_error: Exception | None = None
+        self.snapshot_lock_values: dict[str, object] | None = None
+        self.existing_values: dict[str, object] | None = None
 
     async def load_account_for_share(self, account_id: str) -> AccountModel | None:
         self.calls.append("account")
         return self.account
 
-    async def acquire_snapshot_lock(self, **_: object) -> None:
+    async def acquire_snapshot_lock(self, **values: object) -> None:
         self.calls.append("snapshot_lock")
+        self.snapshot_lock_values = values
 
     async def lock_canonical_evidence(self, account_id: str) -> None:
         self.calls.append("canonical_locks")
@@ -111,8 +118,12 @@ class _Repository:
     async def lock_market_evidence_tables(self) -> None:
         self.calls.append("market_locks")
 
-    async def load_existing_snapshot(self, **_: object) -> AccountSnapshotModel | None:
+    async def lock_liability_evidence_table(self) -> None:
+        self.calls.append("liability_lock")
+
+    async def load_existing_snapshot(self, **values: object) -> AccountSnapshotModel | None:
         self.calls.append("existing")
+        self.existing_values = values
         return self.existing
 
     async def load_snapshot_by_id(self, snapshot_id: str) -> AccountSnapshotModel | None:
@@ -333,6 +344,12 @@ def _writer(
         _command(calculated_at=datetime(2026, 7, 28, 0, 0, 0, 1)),
         _command(created_at=datetime(2026, 7, 28, tzinfo=UTC)),
         _command(is_recalculated=cast(bool, 1)),
+        _command(output_currency=""),
+        _command(output_currency=" "),
+        _command(output_currency="eur"),
+        _command(output_currency=" EUR"),
+        _command(output_currency="EUR "),
+        _command(output_currency=cast(str, 1)),
     ],
 )
 @pytest.mark.asyncio
@@ -365,6 +382,7 @@ async def test_created_composes_evidence_projection_and_persistence_once() -> No
     assert evidence_command.account_id == "account-1"
     assert evidence_command.snapshot_timestamp == SNAPSHOT_AT
     assert evidence_command.calculation_version == 1
+    assert evidence_command.output_currency == "CZK"
     assert projection_calls[0] is evidence.value
     metadata = cast(AccountSnapshotPersistenceMetadata, projection_calls[1])
     assert metadata.calculated_at == CALCULATED_AT
@@ -409,6 +427,7 @@ async def test_liability_zero_item_create_and_replay_skip_investment_locks() -> 
     assert created.item_count == 0
     assert repository.inserted_items == ()
     assert repository.calls[:2] == ["account", "snapshot_lock"]
+    assert repository.calls[:3] == ["account", "snapshot_lock", "liability_lock"]
     assert "canonical_locks" not in repository.calls
     assert "market_locks" not in repository.calls
     assert session.commit_count == 1
@@ -541,15 +560,141 @@ def test_command_result_and_projection_are_frozen() -> None:
         cast(Any, result).item_count = 2
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("account_id", "other-account"),
+        ("timestamp", datetime(2026, 7, 29)),
+        ("granularity", SnapshotGranularity.month),
+        ("currency", "EUR"),
+        ("source", SnapshotSource.scheduled),
+        ("calculation_version", 2),
+        ("calculated_at", datetime(2026, 7, 29)),
+        ("created_at", datetime(2026, 7, 29)),
+        ("is_recalculated", False),
+    ],
+)
 @pytest.mark.asyncio
-async def test_account_and_projection_identity_mismatch_fail_closed() -> None:
+async def test_projection_identity_mismatch_fails_before_replay(
+    field: str,
+    value: object,
+) -> None:
     projection = _projection()
     mismatched = replace(
         projection,
-        snapshot=replace(projection.snapshot, currency="EUR"),
+        snapshot=replace(cast(Any, projection.snapshot), **{field: value}),
     )
     writer, session, repository, _, _ = _writer(projection=mismatched)
     with pytest.raises(AccountSnapshotWriteStateError):
         await writer.write(_command())
     assert repository.inserted_snapshot is None
+    assert "existing" not in repository.calls
     assert session.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [(None, "CZK"), ("CZK", "CZK"), ("EUR", "EUR")],
+)
+@pytest.mark.asyncio
+async def test_output_currency_resolves_lock_evidence_replay_and_result(
+    requested: str | None,
+    expected: str,
+) -> None:
+    projection = _projection()
+    if expected != projection.snapshot.currency:
+        projection = replace(
+            projection,
+            snapshot=replace(projection.snapshot, currency=expected),
+        )
+    writer, _, repository, evidence, _ = _writer(projection=projection)
+
+    result = await writer.write(_command(output_currency=requested))
+
+    assert repository.snapshot_lock_values == {
+        "account_id": "account-1",
+        "timestamp": SNAPSHOT_AT,
+        "currency": expected,
+        "granularity": SnapshotGranularity.day,
+    }
+    assert repository.existing_values == repository.snapshot_lock_values
+    evidence_command = cast(BuildAccountSnapshotEvidenceCommand, evidence.calls[0])
+    assert evidence_command.output_currency == expected
+    assert result.currency == expected
+
+
+@pytest.mark.asyncio
+async def test_mixed_currency_liability_lock_order_and_replay_identity() -> None:
+    projection = _liability_projection()
+    projection = replace(
+        projection,
+        snapshot=replace(projection.snapshot, currency="EUR"),
+    )
+    writer, _, repository, evidence, _ = _writer(projection=projection)
+    repository.account.type = AccountType.loan
+
+    await writer.write(_command(output_currency="EUR"))
+
+    assert repository.calls[:5] == [
+        "account",
+        "snapshot_lock",
+        "liability_lock",
+        "market_locks",
+        "existing",
+    ]
+    assert "canonical_locks" not in repository.calls
+    assert cast(BuildAccountSnapshotEvidenceCommand, evidence.calls[0]).output_currency == "EUR"
+    assert repository.existing_values is not None
+    assert repository.existing_values["currency"] == "EUR"
+
+
+def test_snapshot_lock_scope_includes_output_currency_and_milliseconds() -> None:
+    timestamp = datetime(2026, 7, 28, 1, 2, 3, 456000)
+    default_scope = account_snapshot_lock_scope(
+        account_id="account-1",
+        timestamp=timestamp,
+        currency="CZK",
+        granularity=SnapshotGranularity.minute,
+    )
+    repeated_scope = account_snapshot_lock_scope(
+        account_id="account-1",
+        timestamp=timestamp,
+        currency="CZK",
+        granularity=SnapshotGranularity.minute,
+    )
+    mixed_scope = account_snapshot_lock_scope(
+        account_id="account-1",
+        timestamp=timestamp,
+        currency="EUR",
+        granularity=SnapshotGranularity.minute,
+    )
+
+    assert default_scope == repeated_scope
+    assert default_scope != mixed_scope
+    assert default_scope == "\0".join(
+        (
+            "snapshots:account",
+            "account-1",
+            "2026-07-28T01:02:03.456",
+            "CZK",
+            "minute",
+        )
+    )
+
+
+class _ExecuteSession:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, statement: object) -> None:
+        self.statements.append(str(statement))
+
+
+@pytest.mark.asyncio
+async def test_liability_lock_emits_one_fixed_share_table_statement() -> None:
+    session = _ExecuteSession()
+    repository = AccountSnapshotWriterRepository(cast(Any, session))
+
+    await repository.lock_liability_evidence_table()
+
+    assert session.statements == ['LOCK TABLE public."LiabilityBalance" IN SHARE MODE']

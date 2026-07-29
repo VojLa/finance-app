@@ -26,6 +26,7 @@ from app.db.models.enums import (
     ImportStatus,
     InvestmentEventType,
     InvestmentMovementKind,
+    LiabilityBalanceSource,
     MovementDirection,
     PriceSource,
     SnapshotGranularity,
@@ -34,6 +35,7 @@ from app.db.models.enums import (
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.users import UserModel
@@ -131,6 +133,11 @@ async def _cleanup(prefix: str) -> None:
                 )
             await session.execute(
                 delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
+            )
+            await session.execute(
+                delete(LiabilityBalanceModel).where(
+                    LiabilityBalanceModel.account_id.in_(account_ids)
+                )
             )
             await session.execute(
                 delete(InvestmentMovementModel).where(
@@ -269,6 +276,24 @@ async def _seed_investment(prefix: str) -> str:
                     source=ExchangeRateSource.ecb,
                     created_at=snapshot_at,
                 ),
+                ExchangeRateModel(
+                    id=f"{prefix}-event-rate-usd",
+                    from_currency="EUR",
+                    to_currency="USD",
+                    rate=Decimal("1.1"),
+                    date=event_at,
+                    source=ExchangeRateSource.ecb,
+                    created_at=event_at,
+                ),
+                ExchangeRateModel(
+                    id=f"{prefix}-snapshot-rate-usd",
+                    from_currency="EUR",
+                    to_currency="USD",
+                    rate=Decimal("1.2"),
+                    date=snapshot_at,
+                    source=ExchangeRateSource.ecb,
+                    created_at=snapshot_at,
+                ),
             ]
         )
         session.add(
@@ -371,6 +396,65 @@ async def _seed_investment(prefix: str) -> str:
                 ),
             ]
         )
+        await session.commit()
+    await engine.dispose()
+    return account_id
+
+
+async def _seed_liability(
+    prefix: str,
+    account_type: AccountType,
+    *,
+    amount: Decimal = Decimal("100"),
+    account_currency: str = "USD",
+    output_currency: str | None = None,
+) -> str:
+    account_id = f"{prefix}-account"
+    _, event_at, _, _ = _scenario_times(account_id)
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        session.add(
+            AccountModel(
+                id=account_id,
+                name=account_type.value,
+                type=account_type,
+                currency=account_currency,
+                color=None,
+                notes=None,
+                is_archived=False,
+                archived_at=None,
+                created_at=event_at,
+                updated_at=event_at,
+            )
+        )
+        await session.flush()
+        session.add(
+            LiabilityBalanceModel(
+                id=f"{prefix}-balance",
+                account_id=account_id,
+                effective_at=event_at,
+                currency=account_currency,
+                outstanding_principal=amount,
+                accrued_interest=Decimal("0"),
+                fees_outstanding=Decimal("0"),
+                total_outstanding=amount,
+                source=LiabilityBalanceSource.statement,
+                external_id=f"{prefix}-statement",
+                created_at=event_at,
+            )
+        )
+        if output_currency is not None and output_currency != account_currency:
+            session.add(
+                ExchangeRateModel(
+                    id=f"{prefix}-liability-rate",
+                    from_currency=account_currency,
+                    to_currency=output_currency,
+                    rate=Decimal("0.9"),
+                    date=event_at,
+                    source=ExchangeRateSource.ecb,
+                    created_at=event_at,
+                )
+            )
         await session.commit()
     await engine.dispose()
     return account_id
@@ -572,6 +656,116 @@ async def test_create_exact_snapshot_and_fresh_session_replay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mixed_currency_investment_create_replay_and_native_fields() -> None:
+    prefix = "i5kc4-mixed-investment"
+    await _cleanup(prefix)
+    account_id = await _seed_investment(prefix)
+    snapshot_at, _, _, _ = _scenario_times(account_id)
+    engine = _engine()
+    try:
+        command = _command(account_id, output_currency="USD")
+        async with AsyncSession(engine) as session:
+            created = await AccountSnapshotWriter(session).write(command)
+        assert created.disposition is AccountSnapshotWriteDisposition.created
+        assert created.currency == "USD"
+
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
+            assert snapshot is not None
+            items = tuple(
+                await session.scalars(
+                    select(AccountSnapshotItemModel).where(
+                        AccountSnapshotItemModel.snapshot_id == snapshot.id
+                    )
+                )
+            )
+            assert snapshot.currency == "USD"
+            assert snapshot.cash_value == Decimal("-12.000000")
+            assert snapshot.investment_value == Decimal("36.000000")
+            assert snapshot.investment_cost_basis == Decimal("24.000000")
+            assert snapshot.net_deposits_value == Decimal("11.000000")
+            assert snapshot.unrealized_pnl_value == Decimal("12.000000")
+            assert snapshot.total_value == Decimal("24.000000")
+            assert snapshot.investment_value_by_currency == {"EUR": "30.0000000000"}
+            assert snapshot.investment_cost_basis_by_currency == {"EUR": "20.0000000000"}
+            assert snapshot.exchange_rates == {
+                "version": 1,
+                "snapshotRates": [
+                    {
+                        "rateId": f"{prefix}-snapshot-rate-usd",
+                        "from": "EUR",
+                        "to": "USD",
+                        "rate": "1.20000000",
+                        "timestamp": snapshot_at.isoformat(timespec="milliseconds"),
+                        "source": "ecb",
+                    }
+                ],
+                "historicalRateIds": [f"{prefix}-event-rate-usd"],
+            }
+            assert len(items) == 1
+            assert items[0].price_currency == "EUR"
+            assert items[0].value_currency == "EUR"
+            assert items[0].native_value == Decimal("30.0000000000")
+            assert items[0].value == Decimal("36.0000000000")
+            assert items[0].native_cost_currency == "EUR"
+            assert items[0].native_cost_basis == Decimal("20.0000000000")
+            assert items[0].cost_currency == "USD"
+            assert items[0].cost_basis == Decimal("24.0000000000")
+
+        async with AsyncSession(engine) as session:
+            replayed = await AccountSnapshotWriter(session).write(command)
+        assert replayed.disposition is AccountSnapshotWriteDisposition.replayed
+        assert replayed.snapshot_id == created.snapshot_id
+        async with AsyncSession(engine) as session:
+            assert await _counts(session, account_id) == (1, 1)
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_account_and_output_currency_snapshots_coexist_and_replay_independently() -> None:
+    prefix = "i5kc4-currency-coexist"
+    await _cleanup(prefix)
+    account_id = await _seed_investment(prefix)
+    engine = _engine()
+    try:
+        default_command = _command(account_id)
+        explicit_native_command = _command(account_id, output_currency="CZK")
+        output_command = _command(account_id, output_currency="USD")
+        async with AsyncSession(engine) as session:
+            native = await AccountSnapshotWriter(session).write(default_command)
+        async with AsyncSession(engine) as session:
+            output = await AccountSnapshotWriter(session).write(output_command)
+        assert native.disposition is AccountSnapshotWriteDisposition.created
+        assert output.disposition is AccountSnapshotWriteDisposition.created
+        assert native.snapshot_id != output.snapshot_id
+
+        async with AsyncSession(engine) as session:
+            native_replay = await AccountSnapshotWriter(session).write(explicit_native_command)
+        async with AsyncSession(engine) as session:
+            output_replay = await AccountSnapshotWriter(session).write(output_command)
+        assert native_replay.disposition is AccountSnapshotWriteDisposition.replayed
+        assert native_replay.snapshot_id == native.snapshot_id
+        assert output_replay.disposition is AccountSnapshotWriteDisposition.replayed
+        assert output_replay.snapshot_id == output.snapshot_id
+
+        async with AsyncSession(engine) as session:
+            rows = tuple(
+                await session.scalars(
+                    select(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                    .order_by(AccountSnapshotModel.currency)
+                )
+            )
+            assert tuple(row.currency for row in rows) == ("CZK", "USD")
+            assert await _counts(session, account_id) == (2, 2)
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
 async def test_metadata_conflict_and_persisted_corruption_are_not_repaired() -> None:
     prefix = "i5d-conflict"
     await _cleanup(prefix)
@@ -611,9 +805,6 @@ async def test_metadata_conflict_and_persisted_corruption_are_not_repaired() -> 
         AccountType.bank,
         AccountType.cash,
         AccountType.savings,
-        AccountType.credit_card,
-        AccountType.loan,
-        AccountType.mortgage,
     ],
 )
 async def test_unsupported_account_writes_nothing(account_type: AccountType) -> None:
@@ -640,13 +831,125 @@ async def test_unsupported_account_writes_nothing(account_type: AccountType) -> 
             )
             await session.commit()
         async with AsyncSession(engine) as session:
-            expected_error = (
-                AccountSnapshotPersistenceProjectionError
-                if account_type in {AccountType.bank, AccountType.cash, AccountType.savings}
-                else AccountSnapshotEvidenceStateError
-            )
-            with pytest.raises(expected_error):
+            with pytest.raises(AccountSnapshotPersistenceProjectionError):
                 await AccountSnapshotWriter(session).write(_command(account_id))
+        async with AsyncSession(engine) as session:
+            assert await _counts(session, account_id) == (0, 0)
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+)
+async def test_same_currency_liability_create_and_fresh_replay(
+    account_type: AccountType,
+) -> None:
+    prefix = f"i5kc4-liability-{account_type.value}"
+    await _cleanup(prefix)
+    account_id = await _seed_liability(prefix, account_type)
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            created = await AccountSnapshotWriter(session).write(_command(account_id))
+        assert created.disposition is AccountSnapshotWriteDisposition.created
+        assert created.currency == "USD"
+        assert created.item_count == 0
+
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
+            assert snapshot is not None
+            assert snapshot.currency == "USD"
+            assert snapshot.liabilities_value == Decimal("100.000000")
+            assert snapshot.total_value == Decimal("-100.000000")
+            assert snapshot.exchange_rates == {
+                "version": 1,
+                "snapshotRates": [],
+                "historicalRateIds": [],
+            }
+            assert await _counts(session, account_id) == (1, 0)
+
+        async with AsyncSession(engine) as session:
+            replayed = await AccountSnapshotWriter(session).write(_command(account_id))
+        assert replayed.disposition is AccountSnapshotWriteDisposition.replayed
+        assert replayed.snapshot_id == created.snapshot_id
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amount", [Decimal("100"), Decimal("0")])
+async def test_mixed_currency_liability_create_and_replay(amount: Decimal) -> None:
+    prefix = f"i5kc4-liability-mixed-{str(amount).replace('.', '-')}"
+    await _cleanup(prefix)
+    account_id = await _seed_liability(
+        prefix,
+        AccountType.loan,
+        amount=amount,
+        output_currency="EUR",
+    )
+    _, event_at, _, _ = _scenario_times(account_id)
+    engine = _engine()
+    try:
+        command = _command(account_id, output_currency="EUR")
+        async with AsyncSession(engine) as session:
+            created = await AccountSnapshotWriter(session).write(command)
+        expected = amount * Decimal("0.9")
+        assert created.disposition is AccountSnapshotWriteDisposition.created
+        assert created.currency == "EUR"
+        assert created.item_count == 0
+
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
+            assert snapshot is not None
+            assert snapshot.currency == "EUR"
+            assert snapshot.liabilities_value == expected
+            assert snapshot.total_value == -expected
+            assert snapshot.exchange_rates == {
+                "version": 1,
+                "snapshotRates": [
+                    {
+                        "rateId": f"{prefix}-liability-rate",
+                        "from": "USD",
+                        "to": "EUR",
+                        "rate": "0.90000000",
+                        "timestamp": event_at.isoformat(timespec="milliseconds"),
+                        "source": "ecb",
+                    }
+                ],
+                "historicalRateIds": [],
+            }
+            assert await _counts(session, account_id) == (1, 0)
+
+        async with AsyncSession(engine) as session:
+            replayed = await AccountSnapshotWriter(session).write(command)
+        assert replayed.disposition is AccountSnapshotWriteDisposition.replayed
+        assert replayed.snapshot_id == created.snapshot_id
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_mixed_currency_liability_missing_direct_fx_writes_nothing() -> None:
+    prefix = "i5kc4-liability-missing-fx"
+    await _cleanup(prefix)
+    account_id = await _seed_liability(
+        prefix,
+        AccountType.loan,
+        account_currency="XAA",
+    )
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            with pytest.raises(AccountSnapshotEvidenceStateError):
+                await AccountSnapshotWriter(session).write(
+                    _command(account_id, output_currency="XBB")
+                )
         async with AsyncSession(engine) as session:
             assert await _counts(session, account_id) == (0, 0)
     finally:
@@ -766,6 +1069,24 @@ class _PausingMarketRepository(AccountSnapshotWriterRepository):
         await asyncio.wait_for(self.release.wait(), timeout=10)
 
 
+class _PausingLiabilityRepository(AccountSnapshotWriterRepository):
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        locked: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        super().__init__(session)
+        self.locked = locked
+        self.release = release
+
+    async def lock_liability_evidence_table(self) -> None:
+        await super().lock_liability_evidence_table()
+        self.locked.set()
+        await asyncio.wait_for(self.release.wait(), timeout=10)
+
+
 @pytest.mark.asyncio
 async def test_changed_price_evidence_waits_then_fails_without_mixed_snapshot() -> None:
     prefix = "i5d-price-change"
@@ -831,6 +1152,158 @@ async def test_changed_price_evidence_waits_then_fails_without_mixed_snapshot() 
             assert snapshot.investment_value == Decimal("750.000000")
             assert snapshot.total_value == Decimal("500.000000")
             assert await _counts(session, account_id) == (1, 1)
+    finally:
+        release_writer.set()
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_new_liability_observation_waits_and_retry_conflicts() -> None:
+    prefix = "i5kc4-liability-race"
+    await _cleanup(prefix)
+    account_id = await _seed_liability(prefix, AccountType.loan)
+    snapshot_at, _, _, _ = _scenario_times(account_id)
+    engine = _engine()
+    liability_locked = asyncio.Event()
+    release_writer = asyncio.Event()
+    insert_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    try:
+
+        async def first_write():
+            async with AsyncSession(engine) as session:
+                return await AccountSnapshotWriter(
+                    session,
+                    repository=_PausingLiabilityRepository(
+                        session,
+                        locked=liability_locked,
+                        release=release_writer,
+                    ),
+                ).write(_command(account_id))
+
+        async def insert_observation() -> None:
+            await asyncio.wait_for(liability_locked.wait(), timeout=10)
+            async with AsyncSession(engine) as session:
+                pid = await session.scalar(select(func.pg_backend_pid()))
+                assert pid is not None
+                insert_pid.set_result(pid)
+                effective_at = snapshot_at - timedelta(hours=1)
+                session.add(
+                    LiabilityBalanceModel(
+                        id=f"{prefix}-new-balance",
+                        account_id=account_id,
+                        effective_at=effective_at,
+                        currency="USD",
+                        outstanding_principal=Decimal("120"),
+                        accrued_interest=Decimal("0"),
+                        fees_outstanding=Decimal("0"),
+                        total_outstanding=Decimal("120"),
+                        source=LiabilityBalanceSource.statement,
+                        external_id=f"{prefix}-new-statement",
+                        created_at=effective_at,
+                    )
+                )
+                await session.commit()
+
+        writer_task = asyncio.create_task(first_write())
+        insert_task = asyncio.create_task(insert_observation())
+        await _wait_for_database_lock(
+            engine,
+            await asyncio.wait_for(insert_pid, timeout=10),
+            locktype="relation",
+        )
+        release_writer.set()
+        created, _ = await asyncio.wait_for(
+            asyncio.gather(writer_task, insert_task),
+            timeout=20,
+        )
+        assert created.disposition is AccountSnapshotWriteDisposition.created
+
+        async with AsyncSession(engine) as session:
+            with pytest.raises(AccountSnapshotWriteConflictError):
+                await AccountSnapshotWriter(session).write(_command(account_id))
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
+            assert snapshot is not None
+            assert snapshot.liabilities_value == Decimal("100.000000")
+            assert snapshot.total_value == Decimal("-100.000000")
+            assert await _counts(session, account_id) == (1, 0)
+    finally:
+        release_writer.set()
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_new_mixed_liability_fx_waits_and_retry_conflicts() -> None:
+    prefix = "i5kc4-liability-fx-race"
+    await _cleanup(prefix)
+    account_id = await _seed_liability(
+        prefix,
+        AccountType.mortgage,
+        output_currency="EUR",
+    )
+    snapshot_at, _, _, _ = _scenario_times(account_id)
+    engine = _engine()
+    market_locked = asyncio.Event()
+    release_writer = asyncio.Event()
+    insert_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    command = _command(account_id, output_currency="EUR")
+    try:
+
+        async def first_write():
+            async with AsyncSession(engine) as session:
+                return await AccountSnapshotWriter(
+                    session,
+                    repository=_PausingMarketRepository(
+                        session,
+                        locked=market_locked,
+                        release=release_writer,
+                    ),
+                ).write(command)
+
+        async def insert_rate() -> None:
+            await asyncio.wait_for(market_locked.wait(), timeout=10)
+            async with AsyncSession(engine) as session:
+                pid = await session.scalar(select(func.pg_backend_pid()))
+                assert pid is not None
+                insert_pid.set_result(pid)
+                session.add(
+                    ExchangeRateModel(
+                        id=f"{prefix}-new-rate",
+                        from_currency="USD",
+                        to_currency="EUR",
+                        rate=Decimal("0.95"),
+                        date=snapshot_at,
+                        source=ExchangeRateSource.ecb,
+                        created_at=snapshot_at,
+                    )
+                )
+                await session.commit()
+
+        writer_task = asyncio.create_task(first_write())
+        rate_task = asyncio.create_task(insert_rate())
+        await _wait_for_database_lock(
+            engine,
+            await asyncio.wait_for(insert_pid, timeout=10),
+            locktype="relation",
+        )
+        release_writer.set()
+        created, _ = await asyncio.wait_for(
+            asyncio.gather(writer_task, rate_task),
+            timeout=20,
+        )
+        assert created.disposition is AccountSnapshotWriteDisposition.created
+
+        async with AsyncSession(engine) as session:
+            with pytest.raises(AccountSnapshotWriteConflictError):
+                await AccountSnapshotWriter(session).write(command)
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
+            assert snapshot is not None
+            assert snapshot.liabilities_value == Decimal("90.000000")
+            assert snapshot.total_value == Decimal("-90.000000")
+            assert await _counts(session, account_id) == (1, 0)
     finally:
         release_writer.set()
         await engine.dispose()
@@ -936,6 +1409,36 @@ async def test_same_identity_concurrency_creates_once_and_replays_after_lock_wai
             assert await _counts(session, account_id) == (1, 1)
     finally:
         release.set()
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_different_output_currency_writes_create_distinct_rows() -> None:
+    prefix = "i5kc4-concurrent-output"
+    await _cleanup(prefix)
+    account_id = await _seed_investment(prefix)
+    engine = _engine()
+    try:
+
+        async def write(command: WriteAccountSnapshotCommand):
+            async with AsyncSession(engine) as session:
+                return await AccountSnapshotWriter(session).write(command)
+
+        native, output = await asyncio.wait_for(
+            asyncio.gather(
+                write(_command(account_id)),
+                write(_command(account_id, output_currency="USD")),
+            ),
+            timeout=20,
+        )
+        assert native.disposition is AccountSnapshotWriteDisposition.created
+        assert output.disposition is AccountSnapshotWriteDisposition.created
+        assert native.snapshot_id != output.snapshot_id
+        assert {native.currency, output.currency} == {"CZK", "USD"}
+        async with AsyncSession(engine) as session:
+            assert await _counts(session, account_id) == (2, 2)
+    finally:
         await engine.dispose()
         await _cleanup(prefix)
 
