@@ -55,18 +55,33 @@ portfolio response contract. New calculation code must keep `Decimal` through
 calculation and define currency and rounding explicitly.
 
 For account snapshots, all aggregate values—including cash, investment value,
-cost basis, net deposits, P&L, fees, taxes, and total value—belong in the
-account's main currency. The accompanying `*ByCurrency` JSON fields preserve
-their native-currency breakdown. Event-date FX is required for deposited and
-invested values; a live value should start from the latest daily snapshot and
-only apply later events.
+cost basis, net deposits, P&L, fees, taxes, and total value—belong in one
+explicit output currency. Current persisted orchestration still selects the
+account's main currency as that output currency; the pure 5K-C1 valuation
+contract can also accept a distinct output currency. The accompanying
+`*ByCurrency` JSON fields preserve their native-currency breakdown. Event-date
+FX is required for deposited and invested values; a live value should start
+from the latest daily snapshot and only apply later events.
 
-The 5I-A Python contract calculates an exact account valuation from explicit
-caller-selected evidence. It validates an already aligned UTC bucket, complete
-Holding and selected-price identity, direct `base -> account currency` FX,
-account-type-specific cash or positive-liability evidence, physical numeric
-representability, and 0–100 item allocation. It emits immutable, sorted
-valuation and native-currency breakdown tuples without I/O.
+The 5I-A Python contract, extended by pure 5K-C1, calculates an exact account
+valuation from explicit caller-selected evidence. It validates an already
+aligned UTC bucket, complete Holding and selected-price identity, direct
+`native -> output currency` FX, account-type-specific cash or
+positive-liability evidence, physical numeric representability, and 0–100 item
+allocation. Persisted Account currency and requested output currency remain
+separate validated metadata. It emits immutable, sorted valuation and
+native-currency breakdown tuples without I/O.
+
+Required rates are determined only by actual price, Holding cost, cash, and
+liability evidence currencies. Same-output-currency values use exact identity
+conversion without an FX row. Every other amount requires one supplied direct
+rate to output currency; inverse rates, multi-hop chains, and fallback through
+Account currency are never inferred. All supplied rates must be consumed, so
+an empty mixed-currency account needs no synthetic rate and unrelated evidence
+fails closed. Investment, cash, and positive-liability aggregates use output
+currency while their breakdowns remain native. A liability observation must
+still use Account currency, even when its scalar value is converted to a
+different output currency.
 
 The contract deliberately does not claim a persistable `AccountSnapshot`.
 Complete net-deposit, realized/unrealized P&L, fee, and tax evidence is not yet
@@ -299,7 +314,9 @@ granularity, output currency, and calculation version. It cannot run until all
 write-capable and reuse-only targets are satisfied. This is only a declarative
 dependency: 5K-A reads no database state, invokes no writer, and performs no
 financial calculation. The current AccountSnapshot writer remains
-account-currency-only; 5K-C must establish exact output-currency support before
+account-currency-only. Pure 5K-C1 establishes the calculation contract, while
+5K-C2 through 5K-C5 must add persisted FX selection, physical projection,
+writer identity/replay, and manual-orchestration compatibility before
 mixed-currency coordinated execution.
 
 The read-only 5K-B boundary turns persisted current state into immutable

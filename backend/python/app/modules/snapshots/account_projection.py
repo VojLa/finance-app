@@ -311,8 +311,6 @@ def _validate_account_shape(evidence: AccountSnapshotProjectionInput) -> tuple[s
     account_type = _enum(evidence.account_type, AccountType)
     account_currency = _currency(evidence.account_currency)
     output_currency = _currency(evidence.output_currency)
-    if account_currency != output_currency:
-        raise _fail()
     _enum(evidence.granularity, SnapshotGranularity)
     _enum(evidence.source, SnapshotSource)
     _aligned_timestamp(evidence.snapshot_timestamp, evidence.granularity)
@@ -332,9 +330,8 @@ def _validate_account_shape(evidence: AccountSnapshotProjectionInput) -> tuple[s
             evidence.holdings
             or evidence.prices
             or evidence.cash_balances
-            or evidence.exchange_rates
             or len(evidence.liabilities) != 1
-            or _currency(evidence.liabilities[0].currency) != output_currency
+            or _currency(evidence.liabilities[0].currency) != account_currency
         )
     else:
         raise _fail()

@@ -15,8 +15,8 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A implemented; read-only 5K-B after merge; execution not implemented      |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I-A–5I-E and liability integration implemented                             |
+| snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; pure output-currency valuation added in 5K-C1                   |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
@@ -206,3 +206,19 @@ match the orchestration command. Owner/admin/editor targets never use existing
 rows to bypass the future writer. 5K-B validates no financial fields; 5J-B
 remains the complete AccountSnapshot financial authority. The repository uses
 only autoflush-disabled reads, no locks, and no transaction or write methods.
+
+The pure 5K-C1 extension separates persisted `Account.currency` from the
+requested AccountSnapshot output currency. Required FX pairs come only from
+actual selected price, Holding cost, cash, and liability currencies. Conversion
+uses caller-supplied direct `native -> output` multiplication; inverse,
+multi-hop, and fallback conversion are unsupported, and every supplied rate
+must be consumed. Aggregate values use output currency while native breakdowns
+retain their evidence currencies. Liability evidence must remain in Account
+currency but may be converted to output currency; an empty mixed-currency
+account consumes no synthetic rate.
+
+This extension is calculation-only. Persisted output-currency/FX selection,
+physical projection mapping, writer identity/locking/replay changes, and manual
+orchestration compatibility remain 5K-C2 through 5K-C5. The existing evidence
+service and writer remain account-currency-only, so no mixed-currency
+AccountSnapshot is yet reachable through an application service.
