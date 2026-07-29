@@ -15,7 +15,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning for coordinated account and net-worth refresh                   | Pure 5K-A plan implemented after merge; execution not implemented            |
+| snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A implemented; read-only 5K-B after merge; execution not implemented      |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I-A–5I-E and liability integration implemented                             |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -191,3 +191,18 @@ The current AccountSnapshot writer still emits Account currency and is
 unchanged. Persisted coverage selection, output-currency writer support,
 execution/recovery, authorization, import hooks, and scheduling belong to
 5K-B through 5K-E.
+
+The read-only 5K-B adapter requires a caller-owned `REPEATABLE READ` or
+`SERIALIZABLE` transaction and verifies it before loading persisted evidence.
+It reads the exact User plus every joined Account/AccountMember row, delegates
+policy once to 5K-A, and partitions the immutable targets without changing
+their modes. Persisted User owns base/output currency; AccountMember owns role,
+relation, and acceptance.
+
+Only viewer `reuse_only` targets trigger one batched exact AccountSnapshot
+query by account IDs, bucket, granularity, User base currency, and calculation
+version. Snapshot source and persistence timestamps are validated but need not
+match the orchestration command. Owner/admin/editor targets never use existing
+rows to bypass the future writer. 5K-B validates no financial fields; 5J-B
+remains the complete AccountSnapshot financial authority. The repository uses
+only autoflush-disabled reads, no locks, and no transaction or write methods.
