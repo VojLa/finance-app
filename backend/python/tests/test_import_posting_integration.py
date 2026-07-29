@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from copy import deepcopy
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, TypedDict
@@ -527,7 +528,7 @@ async def _assert_zero_import_roundtrip(
     assert first.replayed is False
     assert (first.rows_total, first.rows_imported, first.rows_skipped) == (total, 0, total)
     assert first.completed_at is not None
-    assert second.model_dump() == first.model_copy(update={"replayed": True}).model_dump()
+    assert asdict(second) == asdict(replace(first, replayed=True))
     assert after_first == after_second
     assert after_first["batch"] == (
         expected_status,
@@ -816,7 +817,7 @@ def test_manual_batch_posts_atomically_and_exact_replay_is_stable() -> None:
         snapshot = await _snapshot(prefix)
         second = await _post(prefix)
         assert first.replayed is False and second.replayed is True
-        assert first.model_dump() | {"replayed": True} == second.model_dump()
+        assert asdict(first) | {"replayed": True} == asdict(second)
         assert await _snapshot(prefix) == snapshot
         assert first.status is ImportStatus.completed
         assert (first.rows_total, first.rows_imported, first.rows_skipped) == (2, 2, 0)
@@ -842,7 +843,7 @@ def test_mixed_trading_batch_posts_unique_rows_and_preserves_duplicate() -> None
         replay = await _post(prefix)
         assert result.status is ImportStatus.completed
         assert replay.replayed is True
-        assert result.model_dump() | {"replayed": True} == replay.model_dump()
+        assert asdict(result) | {"replayed": True} == asdict(replay)
         assert await _snapshot(prefix) == snapshot
         assert (result.rows_total, result.rows_imported, result.rows_skipped) == (3, 2, 1)
         assert len(snapshot["events"]) == 2
@@ -869,7 +870,7 @@ def test_partial_batch_finalizes_review_row_without_posting_it() -> None:
         replay = await _post(prefix)
         assert result.status is ImportStatus.partially_completed
         assert replay.replayed is True
-        assert result.model_dump() | {"replayed": True} == replay.model_dump()
+        assert asdict(result) | {"replayed": True} == asdict(replay)
         assert await _snapshot(prefix) == snapshot
         assert (result.rows_total, result.rows_imported, result.rows_skipped) == (2, 1, 1)
         assert len(snapshot["transactions"]) == 1

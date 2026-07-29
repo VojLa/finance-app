@@ -1,8 +1,17 @@
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.models.enums import ImportSource, ImportStatus
+
+
+class ImportSnapshotRefreshStatus(StrEnum):
+    created = "created"
+    replayed = "replayed"
+    not_required = "not_required"
+    unavailable = "unavailable"
+    conflict = "conflict"
 
 
 class ImportBatchCreateRequest(BaseModel):
@@ -106,6 +115,8 @@ class ImportClassifyResponse(BaseModel):
 
 
 class ImportPostResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     batch_id: str
     status: ImportStatus
     rows_total: int
@@ -113,3 +124,4 @@ class ImportPostResponse(BaseModel):
     rows_skipped: int
     completed_at: datetime
     replayed: bool
+    snapshot_refresh_status: ImportSnapshotRefreshStatus

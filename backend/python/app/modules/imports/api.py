@@ -16,7 +16,8 @@ from app.modules.imports.models import (
     ImportUploadResponse,
 )
 from app.modules.imports.normalization import ImportNormalizationService
-from app.modules.imports.posting_service import ImportBatchPostingService, PostImportBatchCommand
+from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
+from app.modules.imports.posting_service import PostImportBatchCommand
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
 
@@ -138,7 +139,7 @@ async def post_import_batch(
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
 ) -> ImportPostResponse:
-    return await ImportBatchPostingService(session).post_batch(
+    return await ImportBatchPostProcessingService(session).post_batch(
         PostImportBatchCommand(
             principal=principal,
             account_id=account_id,

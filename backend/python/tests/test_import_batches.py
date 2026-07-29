@@ -14,9 +14,13 @@ from app.db.connection import get_db_session
 from app.db.models.enums import ImportSource, ImportStatus
 from app.main import create_app
 from app.modules.accounts.access import AccountNotFoundError
-from app.modules.imports.models import ImportBatchResponse, ImportPostResponse
+from app.modules.imports.models import (
+    ImportBatchResponse,
+    ImportPostResponse,
+    ImportSnapshotRefreshStatus,
+)
+from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
 from app.modules.imports.posting_service import (
-    ImportBatchPostingService,
     ImportBatchPostStateError,
 )
 from app.modules.imports.service import ImportBatchNotFoundError, ImportBatchService
@@ -53,6 +57,7 @@ def _post_response() -> ImportPostResponse:
         rows_skipped=1,
         completed_at=datetime(2026, 7, 25, 12),
         replayed=False,
+        snapshot_refresh_status=ImportSnapshotRefreshStatus.created,
     )
 
 
@@ -204,7 +209,7 @@ def test_post_import_batch_endpoint_is_thin_and_stable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     post_batch = AsyncMock(return_value=_post_response())
-    monkeypatch.setattr(ImportBatchPostingService, "post_batch", post_batch)
+    monkeypatch.setattr(ImportBatchPostProcessingService, "post_batch", post_batch)
 
     with _client(test_settings) as client:
         response = client.post("/api/v1/accounts/account-a/imports/batch-a/post")
@@ -218,6 +223,7 @@ def test_post_import_batch_endpoint_is_thin_and_stable(
         "rows_skipped": 1,
         "completed_at": "2026-07-25T12:00:00",
         "replayed": False,
+        "snapshot_refresh_status": "created",
     }
     assert post_batch.await_args is not None
     command = post_batch.await_args.args[0]
@@ -226,16 +232,63 @@ def test_post_import_batch_endpoint_is_thin_and_stable(
     assert command.batch_id == "batch-a"
 
 
+@pytest.mark.parametrize(
+    "snapshot_status",
+    (
+        ImportSnapshotRefreshStatus.unavailable,
+        ImportSnapshotRefreshStatus.conflict,
+    ),
+)
+def test_post_import_batch_reports_known_post_processing_failure_as_http_200(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_status: ImportSnapshotRefreshStatus,
+) -> None:
+    result = _post_response().model_copy(update={"snapshot_refresh_status": snapshot_status})
+    monkeypatch.setattr(
+        ImportBatchPostProcessingService,
+        "post_batch",
+        AsyncMock(return_value=result),
+    )
+
+    with _client(test_settings) as client:
+        response = client.post("/api/v1/accounts/account-a/imports/batch-a/post")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["snapshot_refresh_status"] == snapshot_status.value
+
+
 def test_post_import_batch_openapi_contract(test_settings: Settings) -> None:
-    operation = create_app(test_settings).openapi()["paths"][
-        "/api/v1/accounts/{account_id}/imports/{batch_id}/post"
-    ]["post"]
+    schema = create_app(test_settings).openapi()
+    operation = schema["paths"]["/api/v1/accounts/{account_id}/imports/{batch_id}/post"]["post"]
 
     assert operation["security"] == [{"InternalSessionToken": []}]
     assert "requestBody" not in operation
     assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ImportPostResponse"
     }
+    assert (
+        "snapshot_refresh_status"
+        in schema["components"]["schemas"]["ImportPostResponse"]["required"]
+    )
+
+
+def test_import_post_response_rejects_internal_post_processing_fields() -> None:
+    payload = _post_response().model_dump()
+    for field in (
+        "user_id",
+        "account_id",
+        "transaction_rows_imported",
+        "investment_event_rows_imported",
+        "holding_ids",
+        "account_snapshot_ids",
+        "net_worth_snapshot_id",
+        "lineage",
+        "exchange_rates",
+    ):
+        with pytest.raises(ValueError):
+            ImportPostResponse.model_validate(payload | {field: "internal"})
 
 
 @pytest.mark.parametrize(
@@ -254,7 +307,7 @@ def test_post_import_batch_maps_domain_failures(
     code: str,
 ) -> None:
     monkeypatch.setattr(
-        ImportBatchPostingService,
+        ImportBatchPostProcessingService,
         "post_batch",
         AsyncMock(side_effect=error),
     )

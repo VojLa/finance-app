@@ -481,4 +481,27 @@ response can coexist with valid completed account rows. The next identical
 request resumes through exact replay and creates NetWorth only after all
 required identities are complete. E1 introduces no compensation, persisted
 execution state, migration, automatic retry, scheduler, worker, background job,
-or import hook; those post-import entry points remain unimplemented in 5K-E2.
+or background execution.
+
+## Import post-processing outcome
+
+`ImportBatchPostingService` now returns an internal immutable terminal result
+that includes counts of imported Transaction and InvestmentEvent targets. Each
+imported row must reference exactly one target and target counts must equal
+`rowsImported`. These counts are orchestration evidence and are not public API
+fields.
+
+After that service commits, 5K-E2 may rebuild Holdings for an investment-event
+batch and then refresh all snapshots reachable by the principal's current user.
+The refresh uses source `import_event`, the common AccountSnapshot/NetWorth
+calculation version, and a minute bucket derived from the persisted
+`ImportBatch.completedAt`. Replaying the batch therefore reuses the same
+Holding and snapshot identities.
+
+`ImportPostResponse.snapshot_refresh_status` is a Python/API-only enum with
+`created`, `replayed`, `not_required`, `unavailable`, and `conflict`. It does
+not alter ImportBatch status and has no database enum. Known post-processing
+failure leaves canonical imported rows and any committed Holding or
+AccountSnapshot rows intact. ImportLog records generic deterministic audits,
+not job progress. There is no compensation, migration, job table, scheduler,
+worker, queue, or background task.

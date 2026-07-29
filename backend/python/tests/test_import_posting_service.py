@@ -250,6 +250,8 @@ def test_success_posts_rows_in_locked_order_and_finalizes_once(
     assert result.status is ImportStatus.completed
     assert (result.rows_total, result.rows_imported, result.rows_skipped) == (3, 2, 1)
     assert result.completed_at is batch.completed_at and result.replayed is False
+    assert result.transaction_rows_imported == 2
+    assert result.investment_event_rows_imported == 0
     assert session.flush.await_count == 1 and session.commit.await_count == 1
     session.rollback.assert_not_awaited()
     assert service.repository.get_for_account.await_args.kwargs["for_update"] is True
@@ -288,11 +290,42 @@ def test_completed_replay_preserves_counters_timestamp_and_uses_writer(
     result = _run(service.post_batch(_command()))
 
     assert result.replayed is True and result.completed_at == completed_at
+    assert result.transaction_rows_imported == 1
+    assert result.investment_event_rows_imported == 0
     assert batch.completed_at == completed_at
     assert (batch.rows_total, batch.rows_imported, batch.rows_skipped) == (1, 1, 0)
     writer.assert_awaited_once()
     session.flush.assert_not_awaited()
     session.commit.assert_awaited_once()
+
+
+def test_imported_row_with_ambiguous_persisted_target_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    row = _pending()
+    session = _session()
+
+    class _Writer:
+        def __init__(self, _: object) -> None:
+            pass
+
+        async def post_row(self, **_: object) -> object:
+            row.status = ImportRowStatus.imported
+            row.created_transaction_id = "transaction"
+            row.created_investment_event_id = "investment-event"
+            return object()
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportTransactionPostingWriter", _Writer)
+    service = _service(session, _batch(), [row])
+
+    with pytest.raises(ImportBatchPostStateError):
+        _run(service.post_batch(_command()))
+
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

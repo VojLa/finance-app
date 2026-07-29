@@ -13,7 +13,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
-from app.modules.snapshot_refresh import manual_service
+from app.modules.snapshot_refresh import version as snapshot_refresh_version
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
     ExecutedAccountSnapshotRefresh,
@@ -260,7 +260,7 @@ async def test_calculation_version_mismatch_fails_before_clock_and_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        manual_service,
+        snapshot_refresh_version,
         "CURRENT_NET_WORTH_CALCULATION_VERSION",
         CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION + 1,
     )

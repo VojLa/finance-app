@@ -14,7 +14,6 @@ from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.investment_posting import ImportInvestmentPostingWriter
 from app.modules.imports.investment_posting_plan import build_investment_posting_plan
-from app.modules.imports.models import ImportPostResponse
 from app.modules.imports.posting_common import ImportPostStateError
 from app.modules.imports.repository import ImportBatchRepository
 from app.modules.imports.service import ImportBatchNotFoundError
@@ -55,6 +54,19 @@ class PostImportBatchCommand:
     principal: AuthenticatedPrincipal
     account_id: str
     batch_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PostImportBatchResult:
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_imported: int
+    rows_skipped: int
+    completed_at: datetime
+    replayed: bool
+    transaction_rows_imported: int
+    investment_event_rows_imported: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,12 +292,42 @@ def _preflight(
     return counts
 
 
+def _persisted_target_counts(rows: list[ImportRowModel]) -> tuple[int, int]:
+    transaction_count = 0
+    investment_event_count = 0
+    imported_count = 0
+    for row in rows:
+        transaction_id = row.created_transaction_id
+        investment_event_id = row.created_investment_event_id
+        has_transaction = (
+            isinstance(transaction_id, str)
+            and bool(transaction_id)
+            and transaction_id == transaction_id.strip()
+        )
+        has_investment_event = (
+            isinstance(investment_event_id, str)
+            and bool(investment_event_id)
+            and investment_event_id == investment_event_id.strip()
+        )
+        if row.status is ImportRowStatus.imported:
+            imported_count += 1
+            if has_transaction == has_investment_event:
+                raise ImportBatchPostStateError()
+            transaction_count += int(has_transaction)
+            investment_event_count += int(has_investment_event)
+        elif transaction_id is not None or investment_event_id is not None:
+            raise ImportBatchPostStateError()
+    if transaction_count + investment_event_count != imported_count:
+        raise ImportBatchPostStateError()
+    return transaction_count, investment_event_count
+
+
 class ImportBatchPostingService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repository = ImportBatchRepository(session)
 
-    async def post_batch(self, command: PostImportBatchCommand) -> ImportPostResponse:
+    async def post_batch(self, command: PostImportBatchCommand) -> PostImportBatchResult:
         try:
             # Lock the persisted membership for the transaction so a concurrent role
             # revocation cannot commit between authorization and canonical posting.
@@ -356,7 +398,10 @@ class ImportBatchPostingService:
                 await self.session.flush()
             if batch.completed_at is None:
                 raise ImportBatchPostStateError()
-            response = ImportPostResponse(
+            transaction_count, investment_event_count = _persisted_target_counts(rows)
+            if transaction_count + investment_event_count != int(batch.rows_imported or 0):
+                raise ImportBatchPostStateError()
+            result = PostImportBatchResult(
                 batch_id=batch.id,
                 status=batch.status,
                 rows_total=int(batch.rows_total or 0),
@@ -364,9 +409,11 @@ class ImportBatchPostingService:
                 rows_skipped=int(batch.rows_skipped or 0),
                 completed_at=batch.completed_at,
                 replayed=replay,
+                transaction_rows_imported=transaction_count,
+                investment_event_rows_imported=investment_event_count,
             )
             await self.session.commit()
         except Exception:
             await self.session.rollback()
             raise
-        return response
+        return result
