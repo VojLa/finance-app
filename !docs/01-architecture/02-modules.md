@@ -15,7 +15,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, and coordinated snapshot execution          | 5K-A/5K-B/5K-D2 implemented; public integration remains 5K-E                  |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -290,8 +290,26 @@ also compares the persistence audit identities before any replay or insert
 decision. Every SERIALIZABLE retry receives the unchanged guard.
 
 Selected dependency identities are returned by the internal writer result for
-future 5K-D2 orchestration only. The manual endpoint passes `None` and exposes
+5K-D2 orchestration only. The manual endpoint passes `None` and exposes
 neither account nor snapshot lineage. 5K-D1 adds no executor, outer
 orchestration transaction, job state, schema, AccountSnapshot write, or API;
-those coordinated execution responsibilities remain 5K-D2, with endpoint and
-import integration remaining 5K-E.
+endpoint and import integration remain 5K-E.
+
+The internal 5K-D2 `UserSnapshotRefreshExecutor` owns one short initial
+`REPEATABLE READ` coverage transaction and calls 5K-B exactly once. It commits
+that read before calling every deterministic owner/admin/editor refresh target
+through the existing AccountSnapshot writer. Viewer targets never reach the
+writer and contribute only their exact selected reusable identity. There is no
+outer transaction across those writes: each account row commits independently,
+and the existing bounded SERIALIZABLE NetWorth writer runs last.
+
+The executor combines created, replayed, and reused AccountSnapshot identities
+in the exact plan order and supplies them to the 5K-D1 guard. It validates every
+dependency result and requires an idle session at each handoff. Partial failure
+is resumable solely through persisted exact writer replay; no compensation,
+repair, in-memory progress state, or job table exists. Account-set drift and
+same-count substitution after coverage fail closed in the final writer, while
+already committed account snapshots remain intact. 5K-D2 exposes no endpoint
+and performs no authorization, import integration, scheduling, calculation,
+evidence selection, physical comparison, or retry ownership; 5K-E remains the
+public/import boundary.

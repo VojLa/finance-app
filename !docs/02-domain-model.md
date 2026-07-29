@@ -437,5 +437,23 @@ against the physical projection audit before replay or creation. It is returned
 only in the internal writer result so 5K-D2 can compare completed refresh
 outputs with final net-worth dependencies. It is not persisted in
 NetWorthSnapshot, does not change physical identity, and is absent from the
-manual HTTP request and response. 5K-D2 execution and 5K-E endpoint/import
-integration remain unimplemented.
+manual HTTP request and response.
+
+5K-D2 turns one exact 5K-B coverage result into a coordinated execution without
+moving any financial rule into orchestration. Its initial caller-owned
+`REPEATABLE READ` transaction establishes the complete current User, account,
+membership, role, output-currency, and viewer-reuse set. The transaction closes
+before any write. Every owner/admin/editor target then receives one independent
+AccountSnapshot writer call; every viewer target contributes its already
+persisted snapshot identity and never invokes that writer.
+
+The combined immutable lineage is ordered by the plan's complete account set
+and guarded by 5K-D1 during the final NetWorth write. Added, removed, archived,
+or same-count-substituted access after coverage cannot produce a stale
+NetWorthSnapshot. Each domain writer owns and commits its own transaction, so
+successful account snapshots survive a later failure. Re-execution invokes all
+refresh targets again and uses exact physical replay—not in-memory state—as the
+only resume mechanism. No compensation, overwrite, repair, cross-stage outer
+transaction, job-state model, or new persisted lineage is introduced. 5K-E
+endpoint, authorization, and import/post-processing integration remain
+unimplemented.
