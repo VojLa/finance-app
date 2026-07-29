@@ -36,6 +36,7 @@ from app.modules.net_worth.evidence_service import (
     CompleteNetWorthEvidence,
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
+    SelectedAccountSnapshotIdentity,
 )
 from app.modules.net_worth.projection import NetWorthCurrencyAmount
 from app.modules.net_worth.repository import NetWorthEvidenceRepository
@@ -216,13 +217,18 @@ def _snapshot(
     )
 
 
-def _command(prefix: str) -> BuildNetWorthEvidenceCommand:
+def _command(
+    prefix: str,
+    *,
+    required: tuple[SelectedAccountSnapshotIdentity, ...] | None = None,
+) -> BuildNetWorthEvidenceCommand:
     return BuildNetWorthEvidenceCommand(
         user_id=f"{prefix}-user",
         timestamp=SNAPSHOT_AT,
         granularity=SnapshotGranularity.day,
         currency="CZK",
         calculation_version=1,
+        required_account_snapshot_identities=required,
     )
 
 
@@ -247,12 +253,13 @@ async def _build(
     prefix: str,
     *,
     repository: NetWorthEvidenceRepository | None = None,
+    required: tuple[SelectedAccountSnapshotIdentity, ...] | None = None,
 ) -> CompleteNetWorthEvidence:
     async with _repeatable_session(engine) as session:
         return await NetWorthEvidenceService(
             session,
             repository=repository,
-        ).build(_command(prefix))
+        ).build(_command(prefix, required=required))
 
 
 async def _state(prefix: str) -> tuple[object, ...]:
@@ -360,6 +367,115 @@ async def test_empty_existing_user_builds_zero_without_writes() -> None:
     assert result.selected_account_snapshot_ids == ()
     assert await _state(prefix) == before
     await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_guard_builds_exact_zero_for_empty_user() -> None:
+    prefix = "k5d1-evidence-empty"
+    await _cleanup(prefix)
+    await _seed(prefix, (), ())
+    before = await _state(prefix)
+    engine = _engine()
+    try:
+        result = await _build(engine, prefix, required=())
+        assert result.selected_identities == ()
+        assert result.projection.account_count == 0
+        assert await _state(prefix) == before
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_exact_guard_accepts_owner_and_viewer_snapshot_identities() -> None:
+    prefix = "k5d1-evidence-exact"
+    await _cleanup(prefix)
+    account_a = _account(prefix, "account-a", AccountType.broker)
+    account_b = _account(prefix, "account-b", AccountType.mortgage)
+    snapshot_a = _snapshot(prefix, account_a)
+    snapshot_b = _snapshot(prefix, account_b)
+    await _seed(prefix, (account_a, account_b), (snapshot_a, snapshot_b))
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            viewer = await session.scalar(
+                select(AccountMemberModel).where(AccountMemberModel.account_id == account_b.id)
+            )
+            assert viewer is not None
+            viewer.role = AccountMemberRole.viewer
+            viewer.relation_type = AccountRelationType.collaborator
+            await session.commit()
+        required = (
+            SelectedAccountSnapshotIdentity(account_a.id, snapshot_a.id),
+            SelectedAccountSnapshotIdentity(account_b.id, snapshot_b.id),
+        )
+
+        result = await _build(engine, prefix, required=required)
+
+        assert result.selected_identities == required
+        assert result.selected_account_ids == (account_a.id, account_b.id)
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_explicit_guard_rejects_empty_missing_extra_and_substituted_accounts() -> None:
+    prefix = "k5d1-evidence-account-guard"
+    await _cleanup(prefix)
+    account_a = _account(prefix, "account-a", AccountType.broker)
+    account_b = _account(prefix, "account-b", AccountType.loan)
+    snapshot_a = _snapshot(prefix, account_a)
+    snapshot_b = _snapshot(prefix, account_b)
+    await _seed(prefix, (account_a, account_b), (snapshot_a, snapshot_b))
+    engine = _engine()
+    invalid_guards = (
+        (),
+        (SelectedAccountSnapshotIdentity(account_a.id, snapshot_a.id),),
+        (
+            SelectedAccountSnapshotIdentity(account_a.id, snapshot_a.id),
+            SelectedAccountSnapshotIdentity(
+                f"{prefix}-account-c",
+                f"{prefix}-snapshot-{prefix}-account-c",
+            ),
+        ),
+        (
+            SelectedAccountSnapshotIdentity(account_a.id, snapshot_a.id),
+            SelectedAccountSnapshotIdentity(account_b.id, snapshot_b.id),
+            SelectedAccountSnapshotIdentity(
+                f"{prefix}-account-c",
+                f"{prefix}-snapshot-{prefix}-account-c",
+            ),
+        ),
+    )
+    try:
+        for required in invalid_guards:
+            with pytest.raises(NetWorthEvidenceStateError):
+                await _build(engine, prefix, required=required)
+        counts = cast(tuple[int, int], (await _state(prefix))[-1])
+        assert counts[1] == 0
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_explicit_guard_rejects_different_snapshot_for_correct_account() -> None:
+    prefix = "k5d1-evidence-snapshot-guard"
+    await _cleanup(prefix)
+    account = _account(prefix, "account", AccountType.broker)
+    snapshot = _snapshot(prefix, account)
+    await _seed(prefix, (account,), (snapshot,))
+    engine = _engine()
+    required = (SelectedAccountSnapshotIdentity(account.id, f"{snapshot.id}-different"),)
+    try:
+        with pytest.raises(NetWorthEvidenceStateError):
+            await _build(engine, prefix, required=required)
+        counts = cast(tuple[int, int], (await _state(prefix))[-1])
+        assert counts[1] == 0
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,7 @@ class BuildNetWorthEvidenceCommand:
     granularity: SnapshotGranularity
     currency: str
     calculation_version: int
+    required_account_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +141,37 @@ def _calculation_version(value: object) -> int:
     return value
 
 
+def validate_required_account_snapshot_identities(
+    value: object,
+) -> tuple[SelectedAccountSnapshotIdentity, ...] | None:
+    """Validate an optional exact, caller-ordered AccountSnapshot dependency set."""
+
+    if value is None:
+        return None
+    if not isinstance(value, tuple):
+        raise _fail()
+
+    account_ids: set[str] = set()
+    snapshot_ids: set[str] = set()
+    previous_key: tuple[str, str] | None = None
+    for identity in value:
+        if not isinstance(identity, SelectedAccountSnapshotIdentity):
+            raise _fail()
+        account_id = _nonblank(identity.account_id)
+        snapshot_id = _nonblank(identity.snapshot_id)
+        key = (account_id, snapshot_id)
+        if (
+            account_id in account_ids
+            or snapshot_id in snapshot_ids
+            or (previous_key is not None and key <= previous_key)
+        ):
+            raise _fail()
+        account_ids.add(account_id)
+        snapshot_ids.add(snapshot_id)
+        previous_key = key
+    return value
+
+
 def _exact(value: object, numeric: Numeric, *, nonnegative: bool = False) -> Decimal:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise _fail()
@@ -205,12 +237,16 @@ def _validate_command(command: object) -> BuildNetWorthEvidenceCommand:
     timestamp = _aligned_timestamp(command.timestamp, command.granularity)
     currency = _currency(command.currency)
     calculation_version = _calculation_version(command.calculation_version)
+    required_identities = validate_required_account_snapshot_identities(
+        command.required_account_snapshot_identities
+    )
     return BuildNetWorthEvidenceCommand(
         user_id=user_id,
         timestamp=timestamp,
         granularity=command.granularity,
         currency=currency,
         calculation_version=calculation_version,
+        required_account_snapshot_identities=required_identities,
     )
 
 
@@ -387,6 +423,12 @@ class NetWorthEvidenceService:
             accesses = await self.repository.load_account_accesses(canonical.user_id)
             accounts = _active_accounts(accesses, user_id=canonical.user_id)
             account_ids = tuple(account.id for account in accounts)
+            required_identities = canonical.required_account_snapshot_identities
+            if (
+                required_identities is not None
+                and tuple(identity.account_id for identity in required_identities) != account_ids
+            ):
+                raise _fail()
             snapshots = (
                 await self.repository.load_exact_snapshots(
                     account_ids=account_ids,
@@ -430,6 +472,14 @@ class NetWorthEvidenceService:
                 )
             if set(snapshots_by_account) != set(account_ids):
                 raise _fail()
+            ordered_identities = tuple(
+                sorted(
+                    identities,
+                    key=lambda identity: (identity.account_id, identity.snapshot_id),
+                )
+            )
+            if required_identities is not None and ordered_identities != required_identities:
+                raise _fail()
 
             projection_input = NetWorthProjectionInput(
                 user_id=canonical.user_id,
@@ -442,12 +492,6 @@ class NetWorthEvidenceService:
             projection = self.projection_builder(projection_input)
             if not isinstance(projection, ExpectedNetWorthProjection):
                 raise _fail()
-            ordered_identities = tuple(
-                sorted(
-                    identities,
-                    key=lambda identity: (identity.account_id, identity.snapshot_id),
-                )
-            )
             return CompleteNetWorthEvidence(
                 projection=projection,
                 selected_account_ids=tuple(identity.account_id for identity in ordered_identities),

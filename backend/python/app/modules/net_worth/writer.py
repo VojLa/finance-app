@@ -19,6 +19,8 @@ from app.modules.net_worth.evidence_service import (
     CompleteNetWorthEvidence,
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
+    SelectedAccountSnapshotIdentity,
+    validate_required_account_snapshot_identities,
 )
 from app.modules.net_worth.persistence_projection import (
     ExpectedNetWorthSnapshotPersistence,
@@ -63,6 +65,7 @@ class WriteNetWorthSnapshotCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    required_account_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +78,7 @@ class NetWorthSnapshotWriteResult:
     currency: str
     account_count: int
     selected_account_snapshot_count: int
+    selected_account_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...] = ()
 
 
 class _EvidenceBuilder(Protocol):
@@ -189,6 +193,12 @@ def _validate_command(command: object) -> WriteNetWorthSnapshotCommand:
         or command.is_recalculated is not (command.source is SnapshotSource.manual_recalculation)
     ):
         raise _fail()
+    try:
+        required_identities = validate_required_account_snapshot_identities(
+            command.required_account_snapshot_identities
+        )
+    except NetWorthEvidenceStateError as exc:
+        raise _fail() from exc
     return WriteNetWorthSnapshotCommand(
         user_id=user_id,
         snapshot_timestamp=_aligned_timestamp(
@@ -202,6 +212,7 @@ def _validate_command(command: object) -> WriteNetWorthSnapshotCommand:
         calculated_at=_timestamp(command.calculated_at),
         created_at=_timestamp(command.created_at),
         is_recalculated=command.is_recalculated,
+        required_account_snapshot_identities=required_identities,
     )
 
 
@@ -263,6 +274,10 @@ def _validate_projection(
         or not isinstance(audit.selected_identities, tuple)
         or len(audit.selected_account_ids) != len(audit.selected_account_snapshot_ids)
         or len(audit.selected_account_ids) != len(audit.selected_identities)
+        or (
+            command.required_account_snapshot_identities is not None
+            and audit.selected_identities != command.required_account_snapshot_identities
+        )
     ):
         raise _fail()
     return projection
@@ -282,6 +297,7 @@ def _result(
         currency=snapshot.currency,
         account_count=len(projection.audit.selected_account_ids),
         selected_account_snapshot_count=len(projection.audit.selected_account_snapshot_ids),
+        selected_account_snapshot_identities=projection.audit.selected_identities,
     )
 
 
@@ -365,6 +381,7 @@ class NetWorthSnapshotWriter:
                 granularity=command.granularity,
                 currency=command.currency,
                 calculation_version=command.calculation_version,
+                required_account_snapshot_identities=(command.required_account_snapshot_identities),
             )
         )
         projection = _validate_projection(

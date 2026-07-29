@@ -193,6 +193,13 @@ def _json(value: str) -> CanonicalNetWorthJsonObject:
     return CanonicalNetWorthJsonObject((("CZK", value),))
 
 
+def _required_identities() -> tuple[SelectedAccountSnapshotIdentity, ...]:
+    return (
+        SelectedAccountSnapshotIdentity("account-1", "source-1"),
+        SelectedAccountSnapshotIdentity("account-2", "source-2"),
+    )
+
+
 def _projection() -> ExpectedNetWorthSnapshotPersistence:
     return ExpectedNetWorthSnapshotPersistence(
         snapshot=ExpectedNetWorthSnapshotRow(
@@ -219,10 +226,7 @@ def _projection() -> ExpectedNetWorthSnapshotPersistence:
         audit=NetWorthSnapshotPersistenceAudit(
             selected_account_ids=("account-1", "account-2"),
             selected_account_snapshot_ids=("source-1", "source-2"),
-            selected_identities=(
-                SelectedAccountSnapshotIdentity("account-1", "source-1"),
-                SelectedAccountSnapshotIdentity("account-2", "source-2"),
-            ),
+            selected_identities=_required_identities(),
         ),
     )
 
@@ -275,6 +279,7 @@ async def test_created_path_owns_one_transaction_and_exact_operation_order() -> 
         currency="CZK",
         account_count=2,
         selected_account_snapshot_count=2,
+        selected_account_snapshot_identities=_required_identities(),
     )
     assert calls == [
         "serializable",
@@ -296,6 +301,7 @@ async def test_created_path_owns_one_transaction_and_exact_operation_order() -> 
             granularity=SnapshotGranularity.day,
             currency="CZK",
             calculation_version=1,
+            required_account_snapshot_identities=None,
         )
     ]
     assert projector.inputs[0][1] == NetWorthSnapshotPersistenceMetadata(
@@ -401,6 +407,72 @@ async def test_invalid_commands_fail_before_transaction(changes: dict[str, objec
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "required",
+    [
+        cast(Any, [SelectedAccountSnapshotIdentity("account-1", "source-1")]),
+        cast(Any, (object(),)),
+        (SelectedAccountSnapshotIdentity("", "source-1"),),
+        (SelectedAccountSnapshotIdentity("account-1", " source-1"),),
+        (
+            SelectedAccountSnapshotIdentity("account-1", "source-1"),
+            SelectedAccountSnapshotIdentity("account-1", "source-2"),
+        ),
+        (
+            SelectedAccountSnapshotIdentity("account-1", "source-1"),
+            SelectedAccountSnapshotIdentity("account-2", "source-1"),
+        ),
+        tuple(reversed(_required_identities())),
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_dependency_guard_fails_before_transaction(
+    required: object,
+) -> None:
+    writer, session, _, evidence, projector, calls = _writer()
+
+    with pytest.raises(
+        NetWorthSnapshotWriteStateError,
+        match=r"^Net-worth snapshot could not be persisted\.$",
+    ) as caught:
+        await writer.write(_command(required_account_snapshot_identities=required))
+
+    assert isinstance(caught.value.__cause__, NetWorthEvidenceStateError)
+    assert session.begin_count == session.commit_count == session.rollback_count == 0
+    assert evidence.commands == []
+    assert projector.inputs == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_exact_dependency_guard_reaches_evidence_projection_and_result() -> None:
+    required = _required_identities()
+    writer, _, _, evidence, _, _ = _writer()
+
+    result = await writer.write(_command(required_account_snapshot_identities=required))
+
+    assert evidence.commands[0].required_account_snapshot_identities == required
+    assert result.selected_account_snapshot_identities == required
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_guard_remains_distinct_from_none() -> None:
+    empty_projection = replace(
+        _projection(),
+        audit=NetWorthSnapshotPersistenceAudit(
+            selected_account_ids=(),
+            selected_account_snapshot_ids=(),
+            selected_identities=(),
+        ),
+    )
+    writer, _, _, evidence, _, _ = _writer(projection=empty_projection)
+
+    result = await writer.write(_command(required_account_snapshot_identities=()))
+
+    assert evidence.commands[0].required_account_snapshot_identities == ()
+    assert result.selected_account_snapshot_identities == ()
+
+
 @pytest.mark.asyncio
 async def test_wrong_command_runtime_type_fails_before_transaction() -> None:
     writer, session, _, _, _, calls = _writer()
@@ -481,6 +553,35 @@ async def test_projection_identity_or_audit_mismatch_fails_closed(
 
 
 @pytest.mark.asyncio
+async def test_projection_dependency_mismatch_fails_before_replay_or_insert() -> None:
+    required = _required_identities()
+    projection = replace(
+        _projection(),
+        audit=replace(
+            _projection().audit,
+            selected_account_ids=("account-1", "account-3"),
+            selected_account_snapshot_ids=("source-1", "source-3"),
+            selected_identities=(
+                SelectedAccountSnapshotIdentity("account-1", "source-1"),
+                SelectedAccountSnapshotIdentity("account-3", "source-3"),
+            ),
+        ),
+    )
+    writer, session, repository, _, _, calls = _writer(projection=projection)
+    repository.existing = _model()
+
+    with pytest.raises(NetWorthSnapshotWriteStateError):
+        await writer.write(_command(required_account_snapshot_identities=required))
+
+    assert "existing" not in calls
+    assert "id" not in calls
+    assert "add" not in calls
+    assert "flush" not in calls
+    assert repository.inserted is None
+    assert session.rollback_count == 1
+
+
+@pytest.mark.asyncio
 async def test_wrong_projection_runtime_type_fails_closed() -> None:
     writer, session, repository, _, projector, _ = _writer()
     projector.projection = cast(Any, object())
@@ -543,6 +644,22 @@ async def test_retry_budget_is_bounded_to_three_complete_attempts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_attempts_preserve_exact_dependency_guard() -> None:
+    required = _required_identities()
+    writer, session, repository, evidence, _, _ = _writer()
+    repository.flush_errors = [_SqlStateError("40001")]
+
+    result = await writer.write(_command(required_account_snapshot_identities=required))
+
+    assert result.disposition is NetWorthSnapshotWriteDisposition.created
+    assert session.begin_count == 2
+    assert [item.required_account_snapshot_identities for item in evidence.commands] == [
+        required,
+        required,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_nonretryable_database_error_has_one_attempt() -> None:
     writer, session, repository, evidence, projector, _ = _writer()
     repository.flush_errors = [_SqlStateError("22003")]
@@ -552,6 +669,19 @@ async def test_nonretryable_database_error_has_one_attempt() -> None:
 
     assert session.begin_count == session.rollback_count == 1
     assert len(evidence.commands) == len(projector.inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_unexpected_non_database_error_propagates_unchanged() -> None:
+    error = RuntimeError("controlled programming error")
+    writer, session, _, _, projector, _ = _writer()
+    projector.error = error
+
+    with pytest.raises(RuntimeError) as caught:
+        await writer.write(_command())
+
+    assert caught.value is error
+    assert session.begin_count == session.rollback_count == 1
 
 
 @pytest.mark.parametrize(
@@ -606,6 +736,7 @@ def test_command_result_and_projection_contracts_are_frozen() -> None:
         command.__setattr__("user_id", "changed")
     with pytest.raises(FrozenInstanceError):
         result.__setattr__("snapshot_id", "changed")
+    assert result.selected_account_snapshot_identities == ()
 
 
 def test_advisory_lock_scope_and_hash_are_stable_and_namespaced() -> None:

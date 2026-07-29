@@ -171,6 +171,7 @@ class ManualNetWorthSnapshotService:
             calculated_at=bucket,
             created_at=bucket,
             is_recalculated=True,
+            required_account_snapshot_identities=None,
         )
         try:
             result = await self.writer_factory(self.session).write(writer_command)

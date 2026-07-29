@@ -32,6 +32,7 @@ from app.modules.net_worth.evidence_service import (
     BuildNetWorthEvidenceCommand,
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
+    SelectedAccountSnapshotIdentity,
 )
 from app.modules.net_worth.manual_service import (
     ManualNetWorthSnapshotService,
@@ -211,6 +212,20 @@ def _command(prefix: str, **changes: object) -> WriteNetWorthSnapshotCommand:
     }
     values.update(changes)
     return WriteNetWorthSnapshotCommand(**cast(Any, values))
+
+
+def _required(
+    *snapshots: AccountSnapshotModel,
+) -> tuple[SelectedAccountSnapshotIdentity, ...]:
+    return tuple(
+        sorted(
+            (
+                SelectedAccountSnapshotIdentity(snapshot.account_id, snapshot.id)
+                for snapshot in snapshots
+            ),
+            key=lambda identity: (identity.account_id, identity.snapshot_id),
+        )
+    )
 
 
 async def _cleanup(prefix: str) -> None:
@@ -483,6 +498,175 @@ async def test_mixed_snapshot_create_and_exact_read_only_replay() -> None:
         assert len(await _rows(prefix)) == 1
         assert (await _state(prefix))[-1] == physical_before_replay
         assert before_sources[:-1] == after_first[:-1]
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_exact_dependency_guard_creates_replays_and_returns_lineage() -> None:
+    prefix = "k5d1-writer-guard"
+    broker = _account(prefix, "broker", AccountType.broker)
+    mortgage = _account(prefix, "mortgage", AccountType.mortgage)
+    broker_snapshot = _source_snapshot(prefix, broker)
+    mortgage_snapshot = _source_snapshot(prefix, mortgage)
+    required = _required(broker_snapshot, mortgage_snapshot)
+    await _seed(
+        prefix,
+        (broker, mortgage),
+        (broker_snapshot, mortgage_snapshot),
+    )
+    command = _command(
+        prefix,
+        required_account_snapshot_identities=required,
+    )
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            first = await NetWorthSnapshotWriter(session).write(command)
+        async with AsyncSession(engine) as session:
+            second = await NetWorthSnapshotWriter(session).write(command)
+
+        assert first.disposition is NetWorthSnapshotWriteDisposition.created
+        assert second.disposition is NetWorthSnapshotWriteDisposition.replayed
+        assert first.snapshot_id == second.snapshot_id
+        assert first.selected_account_snapshot_identities == required
+        assert second.selected_account_snapshot_identities == required
+        assert len(await _rows(prefix)) == 1
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_guard_mismatch_fails_before_physical_replay_and_does_not_repair() -> None:
+    prefix = "k5d1-writer-mismatch"
+    account = _account(prefix, "broker", AccountType.broker)
+    snapshot = _source_snapshot(prefix, account)
+    required = _required(snapshot)
+    account_id = account.id
+    snapshot_id = snapshot.id
+    await _seed(prefix, (account,), (snapshot,))
+    engine = _engine()
+    try:
+        valid = _command(
+            prefix,
+            required_account_snapshot_identities=required,
+        )
+        async with AsyncSession(engine) as session:
+            created = await NetWorthSnapshotWriter(session).write(valid)
+        before = await _state(prefix)
+        invalid = _command(
+            prefix,
+            required_account_snapshot_identities=(
+                SelectedAccountSnapshotIdentity(
+                    account_id,
+                    f"{snapshot_id}-different",
+                ),
+            ),
+        )
+
+        async with AsyncSession(engine) as session:
+            with pytest.raises(NetWorthEvidenceStateError):
+                await NetWorthSnapshotWriter(session).write(invalid)
+
+        assert len(await _rows(prefix)) == 1
+        assert (await _rows(prefix))[0].id == created.snapshot_id
+        assert await _state(prefix) == before
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_guard_creates_and_replays_zero_account_snapshot() -> None:
+    prefix = "k5d1-writer-empty"
+    await _seed(prefix)
+    command = _command(
+        prefix,
+        required_account_snapshot_identities=(),
+    )
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            first = await NetWorthSnapshotWriter(session).write(command)
+        async with AsyncSession(engine) as session:
+            second = await NetWorthSnapshotWriter(session).write(command)
+
+        assert first.disposition is NetWorthSnapshotWriteDisposition.created
+        assert second.disposition is NetWorthSnapshotWriteDisposition.replayed
+        assert first.account_count == first.selected_account_snapshot_count == 0
+        assert first.selected_account_snapshot_identities == ()
+        assert len(await _rows(prefix)) == 1
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_membership_drift_invalidates_precomputed_dependency_guard() -> None:
+    prefix = "k5d1-writer-membership-drift"
+    account_a = _account(prefix, "account-a", AccountType.broker)
+    snapshot_a = _source_snapshot(prefix, account_a)
+    required = _required(snapshot_a)
+    await _seed(prefix, (account_a,), (snapshot_a,))
+    account_b = _account(prefix, "account-b", AccountType.loan)
+    snapshot_b = _source_snapshot(prefix, account_b)
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            session.add(account_b)
+            await session.flush()
+            session.add(_membership(prefix, account_b))
+            session.add(snapshot_b)
+            await session.commit()
+
+        async with AsyncSession(engine) as session:
+            with pytest.raises(NetWorthEvidenceStateError):
+                await NetWorthSnapshotWriter(session).write(
+                    _command(
+                        prefix,
+                        required_account_snapshot_identities=required,
+                    )
+                )
+
+        assert await _rows(prefix) == ()
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_same_count_account_substitution_fails_closed() -> None:
+    prefix = "k5d1-writer-substitution"
+    account_a = _account(prefix, "account-a", AccountType.broker)
+    account_b = _account(prefix, "account-b", AccountType.loan)
+    snapshot_a = _source_snapshot(prefix, account_a)
+    snapshot_b = _source_snapshot(prefix, account_b)
+    required = (
+        SelectedAccountSnapshotIdentity(account_a.id, snapshot_a.id),
+        SelectedAccountSnapshotIdentity(
+            f"{prefix}-account-c",
+            f"{prefix}-source-{prefix}-account-c",
+        ),
+    )
+    await _seed(
+        prefix,
+        (account_a, account_b),
+        (snapshot_a, snapshot_b),
+    )
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            with pytest.raises(NetWorthEvidenceStateError):
+                await NetWorthSnapshotWriter(session).write(
+                    _command(
+                        prefix,
+                        required_account_snapshot_identities=required,
+                    )
+                )
+
+        assert await _rows(prefix) == ()
     finally:
         await engine.dispose()
         await _cleanup(prefix)

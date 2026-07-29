@@ -273,4 +273,25 @@ writer. It performs no Account, User, or FX lookup and never substitutes
 `User.baseCurrency`. Existing owner/admin/editor authorization, concealed
 viewer/inaccessible behavior, authorization-transaction handoff, one-clock
 minute bucket, and generic conflict mapping are unchanged. No API exposes FX
-evidence, and coordinated User-base-currency execution remains 5K-D.
+evidence, and coordinated User-base-currency execution remains 5K-D2.
+
+The first coordinated-execution boundary is 5K-D1, an exact dependency guard
+inside the existing net-worth evidence service and atomic writer. Both internal
+commands may carry an already sorted immutable tuple of
+`SelectedAccountSnapshotIdentity` values. `None` retains manual discovery of
+all current active accounts; an explicit tuple, including an empty tuple,
+requires exact persisted account and AccountSnapshot identity equality.
+
+The evidence service never uses the guard to narrow discovery. Inside each
+coherent writer attempt it reloads the persisted User, base currency, complete
+Account/AccountMember access set, and exact source snapshots, then compares
+both ordered account IDs and ordered account/snapshot identities. The writer
+also compares the persistence audit identities before any replay or insert
+decision. Every SERIALIZABLE retry receives the unchanged guard.
+
+Selected dependency identities are returned by the internal writer result for
+future 5K-D2 orchestration only. The manual endpoint passes `None` and exposes
+neither account nor snapshot lineage. 5K-D1 adds no executor, outer
+orchestration transaction, job state, schema, AccountSnapshot write, or API;
+those coordinated execution responsibilities remain 5K-D2, with endpoint and
+import integration remaining 5K-E.

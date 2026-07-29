@@ -23,6 +23,7 @@ from app.modules.net_worth.evidence_service import (
     CompleteNetWorthEvidence,
     NetWorthEvidenceService,
     NetWorthEvidenceStateError,
+    SelectedAccountSnapshotIdentity,
 )
 from app.modules.net_worth.projection import (
     NetWorthProjectionInput,
@@ -196,6 +197,16 @@ def _command(**changes: object) -> BuildNetWorthEvidenceCommand:
     return BuildNetWorthEvidenceCommand(**cast(Any, values))
 
 
+def _identity(
+    account_id: str = "account-1",
+    snapshot_id: str = "snapshot-account-1",
+) -> SelectedAccountSnapshotIdentity:
+    return SelectedAccountSnapshotIdentity(
+        account_id=account_id,
+        snapshot_id=snapshot_id,
+    )
+
+
 def _set_archive_state(
     access: PersistedAccountAccess,
     *,
@@ -253,6 +264,149 @@ async def test_invalid_command_fails_before_repository_access(command: object) -
         await service.build(cast(Any, command))
 
     assert repository.isolation_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "required",
+    [
+        cast(Any, [_identity()]),
+        cast(Any, (object(),)),
+        (_identity(account_id=""),),
+        (_identity(account_id=" account-1"),),
+        (_identity(snapshot_id=""),),
+        (_identity(snapshot_id="snapshot-account-1 "),),
+        (
+            _identity("account-1", "snapshot-1"),
+            _identity("account-1", "snapshot-2"),
+        ),
+        (
+            _identity("account-1", "snapshot-1"),
+            _identity("account-2", "snapshot-1"),
+        ),
+        (
+            _identity("account-b", "snapshot-b"),
+            _identity("account-a", "snapshot-a"),
+        ),
+    ],
+)
+async def test_invalid_required_identities_fail_before_repository_access(
+    required: object,
+) -> None:
+    repository = FakeRepository()
+    service, _ = _service(repository)
+
+    with pytest.raises(
+        NetWorthEvidenceStateError,
+        match=r"^Persisted evidence cannot produce a complete net worth snapshot\.$",
+    ):
+        await service.build(_command(required_account_snapshot_identities=required))
+
+    assert repository.isolation_calls == 0
+    assert repository.user_calls == 0
+    assert repository.account_calls == 0
+    assert repository.snapshot_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_none_required_identities_preserves_unconstrained_selection() -> None:
+    account = _account()
+    repository = FakeRepository(
+        accesses=(_access(account),),
+        snapshots=(_snapshot(account),),
+    )
+    service, _ = _service(repository)
+
+    result = await service.build(_command(required_account_snapshot_identities=None))
+
+    assert result.selected_identities == (_identity(),)
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_required_identities_accepts_exact_empty_user() -> None:
+    service, _ = _service(FakeRepository())
+
+    result = await service.build(_command(required_account_snapshot_identities=()))
+
+    assert result.selected_identities == ()
+    assert result.projection.account_count == 0
+
+
+@pytest.mark.asyncio
+async def test_exact_required_identities_match_persisted_accounts_and_snapshots() -> None:
+    account_a = _account("account-a")
+    account_b = _account("account-b")
+    required = (
+        _identity("account-a", "snapshot-a"),
+        _identity("account-b", "snapshot-b"),
+    )
+    repository = FakeRepository(
+        accesses=(_access(account_b), _access(account_a)),
+        snapshots=(
+            _snapshot(account_b, snapshot_id="snapshot-b"),
+            _snapshot(account_a, snapshot_id="snapshot-a"),
+        ),
+    )
+    service, _ = _service(repository)
+
+    result = await service.build(_command(required_account_snapshot_identities=required))
+
+    assert result.selected_identities == required
+    assert result.selected_account_ids == ("account-a", "account-b")
+    assert required == (
+        _identity("account-a", "snapshot-a"),
+        _identity("account-b", "snapshot-b"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "required",
+    [
+        (),
+        (_identity("account-b", "snapshot-account-b"),),
+        (
+            _identity("account-1", "snapshot-account-1"),
+            _identity("account-2", "snapshot-account-2"),
+        ),
+    ],
+)
+async def test_required_account_set_must_exactly_match_active_accounts(
+    required: tuple[SelectedAccountSnapshotIdentity, ...],
+) -> None:
+    account = _account()
+    repository = FakeRepository(
+        accesses=(_access(account),),
+        snapshots=(_snapshot(account),),
+    )
+    service, _ = _service(repository)
+
+    with pytest.raises(NetWorthEvidenceStateError):
+        await service.build(_command(required_account_snapshot_identities=required))
+
+    assert repository.account_calls == 1
+    assert repository.snapshot_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_required_snapshot_identity_must_match_selected_snapshot() -> None:
+    account = _account()
+    repository = FakeRepository(
+        accesses=(_access(account),),
+        snapshots=(_snapshot(account),),
+    )
+    projection = Mock(side_effect=build_net_worth_projection)
+    service, _ = _service(repository, projection_builder=projection)
+
+    with pytest.raises(NetWorthEvidenceStateError):
+        await service.build(
+            _command(
+                required_account_snapshot_identities=(_identity(snapshot_id="different-snapshot"),)
+            )
+        )
+
+    assert repository.snapshot_calls == 1
+    projection.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -734,6 +888,20 @@ async def test_malformed_projection_result_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unexpected_programming_error_propagates_unchanged() -> None:
+    error = RuntimeError("controlled programming error")
+    service, _ = _service(
+        FakeRepository(),
+        projection_builder=Mock(side_effect=error),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await service.build(_command())
+
+    assert caught.value is error
+
+
+@pytest.mark.asyncio
 async def test_service_and_repository_are_transaction_neutral() -> None:
     repository = FakeRepository()
     service, session = _service(repository)
@@ -752,7 +920,10 @@ async def test_service_and_repository_are_transaction_neutral() -> None:
 
 
 def test_result_contract_is_frozen() -> None:
-    command = _command()
+    identity = _identity()
+    command = _command(required_account_snapshot_identities=(identity,))
     with pytest.raises(FrozenInstanceError):
         cast(Any, command).user_id = "other"
+    with pytest.raises(FrozenInstanceError):
+        cast(Any, identity).snapshot_id = "other"
     assert not hasattr(command, "__dict__")

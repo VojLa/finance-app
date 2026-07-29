@@ -415,3 +415,27 @@ eligible reused AccountSnapshot may still be financially corrupt, which must
 fail later in the complete 5J-B validation. 5K-B requires coherent
 `REPEATABLE READ` or `SERIALIZABLE`, owns no transaction or lock, disables
 autoflush, and performs no write.
+
+## Exact coordinated net-worth dependencies
+
+5K-D is split into an exact dependency guard (5K-D1) and the later coordinated
+executor (5K-D2). A guarded internal NetWorth write may declare one immutable,
+unique, already sorted tuple of `(account_id, AccountSnapshot.id)` identities.
+`None` means the existing manual selection of every current active supported
+account; `()` means the exact current account set must be empty.
+
+The guard is not a caller-selected account filter. Net-worth evidence still
+loads the persisted User and complete current Account/AccountMember access set,
+derives active supported accounts, and requires exact ordered account-ID
+equality. It then selects the same-bucket, same-granularity, same-output-
+currency, same-version AccountSnapshots and requires exact ordered pair
+equality. Added, removed, archived, or same-count-substituted accounts and
+replaced snapshot identities all fail closed.
+
+The same tuple is checked in every SERIALIZABLE writer attempt and again
+against the physical projection audit before replay or creation. It is returned
+only in the internal writer result so 5K-D2 can compare completed refresh
+outputs with final net-worth dependencies. It is not persisted in
+NetWorthSnapshot, does not change physical identity, and is absent from the
+manual HTTP request and response. 5K-D2 execution and 5K-E endpoint/import
+integration remain unimplemented.
