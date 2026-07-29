@@ -1,0 +1,356 @@
+"""Authenticated orchestration for coordinated manual snapshot refresh."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Literal, Protocol
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.models import AuthenticatedPrincipal
+from app.db.models.enums import SnapshotGranularity, SnapshotSource
+from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
+from app.modules.net_worth.manual_service import CURRENT_NET_WORTH_CALCULATION_VERSION
+from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
+from app.modules.snapshot_refresh.executor import (
+    AccountSnapshotRefreshExecutionDisposition,
+    ExecutedAccountSnapshotRefresh,
+    ExecuteUserSnapshotRefreshCommand,
+    ExecuteUserSnapshotRefreshResult,
+    SnapshotRefreshExecutionConflictError,
+    SnapshotRefreshExecutionStateError,
+    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
+from app.modules.snapshots.manual_service import (
+    CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION,
+)
+from app.shared.errors import ApplicationError
+
+MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY = SnapshotGranularity.minute
+MANUAL_USER_SNAPSHOT_REFRESH_SOURCE = SnapshotSource.manual_recalculation
+CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION = CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION
+Clock = Callable[[], datetime]
+
+
+class UserSnapshotRefreshUnavailableError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="snapshot_refresh_unavailable",
+            message="Snapshot refresh cannot be completed from the current account data.",
+            status_code=409,
+        )
+
+
+class UserSnapshotRefreshConflictError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="snapshot_refresh_conflict",
+            message="Snapshot refresh conflicts with existing data.",
+            status_code=409,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecalculateUserSnapshotRefreshCommand:
+    principal: AuthenticatedPrincipal
+
+
+@dataclass(frozen=True, slots=True)
+class RecalculateUserSnapshotRefreshResult:
+    net_worth_snapshot_id: str
+    net_worth_status: Literal["created", "replayed"]
+    timestamp: datetime
+    granularity: SnapshotGranularity
+    currency: str
+    refresh_account_count: int
+    reuse_only_account_count: int
+    created_account_snapshot_count: int
+    replayed_account_snapshot_count: int
+    reused_account_snapshot_count: int
+    selected_account_snapshot_count: int
+
+
+class _Executor(Protocol):
+    async def execute(
+        self,
+        command: ExecuteUserSnapshotRefreshCommand,
+    ) -> ExecuteUserSnapshotRefreshResult: ...
+
+
+type ExecutorFactory = Callable[[AsyncSession], _Executor]
+
+
+def current_user_snapshot_refresh_timestamp() -> datetime:
+    return datetime.now(UTC)
+
+
+def canonical_manual_user_snapshot_refresh_bucket(value: datetime) -> datetime:
+    if not isinstance(value, datetime):
+        raise UserSnapshotRefreshUnavailableError()
+    normalized = value if value.tzinfo is None else value.astimezone(UTC).replace(tzinfo=None)
+    return normalized.replace(second=0, microsecond=0)
+
+
+def _principal(value: object) -> AuthenticatedPrincipal:
+    if not isinstance(value, RecalculateUserSnapshotRefreshCommand):
+        raise UserSnapshotRefreshUnavailableError()
+    principal = value.principal
+    if (
+        not isinstance(principal, AuthenticatedPrincipal)
+        or not isinstance(principal.user_id, str)
+        or not principal.user_id
+        or principal.user_id != principal.user_id.strip()
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return principal
+
+
+def _calculation_version() -> int:
+    account_version = CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION
+    net_worth_version = CURRENT_NET_WORTH_CALCULATION_VERSION
+    refresh_version = CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION
+    if (
+        not isinstance(account_version, int)
+        or isinstance(account_version, bool)
+        or not isinstance(net_worth_version, int)
+        or isinstance(net_worth_version, bool)
+        or not isinstance(refresh_version, int)
+        or isinstance(refresh_version, bool)
+        or account_version < 1
+        or account_version != net_worth_version
+        or refresh_version != account_version
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return refresh_version
+
+
+def _nonblank(value: object) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise UserSnapshotRefreshUnavailableError()
+    return value
+
+
+def _currency(value: object) -> str:
+    currency = _nonblank(value)
+    if (
+        len(currency) != 3
+        or currency != currency.upper()
+        or not currency.isascii()
+        or not currency.isalpha()
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return currency
+
+
+def _count(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise UserSnapshotRefreshUnavailableError()
+    return value
+
+
+def _validated_account_executions(
+    value: object,
+) -> tuple[ExecutedAccountSnapshotRefresh, ...]:
+    if not isinstance(value, tuple):
+        raise UserSnapshotRefreshUnavailableError()
+    account_ids: set[str] = set()
+    snapshot_ids: set[str] = set()
+    validated: list[ExecutedAccountSnapshotRefresh] = []
+    for execution in value:
+        if not isinstance(execution, ExecutedAccountSnapshotRefresh):
+            raise UserSnapshotRefreshUnavailableError()
+        account_id = _nonblank(execution.account_id)
+        snapshot_id = _nonblank(execution.snapshot_id)
+        if (
+            account_id in account_ids
+            or snapshot_id in snapshot_ids
+            or not isinstance(execution.mode, AccountSnapshotRefreshMode)
+            or not isinstance(
+                execution.disposition,
+                AccountSnapshotRefreshExecutionDisposition,
+            )
+            or (
+                execution.mode is AccountSnapshotRefreshMode.refresh
+                and execution.disposition
+                not in {
+                    AccountSnapshotRefreshExecutionDisposition.created,
+                    AccountSnapshotRefreshExecutionDisposition.replayed,
+                }
+            )
+            or (
+                execution.mode is AccountSnapshotRefreshMode.reuse_only
+                and execution.disposition is not AccountSnapshotRefreshExecutionDisposition.reused
+            )
+        ):
+            raise UserSnapshotRefreshUnavailableError()
+        account_ids.add(account_id)
+        snapshot_ids.add(snapshot_id)
+        validated.append(execution)
+    return tuple(validated)
+
+
+def _validated_lineage(
+    value: object,
+    executions: tuple[ExecutedAccountSnapshotRefresh, ...],
+) -> tuple[SelectedAccountSnapshotIdentity, ...]:
+    if not isinstance(value, tuple):
+        raise UserSnapshotRefreshUnavailableError()
+    expected = tuple(
+        SelectedAccountSnapshotIdentity(
+            account_id=execution.account_id,
+            snapshot_id=execution.snapshot_id,
+        )
+        for execution in executions
+    )
+    if value != expected or any(
+        not isinstance(identity, SelectedAccountSnapshotIdentity) for identity in value
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return value
+
+
+def _validate_executor_result(
+    value: object,
+    *,
+    principal: AuthenticatedPrincipal,
+    bucket: datetime,
+    calculation_version: int,
+) -> ExecuteUserSnapshotRefreshResult:
+    if not isinstance(value, ExecuteUserSnapshotRefreshResult):
+        raise UserSnapshotRefreshUnavailableError()
+    executions = _validated_account_executions(value.account_snapshots)
+    lineage = _validated_lineage(
+        value.required_account_snapshot_identities,
+        executions,
+    )
+    refresh_count = _count(value.refresh_account_count)
+    reuse_count = _count(value.reuse_only_account_count)
+    created_count = _count(value.created_account_snapshot_count)
+    replayed_count = _count(value.replayed_account_snapshot_count)
+    reused_count = _count(value.reused_account_snapshot_count)
+    selected_count = _count(value.selected_account_snapshot_count)
+    if (
+        value.user_id != principal.user_id
+        or value.snapshot_timestamp != bucket
+        or value.granularity is not MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY
+        or value.source is not MANUAL_USER_SNAPSHOT_REFRESH_SOURCE
+        or not isinstance(value.calculation_version, int)
+        or isinstance(value.calculation_version, bool)
+        or value.calculation_version != calculation_version
+        or not isinstance(value.net_worth_disposition, NetWorthSnapshotWriteDisposition)
+        or refresh_count != created_count + replayed_count
+        or reuse_count != reused_count
+        or selected_count != refresh_count + reuse_count
+        or len(executions) != selected_count
+        or len(lineage) != selected_count
+        or created_count
+        != sum(
+            item.disposition is AccountSnapshotRefreshExecutionDisposition.created
+            for item in executions
+        )
+        or replayed_count
+        != sum(
+            item.disposition is AccountSnapshotRefreshExecutionDisposition.replayed
+            for item in executions
+        )
+        or reused_count
+        != sum(
+            item.disposition is AccountSnapshotRefreshExecutionDisposition.reused
+            for item in executions
+        )
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    _currency(value.output_currency)
+    _nonblank(value.net_worth_snapshot_id)
+    return value
+
+
+class ManualUserSnapshotRefreshService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        clock: Clock = current_user_snapshot_refresh_timestamp,
+        executor_factory: ExecutorFactory = UserSnapshotRefreshExecutor,
+    ) -> None:
+        self.session = session
+        self.clock = clock
+        self.executor_factory = executor_factory
+
+    async def recalculate(
+        self,
+        command: RecalculateUserSnapshotRefreshCommand,
+    ) -> RecalculateUserSnapshotRefreshResult:
+        try:
+            principal = _principal(command)
+            calculation_version = _calculation_version()
+        except UserSnapshotRefreshUnavailableError:
+            await self._close_active_transaction()
+            raise
+
+        try:
+            await self.session.commit()
+        except Exception:
+            await self._close_active_transaction()
+            raise
+        await self._require_idle("Snapshot refresh executor requires an idle database session.")
+
+        bucket = canonical_manual_user_snapshot_refresh_bucket(self.clock())
+        executor_command = ExecuteUserSnapshotRefreshCommand(
+            user_id=principal.user_id,
+            snapshot_timestamp=bucket,
+            granularity=MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY,
+            source=MANUAL_USER_SNAPSHOT_REFRESH_SOURCE,
+            calculation_version=calculation_version,
+            calculated_at=bucket,
+            created_at=bucket,
+            is_recalculated=True,
+        )
+        executor = self.executor_factory(self.session)
+        await self._require_idle(
+            "Snapshot refresh executor factory left an active database transaction."
+        )
+        try:
+            executor_result = await executor.execute(executor_command)
+        except SnapshotRefreshExecutionConflictError as exc:
+            await self._require_idle(
+                "Snapshot refresh executor left an active database transaction."
+            )
+            raise UserSnapshotRefreshConflictError() from exc
+        except SnapshotRefreshExecutionStateError as exc:
+            await self._require_idle(
+                "Snapshot refresh executor left an active database transaction."
+            )
+            raise UserSnapshotRefreshUnavailableError() from exc
+        await self._require_idle("Snapshot refresh executor left an active database transaction.")
+        result = _validate_executor_result(
+            executor_result,
+            principal=principal,
+            bucket=bucket,
+            calculation_version=calculation_version,
+        )
+        return RecalculateUserSnapshotRefreshResult(
+            net_worth_snapshot_id=result.net_worth_snapshot_id,
+            net_worth_status=result.net_worth_disposition.value,
+            timestamp=result.snapshot_timestamp,
+            granularity=result.granularity,
+            currency=result.output_currency,
+            refresh_account_count=result.refresh_account_count,
+            reuse_only_account_count=result.reuse_only_account_count,
+            created_account_snapshot_count=result.created_account_snapshot_count,
+            replayed_account_snapshot_count=result.replayed_account_snapshot_count,
+            reused_account_snapshot_count=result.reused_account_snapshot_count,
+            selected_account_snapshot_count=result.selected_account_snapshot_count,
+        )
+
+    async def _require_idle(self, message: str) -> None:
+        if self.session.in_transaction():
+            await self.session.rollback()
+            raise RuntimeError(message)
+
+    async def _close_active_transaction(self) -> None:
+        if self.session.in_transaction():
+            await self.session.rollback()
