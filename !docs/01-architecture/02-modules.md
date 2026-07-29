@@ -16,7 +16,7 @@ thin and shared database infrastructure lives outside modules.
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
 | snapshot_refresh      | Cross-domain planning and persisted coverage for coordinated snapshot refresh         | 5K-A/5K-B implemented; execution not implemented                             |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; pure output-currency valuation added in 5K-C1                   |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency valuation/evidence added through 5K-C2          |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
 
@@ -217,8 +217,19 @@ retain their evidence currencies. Liability evidence must remain in Account
 currency but may be converted to output currency; an empty mixed-currency
 account consumes no synthetic rate.
 
-This extension is calculation-only. Persisted output-currency/FX selection,
-physical projection mapping, writer identity/locking/replay changes, and manual
-orchestration compatibility remain 5K-C2 through 5K-C5. The existing evidence
-service and writer remain account-currency-only, so no mixed-currency
+The read-only 5K-C2 extension adds an optional output currency to the internal
+AccountSnapshot evidence command. Omission retains exact Account-currency
+behavior. Explicit output currency remains distinct from persisted
+`Account.currency`; required direct pairs are derived only from actual current
+and historical evidence currencies. Snapshot valuation selects latest direct
+rates through the snapshot timestamp, while historical financial metrics select
+from the same direct candidate pool through each event timestamp. Selected
+snapshot and historical rate IDs remain separate deterministic audits.
+
+Liability observations remain in Account currency and use one direct
+Account-currency-to-output rate only when needed. The adapter remains
+caller-transaction-owned and read-only and returns no ORM rows. Physical
+projection mapping, writer identity/locking/replay changes, and manual
+orchestration compatibility remain 5K-C3 through 5K-C5. The existing writer
+does not request a distinct output currency, so no mixed-currency
 AccountSnapshot is yet reachable through an application service.
