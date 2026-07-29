@@ -457,3 +457,28 @@ only resume mechanism. No compensation, overwrite, repair, cross-stage outer
 transaction, job-state model, or new persisted lineage is introduced. 5K-E
 endpoint, authorization, and import/post-processing integration remain
 unimplemented.
+
+## Authorized coordinated manual refresh
+
+5K-E is decomposed into the 5K-E1 manual endpoint and later 5K-E2
+import/post-processing integration. E1 targets exactly the authenticated
+principal's user and accepts no body, user/account IDs, currency, timestamp,
+granularity, or lineage. One server clock value becomes a naive UTC minute
+bucket used for all refresh timestamps after the authentication read
+transaction has been committed and the shared session is idle.
+
+The coordinated executor remains the source of persisted User base currency,
+complete account coverage, refresh versus viewer reuse-only classification,
+source AccountSnapshot lineage, and final guarded NetWorth creation. The public
+result exposes only the NetWorth snapshot identity and disposition plus currency,
+bucket, and aggregate execution counts. It never exposes the user identity,
+account or source-snapshot identities, memberships, FX evidence, projections,
+or audits. Missing/incomplete evidence and immutable conflict use distinct
+generic HTTP 409 contracts without identifying the failing account.
+
+Because each AccountSnapshot writer commits independently, an unavailable
+response can coexist with valid completed account rows. The next identical
+request resumes through exact replay and creates NetWorth only after all
+required identities are complete. E1 introduces no compensation, persisted
+execution state, migration, automatic retry, scheduler, worker, background job,
+or import hook; those post-import entry points remain unimplemented in 5K-E2.

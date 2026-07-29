@@ -15,7 +15,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, and coordinated snapshot execution          | 5K-A/5K-B/5K-D2 implemented; public integration remains 5K-E                  |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 implemented; 5K-E1 manual API added; import remains 5K-E2  |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -313,3 +313,22 @@ already committed account snapshots remain intact. 5K-D2 exposes no endpoint
 and performs no authorization, import integration, scheduling, calculation,
 evidence selection, physical comparison, or retry ownership; 5K-E remains the
 public/import boundary.
+
+5K-E is split into 5K-E1 (authorized synchronous manual endpoint) and 5K-E2
+(import/post-processing integration). The E1 route is
+`POST /api/v1/snapshot-refresh/recalculate`; it has no request body, path/query
+selector, or caller-owned snapshot metadata. It derives the user only from
+`CurrentPrincipal`, closes the authentication read transaction, verifies an
+idle session, and invokes the 5K-D2 executor once with one server-owned UTC
+minute bucket and the shared AccountSnapshot/NetWorth calculation version.
+Persisted User state still owns output currency, and 5K-B/5K-D2 still own
+membership roles and viewer `reuse_only` behavior.
+
+The E1 response contains only NetWorth identity/status, bucket metadata,
+currency, and aggregate account counts. Account IDs, AccountSnapshot IDs,
+membership data, selected lineage, FX evidence, projections, and audits never
+cross the public boundary. Incomplete state and immutable conflicts become
+separate generic HTTP 409 application errors. Independently committed account
+rows survive a later failure and allow exact replay on a repeated request.
+E1 adds no scheduler, worker, queue, background task, import hook, schema, or
+migration; import/post-processing integration remains 5K-E2.
