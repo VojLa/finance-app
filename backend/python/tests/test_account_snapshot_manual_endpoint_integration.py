@@ -815,7 +815,7 @@ async def _run_concurrent_liability_write_and_snapshot(
             )
         )
         await asyncio.wait_for(query_complete.wait(), timeout=10)
-        liability_result = await asyncio.wait_for(
+        liability_task = asyncio.create_task(
             LiabilityBalanceWriter(liability_session).write(
                 WriteLiabilityBalanceCommand(
                     account_id=account_id,
@@ -828,11 +828,15 @@ async def _run_concurrent_liability_write_and_snapshot(
                     external_id="concurrent-new",
                     created_at=NOW,
                 )
-            ),
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert not liability_task.done()
+        release_snapshot.set()
+        snapshot_result, liability_result = await asyncio.wait_for(
+            asyncio.gather(snapshot_task, liability_task),
             timeout=10,
         )
-        release_snapshot.set()
-        snapshot_result = await asyncio.wait_for(snapshot_task, timeout=10)
 
     async with AsyncSession(engine) as verify_session:
         snapshot_value = await verify_session.scalar(
@@ -845,7 +849,7 @@ async def _run_concurrent_liability_write_and_snapshot(
     return Decimal(snapshot_value), liability_result.total_outstanding
 
 
-def test_concurrent_liability_append_yields_coherent_old_snapshot_without_deadlock() -> None:
+def test_concurrent_liability_append_waits_and_yields_coherent_old_snapshot() -> None:
     prefix = "i5l2b-concurrent"
     asyncio.run(_cleanup(prefix))
     account_id, _ = asyncio.run(_seed_account(prefix, account_type=AccountType.loan))
