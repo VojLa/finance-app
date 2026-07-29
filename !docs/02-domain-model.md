@@ -275,3 +275,29 @@ is created. The response deliberately excludes user identity, account/source
 snapshot lineage, JSON evidence, and financial values. Scheduled generation,
 automatic account-snapshot orchestration, and historical net-worth reads remain
 unimplemented.
+
+## Coordinated snapshot-refresh plan
+
+The pure 5K-A contract describes a complete coordinated refresh without
+executing it. Current active broker, exchange, crypto-wallet, credit-card, loan,
+and mortgage accounts each produce one immutable target. An active bank, cash,
+or savings account invalidates the complete plan. A consistently archived
+account is excluded from current-state coverage; contradictory archive fields
+fail closed. An empty active set is valid and still yields a final net-worth
+target.
+
+Membership capability remains explicit: owner, admin, and editor may refresh an
+account snapshot; viewer may only reuse an exact existing snapshot. The latter
+is not a write grant. Every target uses the User base currency as its required
+output currency while retaining the Account currency. Different currencies
+mean exact FX evidence will be required later, but 5K-A neither selects nor
+applies FX.
+
+The final net-worth target contains every active account identity in
+deterministic order and depends on exact AccountSnapshots sharing its timestamp,
+granularity, output currency, and calculation version. It cannot run until all
+write-capable and reuse-only targets are satisfied. This is only a declarative
+dependency: 5K-A reads no database state, invokes no writer, and performs no
+financial calculation. The current AccountSnapshot writer remains
+account-currency-only; 5K-C must establish exact output-currency support before
+mixed-currency coordinated execution.

@@ -14,7 +14,8 @@ thin and shared database infrastructure lives outside modules.
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-D implemented; 5J-E after merge                                     |
+| net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
+| snapshot_refresh      | Cross-domain planning for coordinated account and net-worth refresh                   | Pure 5K-A plan implemented after merge; execution not implemented            |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I-A–5I-E and liability integration implemented                             |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -170,3 +171,23 @@ one generic unavailable conflict, while physical target differences produce a
 generic persisted-data conflict. The operation never creates missing account
 snapshots and adds no scheduler, worker, background task, or historical read
 API.
+
+The cross-domain `snapshot_refresh` module begins with the pure 5K-A planning
+boundary. It converts complete typed current user/account/membership evidence
+into deterministic immutable account targets and one final net-worth
+dependency target. Owner, admin, and editor targets are write-capable; viewer
+targets are `reuse_only` and require an exact pre-existing AccountSnapshot.
+One active unsupported bank, cash, or savings account invalidates the whole
+plan. Consistently archived accounts are excluded, while contradictory archive
+state fails closed.
+
+Every target uses the User base currency as its required output currency and
+preserves Account currency separately. Currency mismatch is classified as
+requiring later exact FX evidence; 5K-A selects no rates and performs no
+conversion. The final net-worth target declaratively depends on an exact
+same-bucket, same-granularity, same-output-currency, same-version
+AccountSnapshot for every active account, including `reuse_only` accounts.
+The current AccountSnapshot writer still emits Account currency and is
+unchanged. Persisted coverage selection, output-currency writer support,
+execution/recovery, authorization, import hooks, and scheduling belong to
+5K-B through 5K-E.
