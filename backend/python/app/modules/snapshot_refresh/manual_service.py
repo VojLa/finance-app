@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
-from app.modules.net_worth.manual_service import CURRENT_NET_WORTH_CALCULATION_VERSION
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
@@ -24,6 +23,9 @@ from app.modules.snapshot_refresh.executor import (
     UserSnapshotRefreshExecutor,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
+from app.modules.snapshot_refresh.version import (
+    current_coordinated_snapshot_calculation_version,
+)
 from app.modules.snapshots.manual_service import (
     CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION,
 )
@@ -109,22 +111,13 @@ def _principal(value: object) -> AuthenticatedPrincipal:
 
 
 def _calculation_version() -> int:
-    account_version = CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION
-    net_worth_version = CURRENT_NET_WORTH_CALCULATION_VERSION
-    refresh_version = CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION
-    if (
-        not isinstance(account_version, int)
-        or isinstance(account_version, bool)
-        or not isinstance(net_worth_version, int)
-        or isinstance(net_worth_version, bool)
-        or not isinstance(refresh_version, int)
-        or isinstance(refresh_version, bool)
-        or account_version < 1
-        or account_version != net_worth_version
-        or refresh_version != account_version
-    ):
+    try:
+        version = current_coordinated_snapshot_calculation_version()
+    except ValueError as exc:
+        raise UserSnapshotRefreshUnavailableError() from exc
+    if version != CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION:
         raise UserSnapshotRefreshUnavailableError()
-    return refresh_version
+    return version
 
 
 def _nonblank(value: object) -> str:

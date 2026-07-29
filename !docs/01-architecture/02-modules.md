@@ -15,7 +15,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 implemented; 5K-E1 manual API added; import remains 5K-E2  |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 and 5K-E1 implemented; imports invoke it post-commit in 5K-E2 |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
@@ -331,4 +331,21 @@ cross the public boundary. Incomplete state and immutable conflicts become
 separate generic HTTP 409 application errors. Independently committed account
 rows survive a later failure and allow exact replay on a repeated request.
 E1 adds no scheduler, worker, queue, background task, import hook, schema, or
-migration; import/post-processing integration remains 5K-E2.
+migration; import/post-processing integration is implemented separately by
+5K-E2.
+
+5K-E2 adds an `imports`-owned post-processing orchestrator above the unchanged
+canonical posting transaction. Posting commits first and returns immutable
+persisted target counts. Investment-event imports then run the authorized
+Holding rebuild; every nonempty import then invokes the whole-user coordinated
+snapshot executor with `SnapshotSource.import_event` and the minute bucket
+derived from the terminal batch `completedAt`. Each existing domain retains its
+own transaction and commit.
+
+Known Holding or snapshot incompleteness/conflict is therefore a truthful
+post-commit outcome, not an import rollback: the existing import endpoint
+returns HTTP 200 plus one aggregate `snapshot_refresh_status`. Deterministic
+ImportLog rows are audit-only and use advisory-lock-protected UUIDv5 identity;
+they do not suppress replay. No account/snapshot lineage is exposed and no
+scheduler, queue, worker, background task, job table, schema change, or
+compensation operation is introduced.
