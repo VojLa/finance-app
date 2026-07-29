@@ -144,6 +144,8 @@ async def _seed_account(
     archived: bool = False,
     with_investment: bool = False,
     with_price_ambiguity: bool = False,
+    account_currency: str = "CZK",
+    user_base_currency: str = "CZK",
 ) -> tuple[str, str]:
     account_id = f"{prefix}-account"
     user_id = f"{prefix}-user"
@@ -155,7 +157,7 @@ async def _seed_account(
                 email=f"{user_id}@example.com",
                 name=user_id,
                 password_hash=None,
-                base_currency="CZK",
+                base_currency=user_base_currency,
                 created_at=NOW,
                 updated_at=NOW,
             )
@@ -165,7 +167,7 @@ async def _seed_account(
                 id=account_id,
                 name=prefix,
                 type=account_type,
-                currency="CZK",
+                currency=account_currency,
                 color=None,
                 notes=None,
                 is_archived=archived,
@@ -463,7 +465,42 @@ async def _add_nonmember(prefix: str) -> str:
     return user_id
 
 
-def _call(account_id: str, user_id: str, *, now: datetime = NOW):
+async def _seed_exchange_rate(
+    prefix: str,
+    *,
+    from_currency: str,
+    to_currency: str,
+    rate: Decimal,
+) -> str:
+    rate_id = f"{prefix}-rate-{from_currency.lower()}-{to_currency.lower()}"
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        session.add(
+            ExchangeRateModel(
+                id=rate_id,
+                from_currency=from_currency,
+                to_currency=to_currency,
+                rate=rate,
+                date=NOW,
+                source=ExchangeRateSource.ecb,
+                created_at=NOW,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+    return rate_id
+
+
+_MISSING_BODY = object()
+
+
+def _call(
+    account_id: str,
+    user_id: str,
+    *,
+    now: datetime = NOW,
+    body: object = _MISSING_BODY,
+):
     settings = Settings(
         environment="test",
         database_url=DATABASE_URL,
@@ -475,7 +512,10 @@ def _call(account_id: str, user_id: str, *, now: datetime = NOW):
     app.dependency_overrides[get_current_principal] = lambda: _principal(user_id)
     app.dependency_overrides[get_snapshot_clock] = lambda: lambda: now
     with TestClient(app) as client:
-        return client.post(f"/api/v1/accounts/{account_id}/snapshots/recalculate")
+        path = f"/api/v1/accounts/{account_id}/snapshots/recalculate"
+        if body is _MISSING_BODY:
+            return client.post(path)
+        return client.post(path, json=body)
 
 
 async def _counts(account_id: str) -> tuple[int, int]:
@@ -546,6 +586,91 @@ def test_persisted_write_roles_create_replay_and_next_bucket(
         asyncio.run(_cleanup(prefix))
 
 
+def test_manual_output_currency_creates_and_replays_currency_separated_investment_rows() -> None:
+    prefix = "i5kc5-investment"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(
+        _seed_account(
+            prefix,
+            with_investment=True,
+            user_base_currency="USD",
+        )
+    )
+    try:
+        native = _call(account_id, user_id)
+        explicit_native = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "CZK"},
+        )
+        output = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
+        output_replay = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
+
+        assert native.status_code == explicit_native.status_code == 200
+        assert output.status_code == output_replay.status_code == 200
+        assert native.json()["status"] == "created"
+        assert native.json()["currency"] == "CZK"
+        assert explicit_native.json()["status"] == "replayed"
+        assert explicit_native.json()["snapshotId"] == native.json()["snapshotId"]
+        assert output.json()["status"] == "created"
+        assert output.json()["currency"] == "EUR"
+        assert output_replay.json()["status"] == "replayed"
+        assert output_replay.json()["snapshotId"] == output.json()["snapshotId"]
+        assert output.json()["snapshotId"] != native.json()["snapshotId"]
+
+        rows = asyncio.run(_snapshots(account_id))
+        by_currency = {row.currency: row for row in rows}
+        assert set(by_currency) == {"CZK", "EUR"}
+        assert by_currency["CZK"].investment_value == Decimal("750.000000")
+        assert by_currency["CZK"].investment_cost_basis == Decimal("500.000000")
+        assert by_currency["CZK"].cash_value == Decimal("-250.000000")
+        assert by_currency["CZK"].total_value == Decimal("500.000000")
+        assert by_currency["EUR"].investment_value == Decimal("30.000000")
+        assert by_currency["EUR"].investment_cost_basis == Decimal("20.000000")
+        assert by_currency["EUR"].cash_value == Decimal("-10.000000")
+        assert by_currency["EUR"].total_value == Decimal("20.000000")
+        assert by_currency["EUR"].investment_value_by_currency == {"EUR": "30.0000000000"}
+        assert asyncio.run(_counts(account_id)) == (2, 2)
+
+        async def load_items() -> dict[str, AccountSnapshotItemModel]:
+            engine = _engine()
+            async with AsyncSession(engine) as session:
+                items = tuple(
+                    await session.scalars(
+                        select(AccountSnapshotItemModel)
+                        .join(
+                            AccountSnapshotModel,
+                            AccountSnapshotModel.id == AccountSnapshotItemModel.snapshot_id,
+                        )
+                        .where(AccountSnapshotModel.account_id == account_id)
+                    )
+                )
+            await engine.dispose()
+            return {item.cost_currency: item for item in items if item.cost_currency}
+
+        items = asyncio.run(load_items())
+        assert set(items) == {"CZK", "EUR"}
+        assert items["CZK"].price_currency == "EUR"
+        assert items["CZK"].native_value == Decimal("30.0000000000")
+        assert items["CZK"].value == Decimal("750.0000000000")
+        assert items["CZK"].native_cost_currency == "EUR"
+        assert items["EUR"].price_currency == "EUR"
+        assert items["EUR"].native_value == Decimal("30.0000000000")
+        assert items["EUR"].value == Decimal("30.0000000000")
+        assert items["EUR"].native_cost_currency == "EUR"
+        assert items["EUR"].cost_basis == Decimal("20.0000000000")
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
 @pytest.mark.parametrize(
     ("access", "role"),
     [
@@ -565,8 +690,16 @@ def test_hidden_account_matrix_creates_nothing(
     )
     user_id = asyncio.run(_add_nonmember(prefix)) if access == "nonmember" else member_id
     try:
-        response = _call(account_id, user_id)
-        missing = _call(f"{prefix}-missing", user_id)
+        response = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
+        missing = _call(
+            f"{prefix}-missing",
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
         assert response.status_code == missing.status_code == 404
         assert response.json()["error"]["code"] == missing.json()["error"]["code"]
         assert response.json()["error"]["message"] == missing.json()["error"]["message"]
@@ -657,6 +790,82 @@ def test_liability_accounts_create_exact_zero_item_snapshots_and_replay(
         assert rows[0].liabilities_value == principal + interest + fees
         assert rows[0].total_value == -(principal + interest + fees)
         assert asyncio.run(_counts(account_id)) == (1, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+def test_manual_mixed_currency_liability_creates_and_replays_zero_item_snapshot() -> None:
+    prefix = "i5kc5-liability"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.loan))
+    asyncio.run(_seed_liability_balance(prefix, account_id))
+    rate_id = asyncio.run(
+        _seed_exchange_rate(
+            prefix,
+            from_currency="CZK",
+            to_currency="EUR",
+            rate=Decimal("0.04000000"),
+        )
+    )
+    try:
+        first = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
+        replay = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "EUR"},
+        )
+
+        assert first.status_code == replay.status_code == 200
+        assert first.json()["status"] == "created"
+        assert first.json()["currency"] == "EUR"
+        assert first.json()["itemCount"] == 0
+        assert replay.json()["status"] == "replayed"
+        assert replay.json()["snapshotId"] == first.json()["snapshotId"]
+        rows = asyncio.run(_snapshots(account_id))
+        assert len(rows) == 1
+        assert rows[0].currency == "EUR"
+        assert rows[0].liabilities_value == Decimal("4.600000")
+        assert rows[0].total_value == Decimal("-4.600000")
+        assert rows[0].exchange_rates == {
+            "version": 1,
+            "snapshotRates": [
+                {
+                    "rateId": rate_id,
+                    "from": "CZK",
+                    "to": "EUR",
+                    "rate": "0.04000000",
+                    "timestamp": NOW.isoformat(timespec="milliseconds"),
+                    "source": "ecb",
+                }
+            ],
+            "historicalRateIds": [],
+        }
+        assert asyncio.run(_counts(account_id)) == (1, 0)
+    finally:
+        asyncio.run(_cleanup(prefix))
+
+
+def test_manual_distinct_output_currency_missing_fx_is_generic_and_writes_nothing() -> None:
+    prefix = "i5kc5-missing-fx"
+    asyncio.run(_cleanup(prefix))
+    account_id, user_id = asyncio.run(_seed_account(prefix, with_investment=True))
+    try:
+        response = _call(
+            account_id,
+            user_id,
+            body={"outputCurrency": "USD"},
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "account_snapshot_unavailable"
+        public_payload = str(response.json())
+        assert "EUR" not in public_payload
+        assert "USD" not in public_payload
+        assert "rate" not in public_payload.lower()
+        assert asyncio.run(_counts(account_id)) == (0, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 
