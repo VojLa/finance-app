@@ -5,7 +5,7 @@
 Accepted; the basic legacy portfolio reader plus the 5L-A pure projection,
 5L-B exact persisted AccountSnapshot reader, 5L-C authorized exact API, and
 5L-D pure multi-account aggregation and 5L-E pure dashboard projection are
-implemented.
+implemented, together with the 5L-F authorized public integration.
 
 ## Decision
 
@@ -53,6 +53,16 @@ data.
   contain no investment breakdown.
 - Step 5L-E performs no database read, authorization, snapshot selection,
   Holding, price or FX lookup, endpoint work, or historical comparison.
-  Public portfolio/dashboard orchestration remains staged for 5L-F.
+  Step 5L-F composes it without changing that pure boundary.
+- Step 5L-F requires an explicit exact account selector set and performs no
+  membership-based account discovery or latest/fallback selection. One
+  `REPEATABLE READ` transaction contains every access check and exact 5L-B
+  read, followed by one 5L-D aggregation call. The dashboard adapter calls
+  5L-E exactly once and owns no database transaction.
+- The public portfolio response preserves account-local allocation; the
+  dashboard response exposes aggregate-denominator allocation. All financial
+  Decimal values are JSON strings. Foreign, missing, and archived accounts are
+  not distinguished, partial results do not exist, and the legacy and exact
+  single-account endpoints remain unchanged.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.

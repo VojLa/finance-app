@@ -9,6 +9,9 @@ from app.modules.portfolio_snapshot.aggregation import (
     MultiAccountPortfolioProjectionError,
     build_multi_account_portfolio_view,
 )
+from app.modules.portfolio_snapshot.authorized_reader import (
+    AuthorizedExactPortfolioSnapshotReader,
+)
 from app.modules.portfolio_snapshot.authorized_service import (
     AuthorizedPortfolioSnapshotService,
     PortfolioSnapshotUnavailableError,
@@ -27,6 +30,12 @@ from app.modules.portfolio_snapshot.models import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.portfolio_snapshot.multi_account_service import (
+    AuthorizedMultiAccountPortfolioSnapshotService,
+    ExactAccountSnapshotSelection,
+    ReadAuthorizedMultiAccountPortfolioSnapshotCommand,
+    ReadAuthorizedMultiAccountPortfolioSnapshotResult,
+)
 from app.modules.portfolio_snapshot.projection import (
     PortfolioSnapshotProjectionError,
     build_portfolio_snapshot_view,
@@ -41,8 +50,11 @@ from app.modules.portfolio_snapshot.reader import (
 __all__ = [
     "AccountType",
     "AssetType",
+    "AuthorizedExactPortfolioSnapshotReader",
+    "AuthorizedMultiAccountPortfolioSnapshotService",
     "AuthorizedPortfolioSnapshotService",
     "CompletePortfolioSnapshotRead",
+    "ExactAccountSnapshotSelection",
     "MultiAccountPortfolioAccountView",
     "MultiAccountPortfolioProjectionError",
     "MultiAccountPortfolioSummary",
@@ -57,6 +69,8 @@ __all__ = [
     "PortfolioSnapshotUnavailableError",
     "PortfolioSnapshotView",
     "PortfolioSummaryView",
+    "ReadAuthorizedMultiAccountPortfolioSnapshotCommand",
+    "ReadAuthorizedMultiAccountPortfolioSnapshotResult",
     "ReadAuthorizedPortfolioSnapshotCommand",
     "ReadAuthorizedPortfolioSnapshotResult",
     "ReadExactPortfolioSnapshotCommand",
