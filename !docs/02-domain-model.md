@@ -454,13 +454,13 @@ NetWorthSnapshot. Each domain writer owns and commits its own transaction, so
 successful account snapshots survive a later failure. Re-execution invokes all
 refresh targets again and uses exact physical replay—not in-memory state—as the
 only resume mechanism. No compensation, overwrite, repair, cross-stage outer
-transaction, job-state model, or new persisted lineage is introduced. 5K-E
-endpoint, authorization, and import/post-processing integration remain
-unimplemented.
+transaction, job-state model, or new persisted lineage is introduced. 5K-E1
+and 5K-E2 are the implemented endpoint, authorization, and post-import
+integration boundary.
 
 ## Authorized coordinated manual refresh
 
-5K-E is decomposed into the 5K-E1 manual endpoint and later 5K-E2
+5K-E is decomposed into the 5K-E1 manual endpoint and 5K-E2
 import/post-processing integration. E1 targets exactly the authenticated
 principal's user and accepts no body, user/account IDs, currency, timestamp,
 granularity, or lineage. One server clock value becomes a naive UTC minute
@@ -505,3 +505,29 @@ failure leaves canonical imported rows and any committed Holding or
 AccountSnapshot rows intact. ImportLog records generic deterministic audits,
 not job progress. There is no compensation, migration, job table, scheduler,
 worker, queue, or background task.
+
+## Final coordinated-refresh audit
+
+The completed 5K audit confirms the end-to-end persisted coverage, valuation,
+physical projection, writer, lineage, manual-entry, and import-entry
+contracts. Physical AccountSnapshot identity remains
+`(accountId, timestamp, output currency, granularity)` and NetWorthSnapshot
+identity remains `(userId, timestamp, currency, granularity)`. The same minute
+reached through manual and import orchestration never creates an alternate
+timestamp: exact metadata replays, while different immutable source or
+recalculation metadata conflicts without update, delete, or repair.
+
+Role-mixed coverage still writes owner/admin/editor targets, reuses viewer
+targets only from exact persisted evidence, and sends the complete ordered
+lineage to the final SERIALIZABLE NetWorth guard. Partial account-stage
+commits remain replayable after a later failure. E1 reports state/conflict as
+generic HTTP 409; E2 preserves the committed import and reports the same known
+outcomes as HTTP 200 `snapshot_refresh_status`. Neither response exposes
+account/source lineage, FX evidence, financial breakdowns, or internal
+exceptions.
+
+The physical PostgreSQL catalog retains naive `TIMESTAMP(3)`, canonical
+numeric scales, JSONB audits, existing foreign-key delete behavior, and
+currency-sensitive unique indexes. No 5K migration, job-state table,
+scheduler, worker, queue, background task, compensation path, or support for
+bank/cash/savings AccountSnapshots was introduced.
