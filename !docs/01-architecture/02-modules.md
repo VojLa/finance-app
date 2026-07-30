@@ -11,7 +11,7 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact persisted AccountSnapshot reads and pure single-account portfolio projection    | 5L-A/5L-B implemented; authorized API remains deferred                       |
+| `portfolio_snapshot`  | Exact persisted snapshot projection, reader, and authorized account API                | 5L-A through 5L-C implemented                                                |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -35,8 +35,8 @@ dataclasses. Canonical position ordering is
 `(asset_type, symbol, listing_id, item_id)`. The module performs no database,
 ORM, authorization, price or FX selection, clock access, ID generation, or
 serialization and does not change the existing portfolio API. A persisted exact
-reader is implemented separately in 5L-B; the authorized endpoint remains
-deferred to 5L-C.
+reader is implemented separately in 5L-B, and 5L-C exposes its pure result
+through an authorized account-specific endpoint.
 
 The implemented 5L-B reader selects one exact AccountSnapshot by account,
 timestamp, granularity, and output currency inside a caller-owned coherent
@@ -45,8 +45,20 @@ metadata with explicit read-only joins, validates the complete immutable graph,
 maps database enums and physical currency semantics into the pure 5L-A source,
 and invokes the pure projection once. It never selects a latest snapshot or
 reads Holdings, prices, exchange rates, users, memberships, or live balances.
-The repository owns no transaction, write, or lock. Authorization and the
-public API remain deferred to 5L-C; the legacy portfolio reader is unchanged.
+The repository owns no transaction, write, or lock. The 5L-C application
+service closes the authentication read transaction and then places
+authorization and the exact reader in one fresh `REPEATABLE READ` transaction,
+with the isolation statement preceding every authorization query. It permits
+explicit owner/admin/editor/viewer memberships and hides foreign, missing, and
+archived accounts behind the same not-found contract.
+
+The thin `GET /api/v1/portfolio/accounts/{account_id}/snapshot` adapter accepts
+only exact identity selectors. Its response serializes Decimal values as JSON
+strings and excludes membership/User data, internal selected-row lineage,
+persistence timestamps, and JSONB audits. It performs no financial
+recalculation and reads no Holding, PriceSnapshot, ExchangeRate, price, or FX
+evidence. The legacy portfolio reader remains registered and unchanged;
+multi-account aggregation is deferred to 5L-D.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires

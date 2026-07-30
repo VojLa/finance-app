@@ -93,9 +93,23 @@ the persisted value and cost basis; no cost basis, FX, or valuation is
 recalculated.
 
 5L-B adds no authorization, User or membership selection, endpoint, dashboard,
-multi-account aggregation, schema change, or migration. The existing basic
-portfolio endpoint still reads live Holdings and latest stored FX and remains a
-temporary legacy reader until a later 5L integration step replaces it.
+multi-account aggregation, schema change, or migration.
+
+5L-C exposes the pure view at
+`GET /api/v1/portfolio/accounts/{account_id}/snapshot`. Owner, admin, editor,
+and viewer memberships may read one exact account snapshot; foreign, missing,
+and archived accounts are not disclosed. Authorization and the 5L-B reader run
+inside the same fresh `REPEATABLE READ` transaction after the authentication
+read transaction is closed.
+
+The response retains the output/native currency split and serializes every
+financial Decimal as a JSON string. It excludes internal snapshot-item lineage,
+User and membership data, persistence timestamps, and JSONB audit evidence.
+5L-C performs no financial, allocation, cost-basis, P/L, liability, price, or
+FX calculation and reads no live Holding, PriceSnapshot, or ExchangeRate. The
+existing basic portfolio endpoint still reads live Holdings and latest stored
+FX and remains a temporary unchanged legacy reader. Multi-account aggregation
+is deferred to 5L-D.
 
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary
