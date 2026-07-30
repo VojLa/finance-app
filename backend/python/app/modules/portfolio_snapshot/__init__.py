@@ -1,5 +1,14 @@
 """Snapshot-backed portfolio presentation and exact read contracts."""
 
+from app.modules.portfolio_snapshot.aggregate_models import (
+    MultiAccountPortfolioAccountView,
+    MultiAccountPortfolioSummary,
+    MultiAccountPortfolioView,
+)
+from app.modules.portfolio_snapshot.aggregation import (
+    MultiAccountPortfolioProjectionError,
+    build_multi_account_portfolio_view,
+)
 from app.modules.portfolio_snapshot.authorized_service import (
     AuthorizedPortfolioSnapshotService,
     PortfolioSnapshotUnavailableError,
@@ -34,6 +43,10 @@ __all__ = [
     "AssetType",
     "AuthorizedPortfolioSnapshotService",
     "CompletePortfolioSnapshotRead",
+    "MultiAccountPortfolioAccountView",
+    "MultiAccountPortfolioProjectionError",
+    "MultiAccountPortfolioSummary",
+    "MultiAccountPortfolioView",
     "PortfolioAccountView",
     "PortfolioPositionView",
     "PortfolioSnapshotItemSource",
@@ -49,5 +62,6 @@ __all__ = [
     "ReadExactPortfolioSnapshotCommand",
     "SnapshotGranularity",
     "SnapshotSource",
+    "build_multi_account_portfolio_view",
     "build_portfolio_snapshot_view",
 ]
