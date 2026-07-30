@@ -11,6 +11,7 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
+| `portfolio_snapshot`  | Pure single-account projection from validated AccountSnapshot evidence                | 5L-A immutable read contract implemented; no persisted reader or API         |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -24,6 +25,17 @@ thin and shared database infrastructure lives outside modules.
 not a service layer and it intentionally defines no ORM relationships, so
 repository queries remain explicit and cannot trigger hidden asynchronous lazy
 loads.
+
+The Python `portfolio_snapshot` module owns the pure 5L-A single-account
+presentation contract. It accepts only immutable, already validated
+AccountSnapshot and item evidence, validates exact physical scales, output/native
+currency separation, aggregate and allocation invariants, supported account
+shapes, metadata, uniqueness, and canonical ordering, and returns frozen view
+dataclasses. Canonical position ordering is
+`(asset_type, symbol, listing_id, item_id)`. The module performs no database,
+ORM, authorization, price or FX selection, clock access, ID generation, or
+serialization and does not change the existing portfolio API. A persisted exact
+reader and authorized endpoint remain deferred to 5L-B and 5L-C.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires
