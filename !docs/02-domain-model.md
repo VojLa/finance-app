@@ -77,7 +77,22 @@ AccountSnapshot persistence contract is not supported. Positions are
 canonically ordered by `(asset_type, symbol, listing_id, item_id)`; duplicate
 item, listing, or asset/listing identities fail closed.
 
-5L-A adds no persisted reader, repository, authorization, endpoint, dashboard,
+5L-B adds a read-only adapter for one exact persisted AccountSnapshot identity.
+It requires a caller-owned `REPEATABLE READ` or `SERIALIZABLE` transaction,
+loads only Account, AccountSnapshot, AccountSnapshotItem, AssetListing, and
+Asset rows, and fails closed on missing, ambiguous, corrupt, or relationally
+incomplete evidence. It performs no latest-snapshot selection, price or FX
+lookup, live-Holding calculation, fallback, write, or lock.
+
+Physical AccountSnapshotItem `valueCurrency` is native price/value evidence and
+must equal its `priceCurrency` and AssetListing currency. The pure 5L-A
+position `value_currency` is the parent AccountSnapshot output currency, while
+the physical item `costCurrency` must already equal that output currency. The
+item unrealized P/L supplied to 5L-A is only the exact Decimal subtraction of
+the persisted value and cost basis; no cost basis, FX, or valuation is
+recalculated.
+
+5L-B adds no authorization, User or membership selection, endpoint, dashboard,
 multi-account aggregation, schema change, or migration. The existing basic
 portfolio endpoint still reads live Holdings and latest stored FX and remains a
 temporary legacy reader until a later 5L integration step replaces it.
