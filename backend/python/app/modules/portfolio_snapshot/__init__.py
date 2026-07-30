@@ -1,5 +1,11 @@
 """Snapshot-backed portfolio presentation and exact read contracts."""
 
+from app.modules.portfolio_snapshot.authorized_service import (
+    AuthorizedPortfolioSnapshotService,
+    PortfolioSnapshotUnavailableError,
+    ReadAuthorizedPortfolioSnapshotCommand,
+    ReadAuthorizedPortfolioSnapshotResult,
+)
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
@@ -26,6 +32,7 @@ from app.modules.portfolio_snapshot.reader import (
 __all__ = [
     "AccountType",
     "AssetType",
+    "AuthorizedPortfolioSnapshotService",
     "CompletePortfolioSnapshotRead",
     "PortfolioAccountView",
     "PortfolioPositionView",
@@ -34,8 +41,11 @@ __all__ = [
     "PortfolioSnapshotReadError",
     "PortfolioSnapshotReader",
     "PortfolioSnapshotSource",
+    "PortfolioSnapshotUnavailableError",
     "PortfolioSnapshotView",
     "PortfolioSummaryView",
+    "ReadAuthorizedPortfolioSnapshotCommand",
+    "ReadAuthorizedPortfolioSnapshotResult",
     "ReadExactPortfolioSnapshotCommand",
     "SnapshotGranularity",
     "SnapshotSource",

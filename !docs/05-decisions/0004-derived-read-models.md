@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted; the basic legacy portfolio reader plus the 5L-A pure projection and
-5L-B exact persisted AccountSnapshot reader are implemented.
+Accepted; the basic legacy portfolio reader plus the 5L-A pure projection,
+5L-B exact persisted AccountSnapshot reader, and 5L-C authorized exact API are
+implemented.
 
 ## Decision
 
@@ -31,8 +32,13 @@ data.
   snapshot, reads no live Holding, PriceSnapshot, or ExchangeRate, and maps
   physical AccountSnapshot evidence into that pure contract without a write or
   lock.
-- Step 5L-B deliberately adds no authorization boundary, public API, User or
-  membership selection, multi-account aggregate, or dashboard projection.
-  Those presentation boundaries remain staged from 5L-C onward.
+- Step 5L-C adds an account-specific authorized API over the unchanged 5L-B
+  reader. Explicit owner/admin/editor/viewer access and the exact read share one
+  fresh `REPEATABLE READ` transaction; foreign, missing, and archived accounts
+  are not disclosed.
+- The 5L-C response uses JSON strings for Decimal values and excludes internal
+  lineage, membership/User data, and persisted audit JSON. It does not
+  recalculate finance or select Holdings, prices, or FX. Multi-account and
+  dashboard presentation boundaries remain staged from 5L-D onward.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.

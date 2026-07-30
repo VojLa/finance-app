@@ -8,6 +8,7 @@ from app.modules.holdings.api import router as holdings_router
 from app.modules.imports.api import router as imports_router
 from app.modules.net_worth.api import router as net_worth_router
 from app.modules.portfolio.api import router as portfolio_router
+from app.modules.portfolio_snapshot.api import router as portfolio_snapshot_router
 from app.modules.snapshot_refresh.api import router as snapshot_refresh_router
 from app.modules.snapshots.api import router as snapshots_router
 
@@ -20,6 +21,7 @@ api_router.include_router(holdings_router)
 api_router.include_router(imports_router)
 api_router.include_router(net_worth_router)
 api_router.include_router(portfolio_router)
+api_router.include_router(portfolio_snapshot_router)
 api_router.include_router(snapshots_router)
 api_router.include_router(snapshot_refresh_router)
 
