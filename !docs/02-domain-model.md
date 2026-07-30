@@ -49,6 +49,39 @@ automatic post-import rebuild remains deferred.
 
 ## Money and snapshot invariants
 
+### Pure portfolio snapshot presentation contract
+
+Step 5L-A adds a single-account portfolio presentation contract over complete,
+already validated immutable AccountSnapshot evidence. The AccountSnapshot graph
+is the sole financial authority: the projection does not read Holdings,
+InvestmentEvents, Movements, prices, or exchange rates and does not recalculate
+cost basis, P/L, FX, or missing data. Every financial input and output remains a
+`Decimal`; `MONEY NUMERIC(18,6)`, `QUANTITY NUMERIC(28,10)`,
+`PERCENTAGE NUMERIC(8,4)`, and naive `TIMESTAMP(3)` limits are validated without
+rounding.
+
+The view currency is the snapshot output currency. Every converted position
+value and cost uses that currency, while Account currency, price currency,
+native value currency, and native cost currency remain explicit independent
+fields. The projection verifies exact snapshot formulas, item sums, item and
+aggregate unrealized P/L, and the already persisted allocation definition.
+Positive investment portfolios require exact allocations equal to
+`position.value / investment_value * 100` and an exact total of 100; zero-value
+positions and zero portfolios require zero allocation.
+
+Broker, exchange, and crypto-wallet snapshots can expose positions. Credit-card,
+loan, and mortgage snapshots expose summary-only liability views with positive
+liability magnitude, negative total value, structural-zero investment values,
+and no positions. Bank, cash, and savings remain unavailable because their
+AccountSnapshot persistence contract is not supported. Positions are
+canonically ordered by `(asset_type, symbol, listing_id, item_id)`; duplicate
+item, listing, or asset/listing identities fail closed.
+
+5L-A adds no persisted reader, repository, authorization, endpoint, dashboard,
+multi-account aggregation, schema change, or migration. The existing basic
+portfolio endpoint still reads live Holdings and latest stored FX and remains a
+temporary legacy reader until a later 5L integration step replaces it.
+
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary
 portfolio response contract. New calculation code must keep `Decimal` through
