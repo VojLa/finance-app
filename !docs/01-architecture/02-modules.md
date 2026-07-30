@@ -349,3 +349,13 @@ ImportLog rows are audit-only and use advisory-lock-protected UUIDv5 identity;
 they do not suppress replay. No account/snapshot lineage is exposed and no
 scheduler, queue, worker, background task, job table, schema change, or
 compensation operation is introduced.
+
+The final 5K audit verifies this complete chain against isolated PostgreSQL
+databases and both public entry points. It confirms one non-inverted lock order
+per writer path, domain-owned transactions with idle orchestration handoffs,
+exact replay or immutable conflict, complete owner/editor/viewer lineage, and
+the absence of cross-domain compensation. A manual and import refresh in the
+same minute share the same physical identity; different immutable source
+metadata conflicts without time shifting, update, or delete. The physical
+catalog remains the existing 32-table, 28-enum schema with no 5K migration or
+snapshot-refresh job table.
