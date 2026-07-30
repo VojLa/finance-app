@@ -127,8 +127,27 @@ valuation rules.
 This aggregation has no database, authorization, snapshot selection, reader,
 price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,
 metadata mismatch, duplicate identity, corrupt structure, and aggregate
-overflow fail closed. Dashboard projection remains deferred to 5L-E and public
-multi-account orchestration to 5L-F.
+overflow fail closed.
+
+5L-E projects exactly one complete 5L-D aggregate into an immutable dashboard
+snapshot. Its summary copies the aggregate values and adds only the structural
+`assets = cash + investment` value. One canonical account card is emitted per
+account. Investment positions are grouped by Asset type and also retained as
+separate account-scoped entries in the global ranking; matching listings or
+assets in different accounts are never merged.
+
+Asset-type and position allocations use aggregate investment value as their
+denominator. They do not reuse each position's account-local allocation, and
+every derived percentage must be exactly representable as PERCENTAGE
+`NUMERIC(8,4)` without rounding repair. Liabilities remain positive summary
+magnitudes, not positions. A liability-only or zero-investment dashboard has
+empty allocation and position-ranking tuples.
+
+The 5L-E projection reads no database, authorizes no user, selects no snapshot,
+and performs no Holding, price, or FX lookup. It adds no endpoint and cannot
+derive historical change, performance, or trend from its single snapshot.
+Public portfolio/dashboard orchestration remains deferred to 5L-F; historical
+dashboard series remain outside 5L-E.
 
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary
