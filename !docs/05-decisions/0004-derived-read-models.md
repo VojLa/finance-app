@@ -4,7 +4,8 @@
 
 Accepted; the basic legacy portfolio reader plus the 5L-A pure projection,
 5L-B exact persisted AccountSnapshot reader, 5L-C authorized exact API, and
-5L-D pure multi-account aggregation are implemented.
+5L-D pure multi-account aggregation and 5L-E pure dashboard projection are
+implemented.
 
 ## Decision
 
@@ -44,7 +45,14 @@ data.
   uses exact Decimal summary sums, and fails when MONEY range or aggregate
   formulas are not preserved.
 - Step 5L-D has no database, authorization, reader, endpoint, price/FX
-  selection, or Holding access. Dashboard projection and public multi-account
-  orchestration remain staged for 5L-E and 5L-F.
+  selection, or Holding access.
+- Step 5L-E projects exactly one complete 5L-D view into a summary, account
+  cards, asset-type allocations, and a global account-scoped position ranking.
+  Its allocations use aggregate investment value, never the account-local
+  denominator. Liabilities remain summary-only and zero-investment results
+  contain no investment breakdown.
+- Step 5L-E performs no database read, authorization, snapshot selection,
+  Holding, price or FX lookup, endpoint work, or historical comparison.
+  Public portfolio/dashboard orchestration remains staged for 5L-F.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.

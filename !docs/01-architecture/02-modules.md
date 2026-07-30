@@ -12,6 +12,7 @@ thin and shared database infrastructure lives outside modules.
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, reads, authorized account API, and pure aggregation          | 5L-A through 5L-D implemented                                                |
+| `dashboard_snapshot`  | Pure dashboard projection over one exact multi-account portfolio view                   | 5L-E implemented                                                            |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -19,7 +20,7 @@ thin and shared database infrastructure lives outside modules.
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 and 5K-E1 implemented; imports invoke it post-commit in 5K-E2 |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
-| dashboard / reporting | Dashboard read models                                                                 | Not implemented in Python                                                   |
+| dashboard / reporting | Dashboard read models                                                                 | Pure 5L-E snapshot projection implemented                                   |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -70,8 +71,22 @@ overflow and formula mismatch fail closed.
 
 5L-D has no database, ORM, reader, authorization, transaction, API, price, FX,
 Holding, clock, or I/O boundary. It adds no endpoint and does not duplicate
-single-account or position financial validation. Dashboard projection remains
-deferred to 5L-E and multi-account API orchestration to 5L-F.
+single-account or position financial validation.
+
+The pure `dashboard_snapshot` module implements 5L-E over one complete
+`MultiAccountPortfolioView`. It maps the exact summary, builds deterministic
+account cards, groups investment positions by asset type, and ranks every
+account-scoped position. Dashboard allocations use the aggregate investment
+value as their denominator; they never reuse account-local allocation.
+Liabilities remain summary values rather than positions, so zero-investment
+and liability-only dashboards have no investment breakdown.
+
+5L-E performs only exact Decimal structural arithmetic, including
+`assets = cash + investment`, and validates MONEY and PERCENTAGE
+representability without rounding repair. It accesses no database, ORM,
+authorization, reader, Holding, price, FX, clock, or historical input and adds
+no endpoint. Public portfolio/dashboard orchestration remains deferred to
+5L-F; historical dashboard series are outside this snapshot projection.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires
