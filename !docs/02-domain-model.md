@@ -108,8 +108,27 @@ User and membership data, persistence timestamps, and JSONB audit evidence.
 5L-C performs no financial, allocation, cost-basis, P/L, liability, price, or
 FX calculation and reads no live Holding, PriceSnapshot, or ExchangeRate. The
 existing basic portfolio endpoint still reads live Holdings and latest stored
-FX and remains a temporary unchanged legacy reader. Multi-account aggregation
-is deferred to 5L-D.
+FX and remains a temporary unchanged legacy reader.
+
+5L-D is a pure multi-account presentation aggregate over non-empty tuples of
+already complete 5L-A views. Every contribution must share timestamp,
+granularity, output currency, and calculation version; account and snapshot
+identities are unique. Different Account currencies, account types, snapshot
+sources, and native position currencies remain valid.
+
+Accounts use canonical `(accountId, snapshotId)` order. Positions remain nested
+under their source account in the existing 5L-A order, so matching assets,
+listings, or symbols across accounts are not merged. Aggregate financial fields
+are exact Decimal sums and must remain inside MONEY `NUMERIC(18,6)`. The
+aggregate rechecks only total-value, unrealized-P/L, account-count, and
+position-count invariants; it does not duplicate per-account or per-position
+valuation rules.
+
+This aggregation has no database, authorization, snapshot selection, reader,
+price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,
+metadata mismatch, duplicate identity, corrupt structure, and aggregate
+overflow fail closed. Dashboard projection remains deferred to 5L-E and public
+multi-account orchestration to 5L-F.
 
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary

@@ -11,7 +11,7 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact persisted snapshot projection, reader, and authorized account API                | 5L-A through 5L-C implemented                                                |
+| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized account API, and pure aggregation          | 5L-A through 5L-D implemented                                                |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -58,7 +58,20 @@ strings and excludes membership/User data, internal selected-row lineage,
 persistence timestamps, and JSONB audits. It performs no financial
 recalculation and reads no Holding, PriceSnapshot, ExchangeRate, price, or FX
 evidence. The legacy portfolio reader remains registered and unchanged;
-multi-account aggregation is deferred to 5L-D.
+the authorized single-account endpoint remains unchanged.
+
+The pure 5L-D boundary aggregates only complete 5L-A views. It requires one
+shared timestamp, granularity, output currency, and calculation version plus
+unique account and snapshot identities. Accounts are canonically ordered while
+positions remain account-scoped in their existing 5L-A order, including when
+the same asset or listing occurs in multiple accounts. Summary fields use exact
+high-precision Decimal sums and must remain representable as MONEY; aggregate
+overflow and formula mismatch fail closed.
+
+5L-D has no database, ORM, reader, authorization, transaction, API, price, FX,
+Holding, clock, or I/O boundary. It adds no endpoint and does not duplicate
+single-account or position financial validation. Dashboard projection remains
+deferred to 5L-E and multi-account API orchestration to 5L-F.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires
