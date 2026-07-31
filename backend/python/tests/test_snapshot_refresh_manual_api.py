@@ -16,13 +16,18 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.enums import SnapshotGranularity
 from app.main import create_app
+from app.modules.portfolio_snapshot.multi_account_api_models import (
+    ExactPortfolioSnapshotSetRequest,
+)
 from app.modules.snapshot_refresh.manual_service import (
     ManualUserSnapshotRefreshService,
     RecalculateUserSnapshotRefreshResult,
+    SnapshotRefreshAccountSelection,
     UserSnapshotRefreshConflictError,
     UserSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.models import (
+    SnapshotRefreshAccountSelectionResponse,
     UserSnapshotRefreshRecalculateResponse,
 )
 
@@ -44,6 +49,12 @@ def _result() -> RecalculateUserSnapshotRefreshResult:
         timestamp=BUCKET,
         granularity=SnapshotGranularity.minute,
         currency="EUR",
+        calculation_version=1,
+        accounts=(
+            SnapshotRefreshAccountSelection("account-a", "snapshot-account-a"),
+            SnapshotRefreshAccountSelection("account-b", "snapshot-account-b"),
+            SnapshotRefreshAccountSelection("account-c", "snapshot-account-c"),
+        ),
         refresh_account_count=2,
         reuse_only_account_count=1,
         created_account_snapshot_count=1,
@@ -144,6 +155,21 @@ def test_thin_adapter_forwards_only_principal_and_returns_camel_case(
         "timestamp": "2036-04-05T10:20:00.000",
         "granularity": "minute",
         "currency": "EUR",
+        "calculationVersion": 1,
+        "accounts": [
+            {
+                "accountId": "account-a",
+                "snapshotId": "snapshot-account-a",
+            },
+            {
+                "accountId": "account-b",
+                "snapshotId": "snapshot-account-b",
+            },
+            {
+                "accountId": "account-c",
+                "snapshotId": "snapshot-account-c",
+            },
+        ],
         "refreshAccountCount": 2,
         "reuseOnlyAccountCount": 1,
         "createdAccountSnapshotCount": 1,
@@ -224,6 +250,21 @@ def test_response_rejects_internal_extra_fields(field: str, value: object) -> No
         "timestamp": BUCKET,
         "granularity": "minute",
         "currency": "EUR",
+        "calculation_version": 1,
+        "accounts": [
+            {
+                "account_id": "account-a",
+                "snapshot_id": "snapshot-account-a",
+            },
+            {
+                "account_id": "account-b",
+                "snapshot_id": "snapshot-account-b",
+            },
+            {
+                "account_id": "account-c",
+                "snapshot_id": "snapshot-account-c",
+            },
+        ],
         "refresh_account_count": 2,
         "reuse_only_account_count": 1,
         "created_account_snapshot_count": 1,
@@ -253,3 +294,151 @@ def test_existing_routes_remain_unique_and_new_route_has_no_legacy_alias(
         if isinstance(operation, dict) and "operationId" in operation
     ]
     assert len(operation_ids) == len(set(operation_ids))
+
+
+def test_manifest_subset_is_directly_valid_for_both_5l_request_consumers(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recalculate = AsyncMock(return_value=_result())
+    monkeypatch.setattr(
+        ManualUserSnapshotRefreshService,
+        "recalculate",
+        recalculate,
+    )
+    client, _ = _client(test_settings, principal=_principal())
+
+    with client:
+        response = client.post("/api/v1/snapshot-refresh/recalculate")
+
+    assert response.status_code == 200
+    payload = response.json()
+    manifest = {
+        key: payload[key]
+        for key in (
+            "timestamp",
+            "granularity",
+            "currency",
+            "calculationVersion",
+            "accounts",
+        )
+    }
+    validated = ExactPortfolioSnapshotSetRequest.model_validate(manifest)
+    assert validated.timestamp == BUCKET
+    assert validated.granularity.value == "minute"
+    assert validated.currency == "EUR"
+    assert validated.calculation_version == 1
+    assert tuple(item.account_id for item in validated.accounts) == (
+        "account-a",
+        "account-b",
+        "account-c",
+    )
+    assert tuple(item.snapshot_id for item in validated.accounts) == (
+        "snapshot-account-a",
+        "snapshot-account-b",
+        "snapshot-account-c",
+    )
+
+
+def test_manifest_models_are_exact_extra_forbid_camel_case_contracts() -> None:
+    assert set(SnapshotRefreshAccountSelectionResponse.model_fields) == {
+        "account_id",
+        "snapshot_id",
+    }
+    assert set(UserSnapshotRefreshRecalculateResponse.model_fields) == {
+        "net_worth_snapshot_id",
+        "net_worth_status",
+        "timestamp",
+        "granularity",
+        "currency",
+        "calculation_version",
+        "accounts",
+        "refresh_account_count",
+        "reuse_only_account_count",
+        "created_account_snapshot_count",
+        "replayed_account_snapshot_count",
+        "reused_account_snapshot_count",
+        "selected_account_snapshot_count",
+    }
+    assert SnapshotRefreshAccountSelectionResponse.model_config["extra"] == "forbid"
+    assert UserSnapshotRefreshRecalculateResponse.model_config["extra"] == "forbid"
+    with pytest.raises(ValidationError):
+        SnapshotRefreshAccountSelectionResponse.model_validate(
+            {
+                "accountId": "account-a",
+                "snapshotId": "snapshot-a",
+                "mode": "refresh",
+            }
+        )
+
+
+def test_openapi_exposes_additive_required_manifest_without_new_route(
+    test_settings: Settings,
+) -> None:
+    schema = create_app(test_settings).openapi()
+    response_schema = schema["components"]["schemas"]["UserSnapshotRefreshRecalculateResponse"]
+    account_schema = schema["components"]["schemas"]["SnapshotRefreshAccountSelectionResponse"]
+
+    assert "calculationVersion" in response_schema["required"]
+    assert "accounts" in response_schema["required"]
+    assert response_schema["properties"]["accounts"]["items"] == {
+        "$ref": "#/components/schemas/SnapshotRefreshAccountSelectionResponse"
+    }
+    assert account_schema["required"] == ["accountId", "snapshotId"]
+    assert set(account_schema["properties"]) == {"accountId", "snapshotId"}
+    refresh_paths = [path for path in schema["paths"] if "snapshot-refresh" in path]
+    assert refresh_paths == ["/api/v1/snapshot-refresh/recalculate"]
+
+
+def test_success_response_leaks_only_approved_account_manifest(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ManualUserSnapshotRefreshService,
+        "recalculate",
+        AsyncMock(return_value=_result()),
+    )
+    client, _ = _client(test_settings, principal=_principal())
+
+    with client:
+        response = client.post("/api/v1/snapshot-refresh/recalculate")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["accounts"][0]) == {"accountId", "snapshotId"}
+    forbidden = {
+        "userId",
+        "email",
+        "membership",
+        "role",
+        "relationType",
+        "invitedBy",
+        "mode",
+        "disposition",
+        "selectedItemIds",
+        "priceSource",
+        "priceSnapshotId",
+        "exchangeRateId",
+        "exchangeRates",
+        "cashValueByCurrency",
+        "investmentValueByCurrency",
+        "liabilitiesValueByCurrency",
+        "calculatedAt",
+        "createdAt",
+        "updatedAt",
+        "writerCommand",
+        "internalError",
+    }
+
+    def audit(value: object) -> None:
+        if isinstance(value, dict):
+            assert forbidden.isdisjoint(value)
+            for child in value.values():
+                audit(child)
+        elif isinstance(value, list):
+            for child in value:
+                audit(child)
+
+    audit(payload)
+    assert payload["timestamp"] == "2036-04-05T10:20:00.000"

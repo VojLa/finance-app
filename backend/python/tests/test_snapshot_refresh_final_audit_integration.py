@@ -344,6 +344,13 @@ def test_viewer_only_user_reuses_exact_snapshot_without_writer_creation() -> Non
             "timestamp": "2036-07-29T14:35:00.000",
             "granularity": "minute",
             "currency": "EUR",
+            "calculationVersion": 1,
+            "accounts": [
+                {
+                    "accountId": manual_support._account_id(prefix, "viewer"),
+                    "snapshotId": snapshot_id,
+                }
+            ],
             "refreshAccountCount": 0,
             "reuseOnlyAccountCount": 1,
             "createdAccountSnapshotCount": 0,
@@ -354,6 +361,7 @@ def test_viewer_only_user_reuses_exact_snapshot_without_writer_creation() -> Non
         assert replay.json()["netWorthStatus"] == "replayed"
         assert replay.json()["netWorthSnapshotId"] == first.json()["netWorthSnapshotId"]
         assert replay.json()["reusedAccountSnapshotCount"] == 1
+        assert replay.json()["accounts"] == first.json()["accounts"]
         assert asyncio.run(manual_support._counts(prefix)) == (1, 1)
 
         async def selected_snapshot_ids() -> tuple[str, ...]:

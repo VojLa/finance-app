@@ -308,6 +308,8 @@ def test_mixed_create_and_fresh_session_replay() -> None:
             "timestamp": "2036-07-29T14:35:00.000",
             "granularity": "minute",
             "currency": "EUR",
+            "calculationVersion": 1,
+            "accounts": first.json()["accounts"],
             "refreshAccountCount": 2,
             "reuseOnlyAccountCount": 1,
             "createdAccountSnapshotCount": 2,
@@ -320,6 +322,13 @@ def test_mixed_create_and_fresh_session_replay() -> None:
         assert replay.json()["createdAccountSnapshotCount"] == 0
         assert replay.json()["replayedAccountSnapshotCount"] == 2
         assert replay.json()["reusedAccountSnapshotCount"] == 1
+        assert replay.json()["accounts"] == first.json()["accounts"]
+        assert [item["accountId"] for item in first.json()["accounts"]] == [
+            _account_id(prefix, "a-owner"),
+            _account_id(prefix, "b-editor-usd"),
+            _account_id(prefix, "c-viewer"),
+        ]
+        assert len({item["snapshotId"] for item in first.json()["accounts"]}) == 3
         assert asyncio.run(_counts(prefix)) == (3, 1)
     finally:
         asyncio.run(_cleanup(prefix))

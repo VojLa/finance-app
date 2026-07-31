@@ -71,5 +71,12 @@ data.
   coherence, deterministic serialization, generic failures, and leakage
   boundaries. The legacy live reader remains explicitly outside the
   snapshot-backed financial authority.
+- Step 5M-A adds an exact read manifest to the existing coordinated refresh
+  response. Its timestamp, granularity, output currency, calculation version,
+  and complete ordered account/snapshot identities come only from the already
+  validated executor result. The service performs no second read, membership
+  discovery, latest selection, sorting repair, financial calculation, or
+  fallback. The manifest transports immutable identity directly into the
+  existing 5L portfolio and dashboard request contracts.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.
