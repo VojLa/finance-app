@@ -88,3 +88,31 @@ All responses use `Cache-Control: no-store`. Adapter errors use a Next-owned
 configuration failure is 503, and transport or contract failure is 502. Safe
 Python 404/409 errors may retain status/code/message; Python request IDs, raw
 bodies, headers, tokens, and tracebacks never cross the boundary.
+
+## Portfolio page integration
+
+The portfolio page uses `POST /api/snapshot-workflow/portfolio` exactly once on
+initial load and once per explicit refresh action. The request has no body,
+selector, query parameter, manifest, account ID, snapshot ID, timestamp,
+currency, or calculation version. The page no longer calls the legacy current
+`GET /api/portfolio`, rates refresh, or legacy snapshot recalculation routes.
+
+`status: "empty"` is rendered as a successful no-account state and makes no
+follow-up request. `status: "ready"` supplies current cards and positions
+directly from the generated snapshot response. The aggregate selector uses the
+server aggregate summary; account selection uses the corresponding account
+summary and positions from the same loaded response without another request.
+There is no frontend financial aggregation, FX, pricing, allocation
+calculation, latest-snapshot lookup, or fallback.
+
+The portfolio response provides account-local position allocation but no
+global multi-account position allocation or return percentage. The page hides
+those aggregate presentation elements rather than deriving them. Decimal
+strings remain unchanged in page state; only the account-local allocation
+chart converts its server percentage at the Recharts leaf.
+
+`GET /api/portfolio/history` remains temporarily available for the historical
+line and range selector. History never supplies current cards, positions,
+allocation, account options, or currency and its latest point does not override
+the current snapshot response. The legacy route implementation remains
+registered, and the dashboard page remains unchanged until 5M-D.

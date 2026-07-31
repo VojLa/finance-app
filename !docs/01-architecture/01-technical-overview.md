@@ -16,7 +16,8 @@ Browser -> Next.js UI and legacy route handlers
 - **Next.js / TypeScript** provides the current UI, NextAuth session, and legacy
   routes. It now also owns bodyless portfolio/dashboard snapshot workflow
   routes that bridge a verified session to FastAPI with a short-lived internal
-  token. The pages have not yet migrated to those routes.
+  token. The portfolio page consumes its snapshot workflow route; the dashboard
+  page remains on its legacy route until 5M-D.
 - **Python / FastAPI** owns the new HTTP transport, request infrastructure,
   account and invitation services, import-batch processing, and the temporary
   portfolio read endpoint.
@@ -37,5 +38,13 @@ and Next.js serving as UI and thin session/transport adapter. The 5M-B adapter
 implements that transport boundary for coordinated refresh plus exact
 portfolio/dashboard reads. FastAPI OpenAPI deterministically generates the
 TypeScript transport types. The adapter performs no finance, account
-discovery, or latest lookup; portfolio and dashboard page cutovers remain in
-5M-C and 5M-D.
+discovery, or latest lookup.
+
+The 5M-C portfolio page cutover makes the snapshot workflow response the sole
+authority for current portfolio cards and positions. The account selector is a
+local projection over exact aggregate and account-scoped server views and
+issues no request. Decimal strings remain unchanged; the page performs no
+totals, P/L, return, allocation, FX, pricing, or fallback calculation. The
+legacy history endpoint remains chart-only and cannot override current
+snapshot values. The legacy current portfolio route remains registered but is
+no longer called by the page. The dashboard page cutover remains in 5M-D.

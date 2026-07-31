@@ -52,10 +52,7 @@ describe("snapshot workflow static boundaries", () => {
     }
   })
 
-  it("keeps portfolio/dashboard pages and legacy routes byte-identical to the exact base", async () => {
-    await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
-      "97a93c7f972b9ba1d9a516711fdb7c7ce68519ff268ede2046eb928938b223d8"
-    )
+  it("keeps the dashboard page and legacy routes byte-identical after the portfolio cutover", async () => {
     await expect(sha256("src/app/dashboard/page.tsx")).resolves.toBe(
       "a3223752963889c74416ee55791f73084880e4693d7b39ec48c70beb9128b059"
     )
