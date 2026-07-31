@@ -20,9 +20,19 @@ Account authorization is enforced server-side on every account-scoped operation:
 - archived accounts are absent from normal access; lifecycle operations have an
   explicit archived-account path.
 
-The current Next.js UI has not yet implemented the issuing adapter for this
-Python bridge, so its legacy routes remain separate. Do not treat a browser
-session cookie as a FastAPI credential.
+The Next.js server implements the issuing adapter for the snapshot workflow
+bridge. Its two bodyless workflow routes validate the NextAuth session, then
+issue a fresh short-lived token immediately before each FastAPI request. Tokens
+use HS256 with the configured shared secret and contain only subject, optional
+email, issuer, audience, `iat`, `exp`, and unique `jti`.
+
+The browser session cookie is never a FastAPI credential and is not forwarded
+to Python. Browser authorization headers are also ignored. The shared secret
+and internal token remain server-only: they are not exposed to client
+components, returned in JSON, cached globally, reused across the two-request
+workflow, or written to logs. A Python 401/403 after a valid NextAuth session is
+treated as an internal bridge failure rather than browser authentication
+failure.
 
 ## Imports and sensitive data
 
