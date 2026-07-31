@@ -125,6 +125,48 @@ def _audit_no_leakage(value: object) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_user_manifest_is_successful_empty_state_and_skips_5l_reads() -> None:
+    prefix = "5ma-empty-manifest"
+    await manual_support._seed(prefix, ())
+    try:
+        app = _app(prefix)
+        with TestClient(app) as client:
+            created = client.post(REFRESH_PATH)
+            replayed = client.post(REFRESH_PATH)
+            empty_manifest = _manifest(replayed.json())
+            portfolio = client.post(PORTFOLIO_PATH, json=empty_manifest)
+            dashboard = client.post(DASHBOARD_PATH, json=empty_manifest)
+
+        assert created.status_code == replayed.status_code == 200
+        assert created.json()["netWorthStatus"] == "created"
+        assert replayed.json()["netWorthStatus"] == "replayed"
+        for response in (created, replayed):
+            payload = response.json()
+            assert payload["accounts"] == []
+            assert payload["refreshAccountCount"] == 0
+            assert payload["reuseOnlyAccountCount"] == 0
+            assert payload["createdAccountSnapshotCount"] == 0
+            assert payload["replayedAccountSnapshotCount"] == 0
+            assert payload["reusedAccountSnapshotCount"] == 0
+            assert payload["selectedAccountSnapshotCount"] == 0
+            _audit_no_leakage(payload)
+            assert manual_support._user_id(prefix) not in response.text
+        assert _manifest(created.json()) == empty_manifest
+
+        # A frontend adapter must branch on accounts.length === 0 before 5L:
+        # this complete no-account state is not a partial manifest or fallback.
+        for response in (portfolio, dashboard):
+            assert response.status_code == 422
+            assert set(response.json()) == {"error"}
+            assert response.json()["error"]["code"] == "validation_error"
+            assert response.json()["error"]["message"] == "Request validation failed."
+            assert "accounts" not in response.json()
+            assert "summary" not in response.json()
+    finally:
+        await manual_support._cleanup(prefix)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
     [

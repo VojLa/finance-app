@@ -76,7 +76,12 @@ data.
   and complete ordered account/snapshot identities come only from the already
   validated executor result. The service performs no second read, membership
   discovery, latest selection, sorting repair, financial calculation, or
-  fallback. The manifest transports immutable identity directly into the
-  existing 5L portfolio and dashboard request contracts.
+  fallback. Every successful non-empty manifest transports immutable identity
+  directly into the existing 5L portfolio and dashboard request contracts.
+  A successful empty manifest is the complete no-snapshot-capable-account
+  state, not a partial manifest, error, fallback, or latest lookup. Both 5L
+  contracts continue to require a non-empty account set, so 5M-B must expose
+  an explicit empty branch that calls neither endpoint, performs no account
+  discovery, and creates no synthetic account selector.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.

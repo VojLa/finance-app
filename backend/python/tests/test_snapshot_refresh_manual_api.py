@@ -64,6 +64,24 @@ def _result() -> RecalculateUserSnapshotRefreshResult:
     )
 
 
+def _empty_result() -> RecalculateUserSnapshotRefreshResult:
+    return RecalculateUserSnapshotRefreshResult(
+        net_worth_snapshot_id="net-worth-empty",
+        net_worth_status="created",
+        timestamp=BUCKET,
+        granularity=SnapshotGranularity.minute,
+        currency="EUR",
+        calculation_version=1,
+        accounts=(),
+        refresh_account_count=0,
+        reuse_only_account_count=0,
+        created_account_snapshot_count=0,
+        replayed_account_snapshot_count=0,
+        reused_account_snapshot_count=0,
+        selected_account_snapshot_count=0,
+    )
+
+
 def _client(
     settings: Settings,
     *,
@@ -296,7 +314,7 @@ def test_existing_routes_remain_unique_and_new_route_has_no_legacy_alias(
     assert len(operation_ids) == len(set(operation_ids))
 
 
-def test_manifest_subset_is_directly_valid_for_both_5l_request_consumers(
+def test_non_empty_manifest_subset_is_directly_valid_for_both_5l_consumers(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -338,6 +356,61 @@ def test_manifest_subset_is_directly_valid_for_both_5l_request_consumers(
         "snapshot-account-b",
         "snapshot-account-c",
     )
+
+
+def test_empty_refresh_manifest_is_public_empty_state_not_5l_request(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ManualUserSnapshotRefreshService,
+        "recalculate",
+        AsyncMock(return_value=_empty_result()),
+    )
+    client, _ = _client(test_settings, principal=_principal())
+
+    with client:
+        response = client.post("/api/v1/snapshot-refresh/recalculate")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert {
+        key: payload[key]
+        for key in (
+            "calculationVersion",
+            "accounts",
+            "refreshAccountCount",
+            "reuseOnlyAccountCount",
+            "createdAccountSnapshotCount",
+            "replayedAccountSnapshotCount",
+            "reusedAccountSnapshotCount",
+            "selectedAccountSnapshotCount",
+        )
+    } == {
+        "calculationVersion": 1,
+        "accounts": [],
+        "refreshAccountCount": 0,
+        "reuseOnlyAccountCount": 0,
+        "createdAccountSnapshotCount": 0,
+        "replayedAccountSnapshotCount": 0,
+        "reusedAccountSnapshotCount": 0,
+        "selectedAccountSnapshotCount": 0,
+    }
+    manifest = {
+        key: payload[key]
+        for key in (
+            "timestamp",
+            "granularity",
+            "currency",
+            "calculationVersion",
+            "accounts",
+        )
+    }
+
+    # This validation failure is the intended no-account workflow branch:
+    # the refresh manifest is complete and successful, but is not a 5L request.
+    with pytest.raises(ValidationError):
+        ExactPortfolioSnapshotSetRequest.model_validate(manifest)
 
 
 def test_manifest_models_are_exact_extra_forbid_camel_case_contracts() -> None:

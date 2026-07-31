@@ -612,9 +612,18 @@ source AccountSnapshot lineage, and final guarded NetWorth creation. Since
 5M-A, the public result also exposes the exact read manifest consisting of the
 executor timestamp, granularity, output currency, calculation version, and
 every validated `(account_id, snapshot_id)` identity in deterministic executor
-order. This is the only public account/source lineage: it exists specifically
-to call the existing exact 5L portfolio and dashboard reads without another
-database query, account discovery, latest selection, sort, or fallback.
+order. This is the only public account/source lineage: when non-empty, it calls
+the existing exact 5L portfolio and dashboard reads without another database
+query, account discovery, latest selection, sort, or fallback.
+
+Every successful non-empty manifest is directly compatible with both 5L
+request contracts and is transported unchanged. A successful empty manifest
+has exactly `accounts == []`, zero selected and account-snapshot counts, and
+represents the explicit state that the user has no snapshot-capable account.
+It is complete rather than partial and does not arise from an error, fallback,
+or latest-snapshot lookup. The 5L endpoints continue to require a non-empty
+account set, so 5M-B must return an explicit empty workflow state before either
+5L call and must not discover accounts or manufacture a synthetic selector.
 
 The result otherwise exposes only the NetWorth snapshot identity and
 disposition plus aggregate execution counts. It never exposes user identity,

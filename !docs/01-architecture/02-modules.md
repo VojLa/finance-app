@@ -429,6 +429,15 @@ validated executor result. It performs no second database read, membership
 account discovery, latest selection, sort, or fallback. Incomplete or
 inconsistent lineage fails the complete result closed.
 
+Every successful non-empty refresh manifest is directly compatible with both
+unchanged 5L request contracts and must be transported without discovery,
+sorting, or completion. A successful empty manifest has `accounts == []`,
+zero selected and account-snapshot counts, and represents the complete
+no-snapshot-capable-account state. It is not partial, erroneous, a fallback, or
+a latest lookup. Because both 5L endpoints continue to require a non-empty
+account set, the 5M-B adapter must expose an explicit empty-state branch, call
+neither endpoint, and create no synthetic account selector.
+
 Membership data, roles, refresh modes, writer dispositions, selected item
 lineage, FX evidence, projections, and audits never cross the public boundary.
 Incomplete state and immutable conflicts become separate generic HTTP 409
