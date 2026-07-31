@@ -1,5 +1,9 @@
 """Pure dashboard projection from an exact multi-account portfolio snapshot."""
 
+from app.modules.dashboard_snapshot.authorized_service import (
+    AuthorizedDashboardSnapshotService,
+    ReadAuthorizedDashboardSnapshotResult,
+)
 from app.modules.dashboard_snapshot.models import (
     DashboardAccountCard,
     DashboardAssetTypeAllocation,
@@ -13,11 +17,13 @@ from app.modules.dashboard_snapshot.projection import (
 )
 
 __all__ = [
+    "AuthorizedDashboardSnapshotService",
     "DashboardAccountCard",
     "DashboardAssetTypeAllocation",
     "DashboardSnapshotProjectionError",
     "DashboardSnapshotSummary",
     "DashboardSnapshotView",
     "DashboardTopPosition",
+    "ReadAuthorizedDashboardSnapshotResult",
     "build_dashboard_snapshot_view",
 ]

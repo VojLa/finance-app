@@ -146,8 +146,32 @@ empty allocation and position-ranking tuples.
 The 5L-E projection reads no database, authorizes no user, selects no snapshot,
 and performs no Holding, price, or FX lookup. It adds no endpoint and cannot
 derive historical change, performance, or trend from its single snapshot.
-Public portfolio/dashboard orchestration remains deferred to 5L-F; historical
-dashboard series remain outside 5L-E.
+Public portfolio/dashboard orchestration is owned by 5L-F; historical dashboard
+series remain outside 5L-E.
+
+5L-F makes the complete 5L-D and 5L-E models public through two read-only POST
+operations. Their shared request contains exact timestamp, granularity, output
+currency, calculation version, and a non-empty explicit account selector tuple.
+An optional snapshot ID guards lineage for its account. The API does not
+discover memberships, choose a latest snapshot, infer currency or time, or
+fall back to another immutable row.
+
+One shared authorized exact-account reader applies the existing
+owner/admin/editor/viewer access policy and delegates once per selector to
+5L-B. The multi-account service resets the authentication transaction, sets
+`REPEATABLE READ` as the first statement of one new transaction, and performs
+every access check and exact graph read inside it in canonical account order.
+It returns nothing unless every selector succeeds, then invokes 5L-D exactly
+once. The dashboard service invokes that portfolio service and 5L-E exactly
+once without another transaction or financial calculation.
+
+Portfolio responses retain account-scoped 5L-A positions, native evidence, and
+account-local allocation. Dashboard responses contain only the 5L-E aggregate
+presentation and its global allocation. All financial Decimal values are JSON
+strings; timestamps preserve milliseconds without adding timezone evidence.
+User, membership, internal item lineage, persistence audits, and market-source
+IDs remain private. The pre-existing legacy and exact single-account endpoints
+remain unchanged, and historical dashboard series are still not modeled.
 
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary

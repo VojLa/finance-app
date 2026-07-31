@@ -11,8 +11,8 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized account API, and pure aggregation          | 5L-A through 5L-D implemented                                                |
-| `dashboard_snapshot`  | Pure dashboard projection over one exact multi-account portfolio view                   | 5L-E implemented                                                            |
+| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation                  | 5L-A through 5L-F implemented                                                |
+| `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                              | 5L-E and 5L-F implemented                                                    |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -20,7 +20,7 @@ thin and shared database infrastructure lives outside modules.
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 and 5K-E1 implemented; imports invoke it post-commit in 5K-E2 |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
-| dashboard / reporting | Dashboard read models                                                                 | Pure 5L-E snapshot projection implemented                                   |
+| dashboard / reporting | Dashboard read models                                                                 | Snapshot projection and public read implemented through 5L-F                 |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -85,8 +85,32 @@ and liability-only dashboards have no investment breakdown.
 `assets = cash + investment`, and validates MONEY and PERCENTAGE
 representability without rounding repair. It accesses no database, ORM,
 authorization, reader, Holding, price, FX, clock, or historical input and adds
-no endpoint. Public portfolio/dashboard orchestration remains deferred to
-5L-F; historical dashboard series are outside this snapshot projection.
+no endpoint. Public portfolio/dashboard orchestration is owned by 5L-F;
+historical dashboard series are outside this snapshot projection.
+
+The 5L-F public read boundary exposes only
+`POST /api/v1/portfolio/snapshot` and `POST /api/v1/dashboard/snapshot`.
+Both require the complete exact common snapshot metadata plus an explicit
+non-empty account selector tuple; optional snapshot IDs are lineage guards.
+POST carries this structured selector body but remains read-only. Accounts are
+never discovered from membership and no time, currency, latest row, or fallback
+is inferred.
+
+After closing the authentication dependency transaction, the portfolio service
+starts one `REPEATABLE READ` transaction with isolation setup as its first SQL
+statement. Canonically ordered account authorization and exact 5L-B reads run
+sequentially in that same transaction through the shared authorized account
+reader. Every selector must succeed, and no partial response exists. 5L-D is
+called once for aggregation; the dashboard service then calls 5L-E once after
+the immutable read completes and does not access the database itself.
+
+Public portfolio output retains account-local position allocation and detailed
+5L-A position fields. Dashboard output exposes only the 5L-E summary, account
+cards, asset-type allocations, and global position ranking. Every Decimal is a
+JSON string. Foreign, missing, and archived accounts remain indistinguishable,
+and persisted evidence failures use one generic unavailable response. The
+legacy portfolio route and exact single-account 5L-C route are unchanged;
+historical series remain outside 5L-F.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires
