@@ -115,4 +115,29 @@ chart converts its server percentage at the Recharts leaf.
 line and range selector. History never supplies current cards, positions,
 allocation, account options, or currency and its latest point does not override
 the current snapshot response. The legacy route implementation remains
-registered, and the dashboard page remains unchanged until 5M-D.
+registered.
+
+## Dashboard page integration
+
+The dashboard page uses `POST /api/snapshot-workflow/dashboard` exactly once on
+initial load and once per explicit financial refresh. Its bodyless no-store
+response is the only authority for financial summary values, account and
+position counts, financial account cards, asset-type allocation, and top
+positions. Decimal strings remain unchanged; allocation is server-calculated
+and top positions retain server ranking.
+
+In parallel, `GET /api/dashboard` temporarily supplies only operational
+current-month income, expenses and net cash flow, budget, expense categories,
+monthly trends, and recent transactions. The page adapter discards the legacy
+financial summary and account balances. This response is never a financial
+fallback and cannot change snapshot data.
+
+Snapshot and operational states and errors are separate. A snapshot `empty`
+result renders an explicit no-account financial state while operational widgets
+may remain available. Snapshot failure does not reveal legacy financial data,
+and operational failure does not remove a successful snapshot section. The
+financial refresh calls only the snapshot workflow and does not retry.
+
+The portfolio page remains snapshot-backed. The unchanged legacy dashboard
+route remains registered only for these temporary operational widgets. The next
+step is the 5M final audit.
