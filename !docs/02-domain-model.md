@@ -173,6 +173,21 @@ User, membership, internal item lineage, persistence audits, and market-source
 IDs remain private. The pre-existing legacy and exact single-account endpoints
 remain unchanged, and historical dashboard series are still not modeled.
 
+The final 5L cross-boundary audit adds no domain or production behavior. It
+permanently verifies that the exact AccountSnapshot identity and persisted
+item/listing/asset graph survive unchanged through the single-account view,
+multi-account contribution, dashboard summary, and public serialization
+boundaries. Exact Decimal sums, liability signs, account-local and global
+allocation denominators, supported and rejected account shapes, deterministic
+ordering, generic failures, and leakage exclusions are tested together.
+
+PostgreSQL event evidence proves that single-account, multi-account, and
+dashboard requests each use one isolation-first `REPEATABLE READ` financial
+transaction after authentication, perform no write or lock, and leave the
+session idle. Concurrent changes cannot create a mixed account perspective.
+The physical exact-snapshot unique constraint and reader-level duplicate
+candidate rejection are both independently covered.
+
 Amounts in persistent financial models use PostgreSQL numeric types and Python
 `Decimal`. Converting to floating point is currently limited to the temporary
 portfolio response contract. New calculation code must keep `Decimal` through

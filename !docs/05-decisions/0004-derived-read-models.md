@@ -5,7 +5,8 @@
 Accepted; the basic legacy portfolio reader plus the 5L-A pure projection,
 5L-B exact persisted AccountSnapshot reader, 5L-C authorized exact API, and
 5L-D pure multi-account aggregation and 5L-E pure dashboard projection are
-implemented, together with the 5L-F authorized public integration.
+implemented, together with the 5L-F authorized public integration and the
+test/docs-only final cross-boundary audit.
 
 ## Decision
 
@@ -64,5 +65,11 @@ data.
   Decimal values are JSON strings. Foreign, missing, and archived accounts are
   not distinguished, partial results do not exist, and the legacy and exact
   single-account endpoints remain unchanged.
+- The final 5L audit changes no production code. Static, pure, API, and real
+  PostgreSQL tests prove the dependency directions, exact cross-endpoint
+  values, isolation-first single-transaction reads, read-only SQL, concurrent
+  coherence, deterministic serialization, generic failures, and leakage
+  boundaries. The legacy live reader remains explicitly outside the
+  snapshot-backed financial authority.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.
