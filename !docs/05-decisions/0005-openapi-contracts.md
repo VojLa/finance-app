@@ -34,3 +34,16 @@ lifespan or connecting to PostgreSQL. The cross-platform Node generator invokes
 directory, compares content in Node, returns nonzero on drift, and never writes
 the tracked file. The 5M-B server adapter imports its refresh, selector,
 portfolio, and dashboard HTTP DTOs only from this generated contract.
+
+## Final cutover audit evidence
+
+The 5M final audit reruns the deterministic drift check and verifies the full
+chain from FastAPI OpenAPI through `src/generated/python-api.ts` to the
+Next-owned discriminated workflow contract. Refresh, exact-manifest,
+portfolio, and dashboard transport DTOs remain aliases of generated schemas;
+no handwritten Python financial response type was introduced.
+
+The audit also exercises the generated contracts through the real Next
+workflow services for ready and empty portfolio and dashboard flows. The
+tracked generated file remains unchanged, and the audit introduces no
+production contract, endpoint, dependency, schema, or migration change.

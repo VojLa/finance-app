@@ -56,5 +56,15 @@ asset allocation, and server-ranked top positions. The page no longer consumes
 legacy financial summary or balance fields. A separate temporary legacy request
 is narrowed to operational current-month cash flow, budget, categories, trends,
 and recent transactions; it cannot act as a financial fallback. Snapshot and
-operational states and errors remain independent. The portfolio page remains
-snapshot-backed, and the next step is the 5M final audit.
+operational states and errors remain independent.
+
+The 5M final audit closes the snapshot application cutover without production
+changes. It proves the authenticated browser-to-Next-to-FastAPI path, exact
+manifest transport, cross-runtime token compatibility, token-per-request
+behavior, explicit empty handling, Decimal-string preservation, and the
+absence of legacy financial fallback. Portfolio current finance and dashboard
+finance are snapshot-backed. Portfolio history remains legacy chart-only;
+dashboard operational widgets remain legacy and narrowly adapted. The legacy
+current portfolio and dashboard routes remain compatibility surfaces.
+Frontend-only GitHub Actions coverage remains a separate process risk. The
+next step is the overall 0.1 release/final audit.

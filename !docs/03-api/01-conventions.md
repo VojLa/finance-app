@@ -139,5 +139,19 @@ and operational failure does not remove a successful snapshot section. The
 financial refresh calls only the snapshot workflow and does not retry.
 
 The portfolio page remains snapshot-backed. The unchanged legacy dashboard
-route remains registered only for these temporary operational widgets. The next
-step is the 5M final audit.
+route remains registered only for these temporary operational widgets.
+
+## Snapshot application cutover audit
+
+The 5M final audit proves both bodyless Next workflow routes end to end. Each
+route authenticates the NextAuth session once, performs one refresh, and for a
+non-empty result forwards the exact five-field manifest to exactly one 5L
+read. Each FastAPI request receives a fresh short-lived token. An empty refresh
+returns the discriminated `empty` result and performs no portfolio or dashboard
+read.
+
+The browser receives neither the internal token nor the refresh manifest.
+Portfolio current finance and dashboard financial data are snapshot-backed;
+legacy portfolio history is chart-only, and the narrowed legacy dashboard
+adapter supplies operational widgets only. These legacy surfaces are not
+financial fallbacks. The next step is the overall 0.1 release/final audit.

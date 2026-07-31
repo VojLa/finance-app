@@ -60,3 +60,18 @@ and an internal authentication secret of at least 32 characters.
 
 Secrets belong in environment configuration and must never be committed,
 returned by endpoints, or printed in diagnostics.
+
+## Snapshot cutover audit evidence
+
+The 5M final audit verifies the server-only bridge across both runtimes. Tokens
+issued by the Next.js HS256 issuer are accepted by the real Python
+`InternalTokenVerifier` with the configured issuer and audience. Refresh and
+exact-read requests receive distinct tokens and `jti` values. Tokens travel
+only in server-side authorization headers through a no-store client; the
+browser cookie is never forwarded to FastAPI, and the token, secret, backend
+URL, raw response, and manifest do not appear in public workflow responses or
+errors.
+
+Missing or blank NextAuth identity fails before any FastAPI request. The
+browser cannot supply or override the token subject through a request body.
+The audit made no production security changes.

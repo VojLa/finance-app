@@ -105,7 +105,13 @@ describe("portfolio snapshot page cutover boundaries", () => {
   it("changes no Python, Prisma, migration, legacy, or workflow-route implementation", () => {
     const changed = changedFiles()
     const forbiddenPrefixes = [
-      "backend/python/",
+      "backend/python/app/",
+      "backend/python/database/",
+      "backend/python/migrations/",
+      "backend/python/scripts/",
+      "backend/python/alembic.ini",
+      "backend/python/pyproject.toml",
+      "backend/python/uv.lock",
       "prisma/",
       "src/app/api/portfolio/route.ts",
       "src/app/api/portfolio/history/route.ts",
