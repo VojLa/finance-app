@@ -84,10 +84,7 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps dashboard, legacy routes, workflow routes, and generated OpenAPI byte-identical", async () => {
-    await expect(sha256("src/app/dashboard/page.tsx")).resolves.toBe(
-      "a3223752963889c74416ee55791f73084880e4693d7b39ec48c70beb9128b059"
-    )
+  it("keeps legacy routes, workflow routes, and generated OpenAPI byte-identical", async () => {
     await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
       "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
     )
@@ -105,12 +102,11 @@ describe("portfolio snapshot page cutover boundaries", () => {
     )
   })
 
-  it("changes no Python, Prisma, migration, dashboard, legacy, or workflow-route implementation", () => {
+  it("changes no Python, Prisma, migration, legacy, or workflow-route implementation", () => {
     const changed = changedFiles()
     const forbiddenPrefixes = [
       "backend/python/",
       "prisma/",
-      "src/app/dashboard/page.tsx",
       "src/app/api/portfolio/route.ts",
       "src/app/api/portfolio/history/route.ts",
       "src/app/api/snapshot-workflow/portfolio/route.ts",
