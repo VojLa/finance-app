@@ -6,8 +6,12 @@
 
 ## Audit HEAD SHA
 
-Pending audit-evidence commit. The exact immutable commit will be recorded here
-by a following metadata-only commit and repeated in the PR report.
+`9f5530bf6d0949f17ee7527cb9ab74e4bca5fefa`
+
+This is the immutable audit-evidence commit containing all tests, results,
+verdict, and documentation. The following metadata-only commit records that
+necessarily prior SHA in this report; the PR report records both this audit
+evidence SHA and the exact final branch HEAD.
 
 ## Production files changed
 
