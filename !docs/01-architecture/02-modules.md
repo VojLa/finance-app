@@ -11,8 +11,8 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches                | Implemented through duplicate detection                                     |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation                  | 5L-A through 5L-F implemented                                                |
-| `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                              | 5L-E and 5L-F implemented                                                    |
+| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation                  | 5L complete; final cross-boundary audit passed                               |
+| `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                              | 5L complete; final cross-boundary audit passed                               |
 | transactions          | Cash transaction lifecycle and classification                                         | Database schema only                                                        |
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
@@ -20,7 +20,7 @@ thin and shared database infrastructure lives outside modules.
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 and 5K-E1 implemented; imports invoke it post-commit in 5K-E2 |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
-| dashboard / reporting | Dashboard read models                                                                 | Snapshot projection and public read implemented through 5L-F                 |
+| dashboard / reporting | Dashboard read models                                                                 | Snapshot read path complete and final-audited through 5L                      |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -111,6 +111,16 @@ JSON string. Foreign, missing, and archived accounts remain indistinguishable,
 and persisted evidence failures use one generic unavailable response. The
 legacy portfolio route and exact single-account 5L-C route are unchanged;
 historical series remain outside 5L-F.
+
+The final 5L audit changes no production module. Static dependency tests,
+cross-projection tests, endpoint/OpenAPI tests, and PostgreSQL event
+instrumentation now permanently guard the complete persisted-reader,
+authorization, transaction, aggregation, dashboard, and serialization path.
+They prove one isolation-first `REPEATABLE READ` financial transaction per
+request, read-only and lock-free SQL, exact single/multi/dashboard consistency,
+deterministic responses, access non-disclosure, and the absence of public
+membership or internal lineage evidence. Concurrent portfolio and dashboard
+tests prove coherent database perspectives rather than mixed account state.
 
 The internal holdings rebuild service is caller-transaction-owned. It
 serializes one account with a dedicated transaction advisory lock, then acquires
