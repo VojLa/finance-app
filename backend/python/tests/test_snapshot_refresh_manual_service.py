@@ -29,6 +29,7 @@ from app.modules.snapshot_refresh.manual_service import (
     ManualUserSnapshotRefreshService,
     RecalculateUserSnapshotRefreshCommand,
     RecalculateUserSnapshotRefreshResult,
+    SnapshotRefreshAccountSelection,
     UserSnapshotRefreshConflictError,
     UserSnapshotRefreshUnavailableError,
     canonical_manual_user_snapshot_refresh_bucket,
@@ -232,6 +233,12 @@ async def test_exact_executor_command_uses_principal_and_one_bucket() -> None:
     assert result.net_worth_snapshot_id == "net-worth-a"
     assert result.net_worth_status == "created"
     assert result.currency == "EUR"
+    assert result.calculation_version == CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION
+    assert result.accounts == (
+        SnapshotRefreshAccountSelection("account-a", "snapshot-account-a"),
+        SnapshotRefreshAccountSelection("account-b", "snapshot-account-b"),
+        SnapshotRefreshAccountSelection("account-c", "snapshot-account-c"),
+    )
     assert not hasattr(executor.execute.await_args.args[0], "output_currency")
 
 
@@ -404,6 +411,9 @@ async def test_unexpected_executor_error_propagates_unchanged() -> None:
         lambda value: replace(value, granularity=SnapshotGranularity.hour),
         lambda value: replace(value, source=SnapshotSource.scheduled),
         lambda value: replace(value, calculation_version=2),
+        lambda value: replace(value, calculation_version=0),
+        lambda value: replace(value, calculation_version=cast(Any, True)),
+        lambda value: replace(value, calculation_version=2_147_483_648),
         lambda value: replace(value, output_currency="eur"),
         lambda value: replace(value, net_worth_snapshot_id=""),
         lambda value: replace(value, net_worth_disposition=cast(Any, "created")),
@@ -412,7 +422,60 @@ async def test_unexpected_executor_error_propagates_unchanged() -> None:
         lambda value: replace(value, refresh_account_count=99),
         lambda value: replace(value, reuse_only_account_count=99),
         lambda value: replace(value, selected_account_snapshot_count=99),
+        lambda value: replace(
+            value,
+            required_account_snapshot_identities=cast(
+                Any, list(value.required_account_snapshot_identities)
+            ),
+        ),
+        lambda value: replace(
+            value,
+            required_account_snapshot_identities=(cast(Any, object()),),
+        ),
         lambda value: replace(value, account_snapshots=value.account_snapshots[:-1]),
+        lambda value: replace(
+            value,
+            account_snapshots=(
+                replace(value.account_snapshots[0], account_id=""),
+                *value.account_snapshots[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            account_snapshots=(
+                replace(value.account_snapshots[0], snapshot_id=""),
+                *value.account_snapshots[1:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            account_snapshots=(
+                value.account_snapshots[0],
+                replace(
+                    value.account_snapshots[1],
+                    account_id=value.account_snapshots[0].account_id,
+                ),
+                *value.account_snapshots[2:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            account_snapshots=(
+                value.account_snapshots[0],
+                replace(
+                    value.account_snapshots[1],
+                    snapshot_id=value.account_snapshots[0].snapshot_id,
+                ),
+                *value.account_snapshots[2:],
+            ),
+        ),
+        lambda value: replace(
+            value,
+            account_snapshots=tuple(reversed(value.account_snapshots)),
+            required_account_snapshot_identities=tuple(
+                reversed(value.required_account_snapshot_identities)
+            ),
+        ),
         lambda value: replace(
             value,
             required_account_snapshot_identities=(
@@ -464,6 +527,14 @@ async def test_result_maps_only_safe_summary(
     assert result.replayed_account_snapshot_count == 1
     assert result.reused_account_snapshot_count == 1
     assert result.selected_account_snapshot_count == 3
+    assert result.calculation_version == CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION
+    assert result.accounts == (
+        SnapshotRefreshAccountSelection("account-a", "snapshot-account-a"),
+        SnapshotRefreshAccountSelection("account-b", "snapshot-account-b"),
+        SnapshotRefreshAccountSelection("account-c", "snapshot-account-c"),
+    )
+    assert len({item.account_id for item in result.accounts}) == len(result.accounts)
+    assert len({item.snapshot_id for item in result.accounts}) == len(result.accounts)
     for field in (
         "user_id",
         "account_snapshots",
@@ -475,6 +546,98 @@ async def test_result_maps_only_safe_summary(
         assert not hasattr(result, field)
 
 
+async def test_manifest_preserves_validated_lineage_order_without_database_reads() -> None:
+    executions = (
+        _execution(
+            "account-a",
+            AccountSnapshotRefreshExecutionDisposition.created,
+        ),
+        _execution(
+            "account-b",
+            AccountSnapshotRefreshExecutionDisposition.replayed,
+        ),
+        _execution(
+            "account-c",
+            AccountSnapshotRefreshExecutionDisposition.reused,
+        ),
+    )
+    service, session, _, executor = _service(result=_executor_result(executions=executions))
+
+    result = await service.recalculate(
+        RecalculateUserSnapshotRefreshCommand(principal=_principal())
+    )
+
+    assert tuple(item.account_id for item in result.accounts) == tuple(
+        item.account_id for item in executions
+    )
+    assert tuple(item.snapshot_id for item in result.accounts) == tuple(
+        item.snapshot_id for item in executions
+    )
+    assert len(result.accounts) == result.selected_account_snapshot_count
+    executor.execute.assert_awaited_once()
+    cast(Any, session.execute).assert_not_awaited()
+    cast(Any, session.scalar).assert_not_awaited()
+    cast(Any, session.scalars).assert_not_awaited()
+
+
+async def test_manifest_is_identical_when_exact_account_snapshots_replay() -> None:
+    created = _executor_result()
+    replayed_executions = tuple(
+        replace(
+            execution,
+            disposition=(
+                AccountSnapshotRefreshExecutionDisposition.replayed
+                if execution.mode is AccountSnapshotRefreshMode.refresh
+                else AccountSnapshotRefreshExecutionDisposition.reused
+            ),
+        )
+        for execution in created.account_snapshots
+    )
+    replayed = _executor_result(
+        net_worth_disposition=NetWorthSnapshotWriteDisposition.replayed,
+        executions=replayed_executions,
+    )
+    created_service, _, _, _ = _service(result=created)
+    replayed_service, _, _, _ = _service(result=replayed)
+
+    created_result = await created_service.recalculate(
+        RecalculateUserSnapshotRefreshCommand(principal=_principal())
+    )
+    replayed_result = await replayed_service.recalculate(
+        RecalculateUserSnapshotRefreshCommand(principal=_principal())
+    )
+
+    assert created_result.accounts == replayed_result.accounts
+    assert created_result.calculation_version == replayed_result.calculation_version
+    assert created_result.timestamp == replayed_result.timestamp
+    assert created_result.granularity is replayed_result.granularity
+    assert created_result.currency == replayed_result.currency
+
+
+async def test_manifest_validation_error_is_generic_and_contains_no_identity() -> None:
+    invalid = _executor_result()
+    invalid = replace(
+        invalid,
+        account_snapshots=(
+            replace(
+                invalid.account_snapshots[0],
+                snapshot_id=" sensitive-snapshot-id",
+            ),
+            *invalid.account_snapshots[1:],
+        ),
+    )
+    service, _, _, _ = _service(result=invalid)
+
+    with pytest.raises(UserSnapshotRefreshUnavailableError) as raised:
+        await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
+
+    assert raised.value.code == "snapshot_refresh_unavailable"
+    assert raised.value.message == (
+        "Snapshot refresh cannot be completed from the current account data."
+    )
+    assert "sensitive-snapshot-id" not in str(raised.value)
+
+
 async def test_empty_user_result_is_valid() -> None:
     service, _, _, _ = _service(result=_executor_result(executions=()))
     result = await service.recalculate(
@@ -484,6 +647,7 @@ async def test_empty_user_result_is_valid() -> None:
     assert result.refresh_account_count == 0
     assert result.reuse_only_account_count == 0
     assert result.selected_account_snapshot_count == 0
+    assert result.accounts == ()
 
 
 def test_command_and_result_are_frozen_and_slotted() -> None:
@@ -494,6 +658,8 @@ def test_command_and_result_are_frozen_and_slotted() -> None:
         timestamp=BUCKET,
         granularity=SnapshotGranularity.minute,
         currency="EUR",
+        calculation_version=CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION,
+        accounts=(),
         refresh_account_count=0,
         reuse_only_account_count=0,
         created_account_snapshot_count=0,
@@ -504,6 +670,7 @@ def test_command_and_result_are_frozen_and_slotted() -> None:
     for value, field in (
         (command, "principal"),
         (result, "currency"),
+        (SnapshotRefreshAccountSelection("account-a", "snapshot-a"), "account_id"),
     ):
         with pytest.raises(FrozenInstanceError):
             value.__setattr__(field, None)

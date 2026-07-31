@@ -608,12 +608,30 @@ transaction has been committed and the shared session is idle.
 
 The coordinated executor remains the source of persisted User base currency,
 complete account coverage, refresh versus viewer reuse-only classification,
-source AccountSnapshot lineage, and final guarded NetWorth creation. The public
-result exposes only the NetWorth snapshot identity and disposition plus currency,
-bucket, and aggregate execution counts. It never exposes the user identity,
-account or source-snapshot identities, memberships, FX evidence, projections,
-or audits. Missing/incomplete evidence and immutable conflict use distinct
-generic HTTP 409 contracts without identifying the failing account.
+source AccountSnapshot lineage, and final guarded NetWorth creation. Since
+5M-A, the public result also exposes the exact read manifest consisting of the
+executor timestamp, granularity, output currency, calculation version, and
+every validated `(account_id, snapshot_id)` identity in deterministic executor
+order. This is the only public account/source lineage: when non-empty, it calls
+the existing exact 5L portfolio and dashboard reads without another database
+query, account discovery, latest selection, sort, or fallback.
+
+Every successful non-empty manifest is directly compatible with both 5L
+request contracts and is transported unchanged. A successful empty manifest
+has exactly `accounts == []`, zero selected and account-snapshot counts, and
+represents the explicit state that the user has no snapshot-capable account.
+It is complete rather than partial and does not arise from an error, fallback,
+or latest-snapshot lookup. The 5L endpoints continue to require a non-empty
+account set, so 5M-B must return an explicit empty workflow state before either
+5L call and must not discover accounts or manufacture a synthetic selector.
+
+The result otherwise exposes only the NetWorth snapshot identity and
+disposition plus aggregate execution counts. It never exposes user identity,
+memberships, roles, refresh modes, writer dispositions, FX evidence,
+projections, selected item identities, or audits. A partial or inconsistent
+manifest and other missing/incomplete evidence use the generic unavailable
+HTTP 409 contract; immutable conflict retains its distinct generic HTTP 409
+contract, neither identifying the failing account.
 
 Because each AccountSnapshot writer commits independently, an unavailable
 response can coexist with valid completed account rows. The next identical

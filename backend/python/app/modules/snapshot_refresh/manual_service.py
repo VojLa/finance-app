@@ -34,6 +34,7 @@ from app.shared.errors import ApplicationError
 MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY = SnapshotGranularity.minute
 MANUAL_USER_SNAPSHOT_REFRESH_SOURCE = SnapshotSource.manual_recalculation
 CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION = CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION
+_POSTGRES_INTEGER_MAX = 2_147_483_647
 Clock = Callable[[], datetime]
 
 
@@ -61,12 +62,20 @@ class RecalculateUserSnapshotRefreshCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotRefreshAccountSelection:
+    account_id: str
+    snapshot_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecalculateUserSnapshotRefreshResult:
     net_worth_snapshot_id: str
     net_worth_status: Literal["created", "replayed"]
     timestamp: datetime
     granularity: SnapshotGranularity
     currency: str
+    calculation_version: int
+    accounts: tuple[SnapshotRefreshAccountSelection, ...]
     refresh_account_count: int
     reuse_only_account_count: int
     created_account_snapshot_count: int
@@ -144,6 +153,16 @@ def _count(value: object) -> int:
     return value
 
 
+def _version(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 < value <= _POSTGRES_INTEGER_MAX
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return value
+
+
 def _validated_account_executions(
     value: object,
 ) -> tuple[ExecutedAccountSnapshotRefresh, ...]:
@@ -198,11 +217,61 @@ def _validated_lineage(
         )
         for execution in executions
     )
-    if value != expected or any(
-        not isinstance(identity, SelectedAccountSnapshotIdentity) for identity in value
+    if (
+        value != expected
+        or any(not isinstance(identity, SelectedAccountSnapshotIdentity) for identity in value)
+        or value
+        != tuple(
+            sorted(
+                value,
+                key=lambda identity: (
+                    identity.account_id,
+                    identity.snapshot_id,
+                ),
+            )
+        )
     ):
         raise UserSnapshotRefreshUnavailableError()
     return value
+
+
+def _manifest(
+    lineage: object,
+    *,
+    executions: tuple[ExecutedAccountSnapshotRefresh, ...],
+    selected_count: int,
+) -> tuple[SnapshotRefreshAccountSelection, ...]:
+    if not isinstance(lineage, tuple):
+        raise UserSnapshotRefreshUnavailableError()
+    accounts: list[SnapshotRefreshAccountSelection] = []
+    account_ids: set[str] = set()
+    snapshot_ids: set[str] = set()
+    for identity in lineage:
+        if not isinstance(identity, SelectedAccountSnapshotIdentity):
+            raise UserSnapshotRefreshUnavailableError()
+        account_id = _nonblank(identity.account_id)
+        snapshot_id = _nonblank(identity.snapshot_id)
+        if account_id in account_ids or snapshot_id in snapshot_ids:
+            raise UserSnapshotRefreshUnavailableError()
+        account_ids.add(account_id)
+        snapshot_ids.add(snapshot_id)
+        accounts.append(
+            SnapshotRefreshAccountSelection(
+                account_id=account_id,
+                snapshot_id=snapshot_id,
+            )
+        )
+    result = tuple(accounts)
+    if (
+        len(result) != selected_count
+        or len(result) != len(executions)
+        or tuple(item.account_id for item in result)
+        != tuple(execution.account_id for execution in executions)
+        or tuple(item.snapshot_id for item in result)
+        != tuple(execution.snapshot_id for execution in executions)
+    ):
+        raise UserSnapshotRefreshUnavailableError()
+    return result
 
 
 def _validate_executor_result(
@@ -230,9 +299,7 @@ def _validate_executor_result(
         or value.snapshot_timestamp != bucket
         or value.granularity is not MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY
         or value.source is not MANUAL_USER_SNAPSHOT_REFRESH_SOURCE
-        or not isinstance(value.calculation_version, int)
-        or isinstance(value.calculation_version, bool)
-        or value.calculation_version != calculation_version
+        or _version(value.calculation_version) != calculation_version
         or not isinstance(value.net_worth_disposition, NetWorthSnapshotWriteDisposition)
         or refresh_count != created_count + replayed_count
         or reuse_count != reused_count
@@ -325,12 +392,19 @@ class ManualUserSnapshotRefreshService:
             bucket=bucket,
             calculation_version=calculation_version,
         )
+        accounts = _manifest(
+            result.required_account_snapshot_identities,
+            executions=result.account_snapshots,
+            selected_count=result.selected_account_snapshot_count,
+        )
         return RecalculateUserSnapshotRefreshResult(
             net_worth_snapshot_id=result.net_worth_snapshot_id,
             net_worth_status=result.net_worth_disposition.value,
             timestamp=result.snapshot_timestamp,
             granularity=result.granularity,
             currency=result.output_currency,
+            calculation_version=result.calculation_version,
+            accounts=accounts,
             refresh_account_count=result.refresh_account_count,
             reuse_only_account_count=result.reuse_only_account_count,
             created_account_snapshot_count=result.created_account_snapshot_count,

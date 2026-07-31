@@ -17,7 +17,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                       | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                        |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K-A through 5K-D2 and 5K-E1 implemented; imports invoke it post-commit in 5K-E2 |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API       | 5K complete; 5M-A exact read manifest implemented                             |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                  |
 | prices / FX           | Provider refresh and price persistence                                                | Schema only; portfolio reads existing FX rows                               |
 | dashboard / reporting | Dashboard read models                                                                 | Snapshot read path complete and final-audited through 5L                      |
@@ -421,15 +421,30 @@ minute bucket and the shared AccountSnapshot/NetWorth calculation version.
 Persisted User state still owns output currency, and 5K-B/5K-D2 still own
 membership roles and viewer `reuse_only` behavior.
 
-The E1 response contains only NetWorth identity/status, bucket metadata,
-currency, and aggregate account counts. Account IDs, AccountSnapshot IDs,
-membership data, selected lineage, FX evidence, projections, and audits never
-cross the public boundary. Incomplete state and immutable conflicts become
-separate generic HTTP 409 application errors. Independently committed account
-rows survive a later failure and allow exact replay on a repeated request.
-E1 adds no scheduler, worker, queue, background task, import hook, schema, or
-migration; import/post-processing integration is implemented separately by
-5K-E2.
+The E1 response contains NetWorth identity/status, bucket metadata, currency,
+aggregate account counts, and—since 5M-A—the exact manifest for the existing
+5L portfolio and dashboard read APIs. The manifest copies calculation version
+and the ordered `(account_id, snapshot_id)` tuple directly from the already
+validated executor result. It performs no second database read, membership
+account discovery, latest selection, sort, or fallback. Incomplete or
+inconsistent lineage fails the complete result closed.
+
+Every successful non-empty refresh manifest is directly compatible with both
+unchanged 5L request contracts and must be transported without discovery,
+sorting, or completion. A successful empty manifest has `accounts == []`,
+zero selected and account-snapshot counts, and represents the complete
+no-snapshot-capable-account state. It is not partial, erroneous, a fallback, or
+a latest lookup. Because both 5L endpoints continue to require a non-empty
+account set, the 5M-B adapter must expose an explicit empty-state branch, call
+neither endpoint, and create no synthetic account selector.
+
+Membership data, roles, refresh modes, writer dispositions, selected item
+lineage, FX evidence, projections, and audits never cross the public boundary.
+Incomplete state and immutable conflicts become separate generic HTTP 409
+application errors. Independently committed account rows survive a later
+failure and allow exact replay on a repeated request. E1 adds no scheduler,
+worker, queue, background task, import hook, schema, or migration;
+import/post-processing integration is implemented separately by 5K-E2.
 
 5K-E2 adds an `imports`-owned post-processing orchestrator above the unchanged
 canonical posting transaction. Posting commits first and returns immutable

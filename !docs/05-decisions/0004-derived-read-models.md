@@ -71,5 +71,17 @@ data.
   coherence, deterministic serialization, generic failures, and leakage
   boundaries. The legacy live reader remains explicitly outside the
   snapshot-backed financial authority.
+- Step 5M-A adds an exact read manifest to the existing coordinated refresh
+  response. Its timestamp, granularity, output currency, calculation version,
+  and complete ordered account/snapshot identities come only from the already
+  validated executor result. The service performs no second read, membership
+  discovery, latest selection, sorting repair, financial calculation, or
+  fallback. Every successful non-empty manifest transports immutable identity
+  directly into the existing 5L portfolio and dashboard request contracts.
+  A successful empty manifest is the complete no-snapshot-capable-account
+  state, not a partial manifest, error, fallback, or latest lookup. Both 5L
+  contracts continue to require a non-empty account set, so 5M-B must expose
+  an explicit empty branch that calls neither endpoint, performs no account
+  discovery, and creates no synthetic account selector.
 - Rebuild, idempotency, correction, and concurrency rules must be specified and
   tested before the posting pipeline is introduced.
