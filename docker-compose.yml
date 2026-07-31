@@ -32,8 +32,16 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: development-secret-change-me
+      PYTHON_BACKEND_URL: http://api:8010
+      INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me
+      INTERNAL_AUTH_ISSUER: finance-app-next
+      INTERNAL_AUTH_AUDIENCE: finance-app-python
+      INTERNAL_AUTH_TOKEN_TTL_SECONDS: "60"
+      PYTHON_API_TIMEOUT_MS: "30000"
     depends_on:
       db:
+        condition: service_healthy
+      api:
         condition: service_healthy
 
   api:
@@ -49,6 +57,9 @@ services:
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
+      INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me
+      INTERNAL_AUTH_ISSUER: finance-app-next
+      INTERNAL_AUTH_AUDIENCE: finance-app-python
     depends_on:
       db:
         condition: service_healthy

@@ -41,7 +41,10 @@ and are intentionally excluded from OpenAPI. New clients must use `/api/v1`.
 ## Responses, errors, and writes
 
 FastAPI/Pydantic response models are the HTTP source of truth. Do not manually
-duplicate them in TypeScript; planned clients should be generated from OpenAPI.
+duplicate them in TypeScript. `npm run api:python:generate` exports OpenAPI
+directly from `create_app(...)` without database or lifespan work and generates
+`src/generated/python-api.ts`; `npm run api:python:check` detects drift without
+changing the working tree.
 Writes use request-scoped async SQLAlchemy sessions and commit or roll back as a
 unit. API errors use this stable envelope (health responses are an exception):
 
@@ -63,3 +66,25 @@ errors.
 `PortfolioSummary` is temporary: it represents holding cost, converts missing FX
 at `1.0` while returning a warning, and serializes numeric fields as JSON
 numbers. It is not a market-value, snapshot, or dashboard contract.
+
+## Next.js snapshot workflow routes
+
+Next.js exposes two server-owned browser integration routes:
+
+| Method | Path                               | Purpose                              |
+| ------ | ---------------------------------- | ------------------------------------ |
+| `POST` | `/api/snapshot-workflow/portfolio` | Refresh and exact portfolio snapshot |
+| `POST` | `/api/snapshot-workflow/dashboard` | Refresh and exact dashboard snapshot |
+
+They accept no body or selectors and require a valid NextAuth session. A
+non-empty refresh manifest is carried unchanged to exactly one 5L endpoint and
+returns discriminated `status: "ready"` with a safe refresh summary and the
+unchanged generated 5L response. An empty refresh returns `status: "empty"`
+with only the safe summary and calls no 5L endpoint. Neither response separately
+exposes refresh `accounts`, `accountId`, or `snapshotId`.
+
+All responses use `Cache-Control: no-store`. Adapter errors use a Next-owned
+`{error: {code, message}}` envelope. Authentication failure is 401,
+configuration failure is 503, and transport or contract failure is 502. Safe
+Python 404/409 errors may retain status/code/message; Python request IDs, raw
+bodies, headers, tokens, and tracebacks never cross the boundary.

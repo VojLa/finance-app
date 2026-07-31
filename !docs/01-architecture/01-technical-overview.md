@@ -6,15 +6,17 @@ calculation engines.
 
 ```text
 Browser -> Next.js UI and legacy route handlers
-             \-> planned authenticated adapter -> FastAPI /api/v1 -> PostgreSQL
-                                                     |
-                                               local raw-import storage
+             \-> authenticated server adapter -> FastAPI /api/v1 -> PostgreSQL
+                                                    |
+                                              local raw-import storage
 ```
 
 ## Runtime responsibilities
 
 - **Next.js / TypeScript** provides the current UI, NextAuth session, and legacy
-  routes. The UI has not yet migrated its main workflows to FastAPI.
+  routes. It now also owns bodyless portfolio/dashboard snapshot workflow
+  routes that bridge a verified session to FastAPI with a short-lived internal
+  token. The pages have not yet migrated to those routes.
 - **Python / FastAPI** owns the new HTTP transport, request infrastructure,
   account and invitation services, import-batch processing, and the temporary
   portfolio read endpoint.
@@ -30,6 +32,10 @@ never applies migrations or DDL at application startup. The root endpoint lists
 the available service endpoints; `/api/v1/health/live` and
 `/api/v1/health/ready` are intended for orchestration.
 
-The target architecture is API-first, with Python owning the business workflow
-and Next.js serving as UI and thin session/transport adapter. That boundary is
-documented in `!planning`; it is not fully realized in the current UI.
+The target architecture is API-first, with Python owning financial workflows
+and Next.js serving as UI and thin session/transport adapter. The 5M-B adapter
+implements that transport boundary for coordinated refresh plus exact
+portfolio/dashboard reads. FastAPI OpenAPI deterministically generates the
+TypeScript transport types. The adapter performs no finance, account
+discovery, or latest lookup; portfolio and dashboard page cutovers remain in
+5M-C and 5M-D.
