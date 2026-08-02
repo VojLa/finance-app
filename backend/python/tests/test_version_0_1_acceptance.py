@@ -19,6 +19,7 @@ AUDIT_FILES = frozenset(
     {
         "ChatGPT/audits/0.1-final-acceptance.md",
         "ChatGPT/audits/0.1-requirement-matrix.md",
+        "backend/python/tests/test_snapshot_application_cutover_final_audit.py",
         "backend/python/tests/test_version_0_1_acceptance.py",
         "backend/python/tests/test_version_0_1_acceptance_integration.py",
         "backend/python/tests/test_version_0_1_clean_database_flow_integration.py",
