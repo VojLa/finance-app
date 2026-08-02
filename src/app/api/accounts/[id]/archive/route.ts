@@ -1,0 +1,40 @@
+import { getServerSession } from "next-auth"
+import { NextResponse } from "next/server"
+
+import { authOptions } from "@/lib/auth"
+import { archiveAccount } from "@/modules/accounts/server/account-api"
+import { normalizeAdapterError, toErrorResponse } from "@/modules/python-api/server/errors"
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
+
+export async function POST(_request: Request, { params }: { params: { id: string } }) {
+  const session = await getServerSession(authOptions)
+  if (!session?.user || session.user.id.trim().length === 0) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "authentication_required",
+          message: "Authentication is required.",
+        },
+      },
+      { status: 401, headers: NO_STORE_HEADERS }
+    )
+  }
+
+  try {
+    const account = await archiveAccount(
+      {
+        userId: session.user.id,
+        email: session.user.email || undefined,
+      },
+      params.id
+    )
+    return NextResponse.json(account, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    const mapped = toErrorResponse(normalizeAdapterError(error))
+    return NextResponse.json(mapped.body, {
+      status: mapped.status,
+      headers: NO_STORE_HEADERS,
+    })
+  }
+}

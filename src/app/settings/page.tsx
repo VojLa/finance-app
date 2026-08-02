@@ -3,13 +3,16 @@
 import { useEffect, useState } from "react"
 import { useSession, signOut } from "next-auth/react"
 
-interface SharedAccount {
-  id: string
-  name: string
-  type: string
-  shareRole: string
-  ownerEmail?: string
-}
+import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
+import type { AccountPageModel } from "@/modules/accounts/account-contract"
+import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import { accountRoleLabel, isSharedAccount } from "@/modules/accounts/account-permissions"
+
+type SharedAccountsState =
+  | { status: "loading" }
+  | { status: "ready"; accounts: readonly AccountPageModel[] }
+  | { status: "empty" }
+  | { status: "error"; message: string }
 
 export default function SettingsPage() {
   const { data: session } = useSession()
@@ -20,14 +23,37 @@ export default function SettingsPage() {
   const [pwError, setPwError] = useState("")
   const [pwSuccess, setPwSuccess] = useState(false)
 
-  const [sharedAccounts, setSharedAccounts] = useState<SharedAccount[]>([])
+  const [sharedAccountsState, setSharedAccountsState] = useState<SharedAccountsState>({
+    status: "loading",
+  })
 
   useEffect(() => {
-    fetch("/api/accounts")
-      .then((r) => r.json())
-      .then((data: (SharedAccount & { isShared?: boolean })[]) => {
-        setSharedAccounts(data.filter((a) => a.isShared))
+    let active = true
+    void requestAccounts()
+      .then((accounts) => {
+        if (!active) return
+        const sharedAccounts = accounts
+          .map(toAccountPageModel)
+          .filter((account) => isSharedAccount(account.relationType))
+        setSharedAccountsState(
+          sharedAccounts.length === 0
+            ? { status: "empty" }
+            : { status: "ready", accounts: sharedAccounts }
+        )
       })
+      .catch((error: unknown) => {
+        if (!active) return
+        setSharedAccountsState({
+          status: "error",
+          message:
+            error instanceof AccountClientError
+              ? error.message
+              : "Sdílené účty se nepodařilo načíst.",
+        })
+      })
+    return () => {
+      active = false
+    }
   }, [])
 
   async function handleChangePassword(e: React.FormEvent) {
@@ -129,31 +155,36 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      {sharedAccounts.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-          <h2 className="text-base font-medium text-gray-900">Sdílené přístupy</h2>
-          <p className="text-sm text-gray-500">Tyto účty s tebou sdíleli jiní uživatelé.</p>
-          <div className="divide-y divide-gray-100">
-            {sharedAccounts.map((a) => (
-              <div key={a.id} className="py-2.5 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{a.name}</p>
-                  <p className="text-xs text-gray-400">{a.type}</p>
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <h2 className="text-base font-medium text-gray-900">Sdílené přístupy</h2>
+        {sharedAccountsState.status === "loading" && (
+          <p className="text-sm text-gray-500">Načítám sdílené účty…</p>
+        )}
+        {sharedAccountsState.status === "error" && (
+          <p className="text-sm text-red-600">{sharedAccountsState.message}</p>
+        )}
+        {sharedAccountsState.status === "empty" && (
+          <p className="text-sm text-gray-500">Nemáte žádné sdílené účty.</p>
+        )}
+        {sharedAccountsState.status === "ready" && (
+          <>
+            <p className="text-sm text-gray-500">Tyto účty s tebou sdíleli jiní uživatelé.</p>
+            <div className="divide-y divide-gray-100">
+              {sharedAccountsState.accounts.map((a) => (
+                <div key={a.id} className="py-2.5 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{a.name}</p>
+                    <p className="text-xs text-gray-400">{a.type}</p>
+                  </div>
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                    {accountRoleLabel(a.role)}
+                  </span>
                 </div>
-                <span
-                  className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                    a.shareRole === "editor"
-                      ? "bg-blue-50 text-blue-700"
-                      : "bg-gray-100 text-gray-500"
-                  }`}
-                >
-                  {a.shareRole === "editor" ? "Editor" : "Prohlížeč"}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+              ))}
+            </div>
+          </>
+        )}
+      </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         <h2 className="text-base font-medium text-gray-900">Účet</h2>
