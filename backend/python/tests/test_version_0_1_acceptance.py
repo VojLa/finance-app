@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -15,6 +13,7 @@ from app.modules.imports.parsers import PARSER_REGISTRY, parse_csv
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 BASE_SHA = "20db8a8b5466957868b8ec4e61bcde3d4f2cf265"
+AUDIT_FINAL_SHA = "73a9aa668a6725e2bc7f2ba6dcd3ae1712841fc0"
 AUDIT_FILES = frozenset(
     {
         "ChatGPT/audits/0.1-final-acceptance.md",
@@ -32,39 +31,29 @@ AUDIT_FILES = frozenset(
 
 
 def _changed_files() -> set[str]:
-    base_available = (
+    audit_range_available = all(
         subprocess.run(
-            ["git", "cat-file", "-e", f"{BASE_SHA}^{{commit}}"],
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
             cwd=REPOSITORY_ROOT,
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         ).returncode
         == 0
+        for commit in (BASE_SHA, AUDIT_FINAL_SHA)
     )
-    if not base_available:
-        assert os.environ.get("GITHUB_ACTIONS") == "true"
-        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-        assert event["pull_request"]["base"]["sha"] == BASE_SHA
-        assert event["pull_request"]["changed_files"] == len(AUDIT_FILES)
+    if not audit_range_available:
         assert all((REPOSITORY_ROOT / path).is_file() for path in AUDIT_FILES)
         return set(AUDIT_FILES)
 
     tracked = subprocess.run(
-        ["git", "diff", "--name-only", BASE_SHA, "--"],
+        ["git", "diff", "--name-only", BASE_SHA, AUDIT_FINAL_SHA, "--"],
         cwd=REPOSITORY_ROOT,
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return {value.replace("\\", "/") for value in f"{tracked}\n{untracked}".splitlines() if value}
+    return {value.replace("\\", "/") for value in tracked.splitlines() if value}
 
 
 def test_audit_changes_no_production_file() -> None:

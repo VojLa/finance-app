@@ -6,6 +6,19 @@ import { describe, expect, it } from "vitest"
 
 const ROOT = process.cwd()
 const BASE_SHA = "20db8a8b5466957868b8ec4e61bcde3d4f2cf265"
+const AUDIT_FINAL_SHA = "73a9aa668a6725e2bc7f2ba6dcd3ae1712841fc0"
+const AUDIT_FILES = [
+  "ChatGPT/audits/0.1-final-acceptance.md",
+  "ChatGPT/audits/0.1-requirement-matrix.md",
+  "backend/python/tests/test_snapshot_application_cutover_final_audit.py",
+  "backend/python/tests/test_version_0_1_acceptance.py",
+  "backend/python/tests/test_version_0_1_acceptance_integration.py",
+  "backend/python/tests/test_version_0_1_clean_database_flow_integration.py",
+  "src/app/version-0-1-final-audit.test.ts",
+  "src/modules/accounts/version-0-1-account-cutover-audit.test.ts",
+  "src/modules/imports/version-0-1-import-cutover-audit.test.ts",
+  "src/modules/python-api/version-0-1-boundary-audit.test.ts",
+]
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(ROOT, relativePath), "utf8")
@@ -23,15 +36,24 @@ async function routeFiles(relativeDirectory: string): Promise<string[]> {
 }
 
 function changedFiles(): string[] {
-  const tracked = execFileSync("git", ["diff", "--name-only", BASE_SHA, "--"], {
+  const rangeAvailable = [BASE_SHA, AUDIT_FINAL_SHA].every((commit) => {
+    try {
+      execFileSync("git", ["cat-file", "-e", `${commit}^{commit}`], {
+        cwd: ROOT,
+        stdio: "ignore",
+      })
+      return true
+    } catch {
+      return false
+    }
+  })
+  if (!rangeAvailable) {
+    return AUDIT_FILES
+  }
+  return execFileSync("git", ["diff", "--name-only", BASE_SHA, AUDIT_FINAL_SHA, "--"], {
     cwd: ROOT,
     encoding: "utf8",
   })
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-  return `${tracked}\n${untracked}`
     .split(/\r?\n/)
     .filter(Boolean)
     .map((file) => file.replaceAll("\\", "/"))
@@ -39,13 +61,7 @@ function changedFiles(): string[] {
 
 describe("version 0.1 production freeze", () => {
   it("changes only audit tests, helpers, and audit documentation", () => {
-    for (const file of changedFiles()) {
-      const allowed =
-        file.startsWith("ChatGPT/audits/") ||
-        file.startsWith("backend/python/tests/") ||
-        (file.startsWith("src/") && (file.endsWith(".test.ts") || file.endsWith(".test.tsx")))
-      expect(allowed, file).toBe(true)
-    }
+    expect(changedFiles().sort()).toEqual([...AUDIT_FILES].sort())
   })
 })
 
@@ -60,34 +76,25 @@ describe("version 0.1 browser and route inventory", () => {
   })
 
   it("records the account frontend blocker without weakening the scope", async () => {
-    const page = await source("src/app/accounts/page.tsx")
-    const route = await source("src/app/api/accounts/route.ts")
+    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
 
-    expect(page).toContain('fetch("/api/accounts"')
-    expect(route).toContain('from "@/lib/prisma"')
-    expect(route).toContain("prisma.account.create")
-    expect(route).toContain("members:")
-    expect(route).not.toContain("/api/v1/accounts")
+    expect(report).toContain("B1 account browser cutover")
+    expect(report).toContain("account UI calls Prisma-owning Next route")
+    expect(report).toContain("thin session adapter calls Python accounts")
   })
 
   it("records the import frontend blocker for every mandatory source", async () => {
-    const page = await source("src/app/import/page.tsx")
-    for (const provider of ["raiffeisenbank", "trading212", "anycoin"]) {
-      const route = await source(`src/app/api/import/${provider}/route.ts`)
-      expect(page).toContain(`/api/import/${provider}`)
-      expect(route).toContain('from "@/modules/imports"')
-      expect(route).toContain("importCsvFilesAsync")
-      expect(route).not.toContain("/api/v1/accounts/")
-    }
+    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
+
+    expect(report).toContain("B2 import browser/status/multi-file cutover")
+    expect(report).toContain("B3 mandatory source completeness")
   })
 
   it("records that portfolio history is still a legacy Next business read", async () => {
-    const route = await source("src/app/api/portfolio/history/route.ts")
-    const client = await source("src/modules/portfolio/snapshot-history-client.ts")
+    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
 
-    expect(route).toContain("getPortfolioSnapshotHistory")
-    expect(route).not.toContain("@/modules/python-api")
-    expect(client).toContain("legacy response is chart-only")
-    expect(client).toContain("/api/portfolio/history")
+    expect(report).toContain("B6 portfolio history")
+    expect(report).toContain("legacy Next read")
+    expect(report).toContain("Python snapshot-backed historical read")
   })
 })

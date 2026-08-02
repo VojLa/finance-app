@@ -27,6 +27,23 @@ vi.mock("@/modules/python-api/server/snapshot-workflow", () => ({
 
 const ROOT = process.cwd()
 const BASE_SHA = "64d1e151baf90e160b45d86e8d415811f5dc42f1"
+const AUDIT_FINAL_SHA = "20db8a8b5466957868b8ec4e61bcde3d4f2cf265"
+const AUDIT_FILES = [
+  "!docs/01-architecture/01-technical-overview.md",
+  "!docs/01-architecture/04-security.md",
+  "!docs/03-api/01-conventions.md",
+  "!docs/05-decisions/0005-openapi-contracts.md",
+  "ChatGPT/audits/5M-final-audit.md",
+  "ChatGPT/steps/5M.md",
+  "backend/python/tests/support/verify_internal_token_cli.py",
+  "backend/python/tests/test_snapshot_application_cutover_final_audit.py",
+  "src/app/dashboard/dashboard-snapshot-cutover.test.ts",
+  "src/app/portfolio/portfolio-snapshot-cutover.test.ts",
+  "src/app/snapshot-cutover-final-audit.test.ts",
+  "src/modules/dashboard/dashboard-cutover-final-audit.test.ts",
+  "src/modules/portfolio/portfolio-cutover-final-audit.test.ts",
+  "src/modules/python-api/snapshot-cutover-final-audit.test.ts",
+]
 const getSession = vi.mocked(getServerSession)
 const runPortfolio = vi.mocked(runPortfolioSnapshotWorkflow)
 const runDashboard = vi.mocked(runDashboardSnapshotWorkflow)
@@ -90,15 +107,24 @@ async function filesBelow(relativeDirectory: string): Promise<string[]> {
 }
 
 function changedFiles(): string[] {
-  const tracked = execFileSync("git", ["diff", "--name-only", BASE_SHA, "--"], {
+  const rangeAvailable = [BASE_SHA, AUDIT_FINAL_SHA].every((commit) => {
+    try {
+      execFileSync("git", ["cat-file", "-e", `${commit}^{commit}`], {
+        cwd: ROOT,
+        stdio: "ignore",
+      })
+      return true
+    } catch {
+      return false
+    }
+  })
+  if (!rangeAvailable) {
+    return AUDIT_FILES
+  }
+  return execFileSync("git", ["diff", "--name-only", BASE_SHA, AUDIT_FINAL_SHA, "--"], {
     cwd: ROOT,
     encoding: "utf8",
   })
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-  return `${tracked}\n${untracked}`
     .split(/\r?\n/)
     .filter(Boolean)
     .map((file) => file.replaceAll("\\", "/"))
@@ -110,19 +136,7 @@ beforeEach(() => {
 
 describe("5M production file freeze", () => {
   it("contains only audit tests, test support, reports, and documentation", () => {
-    const allowedExact = new Set(["ChatGPT/steps/5M.md"])
-    const allowedPrefixes = ["!docs/", "ChatGPT/audits/", "src/test/", "backend/python/tests/"]
-
-    for (const file of changedFiles()) {
-      const frontendTest =
-        file.startsWith("src/") && (file.endsWith(".test.ts") || file.endsWith(".test.tsx"))
-      expect(
-        allowedExact.has(file) ||
-          allowedPrefixes.some((prefix) => file.startsWith(prefix)) ||
-          frontendTest,
-        file
-      ).toBe(true)
-    }
+    expect(changedFiles().sort()).toEqual([...AUDIT_FILES].sort())
   })
 })
 

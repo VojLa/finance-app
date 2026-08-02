@@ -1,158 +1,76 @@
-import type { NextRequest } from "next/server"
-import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
-import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
-import { assertAccountAccess } from "@/lib/accountAccess"
+import { NextResponse, type NextRequest } from "next/server"
 
-async function getExistingSessionUserId(sessionUserId: string) {
-  const user = await prisma.user.findUnique({
-    where: { id: sessionUserId },
-    select: { id: true },
-  })
-  return user?.id ?? null
+import { authOptions } from "@/lib/auth"
+import type { CreateAccountRequest } from "@/modules/accounts/account-contract"
+import { createAccount, listAccounts } from "@/modules/accounts/server/account-api"
+import {
+  normalizeAdapterError,
+  toErrorResponse,
+  validationError,
+} from "@/modules/python-api/server/errors"
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
+
+function authenticationRequired() {
+  return NextResponse.json(
+    {
+      error: {
+        code: "authentication_required",
+        message: "Authentication is required.",
+      },
+    },
+    { status: 401, headers: NO_STORE_HEADERS }
+  )
 }
 
 export async function GET() {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const memberships = await prisma.accountMember.findMany({
-    where: { userId: session.user.id },
-    include: { account: true },
-    orderBy: { createdAt: "asc" },
-  })
-
-  return NextResponse.json(
-    memberships.map((membership) => ({
-      ...membership.account,
-      isShared: membership.role !== "owner",
-      shareRole: membership.role,
-      relationType: membership.relationType,
-    }))
-  )
-}
-
-export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { name, type, currency, color } = await req.json()
-
-  if (!name || !type || !currency) {
-    return NextResponse.json({ error: "Chybí povinná pole" }, { status: 400 })
-  }
-
-  const VALID_TYPES = [
-    "bank",
-    "cash",
-    "savings",
-    "broker",
-    "exchange",
-    "crypto_wallet",
-    "credit_card",
-    "loan",
-    "mortgage",
-  ]
-  if (!VALID_TYPES.includes(type)) {
-    return NextResponse.json({ error: "Neplatný typ účtu" }, { status: 400 })
-  }
-
-  const userId = await getExistingSessionUserId(session.user.id)
-  if (!userId) {
-    return NextResponse.json(
-      { error: "Session odkazuje na neexistujiciho uzivatele. Prihlas se prosim znovu." },
-      { status: 401 }
-    )
+  if (!session?.user || session.user.id.trim().length === 0) {
+    return authenticationRequired()
   }
 
   try {
-    const account = await prisma.account.create({
-      data: {
-        name,
-        type,
-        currency,
-        color: color || null,
-        members: {
-          create: {
-            userId,
-            role: "owner",
-            relationType: "owner",
-            acceptedAt: new Date(),
-          },
-        },
-      },
+    const accounts = await listAccounts({
+      userId: session.user.id,
+      email: session.user.email || undefined,
     })
-    return NextResponse.json(account, { status: 201 })
-  } catch (err) {
-    console.error("Account create error:", err)
-    return NextResponse.json({ error: "Nepodařilo se vytvořit účet" }, { status: 500 })
+    return NextResponse.json(accounts, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    const mapped = toErrorResponse(normalizeAdapterError(error))
+    return NextResponse.json(mapped.body, {
+      status: mapped.status,
+      headers: NO_STORE_HEADERS,
+    })
   }
 }
 
-export async function PATCH(req: NextRequest) {
+export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  if (!session?.user || session.user.id.trim().length === 0) {
+    return authenticationRequired()
+  }
 
-  const { searchParams } = new URL(req.url)
-  const id = searchParams.get("id")
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const hasAccess = await assertAccountAccess(id, session.user.id, "admin")
-  if (!hasAccess) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
-
-  const account = await prisma.account.findUnique({ where: { id } })
-  if (!account) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
-
-  const { name, type, currency, color } = await req.json()
-
-  const updated = await prisma.account.update({
-    where: { id },
-    data: {
-      ...(name && { name }),
-      ...(type && { type }),
-      ...(currency && { currency }),
-      color: color ?? account.color,
-    },
-  })
-
-  return NextResponse.json(updated)
-}
-
-export async function DELETE(req: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { searchParams } = new URL(req.url)
-  const id = searchParams.get("id")
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const hasAccess = await assertAccountAccess(id, session.user.id, "owner")
-  if (!hasAccess) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
-
-  const transactions = await prisma.transaction.findMany({
-    where: { accountId: id },
-    select: { id: true },
-  })
-  const transactionIds = transactions.map((tx) => tx.id)
-
-  await prisma.$transaction([
-    prisma.transactionPair.deleteMany({
-      where: {
-        OR: [
-          { fromTransactionId: { in: transactionIds } },
-          { toTransactionId: { in: transactionIds } },
-        ],
+  try {
+    let payload: CreateAccountRequest
+    try {
+      payload = (await request.json()) as CreateAccountRequest
+    } catch {
+      throw validationError()
+    }
+    const account = await createAccount(
+      {
+        userId: session.user.id,
+        email: session.user.email || undefined,
       },
-    }),
-    prisma.accountSnapshot.deleteMany({ where: { accountId: id } }),
-    prisma.transactionSplit.deleteMany({ where: { transactionId: { in: transactionIds } } }),
-    prisma.transaction.deleteMany({ where: { accountId: id } }),
-    prisma.investmentEvent.deleteMany({ where: { accountId: id } }),
-    prisma.holding.deleteMany({ where: { accountId: id } }),
-    prisma.importBatch.deleteMany({ where: { accountId: id } }),
-    prisma.account.delete({ where: { id } }),
-  ])
-
-  return NextResponse.json({ ok: true })
+      payload
+    )
+    return NextResponse.json(account, { status: 201, headers: NO_STORE_HEADERS })
+  } catch (error) {
+    const mapped = toErrorResponse(normalizeAdapterError(error))
+    return NextResponse.json(mapped.body, {
+      status: mapped.status,
+      headers: NO_STORE_HEADERS,
+    })
+  }
 }

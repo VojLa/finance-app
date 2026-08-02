@@ -89,6 +89,38 @@ configuration failure is 503, and transport or contract failure is 502. Safe
 Python 404/409 errors may retain status/code/message; Python request IDs, raw
 bodies, headers, tokens, and tracebacks never cross the boundary.
 
+## Next.js account routes
+
+The main account page uses these same-origin session adapters:
+
+| Method        | Path                         | Python operation                                  |
+| ------------- | ---------------------------- | ------------------------------------------------- |
+| `GET`, `POST` | `/api/accounts`              | list or create through `/api/v1/accounts`         |
+| `PATCH`       | `/api/accounts/{id}`         | update through `/api/v1/accounts/{account_id}`    |
+| `POST`        | `/api/accounts/{id}/archive` | archive through the corresponding lifecycle route |
+
+Each handler reads the NextAuth session once and makes one server-side Python
+request through the shared token-per-request, timeout-bound, no-store
+transport. The browser cookie and browser authorization header are not FastAPI
+credentials, and the internal token never enters the client bundle or JSON
+response. Account HTTP DTOs are aliases of generated FastAPI OpenAPI schemas.
+
+Create accepts only name, type, currency, and optional color/notes. Python
+creates the owner membership from the authenticated subject. Update takes the
+account ID only from the route path and cannot change account type. Archive is
+the R1 lifecycle action; the used routes expose no destructive delete.
+
+User-authored Python validation failures are reduced to
+`422 validation_error / Request validation failed.` Safe Python 404/409 errors
+retain only status, code and message. Python 401/403, transport failures,
+non-JSON responses and 5xx responses are internal bridge failures; raw bodies,
+request IDs, backend URLs, cookies, tokens and stack traces are never returned.
+
+The main account page does not call the legacy cash or share routes. Those route
+files remain registered, unchanged compatibility surfaces. Account cash/FX
+presentation is deferred to the snapshot-backed R6 contract, and sharing UX is
+outside R1.
+
 ## Portfolio page integration
 
 The portfolio page uses `POST /api/snapshot-workflow/portfolio` exactly once on

@@ -26,6 +26,12 @@ const CONTRACT_ERROR: AdapterErrorDefinition = {
   message: "The Python API returned an incompatible response.",
 }
 
+const VALIDATION_ERROR: AdapterErrorDefinition = {
+  status: 422,
+  code: "validation_error",
+  message: "Request validation failed.",
+}
+
 export class SnapshotWorkflowAdapterError extends Error {
   readonly status: number
   readonly code: string
@@ -50,8 +56,12 @@ export function contractError(): SnapshotWorkflowAdapterError {
   return new SnapshotWorkflowAdapterError(CONTRACT_ERROR)
 }
 
+export function validationError(): SnapshotWorkflowAdapterError {
+  return new SnapshotWorkflowAdapterError(VALIDATION_ERROR)
+}
+
 export function forwardedPythonError(
-  status: 404 | 409,
+  status: 404 | 409 | 422,
   code: string,
   message: string
 ): SnapshotWorkflowAdapterError {

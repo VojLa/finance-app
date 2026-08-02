@@ -67,4 +67,19 @@ finance are snapshot-backed. Portfolio history remains legacy chart-only;
 dashboard operational widgets remain legacy and narrowly adapted. The legacy
 current portfolio and dashboard routes remain compatibility surfaces.
 Frontend-only GitHub Actions coverage remains a separate process risk. The
-next step is the overall 0.1 release/final audit.
+subsequent 0.1 final acceptance audit identified remaining release blockers and
+left version 0.1 incomplete.
+
+The 0.1-R1 remediation cuts the main account management page over to the
+existing Python account API. The browser calls only same-origin Next.js account
+routes; those routes verify NextAuth once and delegate through the shared
+server-only authenticated transport. Python now owns list, create, update and
+archive for the used account flow. The generated OpenAPI schemas remain the
+TypeScript HTTP type source.
+
+Account type is immutable after creation. The page replaces destructive delete
+with archive and no longer reads or presents the legacy account-cash/FX model.
+Sharing UX is outside R1. The legacy cash and share route files remain
+registered compatibility surfaces but are not called by the main account page.
+Version 0.1 remains incomplete; the next remediation is 0.1-R2,
+Raiffeisenbank Python source completion.
