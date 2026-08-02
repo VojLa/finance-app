@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth"
 import { NextResponse, type NextRequest } from "next/server"
 
 import { authOptions } from "@/lib/auth"
-import type { CreateAccountRequest } from "@/modules/accounts/account-contract"
+import { parseCreateAccountRequest } from "@/modules/accounts/account-request-parser"
 import { createAccount, listAccounts } from "@/modules/accounts/server/account-api"
 import {
   normalizeAdapterError,
@@ -52,9 +52,9 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    let payload: CreateAccountRequest
+    let payload
     try {
-      payload = (await request.json()) as CreateAccountRequest
+      payload = parseCreateAccountRequest(await request.json())
     } catch {
       throw validationError()
     }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 import {
@@ -16,16 +16,22 @@ import type {
   UpdateAccountRequest,
 } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import {
+  type AccountActionState,
+  isActionErrorForAccount,
+} from "@/modules/accounts/account-page-state"
+import {
+  accountRoleLabel,
+  canArchiveAccount,
+  canEditAccount,
+  isSharedAccount,
+} from "@/modules/accounts/account-permissions"
+import { createAccountRequestController } from "@/modules/accounts/account-request-controller"
 
 type AccountsPageState =
   | { status: "loading" }
   | { status: "ready"; accounts: readonly AccountPageModel[] }
   | { status: "error"; code: string; message: string }
-
-type AccountActionState =
-  | { status: "idle" }
-  | { status: "submitting"; action: "create" | "update" | "archive"; accountId?: string }
-  | { status: "error"; action: "create" | "update" | "archive"; message: string }
 
 type EditForm = {
   name: string
@@ -45,11 +51,22 @@ export default function AccountsPage() {
   const [currency, setCurrency] = useState("EUR")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<EditForm>({ name: "", currency: "" })
+  const requestController = useRef<ReturnType<typeof createAccountRequestController> | null>(null)
+  if (requestController.current === null) {
+    requestController.current = createAccountRequestController(requestAccounts)
+  }
 
-  const loadAccounts = useCallback(async () => {
+  const loadAccounts = useCallback(async (mode: "initial" | "reload") => {
+    const request =
+      mode === "initial"
+        ? requestController.current?.initial()
+        : requestController.current?.reload()
+    if (!request) {
+      return
+    }
     setPageState({ status: "loading" })
     try {
-      const accounts = await requestAccounts()
+      const accounts = await request
       setPageState({
         status: "ready",
         accounts: accounts.map(toAccountPageModel),
@@ -68,7 +85,7 @@ export default function AccountsPage() {
   }, [])
 
   useEffect(() => {
-    void loadAccounts()
+    void loadAccounts("initial")
   }, [loadAccounts])
 
   async function handleCreate(event: React.FormEvent) {
@@ -86,7 +103,7 @@ export default function AccountsPage() {
       setCurrency("EUR")
       setShowCreateForm(false)
       setActionState({ status: "idle" })
-      await loadAccounts()
+      await loadAccounts("reload")
     } catch (error) {
       setActionState({
         status: "error",
@@ -112,11 +129,12 @@ export default function AccountsPage() {
       await requestUpdateAccount(accountId, payload)
       setEditingId(null)
       setActionState({ status: "idle" })
-      await loadAccounts()
+      await loadAccounts("reload")
     } catch (error) {
       setActionState({
         status: "error",
         action: "update",
+        accountId,
         message: safeActionMessage(error),
       })
     }
@@ -133,11 +151,12 @@ export default function AccountsPage() {
     try {
       await requestArchiveAccount(account.id)
       setActionState({ status: "idle" })
-      await loadAccounts()
+      await loadAccounts("reload")
     } catch (error) {
       setActionState({
         status: "error",
         action: "archive",
+        accountId: account.id,
         message: safeActionMessage(error),
       })
     }
@@ -255,7 +274,7 @@ export default function AccountsPage() {
 
             return (
               <article key={account.id} className="bg-white border border-gray-200 rounded-xl p-5">
-                {editingId === account.id ? (
+                {editingId === account.id && canEditAccount(account.role) ? (
                   <div className="space-y-3">
                     <label className="block text-sm text-gray-700">
                       Název
@@ -287,7 +306,7 @@ export default function AccountsPage() {
                         className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 uppercase"
                       />
                     </label>
-                    {actionState.status === "error" && actionState.action === "update" && (
+                    {isActionErrorForAccount(actionState, "update", account.id) && (
                       <p className="text-sm text-red-600">{actionState.message}</p>
                     )}
                     <div className="flex gap-2">
@@ -323,28 +342,39 @@ export default function AccountsPage() {
                         <p className="text-sm text-gray-500">
                           {ACCOUNT_TYPE_LABELS[account.type] ?? account.type} · {account.currency}
                         </p>
+                        {isSharedAccount(account.relationType) && (
+                          <span className="inline-flex mt-2 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                            Sdílený účet · {accountRoleLabel(account.role)}
+                          </span>
+                        )}
                       </div>
                     </div>
-                    {actionState.status === "error" && actionState.action === "archive" && (
+                    {isActionErrorForAccount(actionState, "archive", account.id) && (
                       <p className="text-sm text-red-600 mt-3">{actionState.message}</p>
                     )}
-                    <div className="flex gap-3 mt-5 pt-4 border-t border-gray-100">
-                      <button
-                        type="button"
-                        onClick={() => startEditing(account)}
-                        className="text-sm text-blue-600 hover:text-blue-800"
-                      >
-                        Upravit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleArchive(account)}
-                        disabled={archivePending}
-                        className="text-sm text-amber-700 hover:text-amber-900 disabled:opacity-50"
-                      >
-                        {archivePending ? "Archivuji…" : "Archivovat účet"}
-                      </button>
-                    </div>
+                    {(canEditAccount(account.role) || canArchiveAccount(account.role)) && (
+                      <div className="flex gap-3 mt-5 pt-4 border-t border-gray-100">
+                        {canEditAccount(account.role) && (
+                          <button
+                            type="button"
+                            onClick={() => startEditing(account)}
+                            className="text-sm text-blue-600 hover:text-blue-800"
+                          >
+                            Upravit
+                          </button>
+                        )}
+                        {canArchiveAccount(account.role) && (
+                          <button
+                            type="button"
+                            onClick={() => void handleArchive(account)}
+                            disabled={archivePending}
+                            className="text-sm text-amber-700 hover:text-amber-900 disabled:opacity-50"
+                          >
+                            {archivePending ? "Archivuji…" : "Archivovat účet"}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </article>

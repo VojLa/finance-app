@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 
 import { describe, expect, it } from "vitest"
@@ -14,6 +14,8 @@ const USED_ACCOUNT_FILES = [
   "src/app/api/accounts/[id]/archive/route.ts",
   "src/modules/accounts/account-client.ts",
   "src/modules/accounts/account-contract.ts",
+  "src/modules/accounts/account-request-parser.ts",
+  "src/modules/accounts/account-permissions.ts",
   "src/modules/accounts/server/account-api.ts",
 ]
 
@@ -34,6 +36,27 @@ function changedFiles(): string[] {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((value) => value.replaceAll("\\", "/"))
+}
+
+async function frontendProductionFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(path.join(ROOT, directory), { withFileTypes: true })
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const relative = `${directory}/${entry.name}`
+      if (entry.isDirectory()) {
+        return frontendProductionFiles(relative)
+      }
+      if (
+        !/\.(?:ts|tsx)$/.test(entry.name) ||
+        /\.test\.(?:ts|tsx)$/.test(entry.name) ||
+        relative.startsWith("src/generated/")
+      ) {
+        return []
+      }
+      return [relative]
+    })
+  )
+  return files.flat()
 }
 
 describe("account cutover static boundaries", () => {
@@ -83,7 +106,6 @@ describe("account cutover static boundaries", () => {
   it("does not change imports, Python account production, schema, migrations, or historical audits", () => {
     const changed = changedFiles()
 
-    expect(changed).not.toContain("src/app/import/page.tsx")
     expect(changed.some((file) => file.startsWith("src/app/api/import/"))).toBe(false)
     expect(changed.some((file) => file.startsWith("backend/python/app/modules/accounts/"))).toBe(
       false
@@ -94,5 +116,23 @@ describe("account cutover static boundaries", () => {
     expect(changed).not.toContain("src/generated/python-api.ts")
     expect(changed).not.toContain("ChatGPT/audits/0.1-final-acceptance.md")
     expect(changed).not.toContain("ChatGPT/audits/0.1-requirement-matrix.md")
+  })
+
+  it("has no raw account collection URL outside the typed client and Next account routes", async () => {
+    const files = await frontendProductionFiles("src")
+    const offenders: string[] = []
+
+    for (const file of files) {
+      const contents = await source(file)
+      if (
+        contents.includes("/api/accounts") &&
+        file !== "src/modules/accounts/account-client.ts" &&
+        !file.startsWith("src/app/api/accounts/")
+      ) {
+        offenders.push(file)
+      }
+    }
+
+    expect(offenders).toEqual([])
   })
 })

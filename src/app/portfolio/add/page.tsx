@@ -4,7 +4,16 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 
+import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
+import type { AccountPageModel } from "@/modules/accounts/account-contract"
+import { toAccountPageModel } from "@/modules/accounts/account-contract"
+
 const INVESTMENT_ACCOUNT_TYPES = ["broker", "exchange", "crypto_wallet"]
+
+type AccountLoadState =
+  | { status: "loading" }
+  | { status: "ready"; accounts: readonly AccountPageModel[] }
+  | { status: "error"; message: string }
 
 const TX_TYPES = [
   { value: "buy", label: "Nákup" },
@@ -45,7 +54,9 @@ const INPUT_CLS =
 
 export default function AddTransactionPage() {
   const router = useRouter()
-  const [accounts, setAccounts] = useState<{ id: string; name: string; type: string }[]>([])
+  const [accountLoadState, setAccountLoadState] = useState<AccountLoadState>({
+    status: "loading",
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
@@ -64,14 +75,33 @@ export default function AddTransactionPage() {
   const [feeCurrency, setFeeCurrency] = useState("EUR")
 
   useEffect(() => {
-    fetch("/api/accounts")
-      .then((r) => r.json())
-      .then((data: { id: string; name: string; type: string }[]) => {
-        const inv = data.filter((a) => INVESTMENT_ACCOUNT_TYPES.includes(a.type))
-        setAccounts(inv)
+    let active = true
+    void requestAccounts()
+      .then((data) => {
+        if (!active) return
+        const inv = data
+          .map(toAccountPageModel)
+          .filter((a) => INVESTMENT_ACCOUNT_TYPES.includes(a.type))
+        setAccountLoadState({ status: "ready", accounts: inv })
         if (inv.length > 0) setAccountId(inv[0].id)
       })
+      .catch((loadError: unknown) => {
+        if (!active) return
+        setAccountId("")
+        setAccountLoadState({
+          status: "error",
+          message:
+            loadError instanceof AccountClientError
+              ? loadError.message
+              : "Účty se nepodařilo načíst.",
+        })
+      })
+    return () => {
+      active = false
+    }
   }, [])
+
+  const accounts = accountLoadState.status === "ready" ? accountLoadState.accounts : []
 
   const needsAsset = ["buy", "sell", "dividend", "interest", "staking_reward", "airdrop"].includes(
     type
@@ -109,6 +139,24 @@ export default function AddTransactionPage() {
       setError(data.error ?? "Nepodařilo se uložit transakci.")
       setSaving(false)
     }
+  }
+
+  if (accountLoadState.status === "loading") {
+    return (
+      <div className="max-w-xl">
+        <p className="text-sm text-gray-500">Načítám účty…</p>
+      </div>
+    )
+  }
+
+  if (accountLoadState.status === "error") {
+    return (
+      <div className="max-w-xl">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-5 text-sm text-red-700">
+          {accountLoadState.message}
+        </div>
+      </div>
+    )
   }
 
   if (accounts.length === 0 && accountId === "") {

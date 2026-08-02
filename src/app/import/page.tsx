@@ -3,8 +3,14 @@
 import { useEffect, useRef, useState } from "react"
 
 import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
+import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
+import type { AccountPageModel, PythonAccount } from "@/modules/accounts/account-contract"
+import { toAccountPageModel } from "@/modules/accounts/account-contract"
 
-type Account = { id: string; name: string; type: string }
+type AccountLoadState =
+  | { status: "loading" }
+  | { status: "ready"; accounts: readonly AccountPageModel[] }
+  | { status: "error"; message: string }
 
 type PreviewRow = {
   date: string
@@ -69,21 +75,21 @@ const SOURCES = [
     label: "Raiffeisenbank",
     endpoint: "/api/import/raiffeisenbank",
     previewEndpoint: "/api/import/raiffeisenbank/preview",
-    accepts: ["bank"],
+    accepts: ["bank"] as PythonAccount["type"][],
   },
   {
     value: "trading212",
     label: "Trading 212",
     endpoint: "/api/import/trading212",
     previewEndpoint: null as string | null,
-    accepts: ["broker"],
+    accepts: ["broker"] as PythonAccount["type"][],
   },
   {
     value: "anycoin",
     label: "Anycoin",
     endpoint: "/api/import/anycoin",
     previewEndpoint: null as string | null,
-    accepts: ["exchange"],
+    accepts: ["exchange"] as PythonAccount["type"][],
   },
 ]
 
@@ -177,7 +183,9 @@ function DropZone({
 }
 
 export default function ImportPage() {
-  const [accounts, setAccounts] = useState<Account[]>([])
+  const [accountLoadState, setAccountLoadState] = useState<AccountLoadState>({
+    status: "loading",
+  })
   const [source, setSource] = useState(SOURCES[0])
   const [accountId, setAccountId] = useState("")
   const [files, setFiles] = useState<File[]>([])
@@ -194,9 +202,24 @@ export default function ImportPage() {
   const previewFile = files[0] ?? null
 
   useEffect(() => {
-    fetch("/api/accounts")
-      .then((r) => r.json())
-      .then(setAccounts)
+    let active = true
+    void requestAccounts()
+      .then((accounts) => {
+        if (!active) return
+        setAccountLoadState({ status: "ready", accounts: accounts.map(toAccountPageModel) })
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setAccountId("")
+        setAccountLoadState({
+          status: "error",
+          message:
+            error instanceof AccountClientError ? error.message : "Účty se nepodařilo načíst.",
+        })
+      })
+    return () => {
+      active = false
+    }
   }, [])
 
   useEffect(() => {
@@ -327,7 +350,10 @@ export default function ImportPage() {
     }
   }, [previewFile, accountId, source.previewEndpoint])
 
-  const filteredAccounts = accounts.filter((a) => source.accepts.includes(a.type))
+  const filteredAccounts =
+    accountLoadState.status === "ready"
+      ? accountLoadState.accounts.filter((a) => source.accepts.includes(a.type))
+      : []
 
   function handleSourceChange(s: (typeof SOURCES)[0]) {
     setSource(s)
@@ -428,7 +454,12 @@ export default function ImportPage() {
     }
   }
 
-  const canImport = files.length > 0 && !!accountId && !previewLoading && !importing
+  const canImport =
+    accountLoadState.status === "ready" &&
+    files.length > 0 &&
+    !!accountId &&
+    !previewLoading &&
+    !importing
 
   return (
     <div className="max-w-2xl">
@@ -481,7 +512,11 @@ export default function ImportPage() {
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Účet</label>
-          {filteredAccounts.length === 0 ? (
+          {accountLoadState.status === "loading" ? (
+            <p className="text-sm text-gray-500">Načítám účty…</p>
+          ) : accountLoadState.status === "error" ? (
+            <p className="text-sm text-red-600">{accountLoadState.message}</p>
+          ) : filteredAccounts.length === 0 ? (
             <p className="text-sm text-amber-600">
               Žádný kompatibilní účet (typ:{" "}
               {source.accepts.map((t) => ACCOUNT_TYPE_LABELS[t]).join(", ")}). Nejdřív přidej účet

@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth"
 import { NextResponse, type NextRequest } from "next/server"
 
 import { authOptions } from "@/lib/auth"
-import type { UpdateAccountRequest } from "@/modules/accounts/account-contract"
+import { parseUpdateAccountRequest } from "@/modules/accounts/account-request-parser"
 import { updateAccount } from "@/modules/accounts/server/account-api"
 import {
   normalizeAdapterError,
@@ -27,9 +27,9 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 
   try {
-    let payload: UpdateAccountRequest
+    let payload
     try {
-      payload = (await request.json()) as UpdateAccountRequest
+      payload = parseUpdateAccountRequest(await request.json())
     } catch {
       throw validationError()
     }

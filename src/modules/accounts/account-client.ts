@@ -4,7 +4,11 @@ import type {
   PythonAccount,
   UpdateAccountRequest,
 } from "./account-contract"
-import { isAccountApiErrorResponse, isPythonAccount, isPythonAccountList } from "./account-contract"
+import {
+  isAccountApiErrorResponse,
+  parsePythonAccount,
+  parsePythonAccountList,
+} from "./account-contract"
 
 export const ACCOUNTS_PATH = "/api/accounts"
 
@@ -37,7 +41,7 @@ function contractError(): AccountClientError {
 async function request<T>(
   path: string,
   init: RequestInit,
-  validate: (value: unknown) => value is T,
+  parse: (value: unknown) => T,
   fetchImplementation: FetchImplementation
 ): Promise<T> {
   try {
@@ -52,10 +56,11 @@ async function request<T>(
       }
       throw unavailableError()
     }
-    if (!validate(value)) {
+    try {
+      return parse(value)
+    } catch {
       throw contractError()
     }
-    return value
   } catch (error) {
     if (error instanceof AccountClientError) {
       throw error
@@ -67,7 +72,7 @@ async function request<T>(
 export function requestAccounts(
   fetchImplementation: FetchImplementation = globalThis.fetch
 ): Promise<PythonAccount[]> {
-  return request(ACCOUNTS_PATH, { method: "GET" }, isPythonAccountList, fetchImplementation)
+  return request(ACCOUNTS_PATH, { method: "GET" }, parsePythonAccountList, fetchImplementation)
 }
 
 export function requestCreateAccount(
@@ -81,7 +86,7 @@ export function requestCreateAccount(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
-    isPythonAccount,
+    parsePythonAccount,
     fetchImplementation
   )
 }
@@ -98,7 +103,7 @@ export function requestUpdateAccount(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
-    isPythonAccount,
+    parsePythonAccount,
     fetchImplementation
   )
 }
@@ -110,7 +115,7 @@ export function requestArchiveAccount(
   return request(
     `${ACCOUNTS_PATH}/${encodeURIComponent(accountId)}/archive`,
     { method: "POST" },
-    isPythonAccount,
+    parsePythonAccount,
     fetchImplementation
   )
 }

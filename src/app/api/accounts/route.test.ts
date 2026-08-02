@@ -74,6 +74,14 @@ function createRequest(): NextRequest {
   }) as NextRequest
 }
 
+function createRequestWith(body: Record<string, unknown>): NextRequest {
+  return new Request("http://next.test/api/accounts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }) as NextRequest
+}
+
 function updateRequest(): NextRequest {
   return new Request("http://next.test/api/accounts/caller-body-id", {
     method: "PATCH",
@@ -83,6 +91,14 @@ function updateRequest(): NextRequest {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ name: "Updated", currency: "USD" }),
+  }) as NextRequest
+}
+
+function updateRequestWith(body: Record<string, unknown>): NextRequest {
+  return new Request("http://next.test/api/accounts/path-account", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   }) as NextRequest
 }
 
@@ -301,4 +317,50 @@ describe("thin account routes", () => {
       error: { code: "validation_error", message: "Request validation failed." },
     })
   })
+
+  it.each(["userId", "user_id", "sub", "role", "membership", "is_archived", "created_at"])(
+    "rejects caller-controlled create field %s before Python",
+    async (field) => {
+      getSession.mockResolvedValue({
+        user: { id: "user-1", email: "user@example.test" },
+        expires: "2036-01-01",
+      })
+
+      const response = await collectionRoute.POST(
+        createRequestWith({
+          name: "Broker",
+          type: "broker",
+          currency: "EUR",
+          [field]: "caller-controlled",
+        })
+      )
+
+      expect(response.status).toBe(422)
+      expect(await response.json()).toEqual({
+        error: { code: "validation_error", message: "Request validation failed." },
+      })
+      expect(create).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(["type", "id", "accountId", "role", "is_archived"])(
+    "rejects caller-controlled update field %s before Python",
+    async (field) => {
+      getSession.mockResolvedValue({
+        user: { id: "user-1", email: "user@example.test" },
+        expires: "2036-01-01",
+      })
+
+      const response = await updateRoute.PATCH(
+        updateRequestWith({ name: "Updated", [field]: "caller-controlled" }),
+        { params: { id: "path-account" } }
+      )
+
+      expect(response.status).toBe(422)
+      expect(await response.json()).toEqual({
+        error: { code: "validation_error", message: "Request validation failed." },
+      })
+      expect(update).not.toHaveBeenCalled()
+    }
+  )
 })

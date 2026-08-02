@@ -134,4 +134,43 @@ describe("browser account client", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1)
     }
   })
+
+  it.each([
+    "token",
+    "authorization",
+    "password_hash",
+    "request_id",
+    "backend_url",
+    "membership",
+    "internal_metadata",
+  ])("rejects extra account success field %s before browser exposure", async (field) => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ ...ACCOUNT, [field]: "must-not-leak" }, 201)
+    )
+
+    const result = requestCreateAccount(
+      { name: "Broker", type: "broker", currency: "EUR" },
+      fetchMock
+    )
+
+    await expect(result).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+    })
+    await expect(result).rejects.not.toThrow(/must-not-leak/)
+  })
+
+  it("rejects an extra field in a list item before browser exposure", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      jsonResponse([{ ...ACCOUNT, internal_metadata: "must-not-leak" }])
+    )
+
+    const result = requestAccounts(fetchMock)
+
+    await expect(result).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+    })
+    await expect(result).rejects.not.toThrow(/must-not-leak/)
+  })
 })

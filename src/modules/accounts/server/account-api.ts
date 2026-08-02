@@ -1,7 +1,7 @@
 import "server-only"
 
 import type { CreateAccountRequest, PythonAccount, UpdateAccountRequest } from "../account-contract"
-import { isPythonAccount, isPythonAccountList } from "../account-contract"
+import { parsePythonAccount, parsePythonAccountList } from "../account-contract"
 import {
   contractError,
   forwardedPythonError,
@@ -29,11 +29,12 @@ function mapAccountPythonError(status: number, value: unknown): SnapshotWorkflow
   return unavailableError()
 }
 
-function requireAccount(value: PythonAccount): PythonAccount {
-  if (!isPythonAccount(value)) {
+function requireAccount(value: unknown): PythonAccount {
+  try {
+    return parsePythonAccount(value)
+  } catch {
     throw contractError()
   }
-  return value
 }
 
 export function createPythonAccountApi(
@@ -45,10 +46,11 @@ export function createPythonAccountApi(
   return {
     async listAccounts(): Promise<PythonAccount[]> {
       const value = await responseData(client.GET("/api/v1/accounts"), mapAccountPythonError)
-      if (!isPythonAccountList(value)) {
+      try {
+        return parsePythonAccountList(value)
+      } catch {
         throw contractError()
       }
-      return value
     },
     async createAccount(payload: CreateAccountRequest): Promise<PythonAccount> {
       const value = await responseData(

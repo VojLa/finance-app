@@ -3,6 +3,9 @@
 import { useEffect, useState, useCallback } from "react"
 import Link from "next/link"
 import { fmt } from "@/lib/format"
+import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
+import type { AccountPageModel } from "@/modules/accounts/account-contract"
+import { toAccountPageModel } from "@/modules/accounts/account-contract"
 
 type Category = {
   id: string
@@ -11,7 +14,7 @@ type Category = {
   color: string | null
   type: string
 }
-type Account = { id: string; name: string; type: string; currency: string }
+type Account = AccountPageModel
 type Transaction = {
   id: string
   date: string
@@ -254,6 +257,7 @@ export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [accountLoadError, setAccountLoadError] = useState("")
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(1)
   const [page, setPage] = useState(1)
@@ -280,12 +284,26 @@ export default function TransactionsPage() {
     fetch("/api/categories")
       .then((r) => r.json())
       .then(setCategories)
-    fetch("/api/accounts")
-      .then((r) => r.json())
-      .then((data: Account[]) => {
-        setAccounts(data)
-        if (data.length > 0) setCreateForm((f) => ({ ...f, accountId: data[0].id }))
+    let active = true
+    void requestAccounts()
+      .then((data) => {
+        if (!active) return
+        const accountModels = data.map(toAccountPageModel)
+        setAccounts(accountModels)
+        if (accountModels.length > 0) {
+          setCreateForm((f) => ({ ...f, accountId: accountModels[0].id }))
+        }
       })
+      .catch((error: unknown) => {
+        if (!active) return
+        setAccounts([])
+        setAccountLoadError(
+          error instanceof AccountClientError ? error.message : "Účty se nepodařilo načíst."
+        )
+      })
+    return () => {
+      active = false
+    }
   }, [])
 
   const load = useCallback(async () => {
@@ -547,12 +565,19 @@ export default function TransactionsPage() {
                 setCreateForm((f) => ({ ...emptyForm(), accountId: f.accountId }))
                 setShowCreate(true)
               }}
+              disabled={accountLoadError.length > 0}
               className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
             >
               + Přidat
             </button>
           </div>
         </div>
+
+        {accountLoadError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {accountLoadError}
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3">

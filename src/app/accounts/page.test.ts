@@ -8,12 +8,13 @@ import { toAccountPageModel } from "@/modules/accounts/account-contract"
 const PAGE_PATH = path.join(process.cwd(), "src/app/accounts/page.tsx")
 
 describe("account page Python cutover", () => {
-  it("loads account metadata once through the browser account client", async () => {
+  it("loads account metadata once through the Strict Mode-safe request controller", async () => {
     const source = await readFile(PAGE_PATH, "utf8")
 
     expect(source).toContain("useEffect(() =>")
-    expect(source).toContain("void loadAccounts()")
-    expect(source).toContain("await requestAccounts()")
+    expect(source).toContain('void loadAccounts("initial")')
+    expect(source).toContain("createAccountRequestController(requestAccounts)")
+    expect(source).toContain("requestController.current?.initial()")
     expect(source).toContain('setPageState({ status: "loading" })')
     expect(source).toContain('status: "ready"')
     expect(source).toContain('status: "error"')
@@ -28,7 +29,7 @@ describe("account page Python cutover", () => {
     expect(source).toContain('action: "create"')
     expect(source).toContain('action: "update"')
     expect(source).toContain('action: "archive"')
-    expect(source).toContain("await loadAccounts()")
+    expect(source.match(/await loadAccounts\("reload"\)/g)).toHaveLength(3)
   })
 
   it("keeps account type readonly during edit and omits it from PATCH", async () => {
@@ -71,6 +72,24 @@ describe("account page Python cutover", () => {
     expect(source).toContain('pageState.status === "error"')
     expect(source).toContain("{pageState.message}")
     expect(source).not.toMatch(/request_id|traceback|backendUrl|Authorization|internal token/)
+  })
+
+  it("uses role permissions for edit/archive controls and renders a shared-role badge", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+
+    expect(source).toContain("canEditAccount(account.role)")
+    expect(source).toContain("canArchiveAccount(account.role)")
+    expect(source).toContain("isSharedAccount(account.relationType)")
+    expect(source).toContain("accountRoleLabel(account.role)")
+    expect(source).toContain("Sdílený účet")
+  })
+
+  it("scopes update and archive errors to their exact account ID", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+
+    expect(source).toContain('isActionErrorForAccount(actionState, "update", account.id)')
+    expect(source).toContain('isActionErrorForAccount(actionState, "archive", account.id)')
+    expect(source.match(/accountId:/g)?.length).toBeGreaterThanOrEqual(2)
   })
 
   it("maps only structural generated account fields into the page model", () => {

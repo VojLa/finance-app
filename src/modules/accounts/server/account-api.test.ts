@@ -283,15 +283,83 @@ describe("Python account server client", () => {
     })
   })
 
-  it("fails closed on an incompatible success response", async () => {
+  it("fails closed on a missing required success field", async () => {
     const fetchImplementation = vi.fn<typeof fetch>(async () =>
-      jsonResponse({ ...ACCOUNT, relation_type: undefined, token: "hidden" })
+      jsonResponse({ ...ACCOUNT, relation_type: undefined })
     )
     const { api } = setup(fetchImplementation)
 
     await expect(
       api.createAccount({ name: "A", type: "bank", currency: "EUR" })
     ).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+      message: "The Python API returned an incompatible response.",
+    })
+  })
+
+  it.each([
+    "token",
+    "authorization",
+    "password_hash",
+    "request_id",
+    "backend_url",
+    "membership",
+    "internal_metadata",
+  ])("rejects extra create success field %s without leaking it", async (field) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ ...ACCOUNT, [field]: "must-not-leak" }, 201)
+    )
+    const { api } = setup(fetchImplementation)
+
+    const result = api.createAccount({ name: "A", type: "bank", currency: "EUR" })
+    await expect(result).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+      message: "The Python API returned an incompatible response.",
+    })
+    await expect(result).rejects.not.toThrow(/must-not-leak/)
+  })
+
+  it.each([
+    "token",
+    "authorization",
+    "password_hash",
+    "request_id",
+    "backend_url",
+    "membership",
+    "internal_metadata",
+  ])("rejects extra list-item success field %s without leaking it", async (field) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () =>
+      jsonResponse([{ ...ACCOUNT, [field]: "must-not-leak" }])
+    )
+    const { api } = setup(fetchImplementation)
+
+    const result = api.listAccounts()
+    await expect(result).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+      message: "The Python API returned an incompatible response.",
+    })
+    await expect(result).rejects.not.toThrow(/must-not-leak/)
+  })
+
+  it.each([
+    ["unknown account type", { type: "investment" }],
+    ["unknown role", { role: "superuser" }],
+    ["unknown relation type", { relation_type: "guest" }],
+    ["short currency", { currency: "EU" }],
+    ["lowercase currency", { currency: "eur" }],
+    ["invalid created timestamp", { created_at: "not-a-date" }],
+    ["invalid updated timestamp", { updated_at: "2036-01-01" }],
+    ["impossible calendar timestamp", { updated_at: "2036-02-30T00:00:00" }],
+  ])("maps %s in a success response to a contract error", async (_name, override) => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () =>
+      jsonResponse([{ ...ACCOUNT, ...override }])
+    )
+    const { api } = setup(fetchImplementation)
+
+    await expect(api.listAccounts()).rejects.toMatchObject({
       status: 502,
       code: "python_api_contract_error",
       message: "The Python API returned an incompatible response.",
