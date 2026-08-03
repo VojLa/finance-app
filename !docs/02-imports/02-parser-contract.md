@@ -89,7 +89,9 @@ counterparty never determine classification.
 
 Trading212 retains its schema-version-2 investment-event contract, including
 exact asset, quantity, price, fee, conversion, realized P/L, and provider
-identity evidence. Anycoin retains its existing grouping behavior.
+identity evidence. Anycoin retains its existing grouping behavior: one
+deterministic anchor carries the canonical grouped event and the other group
+members remain explicit skipped lineage evidence.
 
 ## Workflow metadata and posting
 
@@ -108,3 +110,18 @@ Sanitized Raiffeisenbank account and card fixtures prove the complete staged
 contract on PostgreSQL. Card transactions do not establish a credit-card
 liability balance; liability snapshots require separate explicit liability
 evidence.
+
+Committed, synthetic Trading212 and Anycoin fixtures also prove the public
+binary-upload-to-read-model path on PostgreSQL. Trading212 creates exact
+deposit, buy, and dividend events and movements. Anycoin creates one grouped
+buy with an imported anchor plus skipped payment/refund members. Repeated,
+renamed, BOM, and reordered inputs preserve account-scoped canonical identity.
+Issue fixtures persist every physical row and create no canonical event,
+movement, holding, or transaction.
+
+The investment fixture snapshot proof uses a same-currency EUR account and one
+explicitly seeded test price for the exact persisted listing. The seeded row is
+deterministic test evidence, not a live price provider or provider refresh.
+Missing current price evidence fails closed without partial snapshots. No
+exchange-rate row, FX provider, buy-price fallback, latest lookup, or
+post-refresh account discovery is used.
