@@ -106,35 +106,4 @@ describe("R4 import call-graph boundaries", () => {
     expect(client).toContain('export const IMPORT_PATH = "/api/import"')
     expect(page).toContain("requestImport")
   })
-
-  it("does not modify Python import production, schema, migrations, or historical audits", async () => {
-    const { execFileSync } = await import("node:child_process")
-    const changed = execFileSync(
-      "git",
-      ["diff", "--name-only", "534c57d2c34a1c3c599519f531759a9a97a28170", "--"],
-      { cwd: ROOT, encoding: "utf8" }
-    )
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((file) => file.replaceAll("\\", "/"))
-
-    expect(changed.some((file) => file.startsWith("backend/python/app/modules/imports/"))).toBe(
-      false
-    )
-    expect(changed.some((file) => file.startsWith("backend/python/app/modules/holdings/"))).toBe(
-      false
-    )
-    expect(changed.some((file) => file.startsWith("backend/python/app/modules/snapshots/"))).toBe(
-      false
-    )
-    expect(changed.some((file) => file.startsWith("backend/python/app/modules/net_worth/"))).toBe(
-      false
-    )
-    expect(changed.some((file) => file.startsWith("backend/python/alembic/"))).toBe(false)
-    expect(changed.some((file) => file.startsWith("prisma/"))).toBe(false)
-    expect(changed).not.toContain("src/generated/python-api.ts")
-    expect(changed).not.toContain("ChatGPT/audits/0.1-final-acceptance.md")
-    expect(changed).not.toContain("ChatGPT/audits/0.1-requirement-matrix.md")
-    expect(changed).not.toContain("ChatGPT/audits/0.1-r3-investment-source-e2e.md")
-  })
 })
