@@ -31,6 +31,9 @@ no exchange rate. This evidence is not a price provider, provider refresh, FX
 provider, or completion of R5. Missing price evidence fails closed without a
 partial snapshot.
 
-Browser imports still use the legacy Next.js workflow until 0.1-R4. Adding a
-new source still requires a schema enum decision, registry entry,
+The browser now uses one typed same-origin import transport for
+`raiffeisenbank`, `trading212`, and `anycoin`. The Next.js bridge preserves the
+exact file bytes and delegates every staged operation to Python; provider
+routes are thin compatibility wrappers and own no parser or finance semantics.
+Adding a new source still requires a schema enum decision, registry entry,
 deterministic fixtures, and explicit normalization and posting semantics.

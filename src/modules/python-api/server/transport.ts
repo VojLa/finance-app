@@ -59,7 +59,10 @@ export function createAuthenticatedPythonTransport(
         Accept: "application/json",
         Authorization: `Bearer ${token}`,
       })
-      if (["POST", "PATCH"].includes(request.method.toUpperCase())) {
+      const requestedContentType = request.headers.get("Content-Type")?.toLowerCase()
+      if (requestedContentType === "application/octet-stream") {
+        headers.set("Content-Type", "application/octet-stream")
+      } else if (["POST", "PATCH"].includes(request.method.toUpperCase())) {
         headers.set("Content-Type", "application/json")
       }
       const response = await fetchImplementation(input, {
@@ -112,5 +115,27 @@ export function createAuthenticatedPythonTransport(
     }
   }
 
-  return { client, responseData }
+  async function rawJsonRequest<T>(
+    path: string,
+    init: RequestInit,
+    mapPythonError: PythonErrorMapper
+  ): Promise<T> {
+    try {
+      const baseUrl = config.backendUrl.replace(/\/+$/, "")
+      const url = new URL(`${baseUrl}${path.startsWith("/") ? path : `/${path}`}`)
+      const response = await authenticatedFetch(url, init)
+      const value: unknown = await response.json()
+      if (!response.ok) {
+        throw mapPythonError(response.status, value)
+      }
+      return value as T
+    } catch (error) {
+      if (error instanceof SnapshotWorkflowAdapterError) {
+        throw error
+      }
+      throw unavailableError()
+    }
+  }
+
+  return { client, responseData, rawJsonRequest }
 }

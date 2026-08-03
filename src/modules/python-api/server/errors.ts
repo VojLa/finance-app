@@ -61,7 +61,7 @@ export function validationError(): SnapshotWorkflowAdapterError {
 }
 
 export function forwardedPythonError(
-  status: 404 | 409 | 422,
+  status: 400 | 404 | 409 | 422,
   code: string,
   message: string
 ): SnapshotWorkflowAdapterError {

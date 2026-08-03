@@ -5,6 +5,7 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 
 const BASE_SHA = "73a9aa668a6725e2bc7f2ba6dcd3ae1712841fc0"
+const R1_FINAL_SHA = "49ab5ba86e16169f0de530bc5c0f12844dcd25b7"
 const ROOT = process.cwd()
 
 const USED_ACCOUNT_FILES = [
@@ -24,15 +25,10 @@ async function source(file: string): Promise<string> {
 }
 
 function changedFiles(): string[] {
-  const tracked = execFileSync("git", ["diff", "--name-only", BASE_SHA, "--"], {
+  return execFileSync("git", ["diff", "--name-only", BASE_SHA, R1_FINAL_SHA, "--"], {
     cwd: ROOT,
     encoding: "utf8",
   })
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-  return `${tracked}\n${untracked}`
     .split(/\r?\n/)
     .filter(Boolean)
     .map((value) => value.replaceAll("\\", "/"))

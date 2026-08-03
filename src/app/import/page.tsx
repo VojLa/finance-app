@@ -4,64 +4,22 @@ import { useEffect, useRef, useState } from "react"
 
 import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
-import type { AccountPageModel, PythonAccount } from "@/modules/accounts/account-contract"
+import type { AccountPageModel } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import type { ImportSummary } from "@/modules/imports/python/import-contract"
+import { ImportClientError, requestImport } from "@/modules/imports/python/import-client"
+import { IMPORT_SOURCE_OPTIONS } from "@/modules/imports/python/import-sources"
 
 type AccountLoadState =
   | { status: "loading" }
   | { status: "ready"; accounts: readonly AccountPageModel[] }
   | { status: "error"; message: string }
 
-type PreviewRow = {
-  date: string
-  amount: number
-  currency: string
-  type: string
-  description: string
-  counterparty: string
-  isDuplicate: boolean
-}
-
-type PreviewData = {
-  rows: PreviewRow[]
-  counts: { new: number; duplicate: number }
-}
-
-type ParseIssue = {
-  severity: "ignored" | "warning" | "error"
-  code: string
-  message: string
-  rowNumber?: number
-  raw?: Record<string, string>
-  filename?: string
-}
-
-type ImportResult = {
-  accepted?: boolean
-  batchId?: string
-  status?: string
-  imported: number
-  skipped: number
-  duplicates?: number
-  parsed?: number
-  rowsTotal?: number
-  duplicateFile?: boolean
-  parseIssues?: ParseIssue[]
-  filename?: string
-  error?: string
-  detail?: string
-}
-
-type ImportSummary = ImportResult & {
-  files: ImportResult[]
-  failed: number
-}
-
-type ImportStatusResponse = {
-  batches: Array<
-    ImportResult & { id: string; status: string; completedAt?: string; error?: string | null }
-  >
-}
+type ImportPageState =
+  | { status: "idle" }
+  | { status: "uploading"; completed: number; total: number }
+  | { status: "completed"; result: ImportSummary }
+  | { status: "error"; message: string; partial?: ImportSummary }
 
 type ToastState = {
   kind: "success" | "error"
@@ -69,73 +27,29 @@ type ToastState = {
   message: string
 } | null
 
-const SOURCES = [
-  {
-    value: "raiffeisenbank",
-    label: "Raiffeisenbank",
-    endpoint: "/api/import/raiffeisenbank",
-    previewEndpoint: "/api/import/raiffeisenbank/preview",
-    accepts: ["bank"] as PythonAccount["type"][],
-  },
-  {
-    value: "trading212",
-    label: "Trading 212",
-    endpoint: "/api/import/trading212",
-    previewEndpoint: null as string | null,
-    accepts: ["broker"] as PythonAccount["type"][],
-  },
-  {
-    value: "anycoin",
-    label: "Anycoin",
-    endpoint: "/api/import/anycoin",
-    previewEndpoint: null as string | null,
-    accepts: ["exchange"] as PythonAccount["type"][],
-  },
-]
-
-const ISSUE_SEVERITY_LABEL: Record<ParseIssue["severity"], string> = {
-  ignored: "Ignorovano",
-  warning: "Varovani",
-  error: "Chyba",
-}
-
-function rawIssuePreview(raw: Record<string, string> | undefined) {
-  if (!raw) return "-"
-  const values = Object.entries(raw)
-    .filter(([, value]) => value && value.trim() !== "")
-    .slice(0, 8)
-    .map(([key, value]) => `${key}: ${value}`)
-
-  return values.length > 0 ? values.join(" | ") : "-"
-}
-
-function DropZone({
-  onFiles,
-  files,
-}: {
-  onFiles: (files: File[]) => void | Promise<void>
-  files: File[]
-}) {
+function DropZone({ onFiles, files }: { onFiles: (files: File[]) => void; files: File[] }) {
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragging(false)
-    const droppedFiles = Array.from(e.dataTransfer.files)
-    if (droppedFiles.length > 0) onFiles(droppedFiles)
+  function acceptFiles(selected: FileList | File[]) {
+    const csvFiles = Array.from(selected).filter((file) => file.name.toLowerCase().endsWith(".csv"))
+    onFiles(csvFiles)
   }
 
   return (
     <div
-      onDragOver={(e) => {
-        e.preventDefault()
+      onDragOver={(event) => {
+        event.preventDefault()
         setDragging(true)
       }}
       onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragging(false)
+        acceptFiles(event.dataTransfer.files)
+      }}
       onClick={() => inputRef.current?.click()}
-      className={`cursor-pointer border-2 border-dashed rounded-xl p-8 text-center transition-colors select-none ${
+      className={`cursor-pointer rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
         dragging
           ? "border-blue-400 bg-blue-50"
           : "border-gray-300 hover:border-gray-400 hover:bg-gray-50"
@@ -145,71 +59,106 @@ function DropZone({
         ref={inputRef}
         type="file"
         multiple
-        accept=".csv"
+        accept=".csv,text/csv"
         className="hidden"
-        onChange={(e) => {
-          const selectedFiles = Array.from(e.target.files ?? [])
-          if (selectedFiles.length > 0) onFiles(selectedFiles)
-          e.target.value = ""
+        onChange={(event) => {
+          acceptFiles(event.target.files ?? [])
+          event.target.value = ""
         }}
       />
       {files.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-sm font-medium text-gray-800">Vybrano souboru: {files.length}</p>
-          <div className="space-y-1">
-            {files.slice(0, 5).map((file) => (
-              <p
-                key={`${file.name}-${file.size}-${file.lastModified}`}
-                className="text-xs text-gray-500"
-              >
-                {file.name} ({(file.size / 1024).toFixed(1)} KB)
-              </p>
-            ))}
-            {files.length > 5 && (
-              <p className="text-xs text-gray-400">+ dalsich {files.length - 5}</p>
-            )}
-          </div>
-          <p className="text-xs text-gray-400">klikni nebo pretahni soubory pro novy vyber</p>
+          <p className="text-sm font-medium text-gray-800">Vybráno souborů: {files.length}</p>
+          {files.map((file) => (
+            <p
+              key={`${file.name}-${file.size}-${file.lastModified}`}
+              className="text-xs text-gray-500"
+            >
+              {file.name} ({Math.ceil(file.size / 1024)} KB)
+            </p>
+          ))}
         </div>
       ) : (
         <div className="space-y-2">
           <p className="text-2xl text-gray-300">↑</p>
-          <p className="text-sm font-medium text-gray-600">Přetáhni CSV soubor sem</p>
-          <p className="text-xs text-gray-400">nebo klikni pro výběr souboru</p>
+          <p className="text-sm font-medium text-gray-600">Přetáhni CSV soubory sem</p>
+          <p className="text-xs text-gray-400">nebo klikni pro výběr</p>
         </div>
       )}
     </div>
   )
 }
 
+function ImportResult({ result }: { result: ImportSummary }) {
+  return (
+    <div className="space-y-3">
+      <div
+        className={`rounded-lg border px-4 py-3 text-sm ${
+          result.failedFiles > 0
+            ? "border-amber-200 bg-amber-50 text-amber-900"
+            : "border-green-200 bg-green-50 text-green-900"
+        }`}
+      >
+        <p>
+          Importováno: <strong>{result.rowsImported}</strong>, přeskočeno:{" "}
+          <strong>{result.rowsSkipped}</strong>, k revizi: <strong>{result.rowsNeedsReview}</strong>
+          , chybné: <strong>{result.rowsFailed}</strong>.
+        </p>
+        {result.duplicateFiles > 0 && (
+          <p className="mt-1">Duplicitní soubory: {result.duplicateFiles}.</p>
+        )}
+      </div>
+      <div className="space-y-2">
+        {result.files.map((file, index) => (
+          <div
+            key={`${file.filename}-${file.status}-${index}`}
+            className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-medium text-gray-800">{file.filename}</span>
+              <span className="text-xs text-gray-500">{file.status}</span>
+            </div>
+            <p className="mt-1 text-xs text-gray-600">
+              Řádky: {file.rowsTotal}; importováno: {file.rowsImported}; přeskočeno:{" "}
+              {file.rowsSkipped}; revize: {file.rowsNeedsReview}; chyby: {file.rowsFailed}.
+            </p>
+            {"error" in file && <p className="mt-1 text-xs text-red-700">{file.error.message}</p>}
+            {file.status === "failed" && file.batchId && (
+              <p className="mt-1 text-xs text-gray-500">
+                Batch {file.batchId}; poslední úspěšná fáze: {file.lastSuccessfulStage ?? "žádná"}.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function ImportPage() {
+  const initialAccountLoadStarted = useRef(false)
   const [accountLoadState, setAccountLoadState] = useState<AccountLoadState>({
     status: "loading",
   })
-  const [source, setSource] = useState(SOURCES[0])
+  const [source, setSource] = useState<(typeof IMPORT_SOURCE_OPTIONS)[number]>(
+    IMPORT_SOURCE_OPTIONS[0]
+  )
   const [accountId, setAccountId] = useState("")
   const [files, setFiles] = useState<File[]>([])
-
-  const [preview, setPreview] = useState<PreviewData | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewError, setPreviewError] = useState("")
-
-  const [importing, setImporting] = useState(false)
-  const [result, setResult] = useState<ImportSummary | null>(null)
-  const [importError, setImportError] = useState("")
-  const [activeBatchIds, setActiveBatchIds] = useState<string[]>([])
+  const [pageState, setPageState] = useState<ImportPageState>({ status: "idle" })
   const [toast, setToast] = useState<ToastState>(null)
-  const previewFile = files[0] ?? null
 
   useEffect(() => {
-    let active = true
+    if (initialAccountLoadStarted.current) return
+    initialAccountLoadStarted.current = true
     void requestAccounts()
       .then((accounts) => {
-        if (!active) return
-        setAccountLoadState({ status: "ready", accounts: accounts.map(toAccountPageModel) })
+        setAccountLoadState({
+          status: "ready",
+          accounts: accounts.map(toAccountPageModel),
+        })
       })
       .catch((error: unknown) => {
-        if (!active) return
         setAccountId("")
         setAccountLoadState({
           status: "error",
@@ -217,249 +166,73 @@ export default function ImportPage() {
             error instanceof AccountClientError ? error.message : "Účty se nepodařilo načíst.",
         })
       })
-    return () => {
-      active = false
-    }
   }, [])
-
-  useEffect(() => {
-    if (activeBatchIds.length === 0) return
-
-    let cancelled = false
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/import/status?ids=${activeBatchIds.join(",")}`)
-        const data = (await res.json()) as ImportStatusResponse & { error?: string }
-        if (cancelled) return
-        if (!res.ok) throw new Error(data.error || "Nepodarilo se nacist stav importu.")
-
-        const batches = data.batches ?? []
-        const done =
-          batches.length === activeBatchIds.length &&
-          batches.every((batch) =>
-            ["completed", "failed", "cancelled", "partially_completed"].includes(batch.status)
-          )
-
-        if (!done) return
-
-        const summary = batches.reduce<ImportSummary>(
-          (acc, batch) => ({
-            ...acc,
-            imported: acc.imported + (batch.imported ?? 0),
-            skipped: acc.skipped + (batch.skipped ?? 0),
-            duplicates: (acc.duplicates ?? 0) + (batch.duplicates ?? 0),
-            parsed: (acc.parsed ?? 0) + (batch.parsed ?? 0),
-            rowsTotal: (acc.rowsTotal ?? 0) + (batch.rowsTotal ?? 0),
-            parseIssues: [
-              ...(acc.parseIssues ?? []),
-              ...((batch.parseIssues ?? []).map((issue) => ({
-                ...issue,
-                filename: batch.filename,
-              })) as ParseIssue[]),
-            ],
-            failed: acc.failed + (batch.status === "failed" ? 1 : 0),
-          }),
-          {
-            imported: 0,
-            skipped: 0,
-            duplicates: 0,
-            parsed: 0,
-            rowsTotal: 0,
-            parseIssues: [],
-            files: [],
-            failed: 0,
-          }
-        )
-        summary.files = batches
-        setResult(summary)
-        setImporting(false)
-        setActiveBatchIds([])
-
-        if (summary.failed > 0) {
-          setImportError(`Nepodarilo se importovat ${summary.failed} z ${batches.length} souboru.`)
-          setToast({
-            kind: "error",
-            title: "Import selhal",
-            message: `Chybne soubory: ${summary.failed}.`,
-          })
-        } else {
-          setFiles([])
-          setPreview(null)
-          setToast({
-            kind: "success",
-            title: "Import dokoncen",
-            message: `Importovano ${summary.imported}, preskoceno ${summary.skipped}. Neprectene radky: ${summary.parseIssues?.length ?? 0}.`,
-          })
-        }
-      } catch (error) {
-        if (cancelled) return
-        setImporting(false)
-        setActiveBatchIds([])
-        setImportError(error instanceof Error ? error.message : "Import selhal.")
-        setToast({
-          kind: "error",
-          title: "Import selhal",
-          message: error instanceof Error ? error.message : "Import selhal.",
-        })
-      }
-    }
-
-    void poll()
-    const timer = window.setInterval(() => void poll(), 2000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [activeBatchIds])
-
-  useEffect(() => {
-    const previewUrl = source.previewEndpoint
-    if (!previewFile || !accountId || !previewUrl) {
-      setPreview(null)
-      return
-    }
-
-    let cancelled = false
-    setPreviewLoading(true)
-    setPreviewError("")
-    setPreview(null)
-
-    const fd = new FormData()
-    fd.append("file", previewFile)
-    fd.append("accountId", accountId)
-
-    fetch(previewUrl, { method: "POST", body: fd })
-      .then(async (r) => {
-        const data = (await r.json()) as PreviewData & { error?: string }
-        if (cancelled) return
-        if (!r.ok) {
-          setPreviewError(data.error ?? "Náhled se nepodařilo načíst.")
-        } else {
-          setPreview(data)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewError("Nepodařilo se připojit k serveru.")
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [previewFile, accountId, source.previewEndpoint])
 
   const filteredAccounts =
     accountLoadState.status === "ready"
-      ? accountLoadState.accounts.filter((a) => source.accepts.includes(a.type))
+      ? accountLoadState.accounts.filter((account) => source.accepts.includes(account.type))
       : []
 
-  function handleSourceChange(s: (typeof SOURCES)[0]) {
-    setSource(s)
-    setAccountId("")
-    setFiles([])
-    setPreview(null)
-    setPreviewError("")
-    setResult(null)
-    setImportError("")
+  function resetResult() {
+    setPageState({ status: "idle" })
     setToast(null)
   }
 
-  async function handleFiles(selectedFiles: File[]) {
-    const csvFiles = selectedFiles.filter((selectedFile) =>
-      selectedFile.name.toLowerCase().endsWith(".csv")
-    )
-    const nextFiles = csvFiles.length > 0 ? csvFiles : selectedFiles
-
-    setFiles(nextFiles)
-    setResult(null)
-    setImportError("")
-    setToast(null)
+  function handleSourceChange(nextSource: (typeof IMPORT_SOURCE_OPTIONS)[number]) {
+    setSource(nextSource)
+    setAccountId("")
+    setFiles([])
+    resetResult()
   }
 
   function handleReset() {
     setFiles([])
-    setPreview(null)
-    setPreviewError("")
-    setResult(null)
-    setImportError("")
-    setActiveBatchIds([])
-    setToast(null)
+    resetResult()
   }
 
   async function handleImport() {
-    if (files.length === 0 || !accountId) return
-    setImporting(true)
-    setImportError("")
-
+    if (
+      accountLoadState.status !== "ready" ||
+      accountId.length === 0 ||
+      files.length === 0 ||
+      pageState.status === "uploading"
+    ) {
+      return
+    }
+    setPageState({ status: "uploading", completed: 0, total: files.length })
+    setToast(null)
     try {
-      const fd = new FormData()
-      for (const currentFile of files) fd.append("file", currentFile)
-      fd.append("accountId", accountId)
-
-      const res = await fetch(source.endpoint, { method: "POST", body: fd })
-      const data = (await res.json()) as {
-        batchIds?: string[]
-        files?: ImportResult[]
-        error?: string
-        detail?: string
-      }
-
-      if (!res.ok)
-        throw new Error(data.detail ?? data.error ?? `Import selhal (status ${res.status}).`)
-
-      const batchIds = (data.batchIds ??
-        data.files?.map((file) => file.batchId).filter(Boolean) ??
-        []) as string[]
-      if (batchIds.length === 0) {
-        const perFile = data.files ?? []
-        const summary = perFile.reduce<ImportSummary>(
-          (acc, item) => ({
-            ...acc,
-            imported: acc.imported + item.imported,
-            skipped: acc.skipped + item.skipped,
-            duplicates: (acc.duplicates ?? 0) + (item.duplicates ?? 0),
-            parsed: (acc.parsed ?? 0) + (item.parsed ?? 0),
-            rowsTotal: (acc.rowsTotal ?? 0) + (item.rowsTotal ?? 0),
-            parseIssues: [...(acc.parseIssues ?? []), ...(item.parseIssues ?? [])],
-            failed: acc.failed + (item.error ? 1 : 0),
-          }),
-          {
-            imported: 0,
-            skipped: 0,
-            duplicates: 0,
-            parsed: 0,
-            rowsTotal: 0,
-            parseIssues: [],
-            files: [],
-            failed: 0,
-          }
-        )
-        summary.files = perFile
-        setResult(summary)
-        setImporting(false)
-        return
-      }
-
-      setActiveBatchIds(batchIds)
+      const result = await requestImport(accountId, source.value, files)
+      setPageState({ status: "completed", result })
+      setFiles([])
       setToast({
         kind: "success",
-        title: "Import prijat",
-        message: `Zpracovavam ${batchIds.length} souboru na pozadi.`,
+        title: "Import dokončen",
+        message: `Dokončeno ${result.completedFiles} souborů.`,
       })
-    } catch (err) {
-      setImportError(err instanceof Error ? err.message : "Import selhal.")
-      setImporting(false)
+    } catch (error) {
+      const safeError =
+        error instanceof ImportClientError
+          ? error
+          : new ImportClientError(502, "python_api_unavailable", "Import API není dostupné.")
+      setPageState({
+        status: "error",
+        message: safeError.message,
+        ...(safeError.partial ? { partial: safeError.partial } : {}),
+      })
+      setToast({
+        kind: "error",
+        title: "Import nebyl dokončen",
+        message: safeError.message,
+      })
     }
   }
 
   const canImport =
     accountLoadState.status === "ready" &&
+    accountId.length > 0 &&
     files.length > 0 &&
-    !!accountId &&
-    !previewLoading &&
-    !importing
+    pageState.status !== "uploading"
 
   return (
     <div className="max-w-2xl">
@@ -471,243 +244,120 @@ export default function ImportPage() {
               : "border-red-200 bg-red-50 text-red-900"
           }`}
         >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-semibold">{toast.title}</p>
-              <p className="mt-1 text-xs opacity-80">{toast.message}</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setToast(null)}
-              className="text-lg leading-none opacity-50 hover:opacity-80"
-              aria-label="Zavrit notifikaci"
-            >
-              ×
-            </button>
-          </div>
+          <p className="font-semibold">{toast.title}</p>
+          <p className="mt-1 text-xs">{toast.message}</p>
         </div>
       )}
-      <h1 className="text-2xl font-semibold mb-6">Import CSV</h1>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+      <h1 className="mb-6 text-2xl font-semibold">Import CSV</h1>
+      <div className="space-y-5 rounded-xl border border-gray-200 bg-white p-6">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Zdroj</label>
-          <div className="flex gap-2 flex-wrap">
-            {SOURCES.map((s) => (
+          <label className="mb-2 block text-sm font-medium text-gray-700">Zdroj</label>
+          <div className="flex flex-wrap gap-2">
+            {IMPORT_SOURCE_OPTIONS.map((candidate) => (
               <button
-                key={s.value}
+                key={candidate.value}
                 type="button"
-                onClick={() => handleSourceChange(s)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  source.value === s.value
-                    ? "bg-blue-600 text-white border-blue-600"
-                    : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                onClick={() => handleSourceChange(candidate)}
+                disabled={pageState.status === "uploading"}
+                className={`rounded-lg border px-4 py-2 text-sm font-medium ${
+                  source.value === candidate.value
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "border-gray-300 text-gray-700"
                 }`}
               >
-                {s.label}
+                {candidate.label}
               </button>
             ))}
           </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Účet</label>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Účet</label>
           {accountLoadState.status === "loading" ? (
             <p className="text-sm text-gray-500">Načítám účty…</p>
           ) : accountLoadState.status === "error" ? (
             <p className="text-sm text-red-600">{accountLoadState.message}</p>
           ) : filteredAccounts.length === 0 ? (
-            <p className="text-sm text-amber-600">
-              Žádný kompatibilní účet (typ:{" "}
-              {source.accepts.map((t) => ACCOUNT_TYPE_LABELS[t]).join(", ")}). Nejdřív přidej účet
-              na stránce{" "}
-              <a href="/accounts" className="underline">
-                Účty
-              </a>
-              .
+            <p className="text-sm text-amber-700">
+              Žádný kompatibilní účet (
+              {source.accepts.map((type) => ACCOUNT_TYPE_LABELS[type]).join(", ")}).
             </p>
           ) : (
             <select
               value={accountId}
-              onChange={(e) => {
-                setAccountId(e.target.value)
-                setPreview(null)
-                setPreviewError("")
+              disabled={pageState.status === "uploading"}
+              onChange={(event) => {
+                setAccountId(event.target.value)
+                resetResult()
               }}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
             >
               <option value="">Vyber účet</option>
-              {filteredAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
+              {filteredAccounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
                 </option>
               ))}
             </select>
           )}
         </div>
 
-        {filteredAccounts.length > 0 && !result && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">CSV soubor</label>
-            <DropZone onFiles={handleFiles} files={files} />
-          </div>
+        {accountLoadState.status === "ready" && filteredAccounts.length > 0 && (
+          <DropZone
+            files={files}
+            onFiles={(nextFiles) => {
+              setFiles(nextFiles)
+              resetResult()
+            }}
+          />
         )}
 
-        {previewLoading && <p className="text-sm text-gray-400">Načítám náhled...</p>}
-
-        {previewError && <p className="text-sm text-red-600">{previewError}</p>}
-
-        {preview && !previewLoading && (
+        {pageState.status === "uploading" && (
+          <p className="text-sm text-blue-700">
+            Zpracovávám {pageState.total} souborů přes Python API…
+          </p>
+        )}
+        {pageState.status === "error" && (
           <div className="space-y-3">
-            <div className="flex items-center gap-4 text-sm">
-              <span className="font-medium text-gray-800">
-                {preview.counts.new} nových transakcí
-              </span>
-              {preview.counts.duplicate > 0 && (
-                <span className="text-gray-400">
-                  {preview.counts.duplicate} duplicit (budou přeskočeny)
-                </span>
-              )}
-            </div>
+            <p className="text-sm text-red-700">{pageState.message}</p>
+            {pageState.partial && <ImportResult result={pageState.partial} />}
           </div>
         )}
+        {pageState.status === "completed" && <ImportResult result={pageState.result} />}
 
-        {importError && <p className="text-sm text-red-600">{importError}</p>}
-
-        {result && (
-          <div
-            className={`rounded-lg border px-4 py-3 text-sm ${
-              result.failed > 0
-                ? "border-amber-200 bg-amber-50 text-amber-900"
-                : "border-green-200 bg-green-50 text-green-800"
-            }`}
-          >
-            {result.duplicateFile && (
-              <p className="font-medium mb-1">
-                Tento soubor uz byl importovan. Nove transakce nebyly pridany.
-              </p>
-            )}
-            <p>
-              Importováno: <strong>{result.imported}</strong> transakcí
-              {result.skipped > 0 && (
-                <>
-                  , přeskočeno (duplicity): <strong>{result.skipped}</strong>
-                </>
-              )}
-            </p>
-            {result.failed > 0 && (
-              <p className="mt-1 font-medium">Chybne soubory: {result.failed}</p>
-            )}
-            <p className={`mt-1 ${result.failed > 0 ? "text-amber-800" : "text-green-700"}`}>
-              Detekovano CSV radku: <strong>{result.rowsTotal ?? result.parsed ?? 0}</strong>
-              {result.parsed !== undefined && result.rowsTotal !== undefined && (
-                <>
-                  , normalizovanych transakci: <strong>{result.parsed}</strong>
-                </>
-              )}
-            </p>
-          </div>
-        )}
-
-        {result && result.parseIssues && result.parseIssues.length > 0 && (
-          <div className="border border-amber-200 rounded-lg overflow-hidden">
-            <div className="bg-amber-50 px-4 py-3">
-              <p className="text-sm font-medium text-amber-900">
-                Neprectene radky: {result.parseIssues.length}
-              </p>
-              <p className="text-xs text-amber-700">
-                Tyto radky parser ignoroval nebo je neumel bezpecne zpracovat.
-              </p>
-            </div>
-            <div className="max-h-80 overflow-auto">
-              <table className="min-w-full text-xs">
-                <thead className="bg-white sticky top-0 border-y border-amber-100">
-                  <tr>
-                    {result.files.length > 1 && (
-                      <th className="px-3 py-2 text-left text-gray-500 font-medium">Soubor</th>
-                    )}
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Radek</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Stav</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Duvod</th>
-                    <th className="px-3 py-2 text-left text-gray-500 font-medium">Data</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-amber-100 bg-white">
-                  {result.parseIssues.map((issue, index) => (
-                    <tr key={`${issue.filename ?? "file"}-${issue.rowNumber ?? index}-${index}`}>
-                      {result.files.length > 1 && (
-                        <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
-                          {issue.filename ?? "-"}
-                        </td>
-                      )}
-                      <td className="px-3 py-2 text-gray-500 tabular-nums whitespace-nowrap">
-                        {issue.rowNumber ?? "-"}
-                      </td>
-                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
-                        {ISSUE_SEVERITY_LABEL[issue.severity] ?? issue.severity}
-                      </td>
-                      <td className="px-3 py-2 text-gray-700 min-w-[14rem]">{issue.message}</td>
-                      <td className="px-3 py-2 text-gray-500 min-w-[22rem]">
-                        {rawIssuePreview(issue.raw)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {!result ? (
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={handleImport}
-              disabled={!canImport}
-              className="flex-1 bg-blue-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
-              {importing
-                ? activeBatchIds.length > 0
-                  ? "Zpracovavam..."
-                  : "Prijimam import..."
-                : files.length > 1
-                  ? `Importovat ${files.length} souboru`
-                  : preview
-                    ? `Importovat ${preview.counts.new} transakcí`
-                    : "Importovat"}
-            </button>
-            {files.length > 0 && (
-              <button
-                type="button"
-                onClick={handleReset}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
-              >
-                Zrušit
-              </button>
-            )}
-          </div>
-        ) : (
+        <div className="flex gap-2">
           <button
             type="button"
-            onClick={handleReset}
-            className="w-full border border-gray-300 text-gray-700 rounded-lg py-2 text-sm font-medium hover:bg-gray-50 transition-colors"
+            onClick={handleImport}
+            disabled={!canImport}
+            className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            Importovat další soubor
+            {pageState.status === "uploading"
+              ? "Importuji…"
+              : files.length > 1
+                ? `Importovat ${files.length} souborů`
+                : "Importovat"}
           </button>
-        )}
+          {(files.length > 0 ||
+            pageState.status === "completed" ||
+            pageState.status === "error") && (
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={pageState.status === "uploading"}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm"
+            >
+              Reset
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="mt-6 text-xs text-gray-400 space-y-1">
-        <p>
-          <strong className="text-gray-500">Raiffeisenbank:</strong> Internetbanking → Pohyby /
-          Karty → Export CSV
-        </p>
-        <p>
-          <strong className="text-gray-500">Trading 212:</strong> History → Export CSV
-        </p>
-        <p>
-          <strong className="text-gray-500">Anycoin:</strong> Účet → Přehled transakcí → Export
-        </p>
+      <div className="mt-6 space-y-1 text-xs text-gray-400">
+        <p>Raiffeisenbank: Internetbanking → Pohyby / Karty → Export CSV</p>
+        <p>Trading 212: History → Export CSV</p>
+        <p>Anycoin: Účet → Přehled transakcí → Export</p>
       </div>
     </div>
   )

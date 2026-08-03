@@ -91,5 +91,15 @@ account page replaces destructive delete with archive and no longer reads or
 presents the legacy account-cash/FX model. Sharing write UX is outside R1. The
 legacy cash and share route files remain registered compatibility surfaces but
 are not called by the main account page.
-Version 0.1 remains incomplete; the next remediation is 0.1-R2,
-Raiffeisenbank Python source completion.
+The 0.1-R2 and R3 remediations establish source-specific Raiffeisenbank
+processing and fixture-backed Trading212/Anycoin upload-to-read-model evidence.
+R4 cuts the production import page over to those existing Python staged APIs.
+The browser makes one same-origin request; Next.js verifies the session,
+preserves exact file bytes, and orchestrates the eight public Python stages
+with a fresh token per request. Python remains the only parser, normalizer,
+deduplicator, classifier, canonical writer, holdings, and snapshot authority.
+Legacy preview and provider-specific routes remain compatibility surfaces but
+are not used by the page.
+
+Version 0.1 remains incomplete; the next remediation is 0.1-R5, production
+Python price and FX evidence ownership.
