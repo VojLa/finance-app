@@ -1,17 +1,30 @@
 # Supported Sources
 
-| API source value | Current parser | Meaning of support |
-| --- | --- | --- |
-| `raiffeisenbank` | Generic strict CSV | Upload, preserve rows, and generic normalization |
-| `trading212` | Generic strict CSV + schema v2 normalizer | Upload, preserve rows, canonicalize supported investment events, and classify pure intents |
-| `anycoin` | Generic strict CSV | Upload, preserve rows, and generic normalization |
-| `manual` | Generic strict CSV | Upload, preserve rows, and generic normalization |
+| API source value | Current parser                                | Meaning of support                                                                                                         |
+| ---------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `raiffeisenbank` | Source-specific account/card statement parser | Parse exact Czech export shapes, normalize signed Decimal evidence, deduplicate, classify, and post canonical transactions |
+| `trading212`     | Generic strict CSV + schema v2 normalizer     | Upload, preserve rows, canonicalize supported investment events, and classify pure intents                                 |
+| `anycoin`        | Generic strict CSV                            | Upload, preserve rows, and retain existing grouping/normalization semantics                                                |
+| `manual`         | Generic strict CSV                            | Upload, preserve rows, and normalize supported manual transactions                                                         |
 
-The source label selects a parser registry entry, but the Python backend does
-not yet contain broker- or bank-specific CSV mappings, grouped trade parsers, or
-posting rules. Existing TypeScript parsers in the Next.js application are legacy
-code paths and are not called by this FastAPI import pipeline.
+Raiffeisenbank supports exact `account_statement` and `card_statement` header
+contracts. Unknown or mixed shapes fail at file level; malformed data rows are
+preserved as reviewable evidence. Account exports use the provider transaction
+ID when present. Card exports without one receive a deterministic
+account-scoped fallback independent of filename, batch, row number, and row
+order.
 
-Adding a source requires an `ImportSource` schema migration and enum update,
-registration in the parser registry, a deterministic parser with fixtures, and
-normalization/posting semantics before it can be described as end-to-end support.
+Amounts remain signed `Decimal` values through canonical transaction posting.
+Ambiguous `Převod` rows require review, and card transaction sums are never
+treated as liability evidence.
+
+Sanitized fixtures pass the complete pipeline on PostgreSQL. The cash-only CZK
+account fixture produces canonical transactions, an exact AccountSnapshot and
+NetWorthSnapshot, and matching portfolio/dashboard exact reads without price
+or FX providers.
+
+Browser imports still use the legacy Next.js workflow until 0.1-R4. Trading212,
+Anycoin, and manual registry entries retain their existing parser and source
+semantics in 0.1-R2. Adding a new source still requires a schema enum decision,
+registry entry, deterministic fixtures, and explicit normalization and posting
+semantics.

@@ -238,23 +238,23 @@ def test_malformed_account_currency_fails_closed(currency: str) -> None:
     "account_type",
     [AccountType.bank, AccountType.cash, AccountType.savings],
 )
-def test_each_active_unsupported_account_type_invalidates_plan(
+def test_each_active_cash_account_type_is_a_refresh_target(
     account_type: AccountType,
 ) -> None:
-    _fails(_input(_account(account_type=account_type)))
+    result = build_user_snapshot_refresh_plan(_input(_account(account_type=account_type)))
+    assert len(result.account_targets) == 1
+    assert result.account_targets[0].account_type is account_type
+    assert result.account_targets[0].mode is AccountSnapshotRefreshMode.refresh
 
 
-def test_supported_and_unsupported_mix_returns_no_partial_plan() -> None:
-    with pytest.raises(SnapshotRefreshPlanStateError) as error:
-        build_user_snapshot_refresh_plan(
-            _input(
-                _account("broker"),
-                _account("bank", account_type=AccountType.bank),
-            )
+def test_investment_and_cash_accounts_produce_one_complete_plan() -> None:
+    result = build_user_snapshot_refresh_plan(
+        _input(
+            _account("broker"),
+            _account("bank", account_type=AccountType.bank),
         )
-
-    assert str(error.value) == ERROR
-    assert not hasattr(error.value, "plan")
+    )
+    assert tuple(target.account_id for target in result.account_targets) == ("bank", "broker")
 
 
 def test_consistently_archived_account_is_excluded() -> None:

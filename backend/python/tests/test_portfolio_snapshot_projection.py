@@ -400,19 +400,29 @@ def test_liability_snapshot_builds_summary_without_positions() -> None:
     "account_type",
     [AccountType.bank, AccountType.cash, AccountType.savings],
 )
-def test_unsupported_presentation_account_type_fails_closed(
+def test_cash_account_types_build_cash_only_portfolio_view(
     account_type: AccountType,
 ) -> None:
     source = _source(
         account_type=account_type,
+        cash_value=Decimal("10"),
         investment_value=Decimal("0"),
         investment_cost_basis=Decimal("0"),
+        liabilities_value=Decimal("0"),
         unrealized_pnl_value=Decimal("0"),
         total_value=Decimal("10"),
+        net_deposits_value=Decimal("0"),
+        realized_pnl_value=Decimal("0"),
+        fees_value=Decimal("0"),
+        taxes_value=Decimal("0"),
         items=(),
     )
-    with pytest.raises(PortfolioSnapshotProjectionError):
-        build_portfolio_snapshot_view(source)
+
+    result = build_portfolio_snapshot_view(source)
+
+    assert result.positions == ()
+    assert result.summary.cash_value == Decimal("10")
+    assert result.summary.total_value == Decimal("10")
 
 
 @pytest.mark.parametrize(

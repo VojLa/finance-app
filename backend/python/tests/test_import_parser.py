@@ -54,7 +54,7 @@ def _batch(content: bytes) -> ImportBatchModel:
 def test_parser_preserves_valid_blank_and_overflow_rows() -> None:
     content = b"date;amount\n2026-01-01;100\n;\n2026-01-02;200;extra\n"
 
-    rows = parse_import_file(ImportSource.raiffeisenbank, content, encoding="utf-8")
+    rows = parse_import_file(ImportSource.manual, content, encoding="utf-8")
 
     assert [row.row_number for row in rows] == [2, 3, 4]
     assert rows[0].raw_data == {"date": "2026-01-01", "amount": "100"}

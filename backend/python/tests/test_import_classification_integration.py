@@ -662,10 +662,11 @@ def test_provider_normalize_deduplicate_classify_matrix() -> None:
             ImportSource.raiffeisenbank,
             [
                 {
-                    "Datum": "24.07.2026",
-                    "Částka": "10",
-                    "Měna": "EUR",
-                    "Typ": "Převod",
+                    "__raiffeisenbank_statement_kind": "account_statement",
+                    "Datum provedení": "24.07.2026",
+                    "Zaúčtovaná částka": "10",
+                    "Měna účtu": "EUR",
+                    "Typ transakce": "Převod",
                 }
             ],
         )

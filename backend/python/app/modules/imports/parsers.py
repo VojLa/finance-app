@@ -137,8 +137,20 @@ def parse_csv(content: bytes, *, encoding: str | None) -> list[ParsedImportRow]:
 
 
 Parser = Callable[..., list[ParsedImportRow]]
+
+
+def parse_raiffeisenbank(
+    content: bytes,
+    *,
+    encoding: str | None,
+) -> list[ParsedImportRow]:
+    from app.modules.imports.raiffeisenbank import parse_raiffeisenbank_csv
+
+    return parse_raiffeisenbank_csv(content, encoding=encoding)
+
+
 PARSER_REGISTRY: dict[ImportSource, Parser] = {
-    ImportSource.raiffeisenbank: parse_csv,
+    ImportSource.raiffeisenbank: parse_raiffeisenbank,
     ImportSource.trading212: parse_csv,
     ImportSource.anycoin: parse_csv,
     ImportSource.manual: parse_csv,

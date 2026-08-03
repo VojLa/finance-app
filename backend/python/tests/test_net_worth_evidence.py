@@ -148,9 +148,14 @@ def _snapshot(
         AccountType.loan,
         AccountType.mortgage,
     }
+    cash_only = account.type in {
+        AccountType.bank,
+        AccountType.cash,
+        AccountType.savings,
+    }
     cash = Decimal(0) if liability else Decimal("100.000000")
-    investment = Decimal(0) if liability else Decimal("400.000000")
-    cost_basis = Decimal(0) if liability else Decimal("300.000000")
+    investment = Decimal(0) if liability or cash_only else Decimal("400.000000")
+    cost_basis = Decimal(0) if liability or cash_only else Decimal("300.000000")
     liabilities = Decimal("250.000000") if liability else Decimal(0)
     return AccountSnapshotModel(
         id=snapshot_id or f"snapshot-{account.id}",
@@ -528,6 +533,9 @@ async def test_real_user_with_zero_accounts_builds_exact_zero_once() -> None:
         AccountType.broker,
         AccountType.exchange,
         AccountType.crypto_wallet,
+        AccountType.bank,
+        AccountType.cash,
+        AccountType.savings,
         AccountType.credit_card,
         AccountType.loan,
         AccountType.mortgage,
@@ -578,21 +586,6 @@ async def test_valid_archived_account_is_excluded_from_current_evidence() -> Non
     result = await service.build(_command())
 
     assert result.projection.account_count == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.cash, AccountType.savings])
-async def test_active_unsupported_account_invalidates_complete_user_evidence(
-    account_type: AccountType,
-) -> None:
-    account = _account(account_type=account_type)
-    repository = FakeRepository(accesses=(_access(account),))
-    service, _ = _service(repository)
-
-    with pytest.raises(NetWorthEvidenceStateError):
-        await service.build(_command())
-
-    assert repository.snapshot_calls == 0
 
 
 @pytest.mark.asyncio

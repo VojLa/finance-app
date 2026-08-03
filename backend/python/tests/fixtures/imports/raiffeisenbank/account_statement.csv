@@ -1,0 +1,4 @@
+Datum provedení;Zaúčtovaná částka;Měna účtu;Typ transakce;Zpráva;Poznámka;Vlastní poznámka;Název protiúčtu;Id transakce
+14. 6. 2026 12:05;+10000,00;CZK;Příchozí platba;FIKTIVNÍ PŘÍJEM;;;Fiktivní zaměstnavatel;RB-FAKE-IN-001
+14.06.2026;-123,45;CZK;Odchozí platba;FIKTIVNÍ NÁKUP;Testovací platba;;Fiktivní obchod;RB-FAKE-OUT-001
+14.06.2026;-50,00;CZK;Odchozí platba;FIKTIVNÍ POPLATEK;Testovací poplatek;;Fiktivní banka;RB-FAKE-FEE-001

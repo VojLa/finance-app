@@ -47,6 +47,7 @@ class TransactionPostingPlan:
     transaction_type: TransactionType
     transaction_classification: TransactionClassification
     description: str | None
+    counterparty: str | None
     external_id: str | None
 
 
@@ -107,6 +108,7 @@ def build_transaction_posting_plan(
         transaction_type=intent.transaction_type,
         transaction_classification=intent.transaction_classification,
         description=bounded_optional_text(canonical.get("description")),
+        counterparty=bounded_optional_text(canonical.get("counterparty")),
         external_id=bounded_optional_text(canonical.get("external_id")),
     )
 
@@ -127,12 +129,12 @@ def _transaction_matches(
         and transaction.type is plan.transaction_type
         and transaction.classification is plan.transaction_classification
         and transaction.description == plan.description
+        and transaction.counterparty == plan.counterparty
         and transaction.external_id == plan.external_id
         and transaction.booking_date is None
         and transaction.reporting_amount is None
         and transaction.reporting_currency is None
         and transaction.note is None
-        and transaction.counterparty is None
         and transaction.category_id is None
         and transaction.archived_at is None
         and transaction.deleted_at is None
@@ -176,7 +178,7 @@ class ImportTransactionPostingWriter:
             classification=plan.transaction_classification,
             description=plan.description,
             note=None,
-            counterparty=None,
+            counterparty=plan.counterparty,
             external_id=plan.external_id,
             category_id=None,
             archived_at=None,

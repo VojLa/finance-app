@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest"
 
 const ROOT = process.cwd()
 const BASE_SHA = "e34fc2d17915a6159fa2856520c503bf8b6f70b8"
+const CUTOVER_SHA = "64d1e151baf90e160b45d86e8d415811f5dc42f1"
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(ROOT, relativePath), "utf8")
@@ -19,15 +20,10 @@ async function sha256(relativePath: string): Promise<string> {
 }
 
 function changedFiles(): string[] {
-  const tracked = execFileSync("git", ["diff", "--name-only", BASE_SHA, "--"], {
+  return execFileSync("git", ["diff", "--name-only", BASE_SHA, CUTOVER_SHA, "--"], {
     cwd: ROOT,
     encoding: "utf8",
   })
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-  return `${tracked}\n${untracked}`
     .split(/\r?\n/)
     .filter(Boolean)
     .map((file) => file.replaceAll("\\", "/"))

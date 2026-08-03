@@ -30,12 +30,19 @@ _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
+_CASH_ACCOUNT_TYPES = {
+    AccountType.bank,
+    AccountType.cash,
+    AccountType.savings,
+}
 _LIABILITY_ACCOUNT_TYPES = {
     AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
-_SUPPORTED_ACCOUNT_TYPES = _INVESTMENT_ACCOUNT_TYPES | _LIABILITY_ACCOUNT_TYPES
+_SUPPORTED_ACCOUNT_TYPES = (
+    _CASH_ACCOUNT_TYPES | _INVESTMENT_ACCOUNT_TYPES | _LIABILITY_ACCOUNT_TYPES
+)
 
 
 class NetWorthSnapshotPersistenceProjectionError(ValueError):
@@ -366,6 +373,9 @@ def _validate_contributions(
             raise _fail()
         if contribution.account_type in _INVESTMENT_ACCOUNT_TYPES:
             if liabilities != 0:
+                raise _fail()
+        elif contribution.account_type in _CASH_ACCOUNT_TYPES:
+            if portfolio != 0 or liabilities != 0 or assets != cash or net != cash:
                 raise _fail()
         elif cash != 0 or portfolio != 0 or assets != 0 or net != -liabilities:
             raise _fail()

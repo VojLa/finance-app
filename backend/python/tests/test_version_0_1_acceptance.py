@@ -8,7 +8,7 @@ from pathlib import Path
 from app.config.settings import Settings
 from app.db.models.enums import ImportSource
 from app.main import create_app
-from app.modules.imports.parsers import PARSER_REGISTRY, parse_csv
+from app.modules.imports.parsers import PARSER_REGISTRY, parse_csv, parse_raiffeisenbank
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
@@ -95,7 +95,7 @@ def test_python_api_inventory_contains_implemented_core_boundaries() -> None:
     }.issubset(operations)
 
 
-def test_all_mandatory_sources_still_share_the_generic_python_parser() -> None:
+def test_r2_preserves_existing_parsers_and_adds_raiffeisenbank_specific_parser() -> None:
     assert {
         source: PARSER_REGISTRY[source]
         for source in (
@@ -104,7 +104,7 @@ def test_all_mandatory_sources_still_share_the_generic_python_parser() -> None:
             ImportSource.anycoin,
         )
     } == {
-        ImportSource.raiffeisenbank: parse_csv,
+        ImportSource.raiffeisenbank: parse_raiffeisenbank,
         ImportSource.trading212: parse_csv,
         ImportSource.anycoin: parse_csv,
     }

@@ -52,6 +52,9 @@ _ERROR_MESSAGE = "Persisted AccountSnapshot evidence cannot produce a complete p
 _POSTGRES_INTEGER_MAX = 2_147_483_647
 _COHERENT_ISOLATION_LEVELS = {"repeatable read", "serializable"}
 _ACCOUNT_TYPE_MAP = {
+    DbAccountType.bank: AccountType.bank,
+    DbAccountType.cash: AccountType.cash,
+    DbAccountType.savings: AccountType.savings,
     DbAccountType.broker: AccountType.broker,
     DbAccountType.exchange: AccountType.exchange,
     DbAccountType.crypto_wallet: AccountType.crypto_wallet,

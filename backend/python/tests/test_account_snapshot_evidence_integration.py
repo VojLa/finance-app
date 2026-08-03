@@ -37,8 +37,6 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
     ExactSnapshotMetric,
-    SnapshotMetricUnsupportedReason,
-    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import AccountSnapshotEvidenceStateError
 
@@ -337,19 +335,12 @@ async def test_persisted_cash_account_balance_is_read_only(
             assert first.valuation.total_value == Decimal("70.000000")
             assert first.valuation.liabilities_value == Decimal(0)
             assert first.valuation.liabilities_value_by_currency == ()
-            assert first.net_deposits == UnsupportedSnapshotMetric(
-                SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
-            )
-            assert first.fees == UnsupportedSnapshotMetric(
-                SnapshotMetricUnsupportedReason.fee_classification_unavailable
-            )
-            assert first.taxes == UnsupportedSnapshotMetric(
-                SnapshotMetricUnsupportedReason.tax_classification_unavailable
-            )
-            assert first.realized_pnl == UnsupportedSnapshotMetric(
-                SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
-            )
-            assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
+            structural_zero = ExactSnapshotMetric(Decimal(0), ())
+            assert first.net_deposits == structural_zero
+            assert first.fees == structural_zero
+            assert first.taxes == structural_zero
+            assert first.realized_pnl == structural_zero
+            assert first.unrealized_pnl == structural_zero
             assert await _snapshot_counts(session) == before
             assert (
                 tuple(

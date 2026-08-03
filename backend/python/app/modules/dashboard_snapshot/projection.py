@@ -34,6 +34,7 @@ _POSTGRES_INTEGER_MAX = 2_147_483_647
 _INVESTMENT_ACCOUNT_TYPES = frozenset(
     (AccountType.broker, AccountType.exchange, AccountType.crypto_wallet)
 )
+_CASH_ACCOUNT_TYPES = frozenset((AccountType.bank, AccountType.cash, AccountType.savings))
 _LIABILITY_ACCOUNT_TYPES = frozenset(
     (AccountType.credit_card, AccountType.loan, AccountType.mortgage)
 )
@@ -202,7 +203,12 @@ def _account_card(
     output_currency: str,
     account_ids: set[str],
     snapshot_ids: set[str],
-) -> tuple[DashboardAccountCard, tuple[tuple[str, PortfolioPositionView], ...], bool]:
+) -> tuple[
+    DashboardAccountCard,
+    tuple[tuple[str, PortfolioPositionView], ...],
+    bool,
+    bool,
+]:
     if (
         type(account_view) is not MultiAccountPortfolioAccountView
         or type(account_view.account) is not PortfolioAccountView
@@ -221,7 +227,9 @@ def _account_card(
         raise _fail()
     account_type = account_view.account.account_type
     is_investment = account_type in _INVESTMENT_ACCOUNT_TYPES
-    if not is_investment and account_type not in _LIABILITY_ACCOUNT_TYPES:
+    is_cash = account_type in _CASH_ACCOUNT_TYPES
+    is_liability = account_type in _LIABILITY_ACCOUNT_TYPES
+    if not is_investment and not is_cash and not is_liability:
         raise _fail()
     account_currency = _currency(account_view.account.currency)
     summary = account_view.summary
@@ -246,6 +254,10 @@ def _account_card(
     )
     if not is_investment and scoped_positions:
         raise _fail()
+    if is_cash and (investment != 0 or liabilities != 0):
+        raise _fail()
+    if is_liability and (cash != 0 or investment != 0):
+        raise _fail()
     return (
         DashboardAccountCard(
             account_id=account_id,
@@ -263,6 +275,7 @@ def _account_card(
         ),
         scoped_positions,
         is_investment,
+        is_liability,
     )
 
 
@@ -372,8 +385,9 @@ def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> Dashb
         cards: list[DashboardAccountCard] = []
         positions: list[tuple[str, PortfolioPositionView]] = []
         investment_account_count = 0
+        liability_account_count = 0
         for account_view in portfolio.accounts:
-            card, scoped_positions, is_investment = _account_card(
+            card, scoped_positions, is_investment, is_liability = _account_card(
                 account_view,
                 output_currency=currency,
                 account_ids=account_ids,
@@ -382,6 +396,7 @@ def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> Dashb
             cards.append(card)
             positions.extend(scoped_positions)
             investment_account_count += int(is_investment)
+            liability_account_count += int(is_liability)
         if summary.account_count != len(cards) or summary.position_count != len(positions):
             raise _fail()
         scoped = tuple(positions)
@@ -405,7 +420,7 @@ def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> Dashb
             taxes_value=summary.taxes_value,
             account_count=summary.account_count,
             investment_account_count=investment_account_count,
-            liability_account_count=len(cards) - investment_account_count,
+            liability_account_count=liability_account_count,
             position_count=summary.position_count,
         )
         return DashboardSnapshotView(

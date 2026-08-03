@@ -310,10 +310,11 @@ def test_raiffeisenbank_normalization_and_classification_composition(
         source=ImportSource.raiffeisenbank,
         account_id="account-a",
         raw_data={
-            "Datum": "23.07.2026",
-            "Částka": amount,
-            "Měna": "czk",
-            "Typ": source_type,
+            "__raiffeisenbank_statement_kind": "account_statement",
+            "Datum provedení": "23.07.2026",
+            "Zaúčtovaná částka": amount,
+            "Měna účtu": "czk",
+            "Typ transakce": source_type,
         },
     )
     assert normalized.data is not None
@@ -333,10 +334,11 @@ def test_raiffeisenbank_generic_transfer_composition_needs_review() -> None:
         source=ImportSource.raiffeisenbank,
         account_id="account-a",
         raw_data={
-            "Datum": "23.07.2026",
-            "Částka": "100",
-            "Měna": "CZK",
-            "Typ": "Převod",
+            "__raiffeisenbank_statement_kind": "account_statement",
+            "Datum provedení": "23.07.2026",
+            "Zaúčtovaná částka": "100",
+            "Měna účtu": "CZK",
+            "Typ transakce": "Převod",
         },
     )
     assert normalized.data is not None

@@ -28,6 +28,11 @@ _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
+_CASH_ACCOUNT_TYPES = {
+    AccountType.bank,
+    AccountType.cash,
+    AccountType.savings,
+}
 _LIABILITY_ACCOUNT_TYPES = {
     AccountType.credit_card,
     AccountType.loan,
@@ -364,6 +369,20 @@ def _validate_account_type(
     positions: tuple[PortfolioPositionView, ...],
 ) -> None:
     if source.account_type in _INVESTMENT_ACCOUNT_TYPES:
+        return
+    if source.account_type in _CASH_ACCOUNT_TYPES:
+        if (
+            positions
+            or summary.investment_value != 0
+            or summary.investment_cost_basis != 0
+            or summary.liabilities_value != 0
+            or summary.net_deposits_value != 0
+            or summary.realized_pnl_value != 0
+            or summary.unrealized_pnl_value != 0
+            or summary.fees_value != 0
+            or summary.taxes_value != 0
+        ):
+            raise _fail()
         return
     if source.account_type in _LIABILITY_ACCOUNT_TYPES:
         if (

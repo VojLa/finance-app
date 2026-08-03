@@ -1,0 +1,7 @@
+Datum provedení;Zaúčtovaná částka;Měna účtu;Typ transakce;Zpráva;Poznámka;Vlastní poznámka;Název protiúčtu;Id transakce
+15.06.2026;+25,00;CZK;;FIKTIVNÍ PŘÍJEM BEZ TYPU;;;Fiktivní protistrana;RB-FAKE-SIGN-001
+15.06.2026;-20,00;CZK;Převod;FIKTIVNÍ NEJEDNOZNAČNÝ PŘEVOD;;;Fiktivní protistrana;RB-FAKE-TRANSFER-001
+15.06.2026;-10,00;CZK;Příchozí platba;FIKTIVNÍ KONFLIKT TYPU;;;Fiktivní protistrana;RB-FAKE-CONFLICT-001
+neplatné datum;-5,00;CZK;Odchozí platba;FIKTIVNÍ CHYBNÉ DATUM;;;Fiktivní protistrana;RB-FAKE-DATE-001
+
+15.06.2026;-1,00;CZK;Odchozí platba
