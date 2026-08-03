@@ -111,10 +111,15 @@ def _source(
         AccountType.loan,
         AccountType.mortgage,
     }
+    cash_only = account_type in {
+        AccountType.bank,
+        AccountType.cash,
+        AccountType.savings,
+    }
     if items is None:
         items = (
             ()
-            if liability or empty
+            if liability or cash_only or empty
             else (
                 _item(
                     account_id,
@@ -130,7 +135,7 @@ def _source(
     investment_cost = sum((item.cost_basis for item in items), Decimal(0))
     cash_value = _money("0" if liability else cash)
     liabilities = _money("25" if liability else "0")
-    structural_zero = liability
+    structural_zero = liability or cash_only
     return PortfolioSnapshotSource(
         snapshot_id=snapshot_id or f"{account_id}-snapshot",
         account_id=account_id,
@@ -205,6 +210,9 @@ def test_full_pipeline_projects_exact_dashboard_summary() -> None:
         (AccountType.broker, 1, 0),
         (AccountType.exchange, 1, 0),
         (AccountType.crypto_wallet, 1, 0),
+        (AccountType.bank, 0, 0),
+        (AccountType.cash, 0, 0),
+        (AccountType.savings, 0, 0),
         (AccountType.credit_card, 0, 1),
         (AccountType.loan, 0, 1),
         (AccountType.mortgage, 0, 1),
@@ -503,25 +511,14 @@ def test_invalid_top_level_input_fails_closed(value: object) -> None:
         build_dashboard_snapshot_view(cast(Any, value))
 
 
-@pytest.mark.parametrize(
-    "account_type",
-    [AccountType.bank, AccountType.cash, AccountType.savings],
-)
-def test_unsupported_account_type_fails_closed(account_type: AccountType) -> None:
-    portfolio = _portfolio(_source("account"))
-    account_view = portfolio.accounts[0]
-    corrupt = replace(
-        portfolio,
-        accounts=(
-            replace(
-                account_view,
-                account=replace(account_view.account, account_type=account_type),
-            ),
-        ),
-    )
+@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.cash, AccountType.savings])
+def test_cash_account_type_builds_cash_only_dashboard_card(account_type: AccountType) -> None:
+    result = _dashboard(_source("account", account_type=account_type, cash="10"))
 
-    with pytest.raises(DashboardSnapshotProjectionError):
-        build_dashboard_snapshot_view(corrupt)
+    assert result.summary.cash_value == _money("10")
+    assert result.summary.investment_account_count == 0
+    assert result.summary.liability_account_count == 0
+    assert result.accounts[0].cash_value == _money("10")
 
 
 @pytest.mark.parametrize(

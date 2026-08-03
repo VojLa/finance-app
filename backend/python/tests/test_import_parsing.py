@@ -52,7 +52,6 @@ def _batch(content: bytes, *, encoding: str | None = "utf-8") -> ImportBatchMode
 @pytest.mark.parametrize(
     ("source", "content"),
     [
-        (ImportSource.raiffeisenbank, b"date;amount\n2026-01-01;100\n"),
         (ImportSource.trading212, b"date,amount\n2026-01-01,100\n"),
         (ImportSource.anycoin, b"date\tamount\n2026-01-01\t100\n"),
         (ImportSource.manual, b"date,amount\n2026-01-01,100\n"),
@@ -163,10 +162,10 @@ def test_parser_is_deterministic() -> None:
     content = b"a;b\n1;2\n;\n3;4;5\n"
 
     assert parse_import_file(
-        ImportSource.raiffeisenbank,
+        ImportSource.manual,
         content,
         encoding="utf-8",
-    ) == parse_import_file(ImportSource.raiffeisenbank, content, encoding="utf-8")
+    ) == parse_import_file(ImportSource.manual, content, encoding="utf-8")
 
 
 def test_parser_preserves_raw_whitespace_without_value_coercion() -> None:

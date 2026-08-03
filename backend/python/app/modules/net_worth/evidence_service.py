@@ -38,6 +38,9 @@ from app.modules.net_worth.repository import (
 _ERROR_MESSAGE = "Persisted evidence cannot produce a complete net worth snapshot."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
 _SUPPORTED_ACCOUNT_TYPES = {
+    AccountType.bank,
+    AccountType.cash,
+    AccountType.savings,
     AccountType.broker,
     AccountType.exchange,
     AccountType.crypto_wallet,

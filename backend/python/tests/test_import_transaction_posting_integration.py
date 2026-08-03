@@ -224,12 +224,18 @@ async def _reload(
     return batch, row, transactions
 
 
-async def _assert_no_investment_side_effects() -> None:
+async def _assert_no_investment_side_effects(prefix: str) -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine) as session:
+        account_id = f"{prefix}-account"
         counts = [
-            int(await session.scalar(select(func.count()).select_from(model)) or 0)
+            int(
+                await session.scalar(
+                    select(func.count()).select_from(model).where(model.account_id == account_id)
+                )
+                or 0
+            )
             for model in (InvestmentEventModel, InvestmentMovementModel)
         ]
     await engine.dispose()
@@ -296,7 +302,7 @@ async def _assert_representability_rejection(
         after_batch.rows_skipped,
         after_batch.completed_at,
     ) == batch_snapshot
-    await _assert_no_investment_side_effects()
+    await _assert_no_investment_side_effects(prefix)
 
 
 def test_manual_pipeline_persists_exact_transaction_and_row_linkage() -> None:
@@ -345,7 +351,7 @@ def test_manual_pipeline_persists_exact_transaction_and_row_linkage() -> None:
         assert batch.rows_imported == before_batch.rows_imported == 0
         assert batch.rows_skipped == before_batch.rows_skipped == 0
         assert batch.completed_at == before_batch.completed_at is None
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())
 
@@ -358,12 +364,14 @@ def test_raiffeisenbank_pipeline_persists_expense_mapping() -> None:
             prefix,
             ImportSource.raiffeisenbank,
             {
-                "Date": "2026-07-25T12:30:00+02:00",
-                "Amount": "-42.125",
-                "Currency": "EUR",
-                "Type": "expense",
-                "Description": "Card purchase",
-                "ID": "rb-1",
+                "__raiffeisenbank_statement_kind": "account_statement",
+                "Datum provedení": "25.07.2026 12:30:00",
+                "Zaúčtovaná částka": "-42.125",
+                "Měna účtu": "EUR",
+                "Typ transakce": "Odchozí platba",
+                "Zpráva": "Card purchase",
+                "Název protiúčtu": "Fiktivní obchod",
+                "Id transakce": "rb-1",
             },
         )
         await _prepare(prefix)
@@ -371,17 +379,18 @@ def test_raiffeisenbank_pipeline_persists_expense_mapping() -> None:
         batch, row, transactions = await _reload(prefix)
         assert len(transactions) == 1
         transaction = transactions[0]
-        assert transaction.date == datetime(2026, 7, 25, 10, 30)
+        assert transaction.date == datetime(2026, 7, 25, 12, 30)
         assert transaction.amount == Decimal("-42.125000")
         assert transaction.type is TransactionType.expense
         assert transaction.classification is TransactionClassification.real_expense
         assert transaction.description == "Card purchase"
+        assert transaction.counterparty == "Fiktivní obchod"
         assert transaction.external_id == "rb-1"
         assert row.status is ImportRowStatus.imported
         assert row.created_transaction_id == transaction.id
         assert batch.status is ImportStatus.processing
         assert batch.rows_imported == 0
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())
 
@@ -449,7 +458,7 @@ def test_database_replay_returns_same_transaction_without_duplicate() -> None:
         ) == row_snapshot
         assert second_batch.status is first_batch.status is ImportStatus.processing
         assert second_batch.rows_imported == first_batch.rows_imported == 0
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())
 
@@ -483,7 +492,7 @@ def test_caller_rollback_leaves_no_partial_state_and_retry_succeeds() -> None:
         assert rolled_row.deduplication_key == key_snapshot
         assert rolled_batch.status is before_batch.status is ImportStatus.processing
         assert rolled_batch.rows_imported == before_batch.rows_imported == 0
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
         retry_id = await _post(prefix, commit=True)
         retry_batch, retry_row, retry_transactions = await _reload(prefix)
@@ -495,7 +504,7 @@ def test_caller_rollback_leaves_no_partial_state_and_retry_succeeds() -> None:
         assert retry_row.deduplication_key == key_snapshot
         assert retry_batch.status is ImportStatus.processing
         assert retry_batch.rows_imported == 0
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())
 
@@ -560,7 +569,7 @@ def test_corrupted_transaction_replay_fails_closed_without_repair() -> None:
         ) == row_snapshot
         assert batch.status is ImportStatus.processing
         assert batch.rows_imported == 0
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())
 
@@ -687,6 +696,6 @@ def test_postgresql_accepts_exact_boundaries_and_replays_without_change() -> Non
         )
         assert replay_batch.rows_skipped == first_batch.rows_skipped == before_batch.rows_skipped
         assert replay_batch.completed_at == first_batch.completed_at == before_batch.completed_at
-        await _assert_no_investment_side_effects()
+        await _assert_no_investment_side_effects(prefix)
 
     asyncio.run(scenario())

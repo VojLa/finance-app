@@ -68,6 +68,9 @@ _CONFLICT_MESSAGE = "Coordinated snapshot refresh conflicts with persisted state
 _POSTGRES_INTEGER_MAX = 2_147_483_647
 _SUPPORTED_ACCOUNT_TYPES = frozenset(
     {
+        AccountType.bank,
+        AccountType.cash,
+        AccountType.savings,
         AccountType.broker,
         AccountType.exchange,
         AccountType.crypto_wallet,

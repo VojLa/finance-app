@@ -320,11 +320,23 @@ def test_every_canonical_granularity_boundary_is_accepted(
     "account_type",
     [AccountType.bank, AccountType.cash, AccountType.savings],
 )
-def test_physically_unsupported_account_types_fail_closed(
+def test_cash_account_types_preserve_exact_cash_without_investments_or_liabilities(
     account_type: AccountType,
 ) -> None:
-    with pytest.raises(NetWorthProjectionStateError):
-        build_net_worth_projection(_input(_investment(account_type=account_type)))
+    result = build_net_worth_projection(
+        _input(
+            _investment(
+                account_type=account_type,
+                investment=Decimal(0),
+                investment_breakdown=(),
+            )
+        )
+    )
+
+    assert result.cash_value == Decimal("100")
+    assert result.portfolio_value == 0
+    assert result.liabilities_value == 0
+    assert result.net_worth_value == Decimal("100")
 
 
 @pytest.mark.parametrize(

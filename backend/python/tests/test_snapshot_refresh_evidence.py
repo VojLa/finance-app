@@ -425,13 +425,14 @@ async def test_malformed_account_or_membership_fails_closed(
     "account_type",
     [AccountType.bank, AccountType.cash, AccountType.savings],
 )
-async def test_unsupported_active_account_fails_before_snapshot_query(
+async def test_active_cash_account_type_produces_complete_refresh_coverage(
     account_type: AccountType,
 ) -> None:
     repository = FakeRepository(accesses=(_access(_account(account_type=account_type)),))
     service, _ = _service(repository)
-    with pytest.raises(SnapshotRefreshEvidenceStateError):
-        await service.build(_command())
+    result = await service.build(_command())
+    assert len(result.refresh_targets) == 1
+    assert result.refresh_targets[0].account_type is account_type
     assert repository.snapshot_calls == 0
 
 

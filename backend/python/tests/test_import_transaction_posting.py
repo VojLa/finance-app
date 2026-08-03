@@ -55,6 +55,7 @@ def _canonical(
     amount: str = "10.50",
     source_type: str = "income",
     description: str | None = "Salary",
+    counterparty: str | None = None,
     external_id: str | None = "provider-1",
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
@@ -67,6 +68,8 @@ def _canonical(
     }
     if description is not None:
         data["description"] = description
+    if counterparty is not None:
+        data["counterparty"] = counterparty
     if external_id is not None:
         data["external_id"] = external_id
     return data
@@ -127,7 +130,7 @@ def _existing(
         classification=plan.transaction_classification,
         description=plan.description,
         note=None,
-        counterparty=None,
+        counterparty=plan.counterparty,
         external_id=plan.external_id,
         category_id=None,
         archived_at=None,
@@ -296,7 +299,7 @@ def test_money_representability_rejects_non_finite_values(value: str) -> None:
 async def test_writer_creates_exact_model_and_preserves_row_and_batch_data() -> None:
     session = _session()
     batch = _batch()
-    row = _row()
+    row = _row(canonical=_canonical(counterparty="Fiktivní protistrana"))
     normalized_object = row.normalized_data
     normalized_snapshot = deepcopy(row.normalized_data)
     raw_object = row.raw_data
@@ -330,7 +333,7 @@ async def test_writer_creates_exact_model_and_preserves_row_and_batch_data() -> 
     assert transaction.reporting_amount is None
     assert transaction.reporting_currency is None
     assert transaction.note is None
-    assert transaction.counterparty is None
+    assert transaction.counterparty == "Fiktivní protistrana"
     assert transaction.category_id is None
     assert transaction.archived_at is None
     assert transaction.deleted_at is None

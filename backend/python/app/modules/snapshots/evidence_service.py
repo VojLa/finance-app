@@ -846,19 +846,11 @@ class AccountSnapshotEvidenceService:
             )
             if account_type in _CASH_ACCOUNT_TYPES:
                 structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
-                net_deposits: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
-                    SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
-                )
-                realized_pnl: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
-                    SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
-                )
+                net_deposits: SnapshotFinancialMetric = structural_zero
+                realized_pnl: SnapshotFinancialMetric = structural_zero
                 unrealized_pnl: SnapshotFinancialMetric = structural_zero
-                fees: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
-                    SnapshotMetricUnsupportedReason.fee_classification_unavailable
-                )
-                taxes: SnapshotFinancialMetric = UnsupportedSnapshotMetric(
-                    SnapshotMetricUnsupportedReason.tax_classification_unavailable
-                )
+                fees: SnapshotFinancialMetric = structural_zero
+                taxes: SnapshotFinancialMetric = structural_zero
                 selected_historical_rate_ids: tuple[str, ...] = ()
             else:
                 metrics: ExactFinancialMetrics = build_financial_metrics(

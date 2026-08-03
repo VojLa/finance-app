@@ -1,124 +1,110 @@
 # Pre-posting Import Contract
 
-The current pre-posting import contract has three persisted stages and one pure
-classification contract.
+The import contract persists every stage so that parsing, normalization,
+deduplication, classification, and posting remain explicit and replayable.
 
 ## Stage 1: source parser
 
-`parse_import_file` selects a parser from the source registry. All current
-sources use the same strict CSV parser, which:
+`parse_import_file` selects a parser from the source registry. Trading212,
+Anycoin, and manual retain the generic strict CSV parser. Raiffeisenbank uses a
+source-specific parser which detects exactly one supported shape from the
+complete trimmed header:
 
-- decodes UTF-8 with BOM removal by default, or uses the batch's explicit encoding;
-- accepts exactly one unambiguous delimiter from comma, semicolon, and tab;
-- requires non-blank, unique headers;
-- preserves physical blank records;
-- records each row as raw key/value data and retains row number;
-- marks blank or column-count-mismatched rows with a structured parse issue.
+- `account_statement` requires `Datum provedení`, `Zaúčtovaná částka`, and
+  `Měna účtu`;
+- `card_statement` requires `Datum transakce`, `Zaúčtovaná částka`, and
+  `Měna zaúčtování`, with card-specific markers.
 
-A fatal file error—bad encoding, invalid header, ambiguous delimiter, malformed
-CSV, or no data rows—fails the batch. Per-row problems must instead be emitted
-as rows, never silently skipped.
+Unknown, mixed, or ambiguous Raiffeisenbank headers are fatal without echoing
+the complete header or file. The parser supports UTF-8 BOM removal and the
+batch's explicit encoding. Shared strict CSV mechanics select one unambiguous
+comma, semicolon, or tab delimiter; require non-blank unique headers; preserve
+row numbers and raw fields; and persist physical blank or column-mismatch rows
+as structured issues. No data row is silently skipped.
+
+Bad encoding, malformed CSV, an empty file, a header-only file, or a fatal
+header error fails parsing. Per-row problems remain persisted source evidence.
+The parser has no database access and performs no normalization,
+classification, deduplication, posting, or financial calculation.
 
 ## Stage 2: normalizer
 
-The normalizer looks up common aliases for `date`, `amount`, and `currency`,
-with optional `external_id`, `description`, and `type`. It emits this versioned
-shape when valid:
+Generic sources use their existing aliases and source semantics. The
+Raiffeisenbank normalizer maps the detected account or card statement through
+exact Czech source fields and emits schema version 1:
 
 ```json
 {
   "schema_version": 1,
-  "source": "trading212",
-  "date": "2026-07-21",
-  "amount": "123.45",
-  "currency": "EUR",
-  "external_id": "optional",
-  "description": "optional",
-  "type": "optional"
+  "source": "raiffeisenbank",
+  "date": "2026-06-14T12:05:00",
+  "amount": "-123.45",
+  "currency": "CZK",
+  "external_id": "provider-or-deterministic-id",
+  "description": "deterministic description",
+  "counterparty": "optional",
+  "type": "odchozí platba"
 }
 ```
 
-Dates are normalized to ISO date/time values; ambiguous slash dates are rejected.
-Amounts are parsed with `Decimal` and serialized as finite decimal strings.
-Currency is upper-cased and validated as a 2–20 character source code. The
-candidate deduplication key is a SHA-256 hash of stable normalized identity
-fields scoped to source and account.
+Raiffeisenbank dates support the documented Czech date and date-time forms and
+remain timezone-naive source evidence. Amounts use `Decimal`, retain the
+provider sign, and serialize as finite exact decimal strings. Canonical money
+never passes through `float` or `abs`. Currency is exactly three uppercase
+ASCII letters.
+
+Descriptions combine an allowlisted source-specific sequence, skip empty
+values, and remove exact duplicates. Account counterparties come from `Název
+protiúčtu`; card counterparties come from merchant or place evidence. Provider
+transaction IDs take precedence. A card row without a stable provider ID uses
+a SHA-256 fallback over stable canonical source identity. Filename, batch ID,
+upload time, database identity, row number, and randomness are excluded.
 
 ## Stage 3: duplicate detection
 
 Duplicate detection compares normalized candidate keys only inside the same
 account and source. Already imported matches are preserved; otherwise the
-earliest eligible row wins. Later matches become `duplicate`, including matches
-across import batches. Each run reconciles all pending matches for the current
-keys, so out-of-order normalization cannot leave two pending winners.
-Transaction-level serialization prevents concurrent requests from selecting
-different winners. Failed, cancelled, review, and already duplicate rows never
-become winners.
+earliest eligible row wins. Later matches become `duplicate`, including
+matches across batches. The Raiffeisenbank fallback remains stable when the
+same rows are uploaded under a different filename or in another order, while
+different accounts retain separate deduplication scopes.
+
+Each run reconciles all pending matches for the current keys. Transaction-level
+serialization prevents concurrent requests from selecting different winners.
+Failed, cancelled, review, and already duplicate rows never become winners.
 
 ## Pure posting-intent classification
 
-`classify_import_row` is a deterministic, I/O-free contract over one supported
-normalized row. It accepts schema version 1 for bank/manual data and schema
-version 2 for canonical Trading212 investment data. It returns a frozen,
-JSON-serializable posting intent with
-its own schema version:
+`classify_import_row` is deterministic and I/O-free. Schema version 1 produces
+either a transaction intent with the original signed `Decimal`,
+`TransactionType`, and `TransactionClassification`, or structured
+`needs_review` issues that do not echo untrusted source values.
 
-- `transaction` with the original signed `Decimal`, `TransactionType`, and
-  `TransactionClassification`;
-- `investment_event` with the original signed `Decimal`,
-  `InvestmentEventType`, and `buy`/`sell` action for trades as a shared future
-  contract;
-- `needs_review` with structured field, code, and message entries that do not
-  echo untrusted financial or identifying values.
+For Raiffeisenbank, incoming payment must have a positive sign; outgoing
+payment and card payment must have a negative sign. Missing or unknown types
+may use the safe signed-amount fallback. `Převod` is ambiguous and requires
+review. `Interní převod` is accepted only as explicit provider evidence. Type
+and sign conflicts and zero amounts require review. Description and
+counterparty never determine classification.
 
-Raiffeisenbank and manual classification normalize only the optional source
-type by trimming, Unicode case-folding, and whitespace collapse. Exact income,
-expense, and unambiguous internal-transfer tokens take precedence; unsupported
-or missing tokens fall back to the signed amount. `transfer`, `account
-transfer`, and `převod` are explicitly ambiguous review issues, not internal
-transfers. An explicit income/expense token that conflicts with the sign and
-every zero amount require review. Description and counterparty values are
-ignored.
+Trading212 retains its schema-version-2 investment-event contract, including
+exact asset, quantity, price, fee, conversion, realized P/L, and provider
+identity evidence. Anycoin retains its existing grouping behavior.
 
-Trading212 and Anycoin always return `investment_normalization_required` in
-5F-A. A Trading212 investment intent needs source-specific asset identity,
-quantity, price, total, fee, and conversion data. An Anycoin trade requires
-grouping payment, fill, and refund rows by order ID. The current generic
-normalized contract contains neither safely, so it cannot create a successful
-investment intent. Step 5F-B will add source-specific canonicalization and
-grouping; Step 5F-C will add batch persistence and workflow.
+## Workflow metadata and posting
 
-This classifier is not yet a persisted batch stage: there is no classification
-endpoint, row status transition, database write, or ledger posting.
+Deduplication adds only `normalizedData.deduplication`; classification stores
+`normalizedData.posting_intent`. Provider normalizers create neither key.
 
-Trading212 has a dedicated schema-version-2 canonical investment-event shape.
-It accepts only exact normalized action tokens and field aliases, uses decimal
-strings for all monetary and quantity values, and records invalid rows as
-structured review issues. Its fallback duplicate identity excludes note, name,
-and raw action spelling; an external ID takes precedence. Schema version 2 is
-classified only for Trading212 and produces a frozen intent containing asset,
-quantity, money, fee, conversion, realized P/L, provider identity, and the
-promotional flag. It still has no posting workflow.
+The transaction writer locks the classified row, removes workflow metadata from
+a copy, re-runs the pure classifier, and requires exact stored-intent equality.
+It creates or exactly replays one canonical `Transaction` inside the
+caller-owned transaction, including signed amount, source identity,
+description, and bounded optional counterparty. It never commits independently.
+Persisted corruption fails closed and does not create a replacement
+transaction.
 
-Trading212 provider exports sometimes contain a zero-valued fee column. A zero
-fee is treated as absent and is not persisted in the canonical fee section; a
-present canonical fee must be strictly positive.
-
-New source-specific parsers must be deterministic, preserve enough raw context
-for review, and add representative fixture and regression tests. They may not
-perform posting or financial calculation in the parser layer.
-# Workflow metadata
-
-Deduplication adds only `normalizedData.deduplication` with schema version `1` and status `unique` or `duplicate`. Classification then stores `normalizedData.posting_intent`; both are workflow metadata and are removed before re-running the canonical classifier. Provider normalizers must not create either key.
-
-## Internal transaction posting
-
-Step 5G-A provides an internal transaction-row writer for a locked, classified
-row. It removes workflow metadata from a copy, re-runs the pure classifier,
-requires exact stored-intent equality, and creates or exactly replays one
-canonical `Transaction` inside a caller-owned transaction. It does not commit,
-finalize the batch, or change batch counters.
-
-There is no public `/post` endpoint yet. Batch finalization belongs to Step
-5G-C, while `InvestmentEvent` and `InvestmentMovement` posting belongs to Step
-5G-B.
+Sanitized Raiffeisenbank account and card fixtures prove the complete staged
+contract on PostgreSQL. Card transactions do not establish a credit-card
+liability balance; liability snapshots require separate explicit liability
+evidence.

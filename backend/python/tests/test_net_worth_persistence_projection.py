@@ -206,6 +206,11 @@ def test_empty_user_maps_every_physical_field_explicitly() -> None:
     "snapshot",
     [
         _investment(),
+        _investment(
+            account_type=AccountType.bank,
+            portfolio=Decimal(0),
+            portfolio_breakdown=(),
+        ),
         _liability(),
         _investment(cash=Decimal("-10"), portfolio=Decimal("20")),
     ],

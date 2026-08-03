@@ -28,12 +28,12 @@ def test_normalizer_creates_canonical_data_and_stable_key() -> None:
     }
 
     first = normalize_import_row(
-        source=ImportSource.raiffeisenbank,
+        source=ImportSource.manual,
         account_id="account-a",
         raw_data=raw,
     )
     second = normalize_import_row(
-        source=ImportSource.raiffeisenbank,
+        source=ImportSource.manual,
         account_id="account-a",
         raw_data=dict(reversed(list(raw.items()))),
     )
@@ -41,7 +41,7 @@ def test_normalizer_creates_canonical_data_and_stable_key() -> None:
     assert first.validation_errors is None
     assert first.data == {
         "schema_version": 1,
-        "source": "raiffeisenbank",
+        "source": "manual",
         "date": "2026-07-20",
         "amount": "1234.5",
         "currency": "CZK",
@@ -171,11 +171,6 @@ def test_normalizer_rejects_invalid_currency(currency: str) -> None:
 @pytest.mark.parametrize(
     ("source", "raw", "expected"),
     [
-        (
-            ImportSource.raiffeisenbank,
-            {"Datum": "20.07.2026", "Částka": "10,50", "Měna": "czk", "Popis": "Platba"},
-            {"date": "2026-07-20", "amount": "10.5", "currency": "CZK", "description": "Platba"},
-        ),
         (
             ImportSource.anycoin,
             {

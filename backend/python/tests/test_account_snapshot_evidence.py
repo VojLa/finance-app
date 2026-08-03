@@ -53,8 +53,6 @@ from app.modules.snapshots.evidence_service import (
     BuildAccountSnapshotEvidenceCommand,
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
-    SnapshotMetricUnsupportedReason,
-    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
@@ -448,19 +446,12 @@ async def test_cash_account_balance_uses_complete_signed_transaction_history(
     assert result.valuation.total_value == Decimal("70.000000")
     assert result.valuation.liabilities_value == Decimal(0)
     assert result.valuation.liabilities_value_by_currency == ()
-    assert result.net_deposits == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
-    )
-    assert result.fees == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.fee_classification_unavailable
-    )
-    assert result.taxes == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.tax_classification_unavailable
-    )
-    assert result.realized_pnl == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
-    )
-    assert result.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    structural_zero = ExactSnapshotMetric(Decimal(0), ())
+    assert result.net_deposits == structural_zero
+    assert result.fees == structural_zero
+    assert result.taxes == structural_zero
+    assert result.realized_pnl == structural_zero
+    assert result.unrealized_pnl == structural_zero
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
     session.flush.assert_not_called()
@@ -501,7 +492,7 @@ async def test_cash_account_balance_uses_complete_signed_transaction_history(
         ),
     ],
 )
-async def test_cash_transaction_semantics_never_infer_unsupported_metrics(
+async def test_cash_transaction_semantics_use_only_structurally_applicable_metrics(
     transaction_type: TransactionType,
     classification: TransactionClassification,
     amount: str,
@@ -523,21 +514,12 @@ async def test_cash_transaction_semantics_never_infer_unsupported_metrics(
         ).build(_command())
 
     assert first == second
-    assert first.net_deposits == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
-    )
-    assert first.fees == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.fee_classification_unavailable
-    )
-    assert first.taxes == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.tax_classification_unavailable
-    )
-    assert first.realized_pnl == UnsupportedSnapshotMetric(
-        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
-    )
-    assert isinstance(first.net_deposits, UnsupportedSnapshotMetric)
-    assert not hasattr(first.net_deposits, "value")
-    assert first.unrealized_pnl == ExactSnapshotMetric(Decimal(0), ())
+    structural_zero = ExactSnapshotMetric(Decimal(0), ())
+    assert first.net_deposits == structural_zero
+    assert first.fees == structural_zero
+    assert first.taxes == structural_zero
+    assert first.realized_pnl == structural_zero
+    assert first.unrealized_pnl == structural_zero
     metrics.assert_not_called()
 
 
@@ -724,10 +706,11 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
     )
     assert result.selected_snapshot_exchange_rate_ids == ("usd-eur",)
     assert result.selected_historical_exchange_rate_ids == ()
-    assert isinstance(result.net_deposits, UnsupportedSnapshotMetric)
-    assert isinstance(result.realized_pnl, UnsupportedSnapshotMetric)
-    assert isinstance(result.fees, UnsupportedSnapshotMetric)
-    assert isinstance(result.taxes, UnsupportedSnapshotMetric)
+    structural_zero = ExactSnapshotMetric(Decimal(0), ())
+    assert result.net_deposits == structural_zero
+    assert result.realized_pnl == structural_zero
+    assert result.fees == structural_zero
+    assert result.taxes == structural_zero
 
 
 @pytest.mark.asyncio
