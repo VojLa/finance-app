@@ -125,3 +125,19 @@ deterministic test evidence, not a live price provider or provider refresh.
 Missing current price evidence fails closed without partial snapshots. No
 exchange-rate row, FX provider, buy-price fallback, latest lookup, or
 post-refresh account discovery is used.
+
+## Browser transport boundary
+
+The import page sends account identity, one supported source value, and exact
+CSV bytes to the same-origin `POST /api/import` route. Next.js authenticates the
+session once and then runs the generated Python staged API in order: create,
+binary upload, parse, normalize, deduplicate, classify, post, and final batch
+read. Each Python request uses a fresh internal token. Multi-file requests are
+processed sequentially in their submitted order, with safe partial completion
+reported if a later file fails.
+
+No browser or Next.js parser, preview, classifier, posting plan, deduplication
+key, holdings calculation, or financial fallback participates in this path.
+The checksum is calculated over the exact uploaded bytes, including a UTF-8 BOM
+when present. The legacy preview route remains a registered compatibility
+surface but is not called by a production page.

@@ -33,6 +33,8 @@ secret returns `503` for protected calls.
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/parse`       | Parse its verified file                      |
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/normalize`   | Normalize persisted rows                     |
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/deduplicate` | Mark repeated normalized rows as duplicates  |
+| `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/classify`    | Create deterministic posting intent          |
+| `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/post`        | Post canonical rows and run post-processing  |
 | `GET`                    | `/api/v1/portfolio?account_id=…`                               | Basic holdings cost summary                  |
 
 The legacy aliases `/health` and `/portfolio` remain without the version prefix
@@ -137,6 +139,28 @@ The main account page does not call the legacy cash or share routes. Those route
 files remain registered, unchanged compatibility surfaces. Account cash/FX
 presentation is deferred to the snapshot-backed R6 contract, and sharing write
 UX is outside R1.
+
+## Next.js import route
+
+The import page calls one browser endpoint:
+
+| Method | Path          | Purpose                                      |
+| ------ | ------------- | -------------------------------------------- |
+| `POST` | `/api/import` | Run one or more files through the Python API |
+
+The multipart request contains only `accountId`, one supported source value,
+and CSV files. The route reads NextAuth once, validates the bridge-level field
+allowlist, preserves exact binary bytes, and processes files sequentially in
+the submitted order. For each file it calls create, upload, parse, normalize,
+deduplicate, classify, post, and final batch read. Every FastAPI call obtains a
+new internal bearer token through the shared no-store, timeout-bound transport.
+
+The browser receives a safe completed/duplicate/failed result with aggregate
+stage counters. A later failure retains safe earlier completion evidence.
+There is no polling, preview call, retry, browser-side parser, caller-supplied
+posting plan, or FastAPI credential forwarding. The provider-specific routes
+remain registered only as thin wrappers over this shared handler, and the
+account-scoped status route reads Python batch status rather than Prisma.
 
 ## Portfolio page integration
 
