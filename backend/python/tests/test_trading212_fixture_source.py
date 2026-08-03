@@ -131,17 +131,17 @@ def test_issue_fixture_preserves_every_physical_data_row() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    "value",
     [
-        ("Fee", "0"),
-        ("Fee", "0.000000"),
+        "0",
+        "0.000000",
     ],
 )
-def test_zero_fee_placeholder_is_not_persisted_as_fee(field: str, value: str) -> None:
+def test_zero_fee_placeholder_is_not_persisted_as_fee(value: str) -> None:
     row = _rows("activity.csv")[1]
     raw = dict(row.raw_data)
-    raw[field] = value
-    raw["Fee currency"] = ""
+    raw["Currency conversion fee"] = value
+    raw["Currency (Currency conversion fee)"] = ""
     result = normalize_import_row(
         source=ImportSource.trading212,
         account_id="fixture-account",

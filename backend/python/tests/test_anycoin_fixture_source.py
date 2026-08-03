@@ -141,6 +141,7 @@ def test_issue_fixture_preserves_rows_and_fails_closed() -> None:
     outcomes = _outcomes(rows)
     assert len(outcomes) == 21
     assert all(outcome.status is ImportRowStatus.needs_review for outcome in outcomes)
+    by_row = {outcome.row_id: outcome for outcome in outcomes}
     codes = {error["code"] for outcome in outcomes for error in outcome.validation_errors or []}
     assert codes >= {
         "missing_order_id",
@@ -149,8 +150,23 @@ def test_issue_fixture_preserves_rows_and_fails_closed() -> None:
         "multiple_fiat_currencies",
         "contradictory_trade_direction",
         "conflicting_external_id",
-        "unsupported_anycoin_row",
+        "zero_group_net",
+        "unsupported_anycoin_fiat_transfer",
+        "invalid_anycoin_row",
     }
+
+    def error_code(row_number: int) -> str:
+        errors = by_row[f"row-{row_number}"].validation_errors
+        assert errors and len(errors) == 1
+        return errors[0]["code"]
+
+    assert error_code(13) == "zero_group_net"
+    assert error_code(14) == "zero_group_net"
+    assert error_code(15) == "zero_group_net"
+    assert error_code(19) == "unsupported_anycoin_fiat_transfer"
+    assert error_code(20) == "unsupported_anycoin_fiat_transfer"
+    assert error_code(21) == "invalid_anycoin_row"
+    assert error_code(22) == "invalid_anycoin_row"
     assert all(
         not outcome.data or outcome.data.get("kind") != "investment_event" for outcome in outcomes
     )
