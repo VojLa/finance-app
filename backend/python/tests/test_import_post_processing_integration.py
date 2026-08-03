@@ -491,7 +491,7 @@ async def _remove_market_evidence(prefix: str) -> None:
     await engine.dispose()
 
 
-def test_transaction_only_unsupported_account_preserves_committed_import() -> None:
+def test_transaction_only_account_preserves_import_and_replays_snapshots() -> None:
     async def scenario() -> None:
         prefix = "e2-transaction"
         await posting_support._seed(
@@ -503,10 +503,11 @@ def test_transaction_only_unsupported_account_preserves_committed_import() -> No
             await posting_support._prepare(prefix)
             first = await _post(prefix)
             second = await _post(prefix)
-            assert first.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
-            assert second.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
+            assert first.snapshot_refresh_status is ImportSnapshotRefreshStatus.created
+            assert second.snapshot_refresh_status is ImportSnapshotRefreshStatus.replayed
             assert first.replayed is False
             assert second.replayed is True
+            assert await _row_counts(prefix) == (0, 0, 0, 1, 1)
 
             engine = posting_support._engine()
             async with AsyncSession(engine) as session:
@@ -529,11 +530,11 @@ def test_transaction_only_unsupported_account_preserves_committed_import() -> No
                         )
                     ).all()
                 )
-                assert len(logs) == 1
-                assert logs[0].event is ImportLogEvent.snapshot_validation_failed
-                assert "account" not in (logs[0].message or "").lower()
+                assert len(logs) == 2
+                assert {log.event for log in logs} == {ImportLogEvent.snapshots_recalculated}
             await engine.dispose()
         finally:
+            await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
 
     asyncio.run(scenario())
@@ -992,7 +993,9 @@ def test_partially_completed_batch_refreshes_only_imported_targets() -> None:
     asyncio.run(scenario())
 
 
-def test_supported_investment_import_with_other_unsupported_account_is_unavailable() -> None:
+def test_supported_investment_import_includes_other_empty_account_without_exposing_identity() -> (
+    None
+):
     async def scenario() -> None:
         prefix = "e2-r1-whole-user-unsupported"
         symbol = "E2R1UNSUP"
@@ -1007,8 +1010,8 @@ def test_supported_investment_import_with_other_unsupported_account_is_unavailab
             unsupported_id = await _add_unsupported_account(prefix)
             await posting_support._prepare(prefix)
             first = await _post(prefix)
-            assert first.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
-            assert await _row_counts(prefix) == (1, 2, 1, 0, 0)
+            assert first.snapshot_refresh_status is ImportSnapshotRefreshStatus.created
+            assert await _row_counts(prefix) == (1, 2, 1, 1, 1)
             assert unsupported_id not in str(first.model_dump(mode="json"))
 
             engine = posting_support._engine()
@@ -1023,7 +1026,7 @@ def test_supported_investment_import_with_other_unsupported_account_is_unavailab
                             )
                         )
                     )
-                    == 0
+                    == 2
                 )
                 logs = tuple(
                     (
@@ -1036,7 +1039,7 @@ def test_supported_investment_import_with_other_unsupported_account_is_unavailab
                 )
                 assert {log.event for log in logs} == {
                     ImportLogEvent.holdings_recalculated,
-                    ImportLogEvent.snapshot_validation_failed,
+                    ImportLogEvent.snapshots_recalculated,
                 }
                 for log in logs:
                     assert unsupported_id not in (log.message or "")
@@ -1045,8 +1048,8 @@ def test_supported_investment_import_with_other_unsupported_account_is_unavailab
 
             replay = await _post(prefix)
             assert replay.replayed is True
-            assert replay.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
-            assert await _row_counts(prefix) == (1, 2, 1, 0, 0)
+            assert replay.snapshot_refresh_status is ImportSnapshotRefreshStatus.replayed
+            assert await _row_counts(prefix) == (1, 2, 1, 1, 1)
         finally:
             await _cleanup_holdings(prefix)
             if unsupported_id is not None:

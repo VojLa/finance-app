@@ -3,8 +3,8 @@
 | API source value | Current parser                                | Meaning of support                                                                                                         |
 | ---------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `raiffeisenbank` | Source-specific account/card statement parser | Parse exact Czech export shapes, normalize signed Decimal evidence, deduplicate, classify, and post canonical transactions |
-| `trading212`     | Generic strict CSV + schema v2 normalizer     | Upload, preserve rows, canonicalize supported investment events, and classify pure intents                                 |
-| `anycoin`        | Generic strict CSV                            | Upload, preserve rows, and retain existing grouping/normalization semantics                                                |
+| `trading212`     | Generic strict CSV + schema v2 normalizer     | Upload through exact read-model E2E for supported deposit, buy, and dividend evidence                                      |
+| `anycoin`        | Generic strict CSV + batch grouping           | Upload through exact read-model E2E with deterministic grouped anchor/member lineage                                       |
 | `manual`         | Generic strict CSV                            | Upload, preserve rows, and normalize supported manual transactions                                                         |
 
 Raiffeisenbank supports exact `account_statement` and `card_statement` header
@@ -23,8 +23,14 @@ account fixture produces canonical transactions, an exact AccountSnapshot and
 NetWorthSnapshot, and matching portfolio/dashboard exact reads without price
 or FX providers.
 
-Browser imports still use the legacy Next.js workflow until 0.1-R4. Trading212,
-Anycoin, and manual registry entries retain their existing parser and source
-semantics in 0.1-R2. Adding a new source still requires a schema enum decision,
-registry entry, deterministic fixtures, and explicit normalization and posting
-semantics.
+Fully synthetic Trading212 and Anycoin fixtures additionally pass the public
+staged API through canonical events, movements, holdings, coordinated
+snapshots, and matching portfolio/dashboard exact reads. Their EUR snapshot
+tests seed one explicit deterministic test price per exact listing and insert
+no exchange rate. This evidence is not a price provider, provider refresh, FX
+provider, or completion of R5. Missing price evidence fails closed without a
+partial snapshot.
+
+Browser imports still use the legacy Next.js workflow until 0.1-R4. Adding a
+new source still requires a schema enum decision, registry entry,
+deterministic fixtures, and explicit normalization and posting semantics.

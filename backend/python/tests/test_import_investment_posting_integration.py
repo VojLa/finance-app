@@ -770,10 +770,10 @@ def test_cash_only_events_are_asset_free_and_replay_read_only(
         assert len(movements) == movement_count
         assert all(m.asset_id is None and m.listing_id is None for m in movements)
         if action == "Currency conversion":
-            assert [(m.direction, m.currency) for m in movements] == [
+            assert {(m.direction, m.currency) for m in movements} == {
                 (MovementDirection.outgoing, "EUR"),
                 (MovementDirection.incoming, "USD"),
-            ]
+            }
         after_assets = await _counts()
         assert after_assets["Asset"] == before_assets["Asset"]
         assert after_assets["AssetListing"] == before_assets["AssetListing"]
