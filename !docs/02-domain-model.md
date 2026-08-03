@@ -12,11 +12,60 @@ application service yet.
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                         |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                         |
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                         |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | prices and FX                                                | FX is read by portfolio                                                             |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact price/FX requirements, provider ports, atomic evidence | R5-A foundation implemented; concrete production providers remain deferred          |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
 | Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
+
+## Exact market evidence
+
+R5-A uses the existing physical market tables without adding a schema object.
+`PriceSnapshot.price` remains `NUMERIC(28,10)`,
+`ExchangeRate.rate` remains `NUMERIC(18,8)`, and both evidence timestamps
+remain naive UTC `TIMESTAMP(3)`. Provider adapters must return already
+canonical, positive, finite Decimal values at those exact physical scales.
+Validation never rounds, repairs, takes an absolute value, converts through
+`float`, or changes a currency direction.
+
+A price requirement identifies one persisted Account, Asset, Listing, Listing
+currency, provider source, provider symbol, and `through` timestamp. An active
+nonzero Holding uses its exact Listing provider identity when that source is
+registered. Otherwise it may use exactly one supported AssetAlias belonging to
+the same Asset. Missing or multiple supported aliases are unavailable or
+ambiguous; symbols, names, account type, or primary-listing flags never infer a
+provider identity.
+
+FX requirements always describe one direct
+`from_currency -> output_currency` pair. Current requirements cover account,
+cash, Listing-price, Holding cost-basis, and liability currencies at the
+snapshot timestamp. Historical requirements use the timestamp of the
+persisted Transaction, InvestmentEvent, or related canonical movement amount.
+They never substitute snapshot-time FX for event-date FX. Same currency is a
+structural bypass, not an `ExchangeRate` row; inverse and cross rates are not
+derived in R5-A.
+
+The explicit 0.1 freshness policy is 72 hours for prices and seven calendar
+days for FX. Evidence exactly at the maximum age is valid; future or older
+evidence fails closed. Snapshot evidence selection applies this same policy to
+current price, current FX, and historical event-date FX. Missing or stale
+evidence therefore creates neither a partial AccountSnapshot nor a partial
+NetWorthSnapshot.
+
+Market evidence persistence is append-only. Price UUIDv5 identity is based on
+Listing, observation timestamp, and source; FX UUIDv5 identity is based on the
+direct pair, effective timestamp, and source. Price, rate, creation time, User,
+Account, and randomness are excluded from those identities. Exact persisted
+state replays without a write. A different value under the same identity is a
+conflict, and the single mixed price/FX batch rolls back completely. R5-A
+defines provider ports and uses deterministic fake providers only in tests.
+Concrete production HTTP providers and production import/manual composition
+belong to R5-B, so overall R5 remains in progress.
+
+The fixed UUIDv5 namespaces are
+`8c46da0b-b09a-49c7-94f1-a510cf4c2f7c` for `PriceSnapshot` and
+`93484f65-330c-47e9-a592-49e4fd9a5122` for `ExchangeRate`. Changing either
+value is an identity-contract change, not an implementation detail.
 
 ## Important relationships
 

@@ -34,6 +34,11 @@ from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
     SelectLiabilityBalanceCommand,
 )
+from app.modules.market_data.policy import (
+    DEFAULT_MARKET_EVIDENCE_POLICY,
+    MarketEvidencePolicy,
+    validate_market_evidence_policy,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
@@ -167,6 +172,7 @@ def _select_latest_price(
     *,
     holding: SnapshotHoldingEvidence,
     through: datetime,
+    policy: MarketEvidencePolicy,
 ) -> SelectedPriceEvidence:
     matching = [
         candidate
@@ -185,6 +191,7 @@ def _select_latest_price(
         _nonblank(selected.id) == ""
         or selected.asset_id != holding.asset_id
         or selected.listing_id != holding.listing_id
+        or through - canonical_timestamp(selected.timestamp) > policy.maximum_price_age
     ):
         raise _fail()
     return SelectedPriceEvidence(
@@ -205,6 +212,7 @@ def _select_latest_rate(
     base_currency: str,
     quote_currency: str,
     through: datetime,
+    policy: MarketEvidencePolicy,
 ) -> ExchangeRateModel:
     matching = [
         candidate
@@ -227,6 +235,7 @@ def _select_latest_rate(
         or canonical_currency(selected.to_currency) != quote_currency
         or not isinstance(selected.source, ExchangeRateSource)
         or canonical_timestamp(selected.date) > through
+        or through - canonical_timestamp(selected.date) > policy.maximum_fx_age
     ):
         raise _fail()
     exact_rate(selected.rate)
@@ -267,12 +276,14 @@ def _selected_snapshot_rate(
     base_currency: str,
     quote_currency: str,
     through: datetime,
+    policy: MarketEvidencePolicy,
 ) -> SelectedExchangeRateEvidence:
     selected = _select_latest_rate(
         candidates,
         base_currency=base_currency,
         quote_currency=quote_currency,
         through=through,
+        policy=policy,
     )
     return SelectedExchangeRateEvidence(
         rate_id=selected.id,
@@ -649,12 +660,14 @@ class AccountSnapshotEvidenceService:
         *,
         repository: AccountSnapshotEvidenceRepository | None = None,
         liability_evidence_service: _LiabilityEvidenceSelector | None = None,
+        policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
     ) -> None:
         self.session = session
         self.repository = repository or AccountSnapshotEvidenceRepository(session)
         self.liability_evidence_service = (
             liability_evidence_service or LiabilityBalanceEvidenceService(session)
         )
+        self.policy = validate_market_evidence_policy(policy)
 
     async def build(
         self,
@@ -714,6 +727,7 @@ class AccountSnapshotEvidenceService:
                             base_currency=account_currency,
                             quote_currency=output_currency,
                             through=snapshot_timestamp,
+                            policy=self.policy,
                         ),
                     )
                 return _liability_complete_evidence(
@@ -767,6 +781,7 @@ class AccountSnapshotEvidenceService:
                     price_candidates,
                     holding=holding,
                     through=snapshot_timestamp,
+                    policy=self.policy,
                 )
                 for holding in holdings
             )
@@ -799,6 +814,7 @@ class AccountSnapshotEvidenceService:
                         base_currency=currency,
                         quote_currency=output_currency,
                         through=snapshot_timestamp,
+                        policy=self.policy,
                     )
                 )
             historical_rates: list[SelectedHistoricalRate] = []
@@ -810,6 +826,7 @@ class AccountSnapshotEvidenceService:
                     base_currency=evidence.currency,
                     quote_currency=output_currency,
                     through=evidence.timestamp,
+                    policy=self.policy,
                 )
                 historical_rates.append(
                     SelectedHistoricalRate(
