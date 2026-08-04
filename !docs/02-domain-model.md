@@ -4,19 +4,19 @@ The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                  |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                         |
-| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                         |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                      |
-| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                         |
-| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                         |
-| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                         |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact price/FX requirements, provider ports, atomic evidence | R5-A foundation implemented; concrete production providers remain deferred          |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
-| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
+| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                   |
+| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                          |
+| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                          |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                       |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                          |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                          |
+| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                          |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX provider, atomic evidence         | R5-A foundation and R5-B1 production CNB provider implemented; prices remain planned |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                          |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented  |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                              |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                            |
 
 ## Exact market evidence
 
@@ -52,15 +52,30 @@ current price, current FX, and historical event-date FX. Missing or stale
 evidence therefore creates neither a partial AccountSnapshot nor a partial
 NetWorthSnapshot.
 
+R5-B1 supplies the first production source without changing this model. The
+production registry contains exactly the CNB adapter, and the price registry
+remains empty. CNB requirements are limited to direct
+`foreign currency -> CZK` pairs. One official daily XML document is requested
+for the exact requirement date; there is no inverse, cross, alternate-source,
+current-date, or previous-date lookup. The source document publication date,
+not request time, becomes the evidence timestamp. An older weekend or holiday
+publication must still satisfy the shared seven-day freshness policy.
+
+CNB publishes a CZK value for an explicit currency amount. The canonical
+`ExchangeRate.rate` is their exact Decimal quotient. Parser locale rules,
+currency uniqueness, positive finite values, and the `NUMERIC(18,8)` boundary
+are fail-closed; no rounding or `float` conversion is permitted.
+
 Market evidence persistence is append-only. Price UUIDv5 identity is based on
 Listing, observation timestamp, and source; FX UUIDv5 identity is based on the
 direct pair, effective timestamp, and source. Price, rate, creation time, User,
 Account, and randomness are excluded from those identities. Exact persisted
 state replays without a write. A different value under the same identity is a
 conflict, and the single mixed price/FX batch rolls back completely. R5-A
-defines provider ports and uses deterministic fake providers only in tests.
-Concrete production HTTP providers and production import/manual composition
-belong to R5-B, so overall R5 remains in progress.
+defines provider ports. R5-B1 PostgreSQL tests use mocked CNB HTTP responses
+with the real production registry, R5-A service, and writer; they add no direct
+rate or price rows. Production price providers belong to R5-B2 and approved
+import/manual composition belongs to R5-B3, so overall R5 remains in progress.
 
 The fixed UUIDv5 namespaces are
 `8c46da0b-b09a-49c7-94f1-a510cf4c2f7c` for `PriceSnapshot` and
