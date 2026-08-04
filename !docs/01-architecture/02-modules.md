@@ -4,24 +4,24 @@ The Python code is organized under `backend/python/app/modules`. A module owns
 its API adapter, service layer, and repository where those exist; routers stay
 thin and shared database infrastructure lives outside modules.
 
-| Module                | Responsibility                                                                       | Status                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                     | Implemented                                                                   |
-| `accounts`            | Account lifecycle, memberships, and invitations                                      | Implemented                                                                   |
-| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                        |
-| `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches               | Implemented through duplicate detection                                       |
-| `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                               |
-| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation              | 5L complete; final cross-boundary audit passed                                |
-| `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                                |
-| transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                          |
-| ledger                | Investment events and movements                                                      | Database schema only                                                          |
-| holdings              | Project and rebuild holdings from active canonical investment history                | Pure projections, atomic writer, and authorized manual endpoint implemented   |
-| net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                         |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K complete; 5M-A exact read manifest implemented                             |
-| snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                  |
-| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A foundation and R5-B1 production CNB composition implemented              |
-| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | R5-B1 direct foreign-currency-to-CZK CNB provider implemented; prices planned |
-| dashboard / reporting | Dashboard read models                                                                | Snapshot read path complete and final-audited through 5L                      |
+| Module                | Responsibility                                                                       | Status                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                     | Implemented                                                                 |
+| `accounts`            | Account lifecycle, memberships, and invitations                                      | Implemented                                                                 |
+| `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
+| `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches               | Implemented through duplicate detection                                     |
+| `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
+| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation              | 5L complete; final cross-boundary audit passed                              |
+| `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
+| transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                        |
+| ledger                | Investment events and movements                                                      | Database schema only                                                        |
+| holdings              | Project and rebuild holdings from active canonical investment history                | Pure projections, atomic writer, and authorized manual endpoint implemented |
+| net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                       |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K complete; 5M-A exact read manifest implemented                           |
+| snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                |
+| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A foundation, R5-B1 CNB, and R5-B2A CoinGecko composition implemented    |
+| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB direct FX and alias-only CoinGecko crypto price providers implemented   |
+| dashboard / reporting | Dashboard read models                                                                | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -40,10 +40,10 @@ inverse-rate derivation, or cross-rate derivation.
 Price and FX providers are injected protocols registered by exact source enum.
 The registry permits at most one adapter per non-manual source and performs no
 fallback between sources. Provider calls occur sequentially and outside every
-database transaction. R5-B1 production composition keeps the price registry
-empty and registers exactly `ExchangeRateSource.cnb` for direct
-foreign-currency-to-CZK evidence. Market-price providers remain planned for
-R5-B2.
+database transaction. Production composition registers exactly
+`ExchangeRateSource.cnb` for direct foreign-currency-to-CZK evidence and
+`PriceSource.coingecko` for crypto prices selected through one exact persisted
+CoinGecko AssetAlias. Listed-security price support remains planned for R5-B2B.
 
 The CNB adapter performs one HTTPS GET per exact FX requirement against the
 official daily XML document, using `through.date()` as the `DD.MM.YYYY` query.
@@ -76,9 +76,20 @@ advisory locks in canonical order, row-locks existing identities, creates
 deterministic UUIDv5 rows or exactly replays them, and verifies every physical
 column after flush/reload. A different existing value conflicts without
 update or repair; any provider, state, or persistence failure leaves no partial
-price/FX batch. R5-B2 will supply production market-price adapters and R5-B3
-will compose refresh with approved import/manual workflows. Overall R5 remains
-in progress.
+price/FX batch.
+
+The R5-B2A CoinGecko adapter calls only the configured HTTPS `/simple/price`
+endpoint, once per exact requirement, with the persisted alias ID and
+lower-case Listing quote currency. It performs no ticker or name lookup,
+`/coins/list` discovery, hard-coded BTC mapping, retry, redirect, or cache. Its
+optional Demo key is an HTTP-header-only secret. Strict JSON parsing retains
+the exact `Decimal` and provider `last_updated_at` timestamp; duplicate keys,
+excess identities, invalid numbers, future/stale time, or `NUMERIC(28,10)`
+overprecision fail without rounding or timestamp repair. An Anycoin Listing
+without a CoinGecko alias is therefore unavailable, and Trading212 prices
+remain outside this adapter. R5-B2B will supply the listed-security provider;
+R5-B3 will compose refresh with approved import/manual workflows. Overall R5
+remains in progress.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated

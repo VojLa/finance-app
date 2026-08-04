@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
-from app.db.models.enums import ExchangeRateSource
+from app.db.models.enums import ExchangeRateSource, PriceSource
 from app.modules.fx.providers import create_production_exchange_rate_registry
 from app.modules.market_data.factory import create_production_market_evidence_service
 
@@ -60,11 +60,11 @@ def test_production_registry_contains_exactly_cnb() -> None:
     assert registry.get(ExchangeRateSource.cnb).source is ExchangeRateSource.cnb
 
 
-def test_production_service_uses_empty_price_registry_and_cnb_source() -> None:
+def test_production_service_uses_coingecko_price_registry_and_cnb_source() -> None:
     session = MagicMock(spec=AsyncSession)
 
     service = create_production_market_evidence_service(session, _settings())
 
-    assert service.price_registry.sources == frozenset()
+    assert service.price_registry.sources == frozenset({PriceSource.coingecko})
     assert service.fx_registry.sources == frozenset({ExchangeRateSource.cnb})
     assert service.fx_source is ExchangeRateSource.cnb

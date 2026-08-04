@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     cnb_fx_timeout_seconds: float = 10.0
     cnb_fx_max_response_bytes: int = 1_048_576
     cnb_fx_user_agent: str = "finance-app/0.1"
+    coingecko_price_base_url: str = "https://api.coingecko.com/api/v3/simple/price"
+    coingecko_price_timeout_seconds: float = 10.0
+    coingecko_price_max_response_bytes: int = 1_048_576
+    coingecko_price_user_agent: str = "finance-app/0.1"
+    coingecko_demo_api_key: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_file=("../../.env", ".env"),
@@ -64,6 +69,39 @@ class Settings(BaseSettings):
             or len(self.cnb_fx_user_agent) > 256
         ):
             raise ValueError("CNB_FX_USER_AGENT must be a safe non-empty value")
+        price_url = urlsplit(self.coingecko_price_base_url)
+        if (
+            price_url.scheme != "https"
+            or not price_url.hostname
+            or price_url.username is not None
+            or price_url.password is not None
+            or bool(price_url.query)
+            or bool(price_url.fragment)
+            or any(character.isspace() for character in self.coingecko_price_base_url)
+        ):
+            raise ValueError(
+                "COINGECKO_PRICE_BASE_URL must be an absolute credential-free HTTPS URL"
+            )
+        if not 0 < self.coingecko_price_timeout_seconds <= 120:
+            raise ValueError(
+                "COINGECKO_PRICE_TIMEOUT_SECONDS must be greater than zero and at most 120"
+            )
+        if not 0 < self.coingecko_price_max_response_bytes <= 10_485_760:
+            raise ValueError(
+                "COINGECKO_PRICE_MAX_RESPONSE_BYTES must be greater than zero and at most 10485760"
+            )
+        if (
+            not self.coingecko_price_user_agent
+            or self.coingecko_price_user_agent != self.coingecko_price_user_agent.strip()
+            or "\r" in self.coingecko_price_user_agent
+            or "\n" in self.coingecko_price_user_agent
+            or len(self.coingecko_price_user_agent) > 256
+        ):
+            raise ValueError("COINGECKO_PRICE_USER_AGENT must be a safe non-empty value")
+        if self.coingecko_demo_api_key is not None:
+            demo_key = self.coingecko_demo_api_key.get_secret_value()
+            if not demo_key or demo_key != demo_key.strip() or "\r" in demo_key or "\n" in demo_key:
+                raise ValueError("COINGECKO_DEMO_API_KEY must be a safe non-empty value")
         if self.environment != "production":
             return self
 
