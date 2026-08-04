@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -24,6 +25,14 @@ def test_coingecko_settings_defaults_and_safe_secret() -> None:
     assert settings.coingecko_price_max_response_bytes == 1_048_576
     assert settings.coingecko_price_user_agent == "finance-app/0.1"
     assert "demo-secret" not in repr(settings)
+
+
+def test_repository_env_example_keeps_optional_coingecko_key_absent() -> None:
+    env_example = Path(__file__).resolve().parents[3] / ".env.example"
+
+    settings = Settings(_env_file=env_example)
+
+    assert settings.coingecko_demo_api_key is None
 
 
 @pytest.mark.parametrize(
