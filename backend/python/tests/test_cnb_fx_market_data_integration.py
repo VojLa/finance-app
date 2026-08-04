@@ -40,8 +40,11 @@ async def test_production_cnb_registry_persists_exact_rates_and_replays() -> Non
         created_at=CREATED_AT,
     )
     requests: list[str] = []
+    sessions: list[AsyncSession] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert sessions
+        assert not sessions[0].in_transaction()
         requested = request.url.params["date"]
         requests.append(requested)
         publication = datetime.strptime(requested, "%d.%m.%Y").date()
@@ -61,6 +64,7 @@ async def test_production_cnb_registry_persists_exact_rates_and_replays() -> Non
                 select(func.count()).select_from(PriceSnapshotModel)
             )
         async with AsyncSession(engine) as session:
+            sessions[:] = [session]
             first = await create_production_market_evidence_service(
                 session,
                 settings,

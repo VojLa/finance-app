@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -54,6 +55,27 @@ async def test_provider_returns_exact_direct_observation_from_publication_date()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("currency", "published", "expected"),
+    [
+        ("EUR", "24,187", Decimal("24.187")),
+        ("USD", "21,125", Decimal("21.125")),
+    ],
+)
+async def test_provider_supports_exact_direct_foreign_currency_to_czk(
+    currency: str,
+    published: str,
+    expected: Decimal,
+) -> None:
+    transport = FakeTransport(_response(date(2026, 8, 3), ((currency, "1", published),)))
+
+    result = await CnbExchangeRateProvider(transport).fetch(_requirement(from_currency=currency))
+
+    assert result.rate == expected
+    assert transport.calls == [date(2026, 8, 3)]
+
+
+@pytest.mark.asyncio
 async def test_provider_accepts_fresh_weekend_publication_without_fallback_request() -> None:
     transport = FakeTransport(_response(date(2026, 7, 31)))
 
@@ -78,6 +100,18 @@ async def test_provider_rejects_future_or_stale_document(published: date) -> Non
 
 
 @pytest.mark.asyncio
+async def test_provider_accepts_document_on_exact_freshness_boundary() -> None:
+    transport = FakeTransport(_response(date(2026, 7, 27)))
+
+    result = await CnbExchangeRateProvider(transport).fetch(
+        _requirement(through=datetime(2026, 8, 3))
+    )
+
+    assert result.effective_at == datetime(2026, 7, 27)
+    assert transport.calls == [date(2026, 8, 3)]
+
+
+@pytest.mark.asyncio
 async def test_provider_rejects_missing_currency_and_nonrepresentable_rate() -> None:
     missing = FakeTransport(_response(date(2026, 8, 3), (("USD", "1", "21,000"),)))
     with pytest.raises(MarketEvidenceStateError):
@@ -86,6 +120,19 @@ async def test_provider_rejects_missing_currency_and_nonrepresentable_rate() -> 
     repeating = FakeTransport(_response(date(2026, 8, 3), (("EUR", "3", "1,000"),)))
     with pytest.raises(MarketEvidenceStateError):
         await CnbExchangeRateProvider(repeating).fetch(_requirement())
+
+    duplicate = FakeTransport(
+        _response(
+            date(2026, 8, 3),
+            (("EUR", "1", "24,500"), ("EUR", "1", "24,500")),
+        )
+    )
+    with pytest.raises(MarketEvidenceStateError):
+        await CnbExchangeRateProvider(duplicate).fetch(_requirement())
+
+    too_large = FakeTransport(_response(date(2026, 8, 3), (("EUR", "1", "10000000000,000"),)))
+    with pytest.raises(MarketEvidenceStateError):
+        await CnbExchangeRateProvider(too_large).fetch(_requirement())
 
 
 @pytest.mark.asyncio
@@ -106,3 +153,12 @@ async def test_provider_rejects_unsupported_requirement_before_http(
     with pytest.raises(MarketEvidenceStateError):
         await CnbExchangeRateProvider(transport).fetch(requirement)
     assert transport.calls == []
+
+
+def test_provider_has_no_clock_or_database_boundary() -> None:
+    source = inspect.getsource(CnbExchangeRateProvider)
+
+    assert "datetime.now" not in source
+    assert "datetime.utcnow" not in source
+    assert "sqlalchemy" not in source
+    assert "session" not in source

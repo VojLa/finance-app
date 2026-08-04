@@ -59,6 +59,7 @@ async def test_transport_makes_one_exact_bounded_request_without_credentials() -
     ("status", "content_type"),
     [
         (301, "application/xml"),
+        (404, "application/xml"),
         (500, "application/xml"),
         (200, None),
         (200, "text/html"),
@@ -133,6 +134,20 @@ async def test_transport_maps_timeout_without_retry() -> None:
         nonlocal calls
         calls += 1
         raise httpx.ReadTimeout("timeout", request=request)
+
+    with pytest.raises(MarketEvidenceStateError, match="unavailable"):
+        await _transport(handler).fetch_daily_rates(date(2026, 8, 3))
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transport_maps_network_error_without_retry() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("network unavailable", request=request)
 
     with pytest.raises(MarketEvidenceStateError, match="unavailable"):
         await _transport(handler).fetch_daily_rates(date(2026, 8, 3))

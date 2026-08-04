@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import date
 from decimal import Decimal
 
@@ -82,3 +83,56 @@ def test_parser_rejects_duplicate_or_missing_expected_table() -> None:
         parse_cnb_daily_rates(
             b'<kurzy banka="CNB" datum="03.08.2026"><tabulka typ="other"/></kurzy>'
         )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            b'<kurzy banka="CNB"><tabulka '
+            b'typ="XML_TYP_CNB_KURZY_DEVIZOVEHO_TRHU">'
+            b'<radek kod="EUR" mnozstvi="1" kurz="24,500"/></tabulka></kurzy>'
+        ),
+        (
+            b'<kurzy banka="CNB" datum="31.02.2026"><tabulka '
+            b'typ="XML_TYP_CNB_KURZY_DEVIZOVEHO_TRHU">'
+            b'<radek kod="EUR" mnozstvi="1" kurz="24,500"/></tabulka></kurzy>'
+        ),
+        (
+            b'<kurzy banka="CNB" datum="03.08.2026"><tabulka '
+            b'typ="XML_TYP_CNB_KURZY_DEVIZOVEHO_TRHU">'
+            b'<radek kod="EUR" kurz="24,500"/></tabulka></kurzy>'
+        ),
+        (
+            b'<kurzy banka="CNB" datum="03.08.2026"><tabulka '
+            b'typ="XML_TYP_CNB_KURZY_DEVIZOVEHO_TRHU">'
+            b'<radek kod="EUR" mnozstvi="1"/></tabulka></kurzy>'
+        ),
+        cnb_xml(date(2026, 8, 3), (("EUR", "-1", "24,500"),)),
+        cnb_xml(date(2026, 8, 3), (("EUR", "1", "-24,500"),)),
+    ],
+)
+def test_parser_rejects_missing_invalid_or_negative_required_values(body: bytes) -> None:
+    with pytest.raises(MarketEvidenceStateError):
+        parse_cnb_daily_rates(body)
+
+
+def test_parser_accepts_harmless_leaf_elements_without_changing_rates() -> None:
+    body = (
+        b'<kurzy banka="CNB" datum="03.08.2026"><metadata/>'
+        b'<tabulka typ="XML_TYP_CNB_KURZY_DEVIZOVEHO_TRHU"><poznamka/>'
+        b'<radek kod="EUR" mnozstvi="1" kurz="24,500"/></tabulka></kurzy>'
+    )
+
+    result = parse_cnb_daily_rates(body)
+
+    assert tuple(rate.currency_code for rate in result.rates) == ("EUR",)
+
+
+def test_parser_has_no_environment_network_or_database_boundary() -> None:
+    source = inspect.getsource(parse_cnb_daily_rates)
+
+    assert "Settings" not in source
+    assert "httpx" not in source
+    assert "environ" not in source
+    assert "sqlalchemy" not in source
