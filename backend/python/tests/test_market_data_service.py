@@ -21,12 +21,15 @@ from app.modules.market_data.providers import (
 from app.modules.market_data.service import (
     MarketEvidenceRefreshService,
     RefreshMarketEvidenceCommand,
+    _coalesce_price_observations,
 )
 from app.modules.market_data.writer import PersistMarketEvidenceResult
 from app.modules.prices.models import PriceObservation
 
 SNAPSHOT_AT = datetime(2026, 8, 3, 12)
 CREATED_AT = datetime(2026, 8, 3, 12, 1)
+SAME_DAY_SNAPSHOT_AT = datetime(2026, 8, 3, 16)
+SAME_DAY_RATE_AT = datetime(2026, 8, 3)
 
 
 class _Transaction:
@@ -115,6 +118,7 @@ class _FxProvider:
         self.session = session
         self.calls = calls
         self.count = 0
+        self.observations: list[ExchangeRateObservation] = []
         self.observation = ExchangeRateObservation(
             from_currency="EUR",
             to_currency="CZK",
@@ -130,6 +134,8 @@ class _FxProvider:
         assert not self.session.active
         self.calls.append("fx-provider")
         self.count += 1
+        if self.observations:
+            return self.observations[self.count - 1]
         return self.observation
 
 
@@ -143,12 +149,15 @@ class _Writer:
         assert not self.session.active
         self.calls.append("writer")
         self.commands.append(command)
+        persisted = cast(Any, command)
+        price_count = len(persisted.price_observations)
+        rate_count = len(persisted.exchange_rate_observations)
         return PersistMarketEvidenceResult(
-            price_ids=("price-id",),
-            exchange_rate_ids=("rate-id",),
-            prices_created=1,
+            price_ids=("price-id",) if price_count else (),
+            exchange_rate_ids=("rate-id",) if rate_count else (),
+            prices_created=price_count,
             prices_replayed=0,
-            rates_created=1,
+            rates_created=rate_count,
             rates_replayed=0,
         )
 
@@ -202,6 +211,60 @@ def _service() -> tuple[
         writer=writer,
     )
     return service, session, calls, price, fx, writer
+
+
+def _same_day_fx_service(
+    *,
+    second_rate: str = "24.50000000",
+) -> tuple[MarketEvidenceRefreshService, _FxProvider, _Writer]:
+    session = _Session()
+    calls: list[str] = []
+    fx = _FxProvider(session, calls)
+    fx.observations = [
+        ExchangeRateObservation(
+            from_currency="EUR",
+            to_currency="CZK",
+            provider=ExchangeRateSource.ecb,
+            rate=Decimal("24.50000000"),
+            effective_at=SAME_DAY_RATE_AT,
+        ),
+        ExchangeRateObservation(
+            from_currency="EUR",
+            to_currency="CZK",
+            provider=ExchangeRateSource.ecb,
+            rate=Decimal(second_rate),
+            effective_at=SAME_DAY_RATE_AT,
+        ),
+    ]
+    writer = _Writer(session, calls)
+    plan = MarketEvidenceRefreshPlan(
+        user_id="user-1",
+        output_currency="CZK",
+        snapshot_timestamp=SAME_DAY_SNAPSHOT_AT,
+        price_requirements=(),
+        fx_requirements=(
+            ExchangeRateRequirement(
+                from_currency="EUR",
+                to_currency="CZK",
+                through=datetime(2026, 8, 3, 10),
+                provider=ExchangeRateSource.ecb,
+            ),
+            ExchangeRateRequirement(
+                from_currency="EUR",
+                to_currency="CZK",
+                through=datetime(2026, 8, 3, 15),
+                provider=ExchangeRateSource.ecb,
+            ),
+        ),
+    )
+    service = MarketEvidenceRefreshService(
+        cast(Any, session),
+        fx_registry=ExchangeRateProviderRegistry((fx,)),
+        read_boundary=_ReadBoundary(session, calls),
+        planner=_Planner(session, calls, plan),
+        writer=writer,
+    )
+    return service, fx, writer
 
 
 @pytest.mark.parametrize(
@@ -295,6 +358,80 @@ async def test_invalid_provider_identity_fails_before_writer() -> None:
     with pytest.raises(MarketEvidenceStateError):
         await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
     assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_service_coalesces_exact_same_day_fx_observations_before_writer() -> None:
+    service, fx, writer = _same_day_fx_service()
+
+    result = await service.refresh(
+        RefreshMarketEvidenceCommand(
+            "user-1",
+            SAME_DAY_SNAPSHOT_AT,
+            CREATED_AT,
+        )
+    )
+
+    assert fx.count == 2
+    assert result.required_fx_count == 2
+    assert len(writer.commands) == 1
+    command = cast(Any, writer.commands[0])
+    assert command.exchange_rate_observations == (fx.observations[0],)
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_conflicting_same_identity_fx_observations() -> None:
+    service, fx, writer = _same_day_fx_service(second_rate="24.60000000")
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(
+            RefreshMarketEvidenceCommand(
+                "user-1",
+                SAME_DAY_SNAPSHOT_AT,
+                CREATED_AT,
+            )
+        )
+
+    assert fx.count == 2
+    assert writer.commands == []
+
+
+def test_price_observation_coalescing_is_exact_fail_closed_and_sorted() -> None:
+    second = PriceObservation(
+        asset_id="asset-2",
+        listing_id="listing-2",
+        provider=PriceSource.yahoo_finance,
+        provider_symbol="SECOND",
+        price=Decimal("20.0000000000"),
+        currency="EUR",
+        observed_at=SNAPSHOT_AT,
+    )
+    first = PriceObservation(
+        asset_id="asset-1",
+        listing_id="listing-1",
+        provider=PriceSource.yahoo_finance,
+        provider_symbol="FIRST",
+        price=Decimal("10.0000000000"),
+        currency="EUR",
+        observed_at=SNAPSHOT_AT,
+    )
+
+    assert _coalesce_price_observations((second, second, first)) == (
+        first,
+        second,
+    )
+
+    conflicting = PriceObservation(
+        asset_id=second.asset_id,
+        listing_id=second.listing_id,
+        provider=second.provider,
+        provider_symbol=second.provider_symbol,
+        price=Decimal("20.1000000000"),
+        currency=second.currency,
+        observed_at=second.observed_at,
+    )
+    with pytest.raises(MarketEvidenceStateError):
+        _coalesce_price_observations((second, conflicting))
 
 
 @pytest.mark.asyncio

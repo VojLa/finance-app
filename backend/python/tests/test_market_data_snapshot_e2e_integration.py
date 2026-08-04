@@ -67,7 +67,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 SNAPSHOT_AT = datetime(2026, 8, 3)
-EVENT_AT = SNAPSHOT_AT - timedelta(days=10)
+EVENT_DAY = SNAPSHOT_AT - timedelta(days=10)
+EVENT_AT = EVENT_DAY + timedelta(hours=10)
+SECOND_EVENT_AT = EVENT_DAY + timedelta(hours=15)
 CALCULATED_AT = datetime(2026, 8, 3, 0, 1)
 CREATED_AT = datetime(2026, 8, 3, 0, 2)
 
@@ -120,7 +122,9 @@ class _FxProvider:
                 if requirement.through == SNAPSHOT_AT
                 else Decimal("24.00000000")
             ),
-            effective_at=requirement.through - timedelta(days=1),
+            effective_at=(
+                SNAPSHOT_AT - timedelta(days=1) if requirement.through == SNAPSHOT_AT else EVENT_DAY
+            ),
         )
 
 
@@ -142,7 +146,7 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
     account_id = f"{prefix}-account"
     asset_id = f"{prefix}-asset"
     listing_id = f"{prefix}-listing"
-    event_id = f"{prefix}-event"
+    event_ids = (f"{prefix}-event-1", f"{prefix}-event-2")
     symbol = f"T{prefix[-12:].replace('-', '').upper()}"
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -234,47 +238,49 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
                 updated_at=CREATED_AT,
             )
         )
-        session.add(
-            InvestmentEventModel(
-                id=event_id,
-                account_id=account_id,
-                type=InvestmentEventType.cash_deposit,
-                date=EVENT_AT,
-                source=None,
-                external_id=f"{prefix}-deposit",
-                order_id=None,
-                description="Exact external cash flow",
-                realized_pnl=None,
-                realized_pnl_currency=None,
-                import_batch_id=None,
-                archived_at=None,
-                deleted_at=None,
-                created_at=CREATED_AT,
-                updated_at=CREATED_AT,
+        for index, event_at in enumerate((EVENT_AT, SECOND_EVENT_AT), start=1):
+            session.add(
+                InvestmentEventModel(
+                    id=event_ids[index - 1],
+                    account_id=account_id,
+                    type=InvestmentEventType.cash_deposit,
+                    date=event_at,
+                    source=None,
+                    external_id=f"{prefix}-deposit-{index}",
+                    order_id=None,
+                    description="Exact external cash flow",
+                    realized_pnl=None,
+                    realized_pnl_currency=None,
+                    import_batch_id=None,
+                    archived_at=None,
+                    deleted_at=None,
+                    created_at=CREATED_AT,
+                    updated_at=CREATED_AT,
+                )
             )
-        )
         await session.flush()
-        session.add(
-            InvestmentMovementModel(
-                id=f"{prefix}-movement",
-                event_id=event_id,
-                account_id=account_id,
-                asset_id=None,
-                listing_id=None,
-                kind=InvestmentMovementKind.cash,
-                direction=MovementDirection.incoming,
-                quantity=Decimal("1000"),
-                currency="EUR",
-                price_per_unit=None,
-                value_amount=Decimal("1000"),
-                value_currency="EUR",
-                source_symbol=None,
-                source_asset_type=None,
-                note=None,
-                created_at=CREATED_AT,
-                updated_at=CREATED_AT,
+        for index, quantity in enumerate((Decimal("600"), Decimal("400")), start=1):
+            session.add(
+                InvestmentMovementModel(
+                    id=f"{prefix}-movement-{index}",
+                    event_id=event_ids[index - 1],
+                    account_id=account_id,
+                    asset_id=None,
+                    listing_id=None,
+                    kind=InvestmentMovementKind.cash,
+                    direction=MovementDirection.incoming,
+                    quantity=quantity,
+                    currency="EUR",
+                    price_per_unit=None,
+                    value_amount=quantity,
+                    value_currency="EUR",
+                    source_symbol=None,
+                    source_asset_type=None,
+                    note=None,
+                    created_at=CREATED_AT,
+                    updated_at=CREATED_AT,
+                )
             )
-        )
         await session.commit()
     await engine.dispose()
     return user_id, account_id, asset_id, listing_id
@@ -398,10 +404,13 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             assert not session.in_transaction()
 
             assert market_result.required_price_count == 1
-            assert market_result.required_fx_count == 2
+            assert market_result.required_fx_count == 3
+            assert market_result.rates_created + market_result.rates_replayed == 2
+            assert len(market_result.exchange_rate_ids) == 2
             assert len(price_provider.requirements) == 1
             assert [item.through for item in fx_provider.requirements] == [
                 EVENT_AT,
+                SECOND_EVENT_AT,
                 SNAPSHOT_AT,
             ]
             expected_price = PriceObservation(
@@ -418,7 +427,7 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
                 to_currency="CZK",
                 provider=ExchangeRateSource.ecb,
                 rate=Decimal("24.00000000"),
-                effective_at=EVENT_AT - timedelta(days=1),
+                effective_at=EVENT_DAY,
             )
             expected_snapshot_rate = ExchangeRateObservation(
                 from_currency="EUR",
@@ -483,11 +492,12 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             assert prices[0].timestamp == SNAPSHOT_AT - timedelta(hours=1)
             assert prices[0].source is PriceSource.yahoo_finance
             assert len(rates) == 2
+            assert sum(item.date == EVENT_DAY for item in rates) == 1
             assert {(item.id, item.rate, item.date, item.source) for item in rates} == {
                 (
                     exchange_rate_id(expected_event_rate),
                     Decimal("24.00000000"),
-                    EVENT_AT - timedelta(days=1),
+                    EVENT_DAY,
                     ExchangeRateSource.ecb,
                 ),
                 (

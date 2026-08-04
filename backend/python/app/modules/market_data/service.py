@@ -192,6 +192,97 @@ def _validate_plan(
     return value
 
 
+def _coalesce_price_observations(
+    observations: tuple[PriceObservation, ...],
+) -> tuple[PriceObservation, ...]:
+    by_identity: dict[tuple[str, datetime, object], PriceObservation] = {}
+    for observation in observations:
+        if not isinstance(observation, PriceObservation):
+            raise _fail()
+        identity = (
+            observation.listing_id,
+            observation.observed_at,
+            observation.provider,
+        )
+        existing = by_identity.get(identity)
+        if existing is None:
+            by_identity[identity] = observation
+        elif (
+            existing.asset_id,
+            existing.listing_id,
+            existing.provider,
+            existing.provider_symbol,
+            existing.price,
+            existing.currency,
+            existing.observed_at,
+        ) != (
+            observation.asset_id,
+            observation.listing_id,
+            observation.provider,
+            observation.provider_symbol,
+            observation.price,
+            observation.currency,
+            observation.observed_at,
+        ):
+            raise _fail()
+    return tuple(
+        sorted(
+            by_identity.values(),
+            key=lambda item: (
+                item.listing_id,
+                item.observed_at,
+                item.provider.value,
+            ),
+        )
+    )
+
+
+def _coalesce_exchange_rate_observations(
+    observations: tuple[ExchangeRateObservation, ...],
+) -> tuple[ExchangeRateObservation, ...]:
+    by_identity: dict[
+        tuple[str, str, datetime, object],
+        ExchangeRateObservation,
+    ] = {}
+    for observation in observations:
+        if not isinstance(observation, ExchangeRateObservation):
+            raise _fail()
+        identity = (
+            observation.from_currency,
+            observation.to_currency,
+            observation.effective_at,
+            observation.provider,
+        )
+        existing = by_identity.get(identity)
+        if existing is None:
+            by_identity[identity] = observation
+        elif (
+            existing.from_currency,
+            existing.to_currency,
+            existing.provider,
+            existing.rate,
+            existing.effective_at,
+        ) != (
+            observation.from_currency,
+            observation.to_currency,
+            observation.provider,
+            observation.rate,
+            observation.effective_at,
+        ):
+            raise _fail()
+    return tuple(
+        sorted(
+            by_identity.values(),
+            key=lambda item: (
+                item.from_currency,
+                item.to_currency,
+                item.effective_at,
+                item.provider.value,
+            ),
+        )
+    )
+
+
 class MarketEvidenceRefreshService:
     """Call providers only after an immutable read transaction has closed."""
 
@@ -274,6 +365,10 @@ class MarketEvidenceRefreshService:
                         policy=self.policy,
                     )
                 )
+            coalesced_prices = _coalesce_price_observations(tuple(price_observations))
+            coalesced_rates = _coalesce_exchange_rate_observations(
+                tuple(exchange_rate_observations)
+            )
         except (
             PriceObservationValidationError,
             ExchangeRateObservationValidationError,
@@ -285,8 +380,8 @@ class MarketEvidenceRefreshService:
 
         persisted = await self.writer.write(
             PersistMarketEvidenceCommand(
-                price_observations=tuple(price_observations),
-                exchange_rate_observations=tuple(exchange_rate_observations),
+                price_observations=coalesced_prices,
+                exchange_rate_observations=coalesced_rates,
                 created_at=created_at,
             )
         )
