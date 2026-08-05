@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import Settings
 from app.db.models.enums import ExchangeRateSource, PriceSource
 from app.modules.market_data.factory import create_production_market_evidence_service
-from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.prices.providers import create_production_price_registry
 
 
@@ -60,13 +59,11 @@ def test_invalid_coingecko_settings_are_rejected(overrides: dict[str, object]) -
         _settings(**overrides)
 
 
-def test_production_price_registry_contains_exactly_coingecko() -> None:
+def test_production_price_registry_preserves_coingecko_alongside_twelve_data() -> None:
     registry = create_production_price_registry(_settings())
-    assert registry.sources == frozenset({PriceSource.coingecko})
+    assert registry.sources == frozenset({PriceSource.coingecko, PriceSource.twelve_data})
     assert registry.get(PriceSource.coingecko).source is PriceSource.coingecko
-    assert PriceSource.twelve_data not in registry.sources
-    with pytest.raises(MarketEvidenceStateError):
-        registry.get(PriceSource.twelve_data)
+    assert registry.get(PriceSource.twelve_data).source is PriceSource.twelve_data
 
 
 def test_production_service_composes_coingecko_and_cnb() -> None:
@@ -74,6 +71,8 @@ def test_production_service_composes_coingecko_and_cnb() -> None:
         MagicMock(spec=AsyncSession),
         _settings(),
     )
-    assert service.price_registry.sources == frozenset({PriceSource.coingecko})
+    assert service.price_registry.sources == frozenset(
+        {PriceSource.coingecko, PriceSource.twelve_data}
+    )
     assert service.fx_registry.sources == frozenset({ExchangeRateSource.cnb})
     assert service.fx_source is ExchangeRateSource.cnb

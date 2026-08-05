@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     coingecko_price_max_response_bytes: int = 1_048_576
     coingecko_price_user_agent: str = "finance-app/0.1"
     coingecko_demo_api_key: SecretStr | None = None
+    twelve_data_quote_base_url: str = "https://api.twelvedata.com/quote"
+    twelve_data_timeout_seconds: float = 10.0
+    twelve_data_max_response_bytes: int = 1_048_576
+    twelve_data_user_agent: str = "finance-app/0.1"
+    twelve_data_api_key: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_file=("../../.env", ".env"),
@@ -102,6 +107,45 @@ class Settings(BaseSettings):
             demo_key = self.coingecko_demo_api_key.get_secret_value()
             if not demo_key or demo_key != demo_key.strip() or "\r" in demo_key or "\n" in demo_key:
                 raise ValueError("COINGECKO_DEMO_API_KEY must be a safe non-empty value")
+        quote_url = urlsplit(self.twelve_data_quote_base_url)
+        if (
+            quote_url.scheme != "https"
+            or not quote_url.hostname
+            or quote_url.username is not None
+            or quote_url.password is not None
+            or bool(quote_url.query)
+            or bool(quote_url.fragment)
+            or any(character.isspace() for character in self.twelve_data_quote_base_url)
+        ):
+            raise ValueError(
+                "TWELVE_DATA_QUOTE_BASE_URL must be an absolute credential-free HTTPS URL"
+            )
+        if not 0 < self.twelve_data_timeout_seconds <= 120:
+            raise ValueError(
+                "TWELVE_DATA_TIMEOUT_SECONDS must be greater than zero and at most 120"
+            )
+        if not 0 < self.twelve_data_max_response_bytes <= 10_485_760:
+            raise ValueError(
+                "TWELVE_DATA_MAX_RESPONSE_BYTES must be greater than zero and at most 10485760"
+            )
+        if (
+            not self.twelve_data_user_agent
+            or self.twelve_data_user_agent != self.twelve_data_user_agent.strip()
+            or "\r" in self.twelve_data_user_agent
+            or "\n" in self.twelve_data_user_agent
+            or len(self.twelve_data_user_agent) > 256
+        ):
+            raise ValueError("TWELVE_DATA_USER_AGENT must be a safe non-empty value")
+        if self.twelve_data_api_key is not None:
+            api_key = self.twelve_data_api_key.get_secret_value()
+            if (
+                not api_key
+                or api_key != api_key.strip()
+                or "\r" in api_key
+                or "\n" in api_key
+                or len(api_key) > 512
+            ):
+                raise ValueError("TWELVE_DATA_API_KEY must be a safe non-empty value")
         if self.environment != "production":
             return self
 
@@ -116,6 +160,8 @@ class Settings(BaseSettings):
             errors.append("INTERNAL_AUTH_SECRET is required")
         elif len(self.internal_auth_secret) < 32:
             errors.append("INTERNAL_AUTH_SECRET must contain at least 32 characters")
+        if self.twelve_data_api_key is None:
+            errors.append("TWELVE_DATA_API_KEY is required")
 
         if errors:
             raise ValueError("Invalid production settings: " + "; ".join(errors))
