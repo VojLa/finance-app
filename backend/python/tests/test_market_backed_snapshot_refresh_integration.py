@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import event, func, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from support.cnb_fx import cnb_xml
 
@@ -33,6 +33,7 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
+    AccountSnapshotItemModel,
     AccountSnapshotModel,
     NetWorthSnapshotModel,
 )
@@ -353,6 +354,102 @@ async def _seed_mixed_user(
         (listed_asset_id, crypto_asset_id),
         (listed_listing_id, crypto_listing_id),
     )
+
+
+async def _cleanup(prefix: str) -> None:
+    """Remove one committed E2E graph so exact provider aliases stay isolated."""
+
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            user_ids = tuple(
+                await session.scalars(
+                    select(UserModel.id).where(UserModel.id.startswith(f"{prefix}-"))
+                )
+            )
+            account_ids = tuple(
+                await session.scalars(
+                    select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
+                )
+            )
+            asset_ids = tuple(
+                await session.scalars(
+                    select(AssetModel.id).where(AssetModel.id.startswith(f"{prefix}-"))
+                )
+            )
+            listing_ids = tuple(
+                await session.scalars(
+                    select(AssetListingModel.id).where(
+                        AssetListingModel.id.startswith(f"{prefix}-")
+                    )
+                )
+            )
+            event_ids = tuple(
+                await session.scalars(
+                    select(InvestmentEventModel.id).where(
+                        InvestmentEventModel.account_id.in_(account_ids)
+                    )
+                )
+            )
+            snapshot_ids = tuple(
+                await session.scalars(
+                    select(AccountSnapshotModel.id).where(
+                        AccountSnapshotModel.account_id.in_(account_ids)
+                    )
+                )
+            )
+            if snapshot_ids:
+                await session.execute(
+                    delete(AccountSnapshotItemModel).where(
+                        AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
+                    )
+                )
+            if user_ids:
+                await session.execute(
+                    delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
+                )
+            if account_ids:
+                await session.execute(
+                    delete(AccountSnapshotModel).where(
+                        AccountSnapshotModel.account_id.in_(account_ids)
+                    )
+                )
+                await session.execute(
+                    delete(HoldingModel).where(HoldingModel.account_id.in_(account_ids))
+                )
+            if listing_ids:
+                await session.execute(
+                    delete(PriceSnapshotModel).where(PriceSnapshotModel.listing_id.in_(listing_ids))
+                )
+            if event_ids:
+                await session.execute(
+                    delete(InvestmentMovementModel).where(
+                        InvestmentMovementModel.event_id.in_(event_ids)
+                    )
+                )
+                await session.execute(
+                    delete(InvestmentEventModel).where(InvestmentEventModel.id.in_(event_ids))
+                )
+            if asset_ids:
+                await session.execute(
+                    delete(AssetAliasModel).where(AssetAliasModel.asset_id.in_(asset_ids))
+                )
+            if listing_ids:
+                await session.execute(
+                    delete(AssetListingModel).where(AssetListingModel.id.in_(listing_ids))
+                )
+            if asset_ids:
+                await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
+            if account_ids:
+                await session.execute(
+                    delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
+                )
+                await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
+            if user_ids:
+                await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+            await session.commit()
+    finally:
+        await engine.dispose()
 
 
 def _transports(
@@ -744,6 +841,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
     finally:
         event.remove(engine.sync_engine, "after_cursor_execute", record_insert)
         await engine.dispose()
+        await _cleanup(prefix)
 
 
 @pytest.mark.parametrize(
@@ -798,6 +896,7 @@ async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
             assert counts == (0, int(rates_before or 0), 0, 0)
     finally:
         await engine.dispose()
+        await _cleanup(prefix)
 
 
 @pytest.mark.parametrize("alias_failure", ["missing", "ambiguous"])
@@ -846,6 +945,7 @@ async def test_missing_or_ambiguous_alias_fails_before_all_http(
             ) == (0, int(rates_before or 0), 0, 0)
     finally:
         await engine.dispose()
+        await _cleanup(prefix)
 
 
 class _FailingSnapshotExecutor:
@@ -907,3 +1007,4 @@ async def test_snapshot_failure_after_market_writer_preserves_market_evidence() 
             assert snapshots == net_worth == 0
     finally:
         await engine.dispose()
+        await _cleanup(prefix)
