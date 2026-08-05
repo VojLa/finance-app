@@ -3,32 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
+from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
-from app.auth.dependencies import get_current_principal
+from app.auth.dependencies import get_current_principal, get_request_settings
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
+from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
-    ExchangeRateSource,
     LiabilityBalanceSource,
     SnapshotGranularity,
     SnapshotSource,
 )
 from app.db.models.liabilities import LiabilityBalanceModel
-from app.db.models.prices import ExchangeRateModel
+from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -37,13 +42,30 @@ from app.db.models.snapshots import (
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
-from app.modules.snapshot_refresh.api import get_user_snapshot_refresh_clock
+from app.modules.market_data.factory import create_production_market_evidence_service
+from app.modules.snapshot_refresh.api import (
+    get_market_backed_snapshot_refresh_service,
+    get_user_snapshot_refresh_clock,
+)
+from app.modules.snapshot_refresh.executor import (
+    ExecuteUserSnapshotRefreshCommand,
+    ExecuteUserSnapshotRefreshResult,
+    SnapshotRefreshExecutionConflictError,
+    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.market_backed_service import (
+    MarketBackedSnapshotRefreshService,
+)
 from app.modules.snapshots.writer import AccountSnapshotWriter, WriteAccountSnapshotCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 BUCKET = datetime(2036, 7, 29, 14, 35)
 EVIDENCE_AT = BUCKET - timedelta(days=1)
+market_support = cast(
+    Any,
+    importlib.import_module("tests.test_market_backed_snapshot_refresh_integration"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +74,6 @@ class _AccountSpec:
     role: AccountMemberRole = AccountMemberRole.owner
     currency: str = "EUR"
     amount: Decimal = Decimal("100")
-    with_rate: bool = True
     account_type: AccountType = AccountType.loan
 
 
@@ -127,9 +148,6 @@ async def _cleanup(prefix: str) -> None:
                     delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
                 )
                 await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
-            await session.execute(
-                delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(f"{prefix}-"))
-            )
             if user_ids:
                 await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
             await session.commit()
@@ -203,18 +221,6 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                             created_at=EVIDENCE_AT,
                         )
                     )
-                    if spec.currency != "EUR" and spec.with_rate:
-                        session.add(
-                            ExchangeRateModel(
-                                id=f"{prefix}-rate-{spec.suffix}",
-                                from_currency=spec.currency,
-                                to_currency="EUR",
-                                rate=Decimal("0.90000000"),
-                                date=EVIDENCE_AT,
-                                source=ExchangeRateSource.ecb,
-                                created_at=EVIDENCE_AT,
-                            )
-                        )
             await session.commit()
     finally:
         await engine.dispose()
@@ -258,6 +264,186 @@ def _call(prefix: str, *, user_id: str | None = None):
         return client.post("/api/v1/snapshot-refresh/recalculate")
 
 
+def _call_with_forbidden_provider_http(prefix: str):
+    settings = Settings(
+        environment="test",
+        database_url=DATABASE_URL,
+        docs_enabled=True,
+        internal_auth_secret="r5b3b-no-fallback-secret-that-is-long-enough",
+        twelve_data_api_key=market_support.TWELVE_API_KEY,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    app.dependency_overrides[get_current_principal] = lambda: _principal(_user_id(prefix))
+    app.dependency_overrides[get_user_snapshot_refresh_clock] = lambda: lambda: BUCKET
+    requests: list[str] = []
+
+    def unexpected_http(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(503)
+
+    transport = httpx.MockTransport(unexpected_http)
+
+    def market_backed_dependency(
+        session: AsyncSession = Depends(get_db_session),
+        request_settings: Settings = Depends(get_request_settings),
+    ) -> MarketBackedSnapshotRefreshService:
+        def market_factory(
+            active_session: AsyncSession,
+            active_settings: Settings,
+        ):
+            return create_production_market_evidence_service(
+                active_session,
+                active_settings,
+                http_transport=transport,
+                coingecko_http_transport=transport,
+                twelve_data_http_transport=transport,
+            )
+
+        return MarketBackedSnapshotRefreshService(
+            session,
+            request_settings,
+            market_service_factory=market_factory,
+        )
+
+    app.dependency_overrides[get_market_backed_snapshot_refresh_service] = market_backed_dependency
+    with TestClient(app) as client:
+        response = client.post("/api/v1/snapshot-refresh/recalculate")
+    return response, requests
+
+
+class _MarketEvidenceOrderCheckingExecutor:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        listing_ids: tuple[str, str],
+        checks: list[tuple[int, int]],
+    ) -> None:
+        self.session = session
+        self.listing_ids = listing_ids
+        self.checks = checks
+
+    async def execute(
+        self,
+        command: ExecuteUserSnapshotRefreshCommand,
+    ) -> ExecuteUserSnapshotRefreshResult:
+        price_count = int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(PriceSnapshotModel)
+                .where(PriceSnapshotModel.listing_id.in_(self.listing_ids))
+            )
+            or 0
+        )
+        rate_count = int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(ExchangeRateModel)
+                .where(
+                    ExchangeRateModel.source == market_support.ExchangeRateSource.cnb,
+                    ExchangeRateModel.from_currency.in_(("EUR", "USD")),
+                    ExchangeRateModel.to_currency == "CZK",
+                    ExchangeRateModel.date.in_(
+                        (
+                            market_support.EVENT_AT.replace(hour=0),
+                            market_support.SNAPSHOT_AT,
+                        )
+                    ),
+                )
+            )
+            or 0
+        )
+        self.checks.append((price_count, rate_count))
+        await self.session.rollback()
+        return await UserSnapshotRefreshExecutor(self.session).execute(command)
+
+
+class _ConflictingSnapshotExecutor:
+    async def execute(self, command: ExecuteUserSnapshotRefreshCommand) -> object:
+        raise SnapshotRefreshExecutionConflictError()
+
+
+def _mixed_endpoint_call(
+    *,
+    user_id: str,
+    listed_symbol: str,
+    crypto_alias: str,
+    listing_ids: tuple[str, str],
+    provider_call_batches: list[list[tuple[str, str]]],
+    order_checks: list[tuple[int, int]] | None = None,
+    twelve_status: int = 200,
+    coingecko_stale: bool = False,
+    cnb_status: int = 200,
+    snapshot_conflict: bool = False,
+):
+    settings = Settings(
+        environment="test",
+        database_url=DATABASE_URL,
+        docs_enabled=True,
+        internal_auth_secret="r5b3b-endpoint-secret-that-is-long-enough",
+        twelve_data_api_key=market_support.TWELVE_API_KEY,
+        _env_file=None,
+    )
+    app = create_app(settings)
+    app.dependency_overrides[get_current_principal] = lambda: _principal(user_id)
+    app.dependency_overrides[get_user_snapshot_refresh_clock] = lambda: (
+        lambda: market_support.SNAPSHOT_AT
+    )
+
+    def market_backed_dependency(
+        session: AsyncSession = Depends(get_db_session),
+        request_settings: Settings = Depends(get_request_settings),
+    ) -> MarketBackedSnapshotRefreshService:
+        twelve, coingecko, cnb, calls = market_support._transports(
+            session,
+            listed_symbol=listed_symbol,
+            crypto_alias=crypto_alias,
+            twelve_status=twelve_status,
+            coingecko_stale=coingecko_stale,
+            cnb_status=cnb_status,
+        )
+        provider_call_batches.append(calls)
+
+        def market_factory(
+            active_session: AsyncSession,
+            active_settings: Settings,
+        ):
+            return create_production_market_evidence_service(
+                active_session,
+                active_settings,
+                http_transport=cnb,
+                coingecko_http_transport=coingecko,
+                twelve_data_http_transport=twelve,
+            )
+
+        snapshot_executor: object | None = None
+        if snapshot_conflict:
+            snapshot_executor = _ConflictingSnapshotExecutor()
+        elif order_checks is not None:
+            snapshot_executor = _MarketEvidenceOrderCheckingExecutor(
+                session,
+                listing_ids=listing_ids,
+                checks=order_checks,
+            )
+        return MarketBackedSnapshotRefreshService(
+            session,
+            request_settings,
+            market_service_factory=market_factory,
+            snapshot_executor=snapshot_executor,  # type: ignore[arg-type]
+        )
+
+    app.dependency_overrides[get_market_backed_snapshot_refresh_service] = market_backed_dependency
+    with TestClient(app) as client:
+        return client.post("/api/v1/snapshot-refresh/recalculate")
+
+
+def _flatten_provider_calls(
+    batches: list[list[tuple[str, str]]],
+) -> list[tuple[str, str]]:
+    return [call for batch in batches for call in batch]
+
+
 async def _counts(prefix: str) -> tuple[int, int]:
     engine = _engine()
     try:
@@ -284,6 +470,463 @@ async def _counts(prefix: str) -> tuple[int, int]:
         await engine.dispose()
 
 
+def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
+    unique = uuid4().hex[:10]
+    prefix = f"r5b3b-mixed-{uuid4()}"
+    listed_symbol = f"T{unique.upper()}"
+    listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
+    crypto_symbol = f"C{unique.upper()}"
+    crypto_alias = f"coin-{unique}"
+    user_id, account_ids, asset_ids, listing_ids = asyncio.run(
+        market_support._seed_mixed_user(
+            prefix,
+            listed_aliases=(listed_alias,),
+            crypto_aliases=(crypto_alias,),
+            listed_symbol=listed_symbol,
+            crypto_symbol=crypto_symbol,
+        )
+    )
+    provider_call_batches: list[list[tuple[str, str]]] = []
+    order_checks: list[tuple[int, int]] = []
+
+    first = _mixed_endpoint_call(
+        user_id=user_id,
+        listed_symbol=listed_symbol,
+        crypto_alias=crypto_alias,
+        listing_ids=listing_ids,
+        provider_call_batches=provider_call_batches,
+        order_checks=order_checks,
+    )
+    replay = _mixed_endpoint_call(
+        user_id=user_id,
+        listed_symbol=listed_symbol,
+        crypto_alias=crypto_alias,
+        listing_ids=listing_ids,
+        provider_call_batches=provider_call_batches,
+        order_checks=order_checks,
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["currency"] == "CZK"
+    assert first.json()["granularity"] == "minute"
+    assert first.json()["createdAccountSnapshotCount"] == 2
+    assert first.json()["replayedAccountSnapshotCount"] == 0
+    assert replay.json()["createdAccountSnapshotCount"] == 0
+    assert replay.json()["replayedAccountSnapshotCount"] == 2
+    assert replay.json()["netWorthStatus"] == "replayed"
+    assert replay.json()["netWorthSnapshotId"] == first.json()["netWorthSnapshotId"]
+    assert replay.json()["accounts"] == first.json()["accounts"]
+    assert tuple(item["accountId"] for item in first.json()["accounts"]) == account_ids
+    assert order_checks == [(2, 4), (2, 4)]
+    expected_calls = [
+        ("twelve_data", listed_symbol),
+        ("coingecko", crypto_alias),
+        ("cnb", "01.08.2026"),
+        ("cnb", "06.08.2026"),
+        ("cnb", "01.08.2026"),
+        ("cnb", "06.08.2026"),
+    ]
+    assert _flatten_provider_calls(provider_call_batches) == expected_calls * 2
+
+    forbidden_market_keys = {
+        "market",
+        "provider",
+        "providerSymbol",
+        "priceIds",
+        "exchangeRateIds",
+        "requiredPriceCount",
+        "requiredFxCount",
+        "pricesCreated",
+        "pricesReplayed",
+        "ratesCreated",
+        "ratesReplayed",
+    }
+
+    def audit(value: object) -> None:
+        if isinstance(value, dict):
+            assert forbidden_market_keys.isdisjoint(value)
+            for child in value.values():
+                audit(child)
+        elif isinstance(value, list):
+            for child in value:
+                audit(child)
+
+    audit(first.json())
+
+    async def verify_persistence_and_lineage() -> None:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                expected_prices = tuple(
+                    sorted(
+                        (
+                            market_support.price_snapshot_id(
+                                market_support.PriceObservation(
+                                    asset_id=asset_ids[0],
+                                    listing_id=listing_ids[0],
+                                    provider=market_support.PriceSource.twelve_data,
+                                    provider_symbol=listed_alias,
+                                    price=Decimal("225.3200000000"),
+                                    currency="USD",
+                                    observed_at=market_support.TWELVE_OBSERVED_AT,
+                                )
+                            ),
+                            market_support.price_snapshot_id(
+                                market_support.PriceObservation(
+                                    asset_id=asset_ids[1],
+                                    listing_id=listing_ids[1],
+                                    provider=market_support.PriceSource.coingecko,
+                                    provider_symbol=crypto_alias,
+                                    price=Decimal("414.5888000000"),
+                                    currency="EUR",
+                                    observed_at=market_support.COINGECKO_OBSERVED_AT,
+                                )
+                            ),
+                        )
+                    )
+                )
+                expected_rates = tuple(
+                    sorted(
+                        market_support.exchange_rate_id(
+                            market_support.ExchangeRateObservation(
+                                from_currency=currency,
+                                to_currency="CZK",
+                                provider=market_support.ExchangeRateSource.cnb,
+                                rate=rate,
+                                effective_at=through,
+                            )
+                        )
+                        for currency, rate, through in (
+                            (
+                                "EUR",
+                                Decimal("24.00000000"),
+                                market_support.EVENT_AT.replace(hour=0),
+                            ),
+                            (
+                                "EUR",
+                                Decimal("25.00000000"),
+                                market_support.SNAPSHOT_AT,
+                            ),
+                            (
+                                "USD",
+                                Decimal("22.00000000"),
+                                market_support.EVENT_AT.replace(hour=0),
+                            ),
+                            (
+                                "USD",
+                                Decimal("23.00000000"),
+                                market_support.SNAPSHOT_AT,
+                            ),
+                        )
+                    )
+                )
+                assert (
+                    tuple(
+                        await session.scalars(
+                            select(PriceSnapshotModel.id)
+                            .where(PriceSnapshotModel.listing_id.in_(listing_ids))
+                            .order_by(PriceSnapshotModel.id)
+                        )
+                    )
+                    == expected_prices
+                )
+                assert (
+                    tuple(
+                        await session.scalars(
+                            select(ExchangeRateModel.id)
+                            .where(ExchangeRateModel.id.in_(expected_rates))
+                            .order_by(ExchangeRateModel.id)
+                        )
+                    )
+                    == expected_rates
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(AccountSnapshotModel)
+                        .where(AccountSnapshotModel.account_id.in_(account_ids))
+                    )
+                    == 2
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(NetWorthSnapshotModel)
+                        .where(NetWorthSnapshotModel.user_id == user_id)
+                    )
+                    == 1
+                )
+                await session.rollback()
+
+                selected_prices: list[str] = []
+                selected_snapshot_rates: list[str] = []
+                selected_historical_rates: list[str] = []
+                for item in first.json()["accounts"]:
+                    async with session.begin():
+                        evidence = await market_support.AccountSnapshotEvidenceService(
+                            session
+                        ).build(
+                            market_support.BuildAccountSnapshotEvidenceCommand(
+                                account_id=item["accountId"],
+                                snapshot_timestamp=market_support.SNAPSHOT_AT,
+                                granularity=SnapshotGranularity.minute,
+                                source=SnapshotSource.manual_recalculation,
+                                calculation_version=1,
+                                output_currency="CZK",
+                            )
+                        )
+                    selected_prices.extend(evidence.selected_price_ids)
+                    selected_snapshot_rates.extend(evidence.selected_snapshot_exchange_rate_ids)
+                    selected_historical_rates.extend(evidence.selected_historical_exchange_rate_ids)
+                assert tuple(sorted(selected_prices)) == expected_prices
+                assert set(selected_snapshot_rates).isdisjoint(selected_historical_rates)
+                assert (
+                    tuple(sorted(selected_snapshot_rates + selected_historical_rates))
+                    == expected_rates
+                )
+
+                read_command = market_support.ReadAuthorizedMultiAccountPortfolioSnapshotCommand(
+                    principal=market_support._principal(user_id),
+                    timestamp=market_support.SNAPSHOT_AT,
+                    granularity=(market_support.PortfolioSnapshotGranularity.minute),
+                    currency="CZK",
+                    calculation_version=1,
+                    accounts=tuple(
+                        market_support.ExactAccountSnapshotSelection(
+                            account_id=item["accountId"],
+                            required_snapshot_id=item["snapshotId"],
+                        )
+                        for item in first.json()["accounts"]
+                    ),
+                )
+                portfolio = (
+                    await market_support.AuthorizedMultiAccountPortfolioSnapshotService(
+                        session
+                    ).read(read_command)
+                ).portfolio
+                dashboard = (
+                    await market_support.AuthorizedDashboardSnapshotService(
+                        market_support.AuthorizedMultiAccountPortfolioSnapshotService(session)
+                    ).read(read_command)
+                ).dashboard
+                assert portfolio.summary.account_count == dashboard.summary.account_count == 2
+                assert portfolio.summary.position_count == dashboard.summary.position_count == 2
+                assert portfolio.summary.cash_value == dashboard.summary.cash_value
+                assert portfolio.summary.investment_value == dashboard.summary.investment_value
+                assert portfolio.summary.total_value == dashboard.summary.total_value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify_persistence_and_lineage())
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_call_count"),
+    [
+        ("twelve-429", 1),
+        ("coingecko-stale", 2),
+        ("cnb-failure", 3),
+    ],
+)
+def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
+    failure: str,
+    expected_call_count: int,
+) -> None:
+    unique = uuid4().hex[:10]
+    prefix = f"r5b3b-{failure}-{uuid4()}"
+    listed_symbol = f"T{unique.upper()}"
+    listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
+    crypto_alias = f"coin-{unique}"
+    user_id, account_ids, _, listing_ids = asyncio.run(
+        market_support._seed_mixed_user(
+            prefix,
+            listed_aliases=(listed_alias,),
+            crypto_aliases=(crypto_alias,),
+            listed_symbol=listed_symbol,
+            crypto_symbol=f"C{unique.upper()}",
+        )
+    )
+
+    async def rates_before() -> int:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                return int(
+                    await session.scalar(select(func.count()).select_from(ExchangeRateModel)) or 0
+                )
+        finally:
+            await engine.dispose()
+
+    initial_rate_count = asyncio.run(rates_before())
+    provider_call_batches: list[list[tuple[str, str]]] = []
+    response = _mixed_endpoint_call(
+        user_id=user_id,
+        listed_symbol=listed_symbol,
+        crypto_alias=crypto_alias,
+        listing_ids=listing_ids,
+        provider_call_batches=provider_call_batches,
+        twelve_status=429 if failure == "twelve-429" else 200,
+        coingecko_stale=failure == "coingecko-stale",
+        cnb_status=503 if failure == "cnb-failure" else 200,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "snapshot_refresh_unavailable"
+    assert len(_flatten_provider_calls(provider_call_batches)) == expected_call_count
+
+    async def verify_empty() -> None:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                assert await market_support._counts(
+                    session,
+                    user_id=user_id,
+                    account_ids=account_ids,
+                    listing_ids=listing_ids,
+                ) == (0, initial_rate_count, 0, 0)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify_empty())
+
+
+@pytest.mark.parametrize("alias_failure", ["missing", "ambiguous"])
+def test_alias_failure_endpoint_stops_before_provider_http(
+    alias_failure: str,
+) -> None:
+    unique = uuid4().hex[:10]
+    prefix = f"r5b3b-alias-{alias_failure}-{uuid4()}"
+    listed_symbol = f"T{unique.upper()}"
+    listed_aliases = (
+        ()
+        if alias_failure == "missing"
+        else (
+            f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}',
+            f'{{"symbol":"ALT{unique.upper()}","mic_code":"XNAS"}}',
+        )
+    )
+    crypto_alias = f"coin-{unique}"
+    user_id, account_ids, _, listing_ids = asyncio.run(
+        market_support._seed_mixed_user(
+            prefix,
+            listed_aliases=listed_aliases,
+            crypto_aliases=(crypto_alias,),
+            listed_symbol=listed_symbol,
+            crypto_symbol=f"C{unique.upper()}",
+        )
+    )
+    provider_call_batches: list[list[tuple[str, str]]] = []
+    response = _mixed_endpoint_call(
+        user_id=user_id,
+        listed_symbol=listed_symbol,
+        crypto_alias=crypto_alias,
+        listing_ids=listing_ids,
+        provider_call_batches=provider_call_batches,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "snapshot_refresh_unavailable"
+    assert _flatten_provider_calls(provider_call_batches) == []
+
+    async def verify_empty() -> None:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(PriceSnapshotModel)
+                        .where(PriceSnapshotModel.listing_id.in_(listing_ids))
+                    )
+                    == 0
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(AccountSnapshotModel)
+                        .where(AccountSnapshotModel.account_id.in_(account_ids))
+                    )
+                    == 0
+                )
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(NetWorthSnapshotModel)
+                        .where(NetWorthSnapshotModel.user_id == user_id)
+                    )
+                    == 0
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify_empty())
+
+
+def test_snapshot_conflict_after_market_commit_preserves_market_evidence() -> None:
+    unique = uuid4().hex[:10]
+    prefix = f"r5b3b-snapshot-conflict-{uuid4()}"
+    listed_symbol = f"T{unique.upper()}"
+    listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
+    crypto_alias = f"coin-{unique}"
+    user_id, account_ids, _, listing_ids = asyncio.run(
+        market_support._seed_mixed_user(
+            prefix,
+            listed_aliases=(listed_alias,),
+            crypto_aliases=(crypto_alias,),
+            listed_symbol=listed_symbol,
+            crypto_symbol=f"C{unique.upper()}",
+        )
+    )
+    provider_call_batches: list[list[tuple[str, str]]] = []
+    response = _mixed_endpoint_call(
+        user_id=user_id,
+        listed_symbol=listed_symbol,
+        crypto_alias=crypto_alias,
+        listing_ids=listing_ids,
+        provider_call_batches=provider_call_batches,
+        snapshot_conflict=True,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "snapshot_refresh_conflict"
+    assert len(_flatten_provider_calls(provider_call_batches)) == 6
+
+    async def verify_two_phase_persistence() -> None:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                prices, _, snapshots, net_worth = await market_support._counts(
+                    session,
+                    user_id=user_id,
+                    account_ids=account_ids,
+                    listing_ids=listing_ids,
+                )
+                assert prices == 2
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(ExchangeRateModel)
+                        .where(
+                            ExchangeRateModel.source == market_support.ExchangeRateSource.cnb,
+                            ExchangeRateModel.from_currency.in_(("EUR", "USD")),
+                            ExchangeRateModel.to_currency == "CZK",
+                            ExchangeRateModel.date.in_(
+                                (
+                                    market_support.EVENT_AT.replace(hour=0),
+                                    market_support.SNAPSHOT_AT,
+                                )
+                            ),
+                        )
+                    )
+                    == 4
+                )
+                assert snapshots == net_worth == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify_two_phase_persistence())
+
+
 def test_mixed_create_and_fresh_session_replay() -> None:
     prefix = "k5e1-mixed"
     asyncio.run(
@@ -291,7 +934,7 @@ def test_mixed_create_and_fresh_session_replay() -> None:
             prefix,
             (
                 _AccountSpec("a-owner"),
-                _AccountSpec("b-editor-usd", AccountMemberRole.editor, "USD"),
+                _AccountSpec("b-editor", AccountMemberRole.editor),
                 _AccountSpec("c-viewer", AccountMemberRole.viewer),
             ),
         )
@@ -325,7 +968,7 @@ def test_mixed_create_and_fresh_session_replay() -> None:
         assert replay.json()["accounts"] == first.json()["accounts"]
         assert [item["accountId"] for item in first.json()["accounts"]] == [
             _account_id(prefix, "a-owner"),
-            _account_id(prefix, "b-editor-usd"),
+            _account_id(prefix, "b-editor"),
             _account_id(prefix, "c-viewer"),
         ]
         assert len({item["snapshotId"] for item in first.json()["accounts"]}) == 3
@@ -358,49 +1001,49 @@ def test_missing_viewer_coverage_is_generic_and_writes_nothing() -> None:
         asyncio.run(_cleanup(prefix))
 
 
-def test_partial_failure_commits_prefix_and_retry_resumes() -> None:
-    prefix = "k5e1-resume"
+def test_unsupported_non_czk_direct_fx_fails_before_snapshot_writes() -> None:
+    prefix = "r5b3b-unsupported-direct-fx"
     asyncio.run(
         _seed(
             prefix,
             (
                 _AccountSpec("a-eur"),
-                _AccountSpec("b-xzz", currency="XZZ", with_rate=False),
+                _AccountSpec("b-usd", currency="USD"),
             ),
         )
     )
     try:
-        first = _call(prefix)
-        assert first.status_code == 409
-        assert first.json()["error"]["code"] == "snapshot_refresh_unavailable"
-        assert asyncio.run(_counts(prefix)) == (1, 0)
 
-        async def add_rate() -> None:
+        async def matching_rate_count() -> int:
             engine = _engine()
             try:
                 async with AsyncSession(engine) as session:
-                    session.add(
-                        ExchangeRateModel(
-                            id=f"{prefix}-rate-b-xzz",
-                            from_currency="XZZ",
-                            to_currency="EUR",
-                            rate=Decimal("0.90000000"),
-                            date=EVIDENCE_AT,
-                            source=ExchangeRateSource.ecb,
-                            created_at=EVIDENCE_AT,
+                    return int(
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(ExchangeRateModel)
+                            .where(
+                                ExchangeRateModel.from_currency == "USD",
+                                ExchangeRateModel.to_currency == "EUR",
+                                ExchangeRateModel.date.in_((EVIDENCE_AT, BUCKET)),
+                            )
                         )
+                        or 0
                     )
-                    await session.commit()
             finally:
                 await engine.dispose()
 
-        asyncio.run(add_rate())
-        resumed = _call(prefix)
-        assert resumed.status_code == 200
-        assert resumed.json()["netWorthStatus"] == "created"
-        assert resumed.json()["createdAccountSnapshotCount"] == 1
-        assert resumed.json()["replayedAccountSnapshotCount"] == 1
-        assert asyncio.run(_counts(prefix)) == (2, 1)
+        before = asyncio.run(matching_rate_count())
+        first, provider_requests = _call_with_forbidden_provider_http(prefix)
+        assert first.status_code == 409
+        assert first.json()["error"]["code"] == "snapshot_refresh_unavailable"
+        assert first.json()["error"]["message"] == (
+            "Snapshot refresh cannot be completed from the current account data."
+        )
+        assert "USD" not in first.text
+        assert provider_requests == []
+        assert asyncio.run(_counts(prefix)) == (0, 0)
+        assert asyncio.run(matching_rate_count()) == before
     finally:
         asyncio.run(_cleanup(prefix))
 
@@ -432,17 +1075,17 @@ def test_empty_user_creates_and_replays_zero_account_net_worth() -> None:
     "account_type",
     [AccountType.bank, AccountType.cash, AccountType.savings],
 )
-def test_unsupported_active_account_fails_without_disclosure(
+def test_empty_market_plan_refreshes_supported_non_investment_account(
     account_type: AccountType,
 ) -> None:
-    prefix = f"k5e1-unsupported-{account_type.value}"
+    prefix = f"r5b3b-empty-market-{account_type.value}"
     asyncio.run(_seed(prefix, (_AccountSpec("a", account_type=account_type),)))
     try:
         response = _call(prefix)
-        assert response.status_code == 409
-        assert response.json()["error"]["code"] == "snapshot_refresh_unavailable"
-        assert account_type.value not in response.text
-        assert asyncio.run(_counts(prefix)) == (0, 0)
+        assert response.status_code == 200
+        assert response.json()["createdAccountSnapshotCount"] == 1
+        assert response.json()["selectedAccountSnapshotCount"] == 1
+        assert asyncio.run(_counts(prefix)) == (1, 1)
     finally:
         asyncio.run(_cleanup(prefix))
 

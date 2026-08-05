@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +18,10 @@ from app.db.models.enums import SnapshotGranularity
 from app.main import create_app
 from app.modules.portfolio_snapshot.multi_account_api_models import (
     ExactPortfolioSnapshotSetRequest,
+)
+from app.modules.snapshot_refresh.api import (
+    get_manual_user_snapshot_refresh_service,
+    get_market_backed_snapshot_refresh_service,
 )
 from app.modules.snapshot_refresh.manual_service import (
     ManualUserSnapshotRefreshService,
@@ -119,6 +123,31 @@ def test_openapi_contract_has_no_body_or_selectors_and_requires_auth(
         if isinstance((route_path := getattr(route, "path", None)), str)
         if not getattr(route, "include_in_schema", True)
     }
+
+
+def test_api_composes_market_backed_and_manual_services_from_request_state(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
+    market_backed = Mock()
+    constructor = Mock(return_value=market_backed)
+    monkeypatch.setattr(
+        "app.modules.snapshot_refresh.api.MarketBackedSnapshotRefreshService",
+        constructor,
+    )
+
+    resolved = get_market_backed_snapshot_refresh_service(session, test_settings)
+    manual = get_manual_user_snapshot_refresh_service(
+        session,
+        lambda: BUCKET,
+        resolved,
+    )
+
+    constructor.assert_called_once_with(session, test_settings)
+    assert manual.session is session
+    assert manual.market_backed_service is market_backed
+    assert manual.clock() == BUCKET
 
 
 def test_missing_and_invalid_auth_do_not_open_database_session(
@@ -494,6 +523,15 @@ def test_success_response_leaks_only_approved_account_manifest(
         "priceSnapshotId",
         "exchangeRateId",
         "exchangeRates",
+        "market",
+        "priceIds",
+        "exchangeRateIds",
+        "requiredPriceCount",
+        "requiredFxCount",
+        "pricesCreated",
+        "pricesReplayed",
+        "ratesCreated",
+        "ratesReplayed",
         "cashValueByCurrency",
         "investmentValueByCurrency",
         "liabilitiesValueByCurrency",
@@ -502,6 +540,8 @@ def test_success_response_leaks_only_approved_account_manifest(
         "updatedAt",
         "writerCommand",
         "internalError",
+        "provider",
+        "providerSymbol",
     }
 
     def audit(value: object) -> None:

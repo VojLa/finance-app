@@ -16,11 +16,13 @@ from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
     ExecutedAccountSnapshotRefresh,
-    ExecuteUserSnapshotRefreshCommand,
     ExecuteUserSnapshotRefreshResult,
-    SnapshotRefreshExecutionConflictError,
-    SnapshotRefreshExecutionStateError,
-    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
 from app.modules.snapshot_refresh.version import (
@@ -84,14 +86,11 @@ class RecalculateUserSnapshotRefreshResult:
     selected_account_snapshot_count: int
 
 
-class _Executor(Protocol):
+class _MarketBackedRefreshService(Protocol):
     async def execute(
         self,
-        command: ExecuteUserSnapshotRefreshCommand,
-    ) -> ExecuteUserSnapshotRefreshResult: ...
-
-
-type ExecutorFactory = Callable[[AsyncSession], _Executor]
+        command: ExecuteMarketBackedSnapshotRefreshCommand,
+    ) -> ExecuteMarketBackedSnapshotRefreshResult: ...
 
 
 def current_user_snapshot_refresh_timestamp() -> datetime:
@@ -333,12 +332,12 @@ class ManualUserSnapshotRefreshService:
         self,
         session: AsyncSession,
         *,
+        market_backed_service: _MarketBackedRefreshService,
         clock: Clock = current_user_snapshot_refresh_timestamp,
-        executor_factory: ExecutorFactory = UserSnapshotRefreshExecutor,
     ) -> None:
         self.session = session
+        self.market_backed_service = market_backed_service
         self.clock = clock
-        self.executor_factory = executor_factory
 
     async def recalculate(
         self,
@@ -356,10 +355,12 @@ class ManualUserSnapshotRefreshService:
         except Exception:
             await self._close_active_transaction()
             raise
-        await self._require_idle("Snapshot refresh executor requires an idle database session.")
+        await self._require_idle(
+            "Market-backed snapshot refresh requires an idle database session."
+        )
 
         bucket = canonical_manual_user_snapshot_refresh_bucket(self.clock())
-        executor_command = ExecuteUserSnapshotRefreshCommand(
+        market_backed_command = ExecuteMarketBackedSnapshotRefreshCommand(
             user_id=principal.user_id,
             snapshot_timestamp=bucket,
             granularity=MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY,
@@ -369,25 +370,33 @@ class ManualUserSnapshotRefreshService:
             created_at=bucket,
             is_recalculated=True,
         )
-        executor = self.executor_factory(self.session)
-        await self._require_idle(
-            "Snapshot refresh executor factory left an active database transaction."
-        )
         try:
-            executor_result = await executor.execute(executor_command)
-        except SnapshotRefreshExecutionConflictError as exc:
+            market_backed_result = await self.market_backed_service.execute(market_backed_command)
+        except MarketBackedSnapshotRefreshConflictError as exc:
             await self._require_idle(
-                "Snapshot refresh executor left an active database transaction."
+                "Market-backed snapshot refresh left an active database transaction."
             )
             raise UserSnapshotRefreshConflictError() from exc
-        except SnapshotRefreshExecutionStateError as exc:
+        except MarketBackedSnapshotRefreshUnavailableError as exc:
             await self._require_idle(
-                "Snapshot refresh executor left an active database transaction."
+                "Market-backed snapshot refresh left an active database transaction."
             )
             raise UserSnapshotRefreshUnavailableError() from exc
-        await self._require_idle("Snapshot refresh executor left an active database transaction.")
+        except Exception:
+            await self._require_idle(
+                "Market-backed snapshot refresh left an active database transaction."
+            )
+            raise
+        await self._require_idle(
+            "Market-backed snapshot refresh left an active database transaction."
+        )
+        if not isinstance(
+            market_backed_result,
+            ExecuteMarketBackedSnapshotRefreshResult,
+        ):
+            raise UserSnapshotRefreshUnavailableError()
         result = _validate_executor_result(
-            executor_result,
+            market_backed_result.snapshots,
             principal=principal,
             bucket=bucket,
             calculation_version=calculation_version,
