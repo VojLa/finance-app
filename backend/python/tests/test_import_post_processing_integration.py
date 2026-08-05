@@ -5,18 +5,20 @@ import importlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_principal
 from app.config.settings import Settings
+from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.enums import (
@@ -48,12 +50,28 @@ from app.db.models.transactions import TransactionModel
 from app.main import create_app
 from app.modules.holdings.orchestration import HoldingRebuildUnavailableError
 from app.modules.imports import posting_service as posting_service_module
+from app.modules.imports.api import (
+    get_import_market_backed_snapshot_refresh_service,
+)
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import ImportSnapshotRefreshStatus
 from app.modules.imports.normalization import ImportNormalizationService
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
 from app.modules.imports.posting_service import PostImportBatchCommand
+from app.modules.market_data.models import MarketEvidenceRefreshResult
+from app.modules.snapshot_refresh.executor import (
+    ExecuteUserSnapshotRefreshCommand,
+    SnapshotRefreshExecutionConflictError,
+    SnapshotRefreshExecutionStateError,
+    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -61,6 +79,51 @@ posting_support = cast(
     Any,
     importlib.import_module("tests.test_import_posting_integration"),
 )
+
+
+class _SnapshotOnlyMarketBackedService:
+    """Legacy integration seam; production market coverage has dedicated R5 tests."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def execute(
+        self,
+        command: ExecuteMarketBackedSnapshotRefreshCommand,
+    ) -> ExecuteMarketBackedSnapshotRefreshResult:
+        try:
+            snapshots = await UserSnapshotRefreshExecutor(self.session).execute(
+                ExecuteUserSnapshotRefreshCommand(
+                    user_id=command.user_id,
+                    snapshot_timestamp=command.snapshot_timestamp,
+                    granularity=command.granularity,
+                    source=command.source,
+                    calculation_version=command.calculation_version,
+                    calculated_at=command.calculated_at,
+                    created_at=command.created_at,
+                    is_recalculated=command.is_recalculated,
+                )
+            )
+        except SnapshotRefreshExecutionConflictError as exc:
+            raise MarketBackedSnapshotRefreshConflictError from exc
+        except SnapshotRefreshExecutionStateError as exc:
+            raise MarketBackedSnapshotRefreshUnavailableError from exc
+        return ExecuteMarketBackedSnapshotRefreshResult(
+            market=MarketEvidenceRefreshResult(
+                user_id=command.user_id,
+                snapshot_timestamp=command.snapshot_timestamp,
+                output_currency=snapshots.output_currency,
+                required_price_count=0,
+                required_fx_count=0,
+                price_ids=(),
+                exchange_rate_ids=(),
+                prices_created=0,
+                prices_replayed=0,
+                rates_created=0,
+                rates_replayed=0,
+            ),
+            snapshots=snapshots,
+        )
 
 
 async def _post(
@@ -72,8 +135,13 @@ async def _post(
 ):
     engine = posting_support._engine()
     async with AsyncSession(engine) as session:
+        market_backed_service = service_kwargs.pop(
+            "market_backed_service",
+            _SnapshotOnlyMarketBackedService(session),
+        )
         result = await ImportBatchPostProcessingService(
             session,
+            market_backed_service=market_backed_service,
             **service_kwargs,
         ).post_batch(
             PostImportBatchCommand(
@@ -123,11 +191,12 @@ async def _seed_investment_identity(
     symbol: str,
     *,
     price_currency: str = "EUR",
+    price_at: datetime | None = None,
     with_price: bool = True,
 ) -> None:
     engine = posting_support._engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    price_at = datetime(2026, 7, 25, 12)
+    observed_at = price_at or now - timedelta(hours=1)
     async with AsyncSession(engine) as session:
         session.add(
             AssetModel(
@@ -168,7 +237,7 @@ async def _seed_investment_identity(
                     price=Decimal("100"),
                     currency=price_currency,
                     source=PriceSource.broker,
-                    timestamp=price_at,
+                    timestamp=observed_at,
                     created_at=now,
                 )
             )
@@ -188,7 +257,7 @@ async def _add_price(prefix: str, *, currency: str = "EUR") -> None:
                 price=Decimal("100"),
                 currency=currency,
                 source=PriceSource.broker,
-                timestamp=datetime(2026, 7, 25, 12),
+                timestamp=now - timedelta(hours=1),
                 created_at=now,
             )
         )
@@ -206,7 +275,7 @@ async def _add_rate(prefix: str, *, from_currency: str = "USD") -> None:
                 from_currency=from_currency,
                 to_currency="EUR",
                 rate=Decimal("0.90000000"),
-                date=datetime(2026, 7, 25, 12),
+                date=now - timedelta(hours=1),
                 source=ExchangeRateSource.ecb,
                 created_at=now,
             )
@@ -311,6 +380,15 @@ def _endpoint_call(prefix: str, *, principal_user_id: str | None = None):
     )
     app.dependency_overrides[get_current_principal] = lambda: posting_support._principal(
         principal_user_id or f"{prefix}-owner"
+    )
+
+    def market_backed_dependency(
+        session: AsyncSession = Depends(get_db_session),
+    ) -> _SnapshotOnlyMarketBackedService:
+        return _SnapshotOnlyMarketBackedService(session)
+
+    app.dependency_overrides[get_import_market_backed_snapshot_refresh_service] = (
+        market_backed_dependency
     )
     with TestClient(app) as client:
         return client.post(f"/api/v1/accounts/{prefix}-account/imports/{prefix}-batch/post")
@@ -1133,7 +1211,11 @@ def test_two_financially_different_batches_in_same_minute_conflict_without_time_
             rows=[posting_support._trading_buy(symbol, f"{prefix}-first")],
         )
         try:
-            await _seed_investment_identity(prefix, symbol)
+            await _seed_investment_identity(
+                prefix,
+                symbol,
+                price_at=first_completed - timedelta(hours=1),
+            )
             await posting_support._prepare(prefix)
             with patch.object(
                 posting_service_module,

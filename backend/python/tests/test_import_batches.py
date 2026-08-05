@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +14,10 @@ from app.db.connection import get_db_session
 from app.db.models.enums import ImportSource, ImportStatus
 from app.main import create_app
 from app.modules.accounts.access import AccountNotFoundError
+from app.modules.imports.api import (
+    get_import_batch_post_processing_service,
+    get_import_market_backed_snapshot_refresh_service,
+)
 from app.modules.imports.models import (
     ImportBatchResponse,
     ImportPostResponse,
@@ -232,6 +236,29 @@ def test_post_import_batch_endpoint_is_thin_and_stable(
     assert command.batch_id == "batch-a"
 
 
+def test_import_api_composes_request_scoped_market_backed_service(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
+    market_backed = Mock()
+    constructor = Mock(return_value=market_backed)
+    monkeypatch.setattr(
+        "app.modules.imports.api.MarketBackedSnapshotRefreshService",
+        constructor,
+    )
+
+    resolved = get_import_market_backed_snapshot_refresh_service(
+        session,
+        test_settings,
+    )
+    service = get_import_batch_post_processing_service(session, resolved)
+
+    constructor.assert_called_once_with(session, test_settings)
+    assert service.session is session
+    assert service.market_backed_service is market_backed
+
+
 @pytest.mark.parametrize(
     "snapshot_status",
     (
@@ -286,6 +313,13 @@ def test_import_post_response_rejects_internal_post_processing_fields() -> None:
         "net_worth_snapshot_id",
         "lineage",
         "exchange_rates",
+        "market",
+        "price_ids",
+        "exchange_rate_ids",
+        "provider",
+        "provider_symbol",
+        "required_price_count",
+        "required_fx_count",
     ):
         with pytest.raises(ValueError):
             ImportPostResponse.model_validate(payload | {field: "internal"})

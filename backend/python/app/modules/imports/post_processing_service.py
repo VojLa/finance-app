@@ -40,11 +40,13 @@ from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
     ExecutedAccountSnapshotRefresh,
-    ExecuteUserSnapshotRefreshCommand,
     ExecuteUserSnapshotRefreshResult,
-    SnapshotRefreshExecutionConflictError,
-    SnapshotRefreshExecutionStateError,
-    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
 from app.modules.snapshot_refresh.version import (
@@ -69,16 +71,15 @@ class _HoldingService(Protocol):
     async def rebuild(self, command: RebuildHoldingsCommand) -> HoldingRebuildResponse: ...
 
 
-class _Executor(Protocol):
+class _MarketBackedRefreshService(Protocol):
     async def execute(
         self,
-        command: ExecuteUserSnapshotRefreshCommand,
-    ) -> ExecuteUserSnapshotRefreshResult: ...
+        command: ExecuteMarketBackedSnapshotRefreshCommand,
+    ) -> ExecuteMarketBackedSnapshotRefreshResult: ...
 
 
 type PostingServiceFactory = Callable[[AsyncSession], _PostingService]
 type HoldingServiceFactory = Callable[[AsyncSession, Callable[[], datetime]], _HoldingService]
-type ExecutorFactory = Callable[[AsyncSession], _Executor]
 type RepositoryFactory = Callable[[AsyncSession], ImportBatchPostProcessingRepository]
 
 
@@ -360,15 +361,15 @@ class ImportBatchPostProcessingService:
         self,
         session: AsyncSession,
         *,
+        market_backed_service: _MarketBackedRefreshService,
         posting_service_factory: PostingServiceFactory = ImportBatchPostingService,
         holding_service_factory: HoldingServiceFactory = _holding_factory,
-        executor_factory: ExecutorFactory = UserSnapshotRefreshExecutor,
         repository_factory: RepositoryFactory = ImportBatchPostProcessingRepository,
     ) -> None:
         self.session = session
+        self.market_backed_service = market_backed_service
         self.posting_service_factory = posting_service_factory
         self.holding_service_factory = holding_service_factory
-        self.executor_factory = executor_factory
         self.repository_factory = repository_factory
 
     async def post_batch(self, command: PostImportBatchCommand) -> ImportPostResponse:
@@ -452,10 +453,8 @@ class ImportBatchPostProcessingService:
             await self._write_audits(audits)
             return self._response(posting, ImportSnapshotRefreshStatus.unavailable)
 
-        await self._require_idle("Snapshot refresh executor requires an idle session.")
-        executor = self.executor_factory(self.session)
-        await self._require_idle("Snapshot refresh executor factory left an active transaction.")
-        executor_command = ExecuteUserSnapshotRefreshCommand(
+        await self._require_idle("Market-backed snapshot refresh requires an idle session.")
+        market_backed_command = ExecuteMarketBackedSnapshotRefreshCommand(
             user_id=canonical.principal.user_id,
             snapshot_timestamp=bucket,
             granularity=SnapshotGranularity.minute,
@@ -466,22 +465,29 @@ class ImportBatchPostProcessingService:
             is_recalculated=False,
         )
         try:
-            executor_result = await executor.execute(executor_command)
-        except SnapshotRefreshExecutionStateError:
-            await self._require_idle("Snapshot refresh executor left an active transaction.")
+            combined_result = await self.market_backed_service.execute(market_backed_command)
+        except MarketBackedSnapshotRefreshUnavailableError:
+            await self._require_idle("Market-backed snapshot refresh left an active transaction.")
             status = ImportSnapshotRefreshStatus.unavailable
             outcome = "snapshot_unavailable"
-        except SnapshotRefreshExecutionConflictError:
-            await self._require_idle("Snapshot refresh executor left an active transaction.")
+        except MarketBackedSnapshotRefreshConflictError:
+            await self._require_idle("Market-backed snapshot refresh left an active transaction.")
             status = ImportSnapshotRefreshStatus.conflict
             outcome = "snapshot_conflict"
-        except Exception:
-            await self._rollback_active()
+        except Exception as exc:
+            if self.session.in_transaction():
+                await self.session.rollback()
+                raise _runtime_error() from exc
             raise
         else:
-            await self._require_idle("Snapshot refresh executor left an active transaction.")
+            await self._require_idle("Market-backed snapshot refresh left an active transaction.")
+            if not isinstance(
+                combined_result,
+                ExecuteMarketBackedSnapshotRefreshResult,
+            ):
+                raise _runtime_error()
             validated = _validate_executor_result(
-                executor_result,
+                combined_result.snapshots,
                 command=canonical,
                 bucket=bucket,
                 version=version,

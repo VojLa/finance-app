@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentPrincipal
+from app.auth.dependencies import CurrentPrincipal, get_request_settings
+from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
@@ -20,8 +21,30 @@ from app.modules.imports.post_processing_service import ImportBatchPostProcessin
 from app.modules.imports.posting_service import PostImportBatchCommand
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
+from app.modules.snapshot_refresh.market_backed_service import (
+    MarketBackedSnapshotRefreshService,
+)
 
 router = APIRouter(prefix="/accounts/{account_id}/imports", tags=["imports"])
+
+
+def get_import_market_backed_snapshot_refresh_service(
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_request_settings),
+) -> MarketBackedSnapshotRefreshService:
+    return MarketBackedSnapshotRefreshService(session, settings)
+
+
+def get_import_batch_post_processing_service(
+    session: AsyncSession = Depends(get_db_session),
+    market_backed_service: MarketBackedSnapshotRefreshService = Depends(
+        get_import_market_backed_snapshot_refresh_service
+    ),
+) -> ImportBatchPostProcessingService:
+    return ImportBatchPostProcessingService(
+        session,
+        market_backed_service=market_backed_service,
+    )
 
 
 @router.post("", response_model=ImportBatchResponse, status_code=status.HTTP_201_CREATED)
@@ -137,9 +160,9 @@ async def post_import_batch(
     account_id: str,
     batch_id: str,
     principal: CurrentPrincipal,
-    session: AsyncSession = Depends(get_db_session),
+    service: ImportBatchPostProcessingService = Depends(get_import_batch_post_processing_service),
 ) -> ImportPostResponse:
-    return await ImportBatchPostProcessingService(session).post_batch(
+    return await service.post_batch(
         PostImportBatchCommand(
             principal=principal,
             account_id=account_id,
