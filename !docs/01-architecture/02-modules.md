@@ -19,8 +19,8 @@ thin and shared database infrastructure lives outside modules.
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                       |
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K complete; 5M-A exact read manifest implemented                           |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                |
-| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A foundation, R5-B1 CNB, and R5-B2A CoinGecko composition implemented    |
-| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB direct FX and alias-only CoinGecko crypto price providers implemented   |
+| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A, CNB, CoinGecko, and Twelve Data identity foundation implemented       |
+| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB and CoinGecko live; Twelve Data HTTP provider remains planned           |
 | dashboard / reporting | Dashboard read models                                                                | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
@@ -43,7 +43,22 @@ fallback between sources. Provider calls occur sequentially and outside every
 database transaction. Production composition registers exactly
 `ExchangeRateSource.cnb` for direct foreign-currency-to-CZK evidence and
 `PriceSource.coingecko` for crypto prices selected through one exact persisted
-CoinGecko AssetAlias. Listed-security price support remains planned for R5-B2B.
+CoinGecko AssetAlias. Listed-security price support remains planned for R5-B2B1.
+
+R5-B2B0 adds `AssetAliasProvider.twelve_data` and
+`PriceSource.twelve_data` across PostgreSQL, SQLAlchemy, and the Prisma
+compatibility mirror. The planner can project an exact opaque Twelve Data
+alias when that source is explicitly injected, but production composition
+still registers only CoinGecko and CNB. A Twelve Data requirement therefore
+fails closed before provider I/O. No Twelve Data HTTP adapter, API-key setting,
+identity parser, alias inference, or alias writer exists yet.
+
+Stooq was rejected for this boundary because the reviewed public surface did
+not establish the authoritative API and quote-time timezone contract required
+by fail-closed evidence timestamps. Twelve Data was selected for R5-B2B1
+because its official time-series documentation exposes exchange timezone
+metadata and documents IANA timezone semantics. The actual request identity
+format and transport remain owned by that later step.
 
 The CNB adapter performs one HTTPS GET per exact FX requirement against the
 official daily XML document, using `through.date()` as the `DD.MM.YYYY` query.
@@ -87,7 +102,7 @@ the exact `Decimal` and provider `last_updated_at` timestamp; duplicate keys,
 excess identities, invalid numbers, future/stale time, or `NUMERIC(28,10)`
 overprecision fail without rounding or timestamp repair. An Anycoin Listing
 without a CoinGecko alias is therefore unavailable, and Trading212 prices
-remain outside this adapter. R5-B2B will supply the listed-security provider;
+remain outside this adapter. R5-B2B1 will supply the listed-security provider;
 R5-B3 will compose refresh with approved import/manual workflows. Overall R5
 remains in progress.
 

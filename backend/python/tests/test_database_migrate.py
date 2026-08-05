@@ -34,7 +34,7 @@ def test_revision_state_accepts_known_revision_before_upgrade() -> None:
 def test_revision_state_requires_current_schema_head_for_check() -> None:
     with pytest.raises(RuntimeError, match="not at the Alembic head"):
         verify_revision_state(DatabaseState(30, 27, (CUTOVER_REVISION,)), require_head=True)
-    verify_revision_state(DatabaseState(30, 27, (HEAD_REVISION,)), require_head=True)
+    verify_revision_state(DatabaseState(31, 28, (HEAD_REVISION,)), require_head=True)
 
 
 def test_alembic_runner_uses_python_module_and_local_config(

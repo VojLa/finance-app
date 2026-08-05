@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.db.models import AccountModel, AccountType, UserModel
 from app.db.url import normalize_database_url
-from scripts.alembic_baseline import BASELINE_REVISION, CUTOVER_REVISION, HEAD_REVISION
+from scripts.alembic_baseline import (
+    BASELINE_REVISION,
+    CUTOVER_REVISION,
+    HEAD_REVISION,
+    PREVIOUS_HEAD_REVISION,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +91,14 @@ async def test_first_alembic_schema_migration_lifecycle() -> None:
         assert "revision state" in verification.stdout
 
         run_command("-m", "alembic", "-c", str(ALEMBIC_CONFIG), "stamp", BASELINE_REVISION)
-        run_command("scripts/database_migrate.py", "upgrade")
+        run_command(
+            "-m",
+            "alembic",
+            "-c",
+            str(ALEMBIC_CONFIG),
+            "upgrade",
+            PREVIOUS_HEAD_REVISION,
+        )
 
         async with engine.begin() as connection:
             notes = await connection.scalar(
@@ -97,7 +109,7 @@ async def test_first_alembic_schema_migration_lifecycle() -> None:
                 text('SELECT "version_num" FROM public.alembic_version')
             )
             assert notes is None
-            assert version == HEAD_REVISION
+            assert version == PREVIOUS_HEAD_REVISION
             await connection.execute(
                 text('UPDATE "public"."Account" SET "notes" = :notes WHERE "id" = :id'),
                 {"notes": "Preserve this note", "id": TEST_ACCOUNT_ID},
@@ -143,8 +155,12 @@ async def test_first_alembic_schema_migration_lifecycle() -> None:
             notes = await connection.scalar(
                 select(AccountModel.notes).where(AccountModel.id == TEST_ACCOUNT_ID)
             )
+            version = await connection.scalar(
+                text('SELECT "version_num" FROM public.alembic_version')
+            )
             assert account_name == "First Alembic Account"
             assert notes is None
+            assert version == HEAD_REVISION
     finally:
         async with engine.begin() as connection:
             await connection.execute(delete(AccountModel).where(AccountModel.id == TEST_ACCOUNT_ID))

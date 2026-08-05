@@ -54,3 +54,7 @@ Revision `3g0001liabbal` adds `LiabilityBalance` and
 `LiabilityBalanceSource`. Its downgrade refuses to discard existing canonical
 liability evidence. The runtime Prisma schema mirrors the new objects while
 the frozen Prisma migration archive remains unchanged.
+
+Revision `3h0001twdata` adds the `twelve_data` provider identity to two
+PostgreSQL enums. Its downgrade is explicitly unsupported because PostgreSQL
+cannot safely remove a used enum value without rebuilding the type.

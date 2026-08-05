@@ -133,6 +133,7 @@ class AssetAliasProvider(StrEnum):
     coingecko = "coingecko"
     yahoo_finance = "yahoo_finance"
     stooq = "stooq"
+    twelve_data = "twelve_data"
     broker = "broker"
     exchange = "exchange"
 
@@ -151,6 +152,7 @@ class PriceSource(StrEnum):
     coingecko = "coingecko"
     yahoo_finance = "yahoo_finance"
     stooq = "stooq"
+    twelve_data = "twelve_data"
     manual = "manual"
     broker = "broker"
     exchange = "exchange"

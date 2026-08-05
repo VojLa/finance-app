@@ -162,3 +162,8 @@ Revision `3g0001liabbal` adds the canonical `LiabilityBalance` observation
 contract and dedicated `LiabilityBalanceSource` enum. It advances the physical
 schema to 31 application tables and 28 enums without modifying the frozen
 Prisma migration archive or inherited baseline.
+
+Revision `3h0001twdata` adds the explicit `twelve_data` value to the
+`AssetAliasProvider` and `PriceSource` enums. It changes provider identity
+ownership without adding tables, an HTTP adapter, or a production provider
+registration.

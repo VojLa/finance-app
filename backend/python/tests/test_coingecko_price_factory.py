@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import Settings
 from app.db.models.enums import ExchangeRateSource, PriceSource
 from app.modules.market_data.factory import create_production_market_evidence_service
+from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.prices.providers import create_production_price_registry
 
 
@@ -63,6 +64,9 @@ def test_production_price_registry_contains_exactly_coingecko() -> None:
     registry = create_production_price_registry(_settings())
     assert registry.sources == frozenset({PriceSource.coingecko})
     assert registry.get(PriceSource.coingecko).source is PriceSource.coingecko
+    assert PriceSource.twelve_data not in registry.sources
+    with pytest.raises(MarketEvidenceStateError):
+        registry.get(PriceSource.twelve_data)
 
 
 def test_production_service_composes_coingecko_and_cnb() -> None:

@@ -1,4 +1,4 @@
-schema_version = 8
+schema_version = 9
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -125,9 +125,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 4
+revision_count = 5
 head_count = 1
-head_revision = "3g0001liabbal"
+head_revision = "3h0001twdata"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -147,14 +147,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3g0001liabbal"
-revision_count = 4
+head_revision = "3h0001twdata"
+revision_count = 5
 head_count = 1
 
 [current_schema]
-revision = "3g0001liabbal"
-schema_source = "database/revisions/3g0001liabbal/schema.sql"
-checksum_source = "database/revisions/3g0001liabbal/schema.sha256"
+revision = "3h0001twdata"
+schema_source = "database/revisions/3h0001twdata/schema.sql"
+checksum_source = "database/revisions/3h0001twdata/schema.sha256"
 
 [cutover]
 phase = "completed"
