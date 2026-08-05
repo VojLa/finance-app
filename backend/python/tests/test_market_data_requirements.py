@@ -446,22 +446,28 @@ async def test_twelve_data_identity_is_never_inferred_from_listing_metadata() ->
 
 
 @pytest.mark.asyncio
-async def test_production_registry_leaves_twelve_data_requirement_unavailable() -> None:
+async def test_production_registry_projects_exact_twelve_data_requirement() -> None:
     registry = create_production_price_registry(Settings(_env_file=None))
     repository = _Repository()
     repository.holdings = (
         _holding(
             provider=PriceSource.broker,
             provider_symbol="TRADING212",
-            aliases=(_alias(AssetAliasProvider.twelve_data, "opaque-exact-identity"),),
+            aliases=(
+                _alias(
+                    AssetAliasProvider.twelve_data,
+                    '{"symbol":"AAPL","mic_code":"XNAS"}',
+                ),
+            ),
         ),
     )
 
-    assert registry.sources == frozenset({PriceSource.coingecko})
-    with pytest.raises(MarketEvidenceStateError):
-        await _planner(repository, price_sources=registry.sources).build(
-            BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
-        )
+    assert registry.sources == frozenset({PriceSource.coingecko, PriceSource.twelve_data})
+    plan = await _planner(repository, price_sources=registry.sources).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+    assert plan.price_requirements[0].provider is PriceSource.twelve_data
+    assert plan.price_requirements[0].provider_symbol == '{"symbol":"AAPL","mic_code":"XNAS"}'
 
 
 @pytest.mark.asyncio

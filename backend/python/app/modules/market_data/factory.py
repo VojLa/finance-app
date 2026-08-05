@@ -18,6 +18,7 @@ from app.modules.market_data.policy import (
 from app.modules.market_data.service import MarketEvidenceRefreshService
 from app.modules.prices.providers import (
     CoinGeckoPriceTransport,
+    TwelveDataPriceTransport,
     create_production_price_registry,
 )
 
@@ -31,6 +32,8 @@ def create_production_market_evidence_service(
     http_transport: httpx.AsyncBaseTransport | None = None,
     coingecko_transport: CoinGeckoPriceTransport | None = None,
     coingecko_http_transport: httpx.AsyncBaseTransport | None = None,
+    twelve_data_transport: TwelveDataPriceTransport | None = None,
+    twelve_data_http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> MarketEvidenceRefreshService:
     return MarketEvidenceRefreshService(
         session,
@@ -38,7 +41,9 @@ def create_production_market_evidence_service(
             settings,
             policy=policy,
             coingecko_transport=coingecko_transport,
-            http_transport=coingecko_http_transport,
+            twelve_data_transport=twelve_data_transport,
+            coingecko_http_transport=coingecko_http_transport,
+            twelve_data_http_transport=twelve_data_http_transport,
         ),
         fx_registry=create_production_exchange_rate_registry(
             settings,

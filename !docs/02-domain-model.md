@@ -4,19 +4,19 @@ The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                  |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                         |
-| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                         |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                      |
-| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                         |
-| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                         |
-| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                         |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data identity  | R5-B2B0 identity implemented; Twelve Data HTTP evidence remains planned             |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
-| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
+| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                    |
+| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                           |
+| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                           |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                        |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                           |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                           |
+| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                           |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence providers implemented; public refresh orchestration remains R5-B3 |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                           |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented   |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                               |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                             |
 
 ## Exact market evidence
 
@@ -83,7 +83,8 @@ Asset names, `/coins/list`, and hard-coded symbol mappings are not identities.
 The provider's positive exact Decimal and actual `last_updated_at` UTC time are
 validated by R5-A and persisted append-only as `PriceSnapshot`. The timestamp
 is not clamped, and overprecision is not rounded. Anycoin crypto assets without
-that alias fail before HTTP; Trading212 listed securities remain for R5-B2B1.
+that alias fail before HTTP. Trading212 listed securities use only an exact
+persisted Twelve Data alias.
 PostgreSQL tests use mocked HTTP but the production factory, planner, writer,
 snapshot executor, and exact portfolio/dashboard readers. Public
 market-evidence orchestration remains assigned to R5-B3, so overall R5 remains
@@ -91,19 +92,28 @@ in progress.
 
 R5-B2B0 extends the two existing provider-identity enums with the exact value
 `twelve_data`. An `AssetAlias(provider=twelve_data, externalId=...)` stores one
-opaque provider-owned identity; the planner never derives it from a
+provider-owned identity; the planner never derives it from a
 Trading212 symbol, Asset symbol, ISIN, name, exchange, MIC, or another alias.
 When a matching provider is injected, that unchanged string becomes the
-requirement's provider symbol. Production price composition does not yet
-register Twelve Data, so the same requirement is unavailable before HTTP.
+requirement's provider symbol. R5-B2B1 defines its byte-exact canonical form as
+`{"symbol":"AAPL","mic_code":"XNAS"}` and production composition now registers
+Twelve Data alongside CoinGecko.
 
 The Stooq candidate was rejected because the reviewed public surface did not
 establish an authoritative API and quote-time timezone contract. Twelve
-Data's official time-series contract documents exchange timezone metadata and
-IANA timezone behavior, which allows R5-B2B1 to define a fail-closed timestamp
-conversion. R5-B2B0 adds no HTTP client, API key, observation, price row,
-endpoint, alias writer, or identity-format parser; overall R5 remains in
-progress.
+Data's official `/quote` contract documents MIC filtering, an intraday UTC
+timezone, the interval timestamp, and `last_quote_at`. The provider requests
+one exact quote with `interval=1min` and `timezone=UTC`; its API key exists only
+in the server-side Authorization header.
+
+The response `close` string becomes the exact positive Decimal price.
+`last_quote_at` becomes the evidence timestamp only when it equals the
+minute-aligned interval `timestamp` and the UTC response `datetime` represents
+the same instant. Identity, currency, timestamp, freshness, and physical
+precision mismatches fail closed without rounding, clamping, or fallback.
+Production composition is CoinGecko plus Twelve Data for prices and CNB for
+direct FX. Public market/snapshot orchestration remains R5-B3, so overall R5
+remains in progress.
 
 The fixed UUIDv5 namespaces are
 `8c46da0b-b09a-49c7-94f1-a510cf4c2f7c` for `PriceSnapshot` and
