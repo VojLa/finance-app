@@ -7,31 +7,45 @@ import importlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal
 from threading import Event
 from typing import Any, cast
 from unittest.mock import patch
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_principal
+from app.auth.dependencies import get_current_principal, get_request_settings
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel
-from app.db.models.enums import AccountMemberRole, ImportSource, ImportStatus
+from app.db.models.assets import AssetAliasModel
+from app.db.models.enums import (
+    AccountMemberRole,
+    AssetAliasProvider,
+    ImportSource,
+    ImportStatus,
+    PriceSource,
+)
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.main import create_app
+from app.modules.market_data.factory import create_production_market_evidence_service
+from app.modules.market_data.writer import price_snapshot_id
+from app.modules.prices.models import PriceObservation
 from app.modules.snapshot_refresh import version as snapshot_version_module
 from app.modules.snapshot_refresh.api import (
     get_manual_user_snapshot_refresh_service,
+    get_market_backed_snapshot_refresh_service,
     get_user_snapshot_refresh_clock,
 )
 from app.modules.snapshot_refresh.executor import (
@@ -40,6 +54,9 @@ from app.modules.snapshot_refresh.executor import (
     UserSnapshotRefreshExecutor,
 )
 from app.modules.snapshot_refresh.manual_service import ManualUserSnapshotRefreshService
+from app.modules.snapshot_refresh.market_backed_service import (
+    MarketBackedSnapshotRefreshService,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -74,16 +91,52 @@ def _settings() -> Settings:
         log_level="ERROR",
         log_json=False,
         internal_auth_secret="final-5k-audit-secret-with-32-characters",
+        twelve_data_api_key="r5b3b-final-audit-twelve-data-key",
         _env_file=None,
     )
 
 
-def _manual_refresh_call(prefix: str):
+def _manual_refresh_call(prefix: str, symbol: str):
     app = create_app(_settings())
     app.dependency_overrides[get_current_principal] = lambda: posting_support._principal(
         f"{prefix}-owner"
     )
     app.dependency_overrides[get_user_snapshot_refresh_clock] = lambda: lambda: BUCKET
+    observed_epoch = int(BUCKET.replace(tzinfo=UTC).timestamp())
+
+    def twelve_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["symbol"] == symbol
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=(
+                f'{{"symbol":"{symbol}","mic_code":"XNAS",'
+                f'"currency":"EUR","datetime":"2036-07-29 14:35:00",'
+                f'"timestamp":{observed_epoch},"last_quote_at":{observed_epoch},'
+                f'"close":"100.0000000000"}}'
+            ).encode(),
+        )
+
+    transport = httpx.MockTransport(twelve_handler)
+
+    def market_backed_dependency(
+        session: AsyncSession = Depends(get_db_session),
+        settings: Settings = Depends(get_request_settings),
+    ) -> MarketBackedSnapshotRefreshService:
+        def factory(active_session: AsyncSession, active_settings: Settings):
+            return create_production_market_evidence_service(
+                active_session,
+                active_settings,
+                twelve_data_http_transport=transport,
+            )
+
+        return MarketBackedSnapshotRefreshService(
+            session,
+            settings,
+            market_service_factory=factory,
+        )
+
+    app.dependency_overrides[get_market_backed_snapshot_refresh_service] = market_backed_dependency
     with TestClient(app) as client:
         return client.post("/api/v1/snapshot-refresh/recalculate")
 
@@ -190,7 +243,47 @@ def test_manual_and_import_refresh_same_bucket_preserve_immutable_identity() -> 
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
         )
         try:
-            await post_processing_support._seed_investment_identity(prefix, symbol)
+            await post_processing_support._seed_investment_identity(
+                prefix,
+                symbol,
+                with_price=False,
+            )
+            engine = posting_support._engine()
+            try:
+                async with AsyncSession(engine) as session:
+                    observation = PriceObservation(
+                        asset_id=f"{prefix}-asset",
+                        listing_id=f"{prefix}-listing",
+                        provider=PriceSource.twelve_data,
+                        provider_symbol=(f'{{"symbol":"{symbol}","mic_code":"XNAS"}}'),
+                        price=Decimal("100.0000000000"),
+                        currency="EUR",
+                        observed_at=BUCKET,
+                    )
+                    session.add(
+                        AssetAliasModel(
+                            id=f"{prefix}-twelve-data-alias",
+                            asset_id=f"{prefix}-asset",
+                            provider=AssetAliasProvider.twelve_data,
+                            external_id=(f'{{"symbol":"{symbol}","mic_code":"XNAS"}}'),
+                            created_at=COMPLETED_AT,
+                        )
+                    )
+                    session.add(
+                        PriceSnapshotModel(
+                            id=price_snapshot_id(observation),
+                            asset_id=observation.asset_id,
+                            listing_id=observation.listing_id,
+                            price=observation.price,
+                            currency=observation.currency,
+                            source=observation.provider,
+                            timestamp=observation.observed_at,
+                            created_at=COMPLETED_AT,
+                        )
+                    )
+                    await session.commit()
+            finally:
+                await engine.dispose()
             await posting_support._prepare(prefix)
             with patch.object(
                 posting_service_module,
@@ -205,7 +298,7 @@ def test_manual_and_import_refresh_same_bucket_preserve_immutable_identity() -> 
             assert original[0][0][2] == BUCKET
             assert original[1][0][2] == BUCKET
 
-            manual = await asyncio.to_thread(_manual_refresh_call, prefix)
+            manual = await asyncio.to_thread(_manual_refresh_call, prefix, symbol)
             assert manual.status_code == 409
             error = manual.json()["error"]
             assert error == {
@@ -415,10 +508,15 @@ def test_role_revocation_between_auth_and_coverage_is_detected() -> None:
     def service_dependency(
         session: AsyncSession = Depends(get_db_session),
     ) -> ManualUserSnapshotRefreshService:
+        market_backed_service = MarketBackedSnapshotRefreshService(
+            session,
+            _settings(),
+            snapshot_executor=_BarrierExecutor(session),
+        )
         return ManualUserSnapshotRefreshService(
             session,
             clock=lambda: BUCKET,
-            executor_factory=_BarrierExecutor,
+            market_backed_service=market_backed_service,
         )
 
     app.dependency_overrides[get_manual_user_snapshot_refresh_service] = service_dependency

@@ -161,10 +161,26 @@ and their canonical `(account_id, snapshot_id)` sequence must exactly equal
 the guarded NetWorth dependency lineage. Malformed dependency results fail
 closed rather than crossing the boundary.
 
-R5-B3A is internal only. No endpoint, import integration, manual snapshot
-endpoint change, frontend, scheduler, worker, queue, schema, migration, or
-OpenAPI contract uses it yet. R5-B3B and R5-B3C remain planned, the R5 final
-audit remains planned, and R5 remains in progress.
+R5-B3B now uses this command and combined result at the unchanged authenticated
+manual endpoint. The request-scoped settings and database session compose the
+production service; authentication closes its read transaction before one
+server clock read derives the manual minute bucket. Market evidence refresh
+always precedes snapshot execution, and no direct executor fallback remains.
+
+The public manual response still contains only the validated snapshot manifest
+and summary. It exposes no market IDs, provider identities, requirements, or
+counts. A market failure prevents the snapshot graph. Snapshot failure after a
+successful market commit does not delete or compensate evidence because the
+two stages are intentionally separate committed phases. An empty market plan
+is valid and continues to snapshot execution.
+
+CZK-output users may combine USD and EUR holdings through exact Twelve Data,
+CoinGecko, and ČNB evidence. A non-CZK output remains valid when no cross-FX is
+needed; unsupported direct FX such as USD-to-EUR is generically unavailable
+without ECB, inverse, cross-rate, or manual fallback. R5-B3B changes no
+endpoint, frontend, schema, migration, or OpenAPI contract. Import
+post-processing does not use this service yet. R5-B3C and the R5 final audit
+remain planned, and R5 remains in progress.
 
 ## Important relationships
 
@@ -754,15 +770,26 @@ granularity, or lineage. One server clock value becomes a naive UTC minute
 bucket used for all refresh timestamps after the authentication read
 transaction has been committed and the shared session is idle.
 
-The coordinated executor remains the source of persisted User base currency,
-complete account coverage, refresh versus viewer reuse-only classification,
-source AccountSnapshot lineage, and final guarded NetWorth creation. Since
-5M-A, the public result also exposes the exact read manifest consisting of the
-executor timestamp, granularity, output currency, calculation version, and
-every validated `(account_id, snapshot_id)` identity in deterministic executor
-order. This is the only public account/source lineage: when non-empty, it calls
-the existing exact 5L portfolio and dashboard reads without another database
-query, account discovery, latest selection, sort, or fallback.
+R5-B3B projects that bucket and principal into one exact R5-B3A command. The
+production market stage runs first; only its successful validated result may
+start the coordinated executor. That nested executor remains the source of
+persisted User base currency, complete account coverage, refresh versus viewer
+reuse-only classification, source AccountSnapshot lineage, and final guarded
+NetWorth creation. Since 5M-A, the public result also exposes the exact read
+manifest consisting of the executor timestamp, granularity, output currency,
+calculation version, and every validated `(account_id, snapshot_id)` identity
+in deterministic executor order. This is the only public account/source
+lineage: when non-empty, it calls the existing exact 5L portfolio and dashboard
+reads without another database query, account discovery, latest selection,
+sort, or fallback.
+
+Market and snapshot persistence are separate committed phases. Market failure
+prevents every snapshot writer. A later snapshot failure preserves committed
+market evidence, and a zero-requirement market plan proceeds normally.
+Production cross-currency endpoint refresh supports foreign-to-CZK evidence
+through ČNB. Unsupported direct non-CZK pairs fail generically before snapshot
+execution and never fall back to ECB, inverse, cross-rate, or manual evidence.
+No market ID, provider identity, or market count enters the public result.
 
 Every successful non-empty manifest is directly compatible with both 5L
 request contracts and is transported unchanged. A successful empty manifest
@@ -781,12 +808,13 @@ manifest and other missing/incomplete evidence use the generic unavailable
 HTTP 409 contract; immutable conflict retains its distinct generic HTTP 409
 contract, neither identifying the failing account.
 
-Because each AccountSnapshot writer commits independently, an unavailable
-response can coexist with valid completed account rows. The next identical
-request resumes through exact replay and creates NetWorth only after all
-required identities are complete. E1 introduces no compensation, persisted
-execution state, migration, automatic retry, scheduler, worker, background job,
-or background execution.
+After a successful market stage, each AccountSnapshot writer commits
+independently, so an unavailable response can coexist with valid completed
+account rows and valid market evidence. The next identical request resumes
+through exact replay and creates NetWorth only after all required identities
+are complete. E1 introduces no compensation, persisted execution state,
+migration, automatic retry, scheduler, worker, background job, or background
+execution.
 
 ## Import post-processing outcome
 
@@ -801,7 +829,9 @@ batch and then refresh all snapshots reachable by the principal's current user.
 The refresh uses source `import_event`, the common AccountSnapshot/NetWorth
 calculation version, and a minute bucket derived from the persisted
 `ImportBatch.completedAt`. Replaying the batch therefore reuses the same
-Holding and snapshot identities.
+Holding and snapshot identities. This existing import boundary still calls the
+snapshot executor without R5-B3A market orchestration; R5-B3C owns that planned
+integration.
 
 `ImportPostResponse.snapshot_refresh_status` is a Python/API-only enum with
 `created`, `replayed`, `not_required`, `unavailable`, and `conflict`. It does

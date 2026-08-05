@@ -17,7 +17,7 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                       |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K/5M-A and internal R5-B3A market-backed orchestration implemented          |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K/5M-A and R5-B3B manual market-backed integration implemented              |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                |
 | market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A through R5-B3A internal coordinated consumption implemented             |
 | prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB, CoinGecko, and Twelve Data live; approved integrations remain planned  |
@@ -117,9 +117,9 @@ excess identities, invalid numbers, future/stale time, or `NUMERIC(28,10)`
 overprecision fail without rounding or timestamp repair. An Anycoin Listing
 without a CoinGecko alias is therefore unavailable. Trading212-style listed
 securities require their separate canonical Twelve Data alias; the adapter
-does not reuse the broker identity. R5-B3A composes the internal refresh while
-R5-B3B/R5-B3C retain approved manual/import integration. Overall R5 remains
-in progress.
+does not reuse the broker identity. R5-B3A composes the internal refresh and
+R5-B3B connects it to the approved manual endpoint. R5-B3C retains approved
+import integration. Overall R5 remains in progress.
 
 R5-B3A adds one internal orchestrator in `snapshot_refresh` without moving
 financial logic out of `market_data`, `snapshots`, or `net_worth`. Its
@@ -143,10 +143,26 @@ runs the snapshot executor. The combined immutable result cross-validates
 user, timestamp, output currency, canonical market IDs, create/replay counts,
 snapshot dispositions, aggregate counts, and exact AccountSnapshot lineage.
 
-R5-B3A has no endpoint, scheduler, worker, queue, retry, cache, frontend,
-schema, migration, or OpenAPI surface. It is not yet called by import
-post-processing or either manual snapshot endpoint. R5-B3B and R5-B3C own
-those later approved integrations, and overall R5 remains in progress.
+R5-B3B wires the existing authenticated manual endpoint to that orchestrator
+with the same request-scoped session and application-state settings. After the
+authentication read transaction closes, one clock read creates the canonical
+minute bucket and one exact market-backed command. The route and successful
+response remain unchanged; market requirements, IDs, provider identities, and
+counts are not public.
+
+There is no direct manual executor fallback. Market failure prevents snapshot
+execution, while snapshot failure after the market commit preserves valid
+append-only evidence. Empty market plans continue normally. Production
+mixed-currency endpoint refresh is supported for CZK output through exact
+Twelve Data, CoinGecko, and ČNB evidence. Non-CZK plans remain supported when
+they need no cross-FX; unsupported direct pairs such as USD-to-EUR fail through
+the generic unavailable contract without ECB, inverse, cross-rate, or manual
+fallback.
+
+R5-B3B adds no new endpoint, scheduler, worker, queue, retry, cache, frontend,
+schema, migration, or OpenAPI surface. Import post-processing still does not
+call the market-backed service; R5-B3C owns that approved integration, the R5
+final audit remains planned, and overall R5 remains in progress.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated
@@ -537,18 +553,19 @@ public/import boundary.
 `POST /api/v1/snapshot-refresh/recalculate`; it has no request body, path/query
 selector, or caller-owned snapshot metadata. It derives the user only from
 `CurrentPrincipal`, closes the authentication read transaction, verifies an
-idle session, and invokes the 5K-D2 executor once with one server-owned UTC
-minute bucket and the shared AccountSnapshot/NetWorth calculation version.
-Persisted User state still owns output currency, and 5K-B/5K-D2 still own
-membership roles and viewer `reuse_only` behavior.
+idle session, and invokes the R5-B3A market-backed service once with one
+server-owned UTC minute bucket and the shared AccountSnapshot/NetWorth
+calculation version. R5-B3A completes production market evidence before it may
+invoke 5K-D2. Persisted User state still owns output currency, and 5K-B/5K-D2
+still own membership roles and viewer `reuse_only` behavior.
 
 The E1 response contains NetWorth identity/status, bucket metadata, currency,
 aggregate account counts, and—since 5M-A—the exact manifest for the existing
 5L portfolio and dashboard read APIs. The manifest copies calculation version
 and the ordered `(account_id, snapshot_id)` tuple directly from the already
-validated executor result. It performs no second database read, membership
-account discovery, latest selection, sort, or fallback. Incomplete or
-inconsistent lineage fails the complete result closed.
+validated snapshot part of the combined result. It performs no second database
+read, membership account discovery, latest selection, sort, or fallback.
+Incomplete or inconsistent lineage fails the complete result closed.
 
 Every successful non-empty refresh manifest is directly compatible with both
 unchanged 5L request contracts and must be transported without discovery,
@@ -565,7 +582,8 @@ Incomplete state and immutable conflicts become separate generic HTTP 409
 application errors. Independently committed account rows survive a later
 failure and allow exact replay on a repeated request. E1 adds no scheduler,
 worker, queue, background task, import hook, schema, or migration;
-import/post-processing integration is implemented separately by 5K-E2.
+the existing 5K-E2 import snapshot integration does not use R5-B3A until
+R5-B3C.
 
 5K-E2 adds an `imports`-owned post-processing orchestrator above the unchanged
 canonical posting transaction. Posting commits first and returns immutable

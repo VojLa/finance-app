@@ -11,16 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
+from app.modules.market_data.models import MarketEvidenceRefreshResult
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh import version as snapshot_refresh_version
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
     ExecutedAccountSnapshotRefresh,
-    ExecuteUserSnapshotRefreshCommand,
     ExecuteUserSnapshotRefreshResult,
-    SnapshotRefreshExecutionConflictError,
-    SnapshotRefreshExecutionStateError,
 )
 from app.modules.snapshot_refresh.manual_service import (
     CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION,
@@ -33,6 +31,12 @@ from app.modules.snapshot_refresh.manual_service import (
     UserSnapshotRefreshConflictError,
     UserSnapshotRefreshUnavailableError,
     canonical_manual_user_snapshot_refresh_bucket,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
 
@@ -136,6 +140,31 @@ def _executor_result(
     )
 
 
+def _market_result() -> MarketEvidenceRefreshResult:
+    return MarketEvidenceRefreshResult(
+        user_id="user-a",
+        snapshot_timestamp=BUCKET,
+        output_currency="EUR",
+        required_price_count=0,
+        required_fx_count=0,
+        price_ids=(),
+        exchange_rate_ids=(),
+        prices_created=0,
+        prices_replayed=0,
+        rates_created=0,
+        rates_replayed=0,
+    )
+
+
+def _combined_result(
+    snapshots: ExecuteUserSnapshotRefreshResult | None = None,
+) -> ExecuteMarketBackedSnapshotRefreshResult:
+    return ExecuteMarketBackedSnapshotRefreshResult(
+        market=_market_result(),
+        snapshots=snapshots or _executor_result(),
+    )
+
+
 def _session(
     *,
     active: bool = True,
@@ -166,22 +195,26 @@ def _service(
     result: object | None = None,
     error: Exception | None = None,
     clock: Mock | None = None,
+    combined_result: object | None = None,
 ) -> tuple[ManualUserSnapshotRefreshService, AsyncSession, Mock, Mock]:
     active_session = session or _session()
-    executor = Mock(
+    market_backed_service = Mock(
         execute=AsyncMock(
-            return_value=result or _executor_result(),
+            return_value=(
+                combined_result
+                if combined_result is not None
+                else _combined_result(cast(ExecuteUserSnapshotRefreshResult | None, result))
+            ),
             side_effect=error,
         )
     )
-    factory = Mock(return_value=executor)
     active_clock = clock or Mock(return_value=RAW_NOW)
     service = ManualUserSnapshotRefreshService(
         active_session,
         clock=active_clock,
-        executor_factory=factory,
+        market_backed_service=market_backed_service,
     )
-    return service, active_session, factory, executor
+    return service, active_session, market_backed_service, market_backed_service
 
 
 @pytest.mark.parametrize(
@@ -194,31 +227,32 @@ def _service(
         RecalculateUserSnapshotRefreshCommand(principal=_principal("user-a ")),
     ],
 )
-async def test_invalid_command_fails_before_clock_and_executor(command: object) -> None:
+async def test_invalid_command_fails_before_clock_and_market_backed_service(
+    command: object,
+) -> None:
     clock = Mock()
-    service, session, factory, _ = _service(clock=clock)
+    service, session, market_backed_service, _ = _service(clock=clock)
 
     with pytest.raises(UserSnapshotRefreshUnavailableError):
         await service.recalculate(cast(Any, command))
 
     clock.assert_not_called()
-    factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
     cast(Any, session.commit).assert_not_awaited()
     cast(Any, session.rollback).assert_awaited_once_with()
 
 
-async def test_exact_executor_command_uses_principal_and_one_bucket() -> None:
+async def test_exact_market_backed_command_uses_principal_and_one_bucket() -> None:
     clock = Mock(return_value=RAW_NOW)
-    service, session, factory, executor = _service(clock=clock)
+    service, session, market_backed_service, _ = _service(clock=clock)
 
     result = await service.recalculate(
         RecalculateUserSnapshotRefreshCommand(principal=_principal())
     )
 
     cast(Any, session.commit).assert_awaited_once_with()
-    factory.assert_called_once_with(session)
-    executor.execute.assert_awaited_once_with(
-        ExecuteUserSnapshotRefreshCommand(
+    market_backed_service.execute.assert_awaited_once_with(
+        ExecuteMarketBackedSnapshotRefreshCommand(
             user_id="user-a",
             snapshot_timestamp=BUCKET,
             granularity=MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY,
@@ -239,7 +273,10 @@ async def test_exact_executor_command_uses_principal_and_one_bucket() -> None:
         SnapshotRefreshAccountSelection("account-b", "snapshot-account-b"),
         SnapshotRefreshAccountSelection("account-c", "snapshot-account-c"),
     )
-    assert not hasattr(executor.execute.await_args.args[0], "output_currency")
+    assert not hasattr(
+        market_backed_service.execute.await_args.args[0],
+        "output_currency",
+    )
 
 
 def test_manual_bucket_normalizes_aware_and_naive_values() -> None:
@@ -254,16 +291,16 @@ def test_manual_bucket_normalizes_aware_and_naive_values() -> None:
     assert canonical_manual_user_snapshot_refresh_bucket(BUCKET).tzinfo is None
 
 
-async def test_invalid_clock_result_maps_unavailable_without_executor() -> None:
-    service, _, factory, _ = _service(clock=Mock(return_value="not-a-datetime"))
+async def test_invalid_clock_result_maps_unavailable_without_market_backed_call() -> None:
+    service, _, market_backed_service, _ = _service(clock=Mock(return_value="not-a-datetime"))
 
     with pytest.raises(UserSnapshotRefreshUnavailableError):
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
-    factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
 
 
-async def test_calculation_version_mismatch_fails_before_clock_and_executor(
+async def test_calculation_version_mismatch_fails_before_clock_and_market_backed_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -272,91 +309,81 @@ async def test_calculation_version_mismatch_fails_before_clock_and_executor(
         CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION + 1,
     )
     clock = Mock()
-    service, session, factory, _ = _service(clock=clock)
+    service, session, market_backed_service, _ = _service(clock=clock)
 
     with pytest.raises(UserSnapshotRefreshUnavailableError):
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
     clock.assert_not_called()
-    factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
     cast(Any, session.rollback).assert_awaited_once_with()
 
 
-async def test_commit_finishes_before_executor_factory_receives_idle_session() -> None:
+async def test_authentication_transaction_finishes_before_market_backed_call() -> None:
     events: list[str] = []
     session = _session()
     original_commit = cast(Any, session.commit).side_effect
-    executor = Mock(execute=AsyncMock(return_value=_executor_result()))
+    market_backed_service = Mock()
 
     async def commit() -> None:
         events.append("commit")
         await original_commit()
 
-    def factory(received: AsyncSession) -> object:
-        events.append("factory")
-        assert received is session
-        assert received.in_transaction() is False
-        return executor
+    async def execute(command: object) -> object:
+        events.append("market-backed")
+        assert session.in_transaction() is False
+        return _combined_result()
 
     cast(Any, session.commit).side_effect = commit
+    market_backed_service.execute = AsyncMock(side_effect=execute)
     await ManualUserSnapshotRefreshService(
         session,
         clock=lambda: RAW_NOW,
-        executor_factory=cast(Any, factory),
+        market_backed_service=market_backed_service,
     ).recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
-    assert events == ["commit", "factory"]
+    assert events == ["commit", "market-backed"]
 
 
 async def test_commit_failure_rolls_back_and_propagates_original() -> None:
     failure = SQLAlchemyError("controlled commit failure")
     session = _session(commit_error=failure)
-    service, _, factory, _ = _service(session=session)
+    service, _, market_backed_service, _ = _service(session=session)
 
     with pytest.raises(SQLAlchemyError) as raised:
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
     assert raised.value is failure
     cast(Any, session.rollback).assert_awaited_once_with()
-    factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
 
 
 async def test_active_session_after_commit_is_internal_failure() -> None:
     session = _session(remain_active_after_commit=True)
-    service, _, factory, _ = _service(session=session)
+    service, _, market_backed_service, _ = _service(session=session)
 
     with pytest.raises(RuntimeError, match="requires an idle database session"):
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
     cast(Any, session.rollback).assert_awaited_once_with()
-    factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
 
 
-@pytest.mark.parametrize("stage", ["factory", "executor"])
-async def test_dependency_transaction_leak_rolls_back_as_runtime_error(
-    stage: str,
-) -> None:
+async def test_dependency_transaction_leak_rolls_back_as_runtime_error() -> None:
     session = _session()
     state = cast(Any, session.in_transaction).side_effect
-    executor = Mock(execute=AsyncMock(return_value=_executor_result()))
+    market_backed_service = Mock()
 
-    def factory(received: AsyncSession) -> object:
-        if stage == "factory":
-            cast(Any, received.in_transaction).side_effect = lambda: True
-        return executor
+    async def execute(command: object) -> object:
+        cast(Any, session.in_transaction).side_effect = lambda: True
+        return _combined_result()
 
-    if stage == "executor":
-
-        async def execute(command: object) -> object:
-            cast(Any, session.in_transaction).side_effect = lambda: True
-            return _executor_result()
-
-        executor.execute.side_effect = execute
+    market_backed_service.execute = AsyncMock(side_effect=execute)
 
     service = ManualUserSnapshotRefreshService(
         session,
         clock=lambda: RAW_NOW,
-        executor_factory=cast(Any, factory),
+        market_backed_service=market_backed_service,
     )
     with pytest.raises(RuntimeError, match="active database transaction"):
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
@@ -369,30 +396,30 @@ async def test_dependency_transaction_leak_rolls_back_as_runtime_error(
     ("failure", "expected"),
     [
         (
-            SnapshotRefreshExecutionStateError(),
+            MarketBackedSnapshotRefreshUnavailableError(),
             UserSnapshotRefreshUnavailableError,
         ),
         (
-            SnapshotRefreshExecutionConflictError(),
+            MarketBackedSnapshotRefreshConflictError(),
             UserSnapshotRefreshConflictError,
         ),
     ],
 )
-async def test_executor_errors_map_to_generic_application_errors(
+async def test_market_backed_errors_map_to_generic_application_errors(
     failure: Exception,
     expected: type[Exception],
 ) -> None:
-    service, _, _, executor = _service(error=failure)
+    service, _, market_backed_service, _ = _service(error=failure)
 
     with pytest.raises(expected) as raised:
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
     assert raised.value.__cause__ is failure
     assert str(failure) not in str(raised.value)
-    executor.execute.assert_awaited_once()
+    market_backed_service.execute.assert_awaited_once()
 
 
-async def test_unexpected_executor_error_propagates_unchanged() -> None:
+async def test_unexpected_market_backed_error_propagates_unchanged() -> None:
     failure = RuntimeError("controlled programming error")
     service, _, _, _ = _service(error=failure)
 
@@ -400,6 +427,27 @@ async def test_unexpected_executor_error_propagates_unchanged() -> None:
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
 
     assert raised.value is failure
+
+
+async def test_unexpected_error_with_transaction_leak_rolls_back_as_runtime_error() -> None:
+    session = _session()
+    market_backed_service = Mock()
+
+    async def execute(command: object) -> object:
+        cast(Any, session.in_transaction).side_effect = lambda: True
+        raise SQLAlchemyError("controlled database failure")
+
+    market_backed_service.execute = AsyncMock(side_effect=execute)
+    service = ManualUserSnapshotRefreshService(
+        session,
+        clock=lambda: RAW_NOW,
+        market_backed_service=market_backed_service,
+    )
+
+    with pytest.raises(RuntimeError, match="active database transaction"):
+        await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
+
+    cast(Any, session.rollback).assert_awaited_once_with()
 
 
 @pytest.mark.parametrize(
@@ -495,12 +543,21 @@ async def test_unexpected_executor_error_propagates_unchanged() -> None:
         ),
     ],
 )
-async def test_malformed_executor_result_maps_unavailable(mutate: Any) -> None:
+async def test_malformed_snapshot_result_maps_unavailable(mutate: Any) -> None:
     value = mutate(_executor_result())
     service, _, _, _ = _service(result=value)
 
     with pytest.raises(UserSnapshotRefreshUnavailableError):
         await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
+
+
+async def test_wrong_combined_result_type_maps_unavailable() -> None:
+    service, _, market_backed_service, _ = _service(combined_result=object())
+
+    with pytest.raises(UserSnapshotRefreshUnavailableError):
+        await service.recalculate(RecalculateUserSnapshotRefreshCommand(principal=_principal()))
+
+    market_backed_service.execute.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -561,7 +618,9 @@ async def test_manifest_preserves_validated_lineage_order_without_database_reads
             AccountSnapshotRefreshExecutionDisposition.reused,
         ),
     )
-    service, session, _, executor = _service(result=_executor_result(executions=executions))
+    service, session, market_backed_service, _ = _service(
+        result=_executor_result(executions=executions)
+    )
 
     result = await service.recalculate(
         RecalculateUserSnapshotRefreshCommand(principal=_principal())
@@ -574,7 +633,7 @@ async def test_manifest_preserves_validated_lineage_order_without_database_reads
         item.snapshot_id for item in executions
     )
     assert len(result.accounts) == result.selected_account_snapshot_count
-    executor.execute.assert_awaited_once()
+    market_backed_service.execute.assert_awaited_once()
     cast(Any, session.execute).assert_not_awaited()
     cast(Any, session.scalar).assert_not_awaited()
     cast(Any, session.scalars).assert_not_awaited()
@@ -648,6 +707,51 @@ async def test_empty_user_result_is_valid() -> None:
     assert result.reuse_only_account_count == 0
     assert result.selected_account_snapshot_count == 0
     assert result.accounts == ()
+
+
+async def test_empty_market_plan_continues_to_snapshot_result() -> None:
+    combined = _combined_result()
+    service, _, market_backed_service, _ = _service(combined_result=combined)
+
+    result = await service.recalculate(
+        RecalculateUserSnapshotRefreshCommand(principal=_principal())
+    )
+
+    market_backed_service.execute.assert_awaited_once()
+    assert combined.market.required_price_count == 0
+    assert combined.market.required_fx_count == 0
+    assert result.net_worth_snapshot_id == combined.snapshots.net_worth_snapshot_id
+
+
+async def test_market_evidence_identities_do_not_cross_manual_result_boundary() -> None:
+    market = replace(
+        _market_result(),
+        required_price_count=1,
+        required_fx_count=1,
+        price_ids=("sensitive-price-id",),
+        exchange_rate_ids=("sensitive-rate-id",),
+        prices_created=1,
+        rates_created=1,
+    )
+    service, _, _, _ = _service(
+        combined_result=ExecuteMarketBackedSnapshotRefreshResult(
+            market=market,
+            snapshots=_executor_result(),
+        )
+    )
+
+    result = await service.recalculate(
+        RecalculateUserSnapshotRefreshCommand(principal=_principal())
+    )
+
+    for field in (
+        "market",
+        "price_ids",
+        "exchange_rate_ids",
+        "required_price_count",
+        "required_fx_count",
+    ):
+        assert not hasattr(result, field)
 
 
 def test_command_and_result_are_frozen_and_slotted() -> None:
