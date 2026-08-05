@@ -184,8 +184,8 @@ def _validate_market_result(
         or rates_created + rates_replayed != len(exchange_rate_ids)
         or len(price_ids) > required_price_count
         or len(exchange_rate_ids) > required_fx_count
-        or (required_price_count == 0 and price_ids)
-        or (required_fx_count == 0 and exchange_rate_ids)
+        or (required_price_count == 0) != (len(price_ids) == 0)
+        or (required_fx_count == 0) != (len(exchange_rate_ids) == 0)
     ):
         raise _unavailable()
     return value

@@ -351,6 +351,78 @@ async def test_invalid_market_result_stops_before_snapshot(
     assert snapshots.commands == []
 
 
+@pytest.mark.asyncio
+async def test_positive_price_requirement_requires_physical_identity() -> None:
+    market_result = _market_result(
+        price_ids=(),
+        exchange_rate_ids=(),
+        required_price_count=1,
+        required_fx_count=0,
+        prices_created=0,
+        prices_replayed=0,
+    )
+    service, _, _, snapshots, _ = _service(market_result=market_result)
+
+    with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
+        await service.execute(_command())
+
+    assert snapshots.commands == []
+
+
+@pytest.mark.asyncio
+async def test_positive_fx_requirement_requires_physical_identity() -> None:
+    market_result = _market_result(
+        price_ids=(),
+        exchange_rate_ids=(),
+        required_price_count=0,
+        required_fx_count=1,
+        rates_created=0,
+        rates_replayed=0,
+    )
+    service, _, _, snapshots, _ = _service(market_result=market_result)
+
+    with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
+        await service.execute(_command())
+
+    assert snapshots.commands == []
+
+
+@pytest.mark.asyncio
+async def test_multiple_price_requirements_may_coalesce_to_one_identity() -> None:
+    market_result = _market_result(
+        price_ids=("price-a",),
+        exchange_rate_ids=(),
+        required_price_count=2,
+        required_fx_count=0,
+        prices_created=1,
+        prices_replayed=0,
+    )
+    service, _, _, snapshots, _ = _service(market_result=market_result)
+
+    result = await service.execute(_command())
+
+    assert result.market is market_result
+    assert len(snapshots.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_fx_requirements_may_coalesce_to_one_identity() -> None:
+    market_result = _market_result(
+        price_ids=(),
+        exchange_rate_ids=("rate-a",),
+        required_price_count=0,
+        required_fx_count=2,
+        rates_created=1,
+        rates_replayed=0,
+    )
+    service, _, _, snapshots, _ = _service(market_result=market_result)
+
+    result = await service.execute(_command())
+
+    assert result.market is market_result
+    assert len(snapshots.commands) == 1
+
+
 @pytest.mark.parametrize(
     "snapshot_result",
     [
