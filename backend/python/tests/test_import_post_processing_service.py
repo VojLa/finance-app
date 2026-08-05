@@ -30,14 +30,19 @@ from app.modules.imports.posting_service import (
     PostImportBatchCommand,
     PostImportBatchResult,
 )
+from app.modules.market_data.models import MarketEvidenceRefreshResult
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
     AccountSnapshotRefreshExecutionDisposition,
     ExecutedAccountSnapshotRefresh,
     ExecuteUserSnapshotRefreshResult,
-    SnapshotRefreshExecutionConflictError,
-    SnapshotRefreshExecutionStateError,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
 
@@ -179,6 +184,33 @@ def _executor_result(
     )
 
 
+def _market_result() -> MarketEvidenceRefreshResult:
+    return MarketEvidenceRefreshResult(
+        user_id="user-a",
+        snapshot_timestamp=BUCKET,
+        output_currency="EUR",
+        required_price_count=0,
+        required_fx_count=0,
+        price_ids=(),
+        exchange_rate_ids=(),
+        prices_created=0,
+        prices_replayed=0,
+        rates_created=0,
+        rates_replayed=0,
+    )
+
+
+def _combined_result(
+    snapshots: ExecuteUserSnapshotRefreshResult | None = None,
+    *,
+    market: MarketEvidenceRefreshResult | None = None,
+) -> ExecuteMarketBackedSnapshotRefreshResult:
+    return ExecuteMarketBackedSnapshotRefreshResult(
+        market=market or _market_result(),
+        snapshots=snapshots or _executor_result(),
+    )
+
+
 def _holding_result(*, replayed: bool = False) -> HoldingRebuildResponse:
     return HoldingRebuildResponse(
         account_id="account-a",
@@ -198,6 +230,7 @@ def _service(
     holding_error: Exception | None = None,
     executor: object | None = None,
     executor_error: Exception | None = None,
+    combined: object | None = None,
 ) -> tuple[
     ImportBatchPostProcessingService,
     _Session,
@@ -222,24 +255,33 @@ def _service(
         return holding if holding is not None else _holding_result()
 
     async def execute(_: object) -> object:
-        calls.append("executor")
+        calls.append("market-backed")
         session.active = False
         if executor_error is not None:
             raise executor_error
-        return executor if executor is not None else _executor_result()
+        if combined is not None:
+            return combined
+        return _combined_result(cast(ExecuteUserSnapshotRefreshResult | None, executor))
 
     posting_factory = Mock(return_value=Mock(post_batch=AsyncMock(side_effect=post_batch)))
     holding_factory = Mock(return_value=Mock(rebuild=AsyncMock(side_effect=rebuild)))
-    executor_factory = Mock(return_value=Mock(execute=AsyncMock(side_effect=execute)))
+    market_backed_service = Mock(execute=AsyncMock(side_effect=execute))
     repository = _AuditRepository(calls)
     service = ImportBatchPostProcessingService(
         cast(AsyncSession, session),
+        market_backed_service=market_backed_service,
         posting_service_factory=posting_factory,
         holding_service_factory=holding_factory,
-        executor_factory=executor_factory,
         repository_factory=Mock(return_value=repository),
     )
-    return service, session, posting_factory, holding_factory, executor_factory, repository
+    return (
+        service,
+        session,
+        posting_factory,
+        holding_factory,
+        market_backed_service,
+        repository,
+    )
 
 
 def test_bucket_is_derived_from_completed_at() -> None:
@@ -272,55 +314,57 @@ async def test_invalid_command_fails_before_posting(command: object) -> None:
 
 
 async def test_zero_import_is_not_required_without_post_processing() -> None:
-    service, session, _, holding_factory, executor_factory, repository = _service(
+    service, session, _, holding_factory, market_backed_service, repository = _service(
         posting=_posting_result(rows_imported=0, transactions=0, investments=0)
     )
     result = await service.post_batch(_command())
     assert result.snapshot_refresh_status is ImportSnapshotRefreshStatus.not_required
     holding_factory.assert_not_called()
-    executor_factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
     assert repository.logs == {}
     assert session.calls == ["posting"]
 
 
-async def test_investment_import_rebuilds_then_executes_and_audits() -> None:
-    service, session, _, holding_factory, executor_factory, repository = _service()
+async def test_investment_import_rebuilds_then_runs_market_backed_and_audits() -> None:
+    service, session, _, holding_factory, market_backed_service, repository = _service()
     result = await service.post_batch(_command())
     assert result.snapshot_refresh_status is ImportSnapshotRefreshStatus.created
     holding_factory.assert_called_once()
     clock = holding_factory.call_args.args[1]
     assert clock() == COMPLETED_AT
-    executor = executor_factory.return_value
-    executor_command = executor.execute.await_args.args[0]
-    assert executor_command.user_id == "user-a"
-    assert executor_command.snapshot_timestamp == BUCKET
-    assert executor_command.granularity is SnapshotGranularity.minute
-    assert executor_command.source is SnapshotSource.import_event
-    assert executor_command.calculation_version == 1
-    assert executor_command.calculated_at == BUCKET
-    assert executor_command.created_at == BUCKET
-    assert executor_command.is_recalculated is False
+    market_backed_service.execute.assert_awaited_once()
+    combined_command = market_backed_service.execute.await_args.args[0]
+    assert combined_command == ExecuteMarketBackedSnapshotRefreshCommand(
+        user_id="user-a",
+        snapshot_timestamp=BUCKET,
+        granularity=SnapshotGranularity.minute,
+        source=SnapshotSource.import_event,
+        calculation_version=1,
+        calculated_at=BUCKET,
+        created_at=BUCKET,
+        is_recalculated=False,
+    )
     assert {cast(Any, log).event for log in repository.logs.values()} == {
         ImportLogEvent.holdings_recalculated,
         ImportLogEvent.snapshots_recalculated,
     }
     assert session.calls.index("posting") < session.calls.index("holding")
-    assert session.calls.index("holding") < session.calls.index("executor")
+    assert session.calls.index("holding") < session.calls.index("market-backed")
     assert session.active is False
 
 
-async def test_transaction_only_import_skips_holding_but_executes() -> None:
-    service, _, _, holding_factory, executor_factory, _ = _service(
+async def test_transaction_only_empty_market_plan_skips_holding_and_executes() -> None:
+    service, _, _, holding_factory, market_backed_service, _ = _service(
         posting=_posting_result(rows_imported=1, transactions=1, investments=0)
     )
     result = await service.post_batch(_command())
     assert result.snapshot_refresh_status is ImportSnapshotRefreshStatus.created
     holding_factory.assert_not_called()
-    executor_factory.assert_called_once()
+    market_backed_service.execute.assert_awaited_once()
 
 
 async def test_replayed_batch_still_rebuilds_and_executes() -> None:
-    service, _, _, holding_factory, executor_factory, _ = _service(
+    service, _, _, holding_factory, market_backed_service, _ = _service(
         posting=_posting_result(replayed=True),
         holding=_holding_result(replayed=True),
         executor=_executor_result(disposition=NetWorthSnapshotWriteDisposition.replayed),
@@ -329,68 +373,74 @@ async def test_replayed_batch_still_rebuilds_and_executes() -> None:
     assert result.replayed is True
     assert result.snapshot_refresh_status is ImportSnapshotRefreshStatus.replayed
     holding_factory.assert_called_once()
-    executor_factory.assert_called_once()
+    market_backed_service.execute.assert_awaited_once()
 
 
-async def test_holding_unavailable_preserves_import_result_and_skips_executor() -> None:
-    service, _, _, _, executor_factory, repository = _service(
+async def test_holding_unavailable_preserves_import_result_and_skips_market() -> None:
+    service, _, _, _, market_backed_service, repository = _service(
         holding_error=HoldingRebuildUnavailableError()
     )
     result = await service.post_batch(_command())
     assert result.status is ImportStatus.completed
     assert result.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
-    executor_factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
     log = next(iter(repository.logs.values()))
     assert cast(Any, log).level is ImportLogLevel.warning
     assert cast(Any, log).event is ImportLogEvent.snapshot_validation_failed
 
 
 @pytest.mark.parametrize(
-    ("error", "status"),
+    ("error", "status", "expected_audit_id"),
     [
         (
-            SnapshotRefreshExecutionStateError(),
+            MarketBackedSnapshotRefreshUnavailableError(),
             ImportSnapshotRefreshStatus.unavailable,
+            "72c2de47-cf4b-501a-bf24-6d3868c8f5c9",
         ),
         (
-            SnapshotRefreshExecutionConflictError(),
+            MarketBackedSnapshotRefreshConflictError(),
             ImportSnapshotRefreshStatus.conflict,
+            "8d87167d-aa17-57fe-b3a5-bb829d0910e6",
         ),
     ],
 )
 async def test_known_snapshot_failure_is_http_success_status(
     error: Exception,
     status: ImportSnapshotRefreshStatus,
+    expected_audit_id: str,
 ) -> None:
     service, _, _, _, _, repository = _service(executor_error=error)
     result = await service.post_batch(_command())
     assert result.snapshot_refresh_status is status
-    assert cast(Any, next(iter(repository.logs.values()))).event in {
-        ImportLogEvent.holdings_recalculated,
-        ImportLogEvent.snapshot_validation_failed,
+    failure_logs = {
+        log_id: cast(Any, log)
+        for log_id, log in repository.logs.items()
+        if cast(Any, log).event is ImportLogEvent.snapshot_validation_failed
     }
+    assert tuple(failure_logs) == (expected_audit_id,)
+    assert failure_logs[expected_audit_id].level is ImportLogLevel.warning
 
 
-async def test_unexpected_holding_and_executor_errors_propagate() -> None:
+async def test_unexpected_holding_and_market_backed_errors_propagate() -> None:
     holding_error = RuntimeError("holding infrastructure")
     service, _, _, _, _, _ = _service(holding_error=holding_error)
     with pytest.raises(RuntimeError, match="holding infrastructure"):
         await service.post_batch(_command())
-    executor_error = RuntimeError("executor infrastructure")
+    executor_error = RuntimeError("market-backed infrastructure")
     service, _, _, _, _, _ = _service(executor_error=executor_error)
-    with pytest.raises(RuntimeError, match="executor infrastructure"):
+    with pytest.raises(RuntimeError, match="market-backed infrastructure"):
         await service.post_batch(_command())
 
 
-async def test_unexpected_executor_error_rolls_back_leaked_transaction() -> None:
+async def test_unexpected_market_backed_error_leak_becomes_runtime_error() -> None:
     service, session, _, _, _, _ = _service()
 
     async def execute(_: object) -> object:
         session.active = True
-        raise RuntimeError("executor infrastructure")
+        raise RuntimeError("market-backed infrastructure")
 
-    service.executor_factory = Mock(return_value=Mock(execute=AsyncMock(side_effect=execute)))
-    with pytest.raises(RuntimeError, match="executor infrastructure"):
+    service.market_backed_service = Mock(execute=AsyncMock(side_effect=execute))
+    with pytest.raises(RuntimeError, match="invalid state"):
         await service.post_batch(_command())
     session.rollback.assert_awaited_once()
     assert session.active is False
@@ -407,11 +457,11 @@ async def test_unexpected_executor_error_rolls_back_leaked_transaction() -> None
     ],
 )
 async def test_malformed_posting_result_is_programming_error(result: object) -> None:
-    service, _, _, holding_factory, executor_factory, _ = _service(posting=result)
+    service, _, _, holding_factory, market_backed_service, _ = _service(posting=result)
     with pytest.raises(RuntimeError):
         await service.post_batch(_command())
     holding_factory.assert_not_called()
-    executor_factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -426,14 +476,52 @@ async def test_malformed_posting_result_is_programming_error(result: object) -> 
         replace(_executor_result(), required_account_snapshot_identities=()),
     ],
 )
-async def test_malformed_executor_result_is_programming_error(result: object) -> None:
+async def test_malformed_snapshot_result_is_programming_error(result: object) -> None:
     service, _, _, _, _, _ = _service(executor=result)
     with pytest.raises(RuntimeError):
         await service.post_batch(_command())
 
 
+async def test_wrong_combined_result_type_is_programming_error() -> None:
+    service, _, _, _, market_backed_service, repository = _service(combined=object())
+
+    with pytest.raises(RuntimeError, match="invalid state"):
+        await service.post_batch(_command())
+
+    market_backed_service.execute.assert_awaited_once()
+    assert repository.logs == {}
+
+
+async def test_market_metadata_never_enters_response_or_audit() -> None:
+    market = replace(
+        _market_result(),
+        required_price_count=1,
+        required_fx_count=1,
+        price_ids=("sensitive-price-id",),
+        exchange_rate_ids=("sensitive-rate-id",),
+        prices_created=1,
+        rates_created=1,
+    )
+    service, _, _, _, _, repository = _service(combined=_combined_result(market=market))
+
+    result = await service.post_batch(_command())
+
+    for field in (
+        "market",
+        "price_ids",
+        "exchange_rate_ids",
+        "provider",
+        "required_price_count",
+        "required_fx_count",
+    ):
+        assert not hasattr(result, field)
+    serialized_audits = repr(tuple(repository.logs.values()))
+    assert "sensitive-price-id" not in serialized_audits
+    assert "sensitive-rate-id" not in serialized_audits
+
+
 async def test_dependency_transaction_leak_is_rolled_back() -> None:
-    service, session, _, _, executor_factory, _ = _service()
+    service, session, _, _, market_backed_service, _ = _service()
 
     async def leaking_post(_: object) -> PostImportBatchResult:
         session.active = True
@@ -445,7 +533,7 @@ async def test_dependency_transaction_leak_is_rolled_back() -> None:
     with pytest.raises(RuntimeError, match="Import posting dependency"):
         await service.post_batch(_command())
     session.rollback.assert_awaited_once()
-    executor_factory.assert_not_called()
+    market_backed_service.execute.assert_not_awaited()
 
 
 async def test_commands_and_results_are_immutable() -> None:

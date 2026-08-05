@@ -9,7 +9,7 @@ thin and shared database infrastructure lives outside modules.
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                     | Implemented                                                                 |
 | `accounts`            | Account lifecycle, memberships, and invitations                                      | Implemented                                                                 |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
-| `imports`             | Register, upload, parse, normalize, and deduplicate CSV import batches               | Implemented through duplicate detection                                     |
+| `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation              | 5L complete; final cross-boundary audit passed                              |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
@@ -17,10 +17,10 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                       |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K/5M-A and R5-B3B manual market-backed integration implemented              |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | R5-B3A coordinator used by R5-B3B manual and R5-B3C import paths             |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                |
-| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A through R5-B3A internal coordinated consumption implemented             |
-| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB, CoinGecko, and Twelve Data live; approved integrations remain planned  |
+| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A through R5-B3C coordinated production consumption implemented           |
+| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB, CoinGecko, and Twelve Data used by manual and import refresh            |
 | dashboard / reporting | Dashboard read models                                                                | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
@@ -118,8 +118,8 @@ overprecision fail without rounding or timestamp repair. An Anycoin Listing
 without a CoinGecko alias is therefore unavailable. Trading212-style listed
 securities require their separate canonical Twelve Data alias; the adapter
 does not reuse the broker identity. R5-B3A composes the internal refresh and
-R5-B3B connects it to the approved manual endpoint. R5-B3C retains approved
-import integration. Overall R5 remains in progress.
+R5-B3B connects it to the approved manual endpoint and R5-B3C connects it to
+approved import post-processing. Overall R5 remains in progress.
 
 R5-B3A adds one internal orchestrator in `snapshot_refresh` without moving
 financial logic out of `market_data`, `snapshots`, or `net_worth`. Its
@@ -160,9 +160,10 @@ the generic unavailable contract without ECB, inverse, cross-rate, or manual
 fallback.
 
 R5-B3B adds no new endpoint, scheduler, worker, queue, retry, cache, frontend,
-schema, migration, or OpenAPI surface. Import post-processing still does not
-call the market-backed service; R5-B3C owns that approved integration, the R5
-final audit remains planned, and overall R5 remains in progress.
+schema, migration, or OpenAPI surface. R5-B3C now makes the existing import
+post-processing boundary call the same market-backed service after posting and
+Holding rebuild. The R5 final audit remains planned, and overall R5 remains in
+progress.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated
@@ -581,25 +582,29 @@ lineage, FX evidence, projections, and audits never cross the public boundary.
 Incomplete state and immutable conflicts become separate generic HTTP 409
 application errors. Independently committed account rows survive a later
 failure and allow exact replay on a repeated request. E1 adds no scheduler,
-worker, queue, background task, import hook, schema, or migration;
-the existing 5K-E2 import snapshot integration does not use R5-B3A until
-R5-B3C.
+worker, queue, background task, schema, or migration.
 
 5K-E2 adds an `imports`-owned post-processing orchestrator above the unchanged
 canonical posting transaction. Posting commits first and returns immutable
 persisted target counts. Investment-event imports then run the authorized
-Holding rebuild; every nonempty import then invokes the whole-user coordinated
-snapshot executor with `SnapshotSource.import_event` and the minute bucket
-derived from the terminal batch `completedAt`. Each existing domain retains its
-own transaction and commit.
+Holding rebuild; every nonempty import then invokes the R5-B3A market-backed
+coordinator with `SnapshotSource.import_event` and the minute bucket derived
+from the terminal batch `completedAt`. Production market evidence completes
+before the coordinator may invoke the whole-user snapshot executor. Each
+existing domain retains its own transaction and commit, and the session must
+be idle at every handoff.
 
 Known Holding or snapshot incompleteness/conflict is therefore a truthful
 post-commit outcome, not an import rollback: the existing import endpoint
 returns HTTP 200 plus one aggregate `snapshot_refresh_status`. Deterministic
 ImportLog rows are audit-only and use advisory-lock-protected UUIDv5 identity;
-they do not suppress replay. No account/snapshot lineage is exposed and no
-scheduler, queue, worker, background task, job table, schema change, or
-compensation operation is introduced.
+they do not suppress replay. Market IDs, provider metadata, requirements, and
+counts are not exposed in either the audit or unchanged `ImportPostResponse`.
+Missing or ambiguous aliases are unavailable before provider HTTP. A delayed
+replay retains the persisted historical bucket and rejects future provider
+observations; the manual endpoint owns later current-state recovery. Alias
+onboarding is outside R5-B3C. No scheduler, queue, worker, background task, job
+table, schema change, or compensation operation is introduced.
 
 The final 5K audit verifies this complete chain against isolated PostgreSQL
 databases and both public entry points. It confirms one non-inverted lock order

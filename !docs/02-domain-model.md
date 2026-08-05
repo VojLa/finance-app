@@ -12,7 +12,7 @@ application service yet.
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                           |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                           |
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                           |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence providers implemented; public refresh orchestration remains R5-B3 |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence feeds manual and import refresh; R5 final audit remains planned    |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                           |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented   |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                               |
@@ -178,9 +178,9 @@ CZK-output users may combine USD and EUR holdings through exact Twelve Data,
 CoinGecko, and ČNB evidence. A non-CZK output remains valid when no cross-FX is
 needed; unsupported direct FX such as USD-to-EUR is generically unavailable
 without ECB, inverse, cross-rate, or manual fallback. R5-B3B changes no
-endpoint, frontend, schema, migration, or OpenAPI contract. Import
-post-processing does not use this service yet. R5-B3C and the R5 final audit
-remain planned, and R5 remains in progress.
+endpoint, frontend, schema, migration, or OpenAPI contract. R5-B3C now uses
+this service from import post-processing after canonical posting and Holding
+rebuild. The R5 final audit remains planned, and R5 remains in progress.
 
 ## Important relationships
 
@@ -825,21 +825,33 @@ imported row must reference exactly one target and target counts must equal
 fields.
 
 After that service commits, 5K-E2 may rebuild Holdings for an investment-event
-batch and then refresh all snapshots reachable by the principal's current user.
-The refresh uses source `import_event`, the common AccountSnapshot/NetWorth
-calculation version, and a minute bucket derived from the persisted
-`ImportBatch.completedAt`. Replaying the batch therefore reuses the same
-Holding and snapshot identities. This existing import boundary still calls the
-snapshot executor without R5-B3A market orchestration; R5-B3C owns that planned
-integration.
+batch and then invokes R5-B3A for all snapshots reachable by the principal's
+current user. Market evidence always precedes snapshot execution. The exact
+command uses source `import_event`, the common AccountSnapshot/NetWorth
+calculation version, and one minute bucket derived from persisted
+`ImportBatch.completedAt` for snapshot, calculation, and creation time.
+Replaying the batch therefore reuses the same Holding, market, and snapshot
+identities without a current-time replacement.
+
+These stages are not one atomic transaction. Market failure leaves posting and
+rebuilt Holdings committed and prevents snapshot execution. Snapshot failure
+after a market commit leaves valid append-only evidence intact. Empty market
+requirements are valid. Missing or ambiguous aliases are generically
+unavailable before HTTP, and the import boundary never derives aliases from
+ticker, ISIN, or name. A delayed replay rejects provider observations newer
+than its original bucket rather than repairing timestamps; the manual refresh
+endpoint owns later current-state recovery. Alias onboarding is outside
+R5-B3C.
 
 `ImportPostResponse.snapshot_refresh_status` is a Python/API-only enum with
 `created`, `replayed`, `not_required`, `unavailable`, and `conflict`. It does
-not alter ImportBatch status and has no database enum. Known post-processing
-failure leaves canonical imported rows and any committed Holding or
-AccountSnapshot rows intact. ImportLog records generic deterministic audits,
-not job progress. There is no compensation, migration, job table, scheduler,
-worker, queue, or background task.
+not alter ImportBatch status and has no database enum. Its fields and OpenAPI
+shape remain unchanged, and neither it nor the deterministic generic ImportLog
+exposes market IDs, provider metadata, requirements, or counts. Known
+post-processing failure leaves canonical imported rows and any committed
+Holding, market evidence, or AccountSnapshot rows intact. ImportLog records
+audits, not job progress. There is no compensation, migration, job table,
+scheduler, worker, queue, or background task.
 
 ## Final coordinated-refresh audit
 
