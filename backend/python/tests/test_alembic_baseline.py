@@ -11,6 +11,7 @@ from scripts.alembic_baseline import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
     HEAD_REVISION,
+    PREVIOUS_HEAD_REVISION,
     DatabaseState,
     verify_database_state,
     verify_manifest,
@@ -21,7 +22,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = BACKEND_ROOT / "migrations" / "versions" / "3d0001base_prisma_schema_baseline.py"
 CUTOVER_PATH = BACKEND_ROOT / "migrations" / "versions" / "3e0001cutover_alembic_ownership.py"
 FIRST_HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
-HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3g0001liabbal_add_liability_balances.py"
+LIABILITY_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3g0001liabbal_add_liability_balances.py"
+)
+HEAD_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3h0001twdata_add_twelve_data_provider_identity.py"
+)
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
 
@@ -78,10 +84,10 @@ def test_first_schema_revision_metadata_and_data_loss_guard() -> None:
 
 
 def test_liability_schema_revision_metadata_and_data_loss_guard() -> None:
-    revision = load_revision(HEAD_PATH, "liability_balances")
-    source = HEAD_PATH.read_text(encoding="utf-8")
+    revision = load_revision(LIABILITY_PATH, "liability_balances")
+    source = LIABILITY_PATH.read_text(encoding="utf-8")
 
-    assert revision.revision == HEAD_REVISION
+    assert revision.revision == PREVIOUS_HEAD_REVISION
     assert revision.down_revision == "3f0001acctnote"
     assert revision.schema_change is True
     assert revision.schema_change_kind == "add_liability_balance_contract"
@@ -93,18 +99,34 @@ def test_liability_schema_revision_metadata_and_data_loss_guard() -> None:
     assert 'SELECT EXISTS (SELECT 1 FROM "public"."LiabilityBalance")' in source
 
 
+def test_twelve_data_identity_revision_metadata_and_downgrade_policy() -> None:
+    revision = load_revision(HEAD_PATH, "twelve_data_provider_identity")
+    source = HEAD_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == HEAD_REVISION
+    assert revision.down_revision == PREVIOUS_HEAD_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "extend_market_provider_identity_enums"
+    assert revision.affected_tables == ("AssetAlias", "AssetListing", "PriceSnapshot")
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    assert source.count("ADD VALUE IF NOT EXISTS 'twelve_data'") == 2
+    with pytest.raises(RuntimeError, match="cannot be downgraded automatically"):
+        revision.downgrade()
+
+
 def test_manifest_records_first_alembic_schema_head() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 8
+    assert manifest["schema_version"] == 9
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 4
+    assert baseline["revision_count"] == 5
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 4
+    assert alembic["revision_count"] == 5
 
     verify_manifest()
     verify_revision_graph()
@@ -115,6 +137,7 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(30, 27, (BASELINE_REVISION,)))
     verify_database_state(DatabaseState(30, 27, (CUTOVER_REVISION,)))
     verify_database_state(DatabaseState(30, 27, ("3f0001acctnote",)))
+    verify_database_state(DatabaseState(31, 28, (PREVIOUS_HEAD_REVISION,)))
     verify_database_state(DatabaseState(31, 28, (HEAD_REVISION,)))
 
 

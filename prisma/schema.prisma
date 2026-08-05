@@ -509,6 +509,7 @@ enum AssetAliasProvider {
   coingecko
   yahoo_finance
   stooq
+  twelve_data
   broker
   exchange
 }
@@ -535,6 +536,7 @@ enum PriceSource {
   coingecko
   yahoo_finance
   stooq
+  twelve_data
   manual
   broker
   exchange

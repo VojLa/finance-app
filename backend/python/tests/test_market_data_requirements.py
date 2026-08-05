@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.config.settings import Settings
 from app.db.models.accounts import AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.enums import (
@@ -26,12 +27,15 @@ from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
-from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.models import MarketEvidenceStateError, PriceRequirement
+from app.modules.market_data.providers import PriceProviderRegistry
 from app.modules.market_data.requirements import (
     BuildMarketEvidenceRefreshPlanCommand,
     MarketEvidenceRequirementsPlanner,
 )
 from app.modules.market_data.requirements_repository import PersistedMarketHolding
+from app.modules.prices.models import PriceObservation
+from app.modules.prices.providers import create_production_price_registry
 
 SNAPSHOT_AT = datetime(2026, 8, 3, 12)
 EVENT_AT = SNAPSHOT_AT - timedelta(days=3)
@@ -98,6 +102,13 @@ class _Repository:
     ) -> tuple[LiabilityBalanceModel, ...]:
         self.calls.append(("liabilities", account_ids, through))
         return self.liability_balances
+
+
+class _InjectedTwelveDataProvider:
+    source = PriceSource.twelve_data
+
+    async def fetch(self, _requirement: PriceRequirement) -> PriceObservation:
+        raise AssertionError("Planner tests must not call a provider.")
 
 
 def _user(*, currency: str = "CZK") -> UserModel:
@@ -386,6 +397,71 @@ async def test_plan_uses_one_exact_supported_asset_alias() -> None:
 
     assert plan.price_requirements[0].provider is PriceSource.coingecko
     assert plan.price_requirements[0].provider_symbol == "exact-coin"
+
+
+@pytest.mark.asyncio
+async def test_injected_twelve_data_provider_uses_exact_opaque_alias() -> None:
+    registry = PriceProviderRegistry((_InjectedTwelveDataProvider(),))
+    repository = _Repository()
+    repository.holdings = (
+        _holding(
+            provider=PriceSource.broker,
+            provider_symbol="TRADING212",
+            aliases=(_alias(AssetAliasProvider.twelve_data, "opaque-exact-identity"),),
+        ),
+    )
+
+    plan = await _planner(
+        repository,
+        price_sources=registry.sources,
+    ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+
+    requirement = plan.price_requirements[0]
+    assert requirement.provider is PriceSource.twelve_data
+    assert requirement.provider_symbol == "opaque-exact-identity"
+
+
+@pytest.mark.asyncio
+async def test_twelve_data_identity_is_never_inferred_from_listing_metadata() -> None:
+    repository = _Repository()
+    persisted = _holding(
+        provider=PriceSource.broker,
+        provider_symbol="TRADING212",
+        aliases=(),
+    )
+    assert persisted.asset is not None
+    assert persisted.listing is not None
+    persisted.asset.symbol = "AAPL"
+    persisted.asset.isin = "US0378331005"
+    persisted.asset.name = "Apple Inc."
+    persisted.listing.exchange = "NASDAQ"
+    persisted.listing.mic = "XNAS"
+    repository.holdings = (persisted,)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await _planner(
+            repository,
+            price_sources=frozenset({PriceSource.twelve_data}),
+        ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+
+
+@pytest.mark.asyncio
+async def test_production_registry_leaves_twelve_data_requirement_unavailable() -> None:
+    registry = create_production_price_registry(Settings(_env_file=None))
+    repository = _Repository()
+    repository.holdings = (
+        _holding(
+            provider=PriceSource.broker,
+            provider_symbol="TRADING212",
+            aliases=(_alias(AssetAliasProvider.twelve_data, "opaque-exact-identity"),),
+        ),
+    )
+
+    assert registry.sources == frozenset({PriceSource.coingecko})
+    with pytest.raises(MarketEvidenceStateError):
+        await _planner(repository, price_sources=registry.sources).build(
+            BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+        )
 
 
 @pytest.mark.asyncio

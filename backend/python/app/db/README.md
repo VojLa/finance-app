@@ -67,3 +67,7 @@ Revision `3f0001acctnote` adds nullable `Account.notes` as the first physical sc
 Revision `3g0001liabbal` adds the explicit `LiabilityBalance` model and
 dedicated source enum. The model mirrors canonical MONEY and TIMESTAMP types,
 component checks, account foreign key, uniqueness, and lookup index.
+
+Revision `3h0001twdata` adds the explicit `twelve_data` identity to the
+`AssetAliasProvider` and `PriceSource` enums. It mirrors provider ownership
+without registering an HTTP adapter.

@@ -25,8 +25,9 @@ ALEMBIC_CONFIG = PROJECT_ROOT / "alembic.ini"
 OWNERSHIP_MANIFEST = PROJECT_ROOT / "database" / "schema_ownership.toml"
 BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
-PREVIOUS_HEAD_REVISION = "3f0001acctnote"
-HEAD_REVISION = "3g0001liabbal"
+FIRST_SCHEMA_REVISION = "3f0001acctnote"
+PREVIOUS_HEAD_REVISION = "3g0001liabbal"
+HEAD_REVISION = "3h0001twdata"
 EXPECTED_TABLE_COUNT = 31
 EXPECTED_ENUM_COUNT = 28
 INHERITED_TABLE_COUNT = 30
@@ -50,8 +51,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 4:
-        raise RuntimeError(f"Expected exactly four Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 5:
+        raise RuntimeError(f"Expected exactly five Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -60,23 +61,26 @@ def verify_revision_graph() -> None:
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
+    first_schema = by_revision.get(FIRST_SCHEMA_REVISION)
     previous_head = by_revision.get(PREVIOUS_HEAD_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
         raise RuntimeError("The Alembic ownership cutover revision graph is invalid.")
-    if previous_head is None or previous_head.down_revision != CUTOVER_REVISION:
+    if first_schema is None or first_schema.down_revision != CUTOVER_REVISION:
         raise RuntimeError("The first Alembic schema revision must follow the cutover marker.")
-    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+    if previous_head is None or previous_head.down_revision != FIRST_SCHEMA_REVISION:
         raise RuntimeError("The liability schema revision must follow the previous head.")
+    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+        raise RuntimeError("The Twelve Data identity revision must follow the liability head.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 8:
+    if manifest.get("schema_version") != 9:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 8 after the liability schema change."
+            "Ownership manifest schema_version must be 9 after the provider identity change."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -106,7 +110,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 4,
+        "revision_count": 5,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -175,9 +179,9 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 def verify_database_state(state: DatabaseState) -> None:
     revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
-    at_liability_head = revision == HEAD_REVISION
-    expected_tables = EXPECTED_TABLE_COUNT if at_liability_head else INHERITED_TABLE_COUNT
-    expected_enums = EXPECTED_ENUM_COUNT if at_liability_head else INHERITED_ENUM_COUNT
+    at_liability_or_later = revision in {PREVIOUS_HEAD_REVISION, HEAD_REVISION}
+    expected_tables = EXPECTED_TABLE_COUNT if at_liability_or_later else INHERITED_TABLE_COUNT
+    expected_enums = EXPECTED_ENUM_COUNT if at_liability_or_later else INHERITED_ENUM_COUNT
     if state.table_count != expected_tables:
         raise RuntimeError(
             f"Expected {expected_tables} application tables, found {state.table_count}."

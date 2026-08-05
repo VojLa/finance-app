@@ -3,7 +3,7 @@ from sqlalchemy.dialects.postgresql import ENUM
 
 from app.db import models as database_models  # noqa: F401
 from app.db.base import Base
-from app.db.models import MovementDirection
+from app.db.models import AssetAliasProvider, MovementDirection, PriceSource
 
 EXPECTED_TABLES = {
     "Account",
@@ -61,7 +61,14 @@ EXPECTED_ENUMS = {
         "mortgage",
     ],
     "AliasMatchType": ["exact", "contains", "starts_with", "ends_with"],
-    "AssetAliasProvider": ["coingecko", "yahoo_finance", "stooq", "broker", "exchange"],
+    "AssetAliasProvider": [
+        "coingecko",
+        "yahoo_finance",
+        "stooq",
+        "twelve_data",
+        "broker",
+        "exchange",
+    ],
     "AssetType": ["stock", "etf", "crypto", "commodity", "cash", "bond", "other"],
     "BudgetAlertType": ["approaching_limit", "exceeded", "reset"],
     "BudgetPeriodType": ["monthly", "weekly", "yearly", "custom"],
@@ -135,6 +142,7 @@ EXPECTED_ENUMS = {
         "coingecko",
         "yahoo_finance",
         "stooq",
+        "twelve_data",
         "manual",
         "broker",
         "exchange",
@@ -242,3 +250,5 @@ def test_financial_numeric_precision_matches_postgresql_schema() -> None:
 def test_python_safe_enum_names_preserve_database_values() -> None:
     assert MovementDirection.incoming.value == "in"
     assert MovementDirection.outgoing.value == "out"
+    assert AssetAliasProvider.twelve_data.value == "twelve_data"
+    assert PriceSource.twelve_data.value == "twelve_data"

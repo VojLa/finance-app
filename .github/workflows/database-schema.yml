@@ -157,7 +157,7 @@ jobs:
         run: |
           uv run alembic -c alembic.ini current --check-heads
           uv run alembic -c alembic.ini check
-          uv run python scripts/database_schema.py --check --revision 3g0001liabbal
+          uv run python scripts/database_schema.py --check --revision 3h0001twdata
           uv run python scripts/sqlalchemy_schema.py --check
           uv run python scripts/alembic_baseline.py --verify
 
@@ -170,5 +170,5 @@ jobs:
           export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
           uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3g0001liabbal
+          uv run python scripts/database_schema.py --check --revision 3h0001twdata
           uv run python scripts/sqlalchemy_schema.py --check
