@@ -120,6 +120,52 @@ The fixed UUIDv5 namespaces are
 `93484f65-330c-47e9-a592-49e4fd9a5122` for `ExchangeRate`. Changing either
 value is an identity-contract change, not an implementation detail.
 
+## Market-backed snapshot refresh
+
+R5-B3A defines one immutable internal command that carries the exact user,
+snapshot bucket, granularity, source, calculation version, calculation and
+creation timestamps, and recalculation flag. All timestamps must already be
+naive UTC values exactly representable as `TIMESTAMP(3)`; the service neither
+rounds them nor substitutes a clock value. The command is validated completely
+before market persistence so invalid snapshot metadata cannot create market
+evidence and then fail only at the second phase.
+
+Execution order is fixed: the production `MarketEvidenceRefreshService` runs
+first, its result is validated, and only then may
+`UserSnapshotRefreshExecutor` run. Both projections retain the original user
+and snapshot timestamp. Market refresh receives the original `created_at`;
+snapshot refresh receives every command field unchanged. An empty market plan
+with zero price and FX requirements is complete valid evidence, not an
+unavailable state, and therefore continues to snapshot execution.
+
+Market evidence and the snapshot graph are two separate committed phases.
+There is no outer atomic transaction. Market failure creates no partial
+price/FX batch and prevents every AccountSnapshot or NetWorthSnapshot call.
+After a successful append-only market commit, later snapshot failure leaves
+the valid PriceSnapshot and ExchangeRate rows intact. The orchestrator never
+deletes, compensates, repairs, or attempts to roll back already committed
+market evidence.
+
+The shared session is idle at each stage boundary. The market planner's
+read-only transaction closes before provider HTTP, provider I/O occurs outside
+database transactions, the market writer transaction closes before snapshot
+execution, and the snapshot executor must also return an idle session. A
+dependency that leaks a transaction is rolled back and produces an internal
+runtime failure before the next stage.
+
+The immutable combined result cross-validates exact user, timestamp, and
+output currency ownership. Market counts are nonnegative, canonical ID tuples
+are sorted and duplicate-free, and create plus replay counts equal persisted
+identity counts. Snapshot executions must have valid mode/disposition counts,
+and their canonical `(account_id, snapshot_id)` sequence must exactly equal
+the guarded NetWorth dependency lineage. Malformed dependency results fail
+closed rather than crossing the boundary.
+
+R5-B3A is internal only. No endpoint, import integration, manual snapshot
+endpoint change, frontend, scheduler, worker, queue, schema, migration, or
+OpenAPI contract uses it yet. R5-B3B and R5-B3C remain planned, the R5 final
+audit remains planned, and R5 remains in progress.
+
 ## Important relationships
 
 - A user can access an account through an account membership. The creating user

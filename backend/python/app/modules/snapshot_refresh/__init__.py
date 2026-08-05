@@ -31,6 +31,15 @@ from app.modules.snapshot_refresh.manual_service import (
     canonical_manual_user_snapshot_refresh_bucket,
     current_user_snapshot_refresh_timestamp,
 )
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
+)
+from app.modules.snapshot_refresh.market_backed_service import (
+    MarketBackedSnapshotRefreshService,
+)
 from app.modules.snapshot_refresh.models import (
     UserSnapshotRefreshRecalculateResponse,
 )
@@ -57,6 +66,8 @@ __all__ = [
     "AccountSnapshotRefreshMode",
     "BuildSnapshotRefreshCoverageCommand",
     "CompleteSnapshotRefreshCoverage",
+    "ExecuteMarketBackedSnapshotRefreshCommand",
+    "ExecuteMarketBackedSnapshotRefreshResult",
     "ExecuteUserSnapshotRefreshCommand",
     "ExecuteUserSnapshotRefreshResult",
     "ExecutedAccountSnapshotRefresh",
@@ -64,6 +75,9 @@ __all__ = [
     "ExpectedNetWorthRefreshTarget",
     "ExpectedUserSnapshotRefreshPlan",
     "ManualUserSnapshotRefreshService",
+    "MarketBackedSnapshotRefreshConflictError",
+    "MarketBackedSnapshotRefreshService",
+    "MarketBackedSnapshotRefreshUnavailableError",
     "PersistedSnapshotRefreshAccess",
     "RecalculateUserSnapshotRefreshCommand",
     "RecalculateUserSnapshotRefreshResult",

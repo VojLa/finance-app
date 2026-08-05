@@ -17,10 +17,10 @@ thin and shared database infrastructure lives outside modules.
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation               | 5J-A–5J-E implemented                                                       |
-| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K complete; 5M-A exact read manifest implemented                           |
+| snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API     | 5K/5M-A and internal R5-B3A market-backed orchestration implemented          |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation            | 5I complete; output-currency chain implemented through 5K-C5                |
-| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A, CNB, CoinGecko, and Twelve Data production providers implemented      |
-| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB, CoinGecko, and Twelve Data live; public refresh orchestration planned  |
+| market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes | R5-A through R5-B3A internal coordinated consumption implemented             |
+| prices / FX           | Canonical price and direct-FX observation models, validation, and providers          | CNB, CoinGecko, and Twelve Data live; approved integrations remain planned  |
 | dashboard / reporting | Dashboard read models                                                                | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
@@ -117,8 +117,36 @@ excess identities, invalid numbers, future/stale time, or `NUMERIC(28,10)`
 overprecision fail without rounding or timestamp repair. An Anycoin Listing
 without a CoinGecko alias is therefore unavailable. Trading212-style listed
 securities require their separate canonical Twelve Data alias; the adapter
-does not reuse the broker identity. R5-B3 will compose refresh with approved
-import/manual workflows. Overall R5 remains in progress.
+does not reuse the broker identity. R5-B3A composes the internal refresh while
+R5-B3B/R5-B3C retain approved manual/import integration. Overall R5 remains
+in progress.
+
+R5-B3A adds one internal orchestrator in `snapshot_refresh` without moving
+financial logic out of `market_data`, `snapshots`, or `net_worth`. Its
+immutable command is validated before I/O. It first projects the exact user,
+snapshot timestamp, and caller-supplied `created_at` into the production
+market-evidence service. Only a validated successful market result permits the
+existing `UserSnapshotRefreshExecutor` to receive every original snapshot
+field unchanged.
+
+The shared session must be idle at entry and after both dependencies. Market
+planning completes its read transaction before provider HTTP, provider HTTP
+runs outside every transaction, and the market writer commits before snapshot
+execution. A dependency transaction leak is rolled back and surfaced as an
+internal runtime error before another stage can start.
+
+This is deliberately two-phase persistence, not one atomic transaction.
+Market failure prevents the snapshot call. Snapshot failure after market
+success does not delete or compensate append-only `PriceSnapshot` or
+`ExchangeRate` evidence. A zero-price, zero-FX market plan is valid and still
+runs the snapshot executor. The combined immutable result cross-validates
+user, timestamp, output currency, canonical market IDs, create/replay counts,
+snapshot dispositions, aggregate counts, and exact AccountSnapshot lineage.
+
+R5-B3A has no endpoint, scheduler, worker, queue, retry, cache, frontend,
+schema, migration, or OpenAPI surface. It is not yet called by import
+post-processing or either manual snapshot endpoint. R5-B3B and R5-B3C own
+those later approved integrations, and overall R5 remains in progress.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated
