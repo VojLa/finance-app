@@ -114,11 +114,13 @@ def _view(
         calculation_version=1,
         summary=PortfolioSummaryView(
             cash_value=Decimal("0.000000"),
+            cash_by_currency=(),
             investment_value=investment,
             investment_cost_basis=investment_cost,
             liabilities_value=liabilities,
             total_value=investment - liabilities,
             net_deposits_value=Decimal("0.000000"),
+            net_deposits_by_currency=(),
             realized_pnl_value=Decimal("0.000000"),
             unrealized_pnl_value=investment - investment_cost,
             fees_value=Decimal("0.000000"),

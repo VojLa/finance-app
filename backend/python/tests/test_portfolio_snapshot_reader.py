@@ -28,7 +28,12 @@ from app.db.models.enums import (
     SnapshotSource as DbSnapshotSource,
 )
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
+from app.modules.portfolio_snapshot.currency_breakdown import (
+    PortfolioCurrencyBreakdownError,
+    decode_portfolio_currency_breakdown,
+)
 from app.modules.portfolio_snapshot.models import (
+    PortfolioCurrencyAmount,
     PortfolioSnapshotSource,
     SnapshotGranularity,
 )
@@ -56,6 +61,100 @@ class FakeSession:
 
     def in_transaction(self) -> bool:
         return self.active
+
+
+@pytest.mark.parametrize(
+    ("physical", "scalar", "expected"),
+    [
+        ({}, Decimal("0.000000"), ()),
+        (
+            {"CZK": "123.450000"},
+            Decimal("123.450000"),
+            (PortfolioCurrencyAmount("CZK", Decimal("123.450000")),),
+        ),
+        (
+            {"USD": "-2.000000", "CZK": "0.000000", "EUR": "3.000000"},
+            Decimal("999.000000"),
+            (
+                PortfolioCurrencyAmount("CZK", Decimal("0.000000")),
+                PortfolioCurrencyAmount("EUR", Decimal("3.000000")),
+                PortfolioCurrencyAmount("USD", Decimal("-2.000000")),
+            ),
+        ),
+        (
+            {"EUR": "-500.000000"},
+            Decimal("-500.000000"),
+            (PortfolioCurrencyAmount("EUR", Decimal("-500.000000")),),
+        ),
+    ],
+)
+def test_currency_breakdown_decoder_accepts_only_canonical_evidence(
+    physical: object,
+    scalar: Decimal,
+    expected: tuple[PortfolioCurrencyAmount, ...],
+) -> None:
+    assert (
+        decode_portfolio_currency_breakdown(
+            physical,
+            scalar_total=scalar,
+            output_currency="CZK" if len(expected) != 1 else expected[0].currency,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "physical",
+    [
+        None,
+        [],
+        {"czk": "1.000000"},
+        {" CZK": "1.000000"},
+        {"CZ": "1.000000"},
+        {"CZKK": "1.000000"},
+        {"CZK": 1.0},
+        {"CZK": 1},
+        {"CZK": True},
+        {"CZK": None},
+        {"CZK": []},
+        {"CZK": {"amount": "1.000000"}},
+        {"CZK": "NaN"},
+        {"CZK": "Infinity"},
+        {"CZK": "-Infinity"},
+        {"CZK": "1e2"},
+        {"CZK": "1.0"},
+        {"CZK": "1.0000000"},
+        {"CZK": " 1.000000"},
+        {"CZK": "+1.000000"},
+        {"CZK": "01.000000"},
+        {"CZK": "1000000000000.000000"},
+        {1: "1.000000"},
+    ],
+)
+def test_currency_breakdown_decoder_rejects_noncanonical_physical_values(
+    physical: object,
+) -> None:
+    with pytest.raises(PortfolioCurrencyBreakdownError):
+        decode_portfolio_currency_breakdown(
+            physical,
+            scalar_total=Decimal("1.000000"),
+            output_currency="CZK",
+        )
+
+
+def test_currency_breakdown_decoder_enforces_empty_and_same_currency_coherence() -> None:
+    with pytest.raises(PortfolioCurrencyBreakdownError):
+        decode_portfolio_currency_breakdown(
+            {},
+            scalar_total=Decimal("1.000000"),
+            output_currency="CZK",
+        )
+    with pytest.raises(PortfolioCurrencyBreakdownError):
+        decode_portfolio_currency_breakdown(
+            {"CZK": "2.000000"},
+            scalar_total=Decimal("1.000000"),
+            output_currency="CZK",
+        )
 
 
 class FakeRepository:
@@ -155,10 +254,10 @@ def _snapshot(
         unrealized_pnl_value=unrealized_pnl_value,
         fees_value=fees_value,
         taxes_value=taxes_value,
-        cash_value_by_currency=None,
+        cash_value_by_currency={"EUR": format(cash_value, ".6f")},
         investment_value_by_currency=None,
         investment_cost_basis_by_currency=None,
-        net_deposits_by_currency=None,
+        net_deposits_by_currency={"EUR": format(net_deposits_value, ".6f")},
         realized_pnl_by_currency=None,
         unrealized_pnl_by_currency=None,
         fees_by_currency=None,
@@ -367,6 +466,12 @@ async def test_exact_investment_snapshot_builds_portfolio_view() -> None:
     assert result.view.account.currency == "CZK"
     assert result.view.currency == "EUR"
     assert result.view.summary.total_value == Decimal("110")
+    assert result.view.summary.cash_by_currency == (
+        PortfolioCurrencyAmount("EUR", Decimal("10.000000")),
+    )
+    assert result.view.summary.net_deposits_by_currency == (
+        PortfolioCurrencyAmount("EUR", Decimal("70.000000")),
+    )
     assert tuple(position.symbol for position in result.view.positions) == ("BBB", "AAA")
     assert repository.snapshot_arguments == {
         "account_id": "account-1",
@@ -374,6 +479,30 @@ async def test_exact_investment_snapshot_builds_portfolio_view() -> None:
         "granularity": DbSnapshotGranularity.day,
         "currency": "EUR",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "physical"),
+    [
+        ("cash_value_by_currency", None),
+        ("cash_value_by_currency", {}),
+        ("cash_value_by_currency", {"EUR": "10.0"}),
+        ("cash_value_by_currency", {"EUR": 10.0}),
+        ("net_deposits_by_currency", None),
+        ("net_deposits_by_currency", {"EUR": "999.000000"}),
+    ],
+)
+async def test_reader_rejects_missing_or_malformed_breakdown_without_fallback(
+    field: str,
+    physical: object,
+) -> None:
+    snapshot = _snapshot()
+    setattr(snapshot, field, physical)
+    reader, _ = _reader(FakeRepository(snapshots=(snapshot,)))
+
+    with pytest.raises(PortfolioSnapshotReadError):
+        await reader.read(_command())
 
 
 @pytest.mark.asyncio

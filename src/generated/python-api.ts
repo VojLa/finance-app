@@ -1154,6 +1154,8 @@ export interface components {
     MultiAccountPortfolioSummaryResponse: {
       /** Accountcount */
       accountCount: number
+      /** Cashbycurrency */
+      cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
       cashValue: string
       /** Feesvalue */
@@ -1164,6 +1166,8 @@ export interface components {
       investmentValue: string
       /** Liabilitiesvalue */
       liabilitiesValue: string
+      /** Netdepositsbycurrency */
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Netdepositsvalue */
       netDepositsValue: string
       /** Positioncount */
@@ -1195,6 +1199,13 @@ export interface components {
       status: "created" | "replayed"
       /** Timestamp */
       timestamp: string
+    }
+    /** PortfolioCurrencyAmountResponse */
+    PortfolioCurrencyAmountResponse: {
+      /** Amount */
+      amount: string
+      /** Currency */
+      currency: string
     }
     /** PortfolioSnapshotAccountResponse */
     PortfolioSnapshotAccountResponse: {
@@ -1265,6 +1276,8 @@ export interface components {
     }
     /** PortfolioSnapshotSummaryResponse */
     PortfolioSnapshotSummaryResponse: {
+      /** Cashbycurrency */
+      cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
       cashValue: string
       /** Feesvalue */
@@ -1275,6 +1288,8 @@ export interface components {
       investmentValue: string
       /** Liabilitiesvalue */
       liabilitiesValue: string
+      /** Netdepositsbycurrency */
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Netdepositsvalue */
       netDepositsValue: string
       /** Positioncount */

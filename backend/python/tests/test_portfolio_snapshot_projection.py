@@ -11,6 +11,7 @@ import pytest
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
+    PortfolioCurrencyAmount,
     PortfolioSnapshotItemSource,
     PortfolioSnapshotSource,
     SnapshotGranularity,
@@ -109,11 +110,13 @@ def _source(
     calculated_at: datetime = datetime(2026, 7, 27, 10, 15, 0, 123000),
     created_at: datetime = datetime(2026, 7, 27, 10, 15, 0, 456000),
     cash_value: Decimal = Decimal("10"),
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
     investment_value: Decimal = Decimal("100"),
     investment_cost_basis: Decimal = Decimal("80"),
     liabilities_value: Decimal = Decimal("0"),
     total_value: Decimal = Decimal("110"),
     net_deposits_value: Decimal = Decimal("70"),
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
     realized_pnl_value: Decimal = Decimal("5"),
     unrealized_pnl_value: Decimal = Decimal("20"),
     fees_value: Decimal = Decimal("2"),
@@ -134,11 +137,21 @@ def _source(
         calculated_at=calculated_at,
         created_at=created_at,
         cash_value=cash_value,
+        cash_by_currency=(
+            cash_by_currency
+            if cash_by_currency is not None
+            else (PortfolioCurrencyAmount(output_currency, cash_value),)
+        ),
         investment_value=investment_value,
         investment_cost_basis=investment_cost_basis,
         liabilities_value=liabilities_value,
         total_value=total_value,
         net_deposits_value=net_deposits_value,
+        net_deposits_by_currency=(
+            net_deposits_by_currency
+            if net_deposits_by_currency is not None
+            else (PortfolioCurrencyAmount(output_currency, net_deposits_value),)
+        ),
         realized_pnl_value=realized_pnl_value,
         unrealized_pnl_value=unrealized_pnl_value,
         fees_value=fees_value,
@@ -160,13 +173,17 @@ def test_investment_snapshot_builds_exact_portfolio_view() -> None:
     assert view.currency == "EUR"
     assert view.source is SnapshotSource.manual_recalculation
     assert view.calculation_version == 1
+    assert view.summary.cash_by_currency == (PortfolioCurrencyAmount("EUR", Decimal("10")),)
+    assert view.summary.net_deposits_by_currency == (PortfolioCurrencyAmount("EUR", Decimal("70")),)
     assert tuple(getattr(view.summary, field.name) for field in fields(view.summary)) == (
         Decimal("10"),
+        (PortfolioCurrencyAmount("EUR", Decimal("10")),),
         Decimal("100"),
         Decimal("80"),
         Decimal("0"),
         Decimal("110"),
         Decimal("70"),
+        (PortfolioCurrencyAmount("EUR", Decimal("70")),),
         Decimal("5"),
         Decimal("20"),
         Decimal("2"),
@@ -196,6 +213,56 @@ def test_investment_snapshot_builds_exact_portfolio_view() -> None:
         Decimal("50"),
         "USD",
     )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "cash_by_currency": (
+                PortfolioCurrencyAmount("USD", Decimal("1.000000")),
+                PortfolioCurrencyAmount("CZK", Decimal("2.000000")),
+            )
+        },
+        {
+            "cash_by_currency": (
+                PortfolioCurrencyAmount("CZK", Decimal("1.000000")),
+                PortfolioCurrencyAmount("CZK", Decimal("2.000000")),
+            )
+        },
+        {"cash_by_currency": ()},
+        {"cash_by_currency": (PortfolioCurrencyAmount("EUR", Decimal("11.000000")),)},
+        {"cash_by_currency": (PortfolioCurrencyAmount("eur", Decimal("10.000000")),)},
+        {"cash_by_currency": (PortfolioCurrencyAmount("EUR", Decimal("10.0000001")),)},
+    ],
+)
+def test_summary_breakdown_mismatch_fails_closed(changes: dict[str, object]) -> None:
+    with pytest.raises(PortfolioSnapshotProjectionError):
+        build_portfolio_snapshot_view(_source(**cast(Any, changes)))
+
+
+def test_negative_multi_currency_breakdowns_propagate_without_synthesis() -> None:
+    cash = (
+        PortfolioCurrencyAmount("CZK", Decimal("-10.000000")),
+        PortfolioCurrencyAmount("USD", Decimal("2.000000")),
+    )
+    deposits = (
+        PortfolioCurrencyAmount("EUR", Decimal("-5.000000")),
+        PortfolioCurrencyAmount("USD", Decimal("1.000000")),
+    )
+
+    view = build_portfolio_snapshot_view(
+        _source(
+            cash_value=Decimal("-1.000000"),
+            total_value=Decimal("99.000000"),
+            cash_by_currency=cash,
+            net_deposits_value=Decimal("-4.000000"),
+            net_deposits_by_currency=deposits,
+        )
+    )
+
+    assert view.summary.cash_by_currency is cash
+    assert view.summary.net_deposits_by_currency is deposits
 
 
 def test_mixed_currency_positions_preserve_native_fields_and_output_aggregates() -> None:
@@ -236,7 +303,18 @@ def test_inputs_are_not_mutated_and_outputs_are_frozen() -> None:
 def test_financial_values_never_use_binary_float() -> None:
     view = build_portfolio_snapshot_view(_source())
     financial_values = (
-        *(getattr(view.summary, field.name) for field in fields(view.summary)[:-1]),
+        view.summary.cash_value,
+        *(item.amount for item in view.summary.cash_by_currency),
+        view.summary.investment_value,
+        view.summary.investment_cost_basis,
+        view.summary.liabilities_value,
+        view.summary.total_value,
+        view.summary.net_deposits_value,
+        *(item.amount for item in view.summary.net_deposits_by_currency),
+        view.summary.realized_pnl_value,
+        view.summary.unrealized_pnl_value,
+        view.summary.fees_value,
+        view.summary.taxes_value,
         *(
             value
             for position in view.positions

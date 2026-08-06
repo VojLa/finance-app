@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_principal
@@ -17,6 +18,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.main import create_app
+from app.modules.portfolio_snapshot.api_models import PortfolioCurrencyAmountResponse
 from app.modules.portfolio_snapshot.authorized_service import (
     AuthorizedPortfolioSnapshotService,
     ReadAuthorizedPortfolioSnapshotResult,
@@ -25,6 +27,7 @@ from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotView,
     PortfolioSummaryView,
@@ -41,6 +44,22 @@ QUERY = {
     "currency": "EUR",
     "calculationVersion": "1",
 }
+
+
+def test_currency_amount_response_forbids_extra_fields_and_serializes_decimal() -> None:
+    response = PortfolioCurrencyAmountResponse(
+        currency="EUR",
+        amount=Decimal("-1.250000"),
+    )
+
+    assert response.model_dump(mode="json", by_alias=True) == {
+        "currency": "EUR",
+        "amount": "-1.250000",
+    }
+    with pytest.raises(ValidationError):
+        PortfolioCurrencyAmountResponse.model_validate(
+            {"currency": "EUR", "amount": "1.000000", "extra": True}
+        )
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -88,11 +107,16 @@ def _view() -> PortfolioSnapshotView:
         calculation_version=1,
         summary=PortfolioSummaryView(
             cash_value=Decimal("10.000000"),
+            cash_by_currency=(
+                PortfolioCurrencyAmount("CZK", Decimal("250.000000")),
+                PortfolioCurrencyAmount("EUR", Decimal("10.000000")),
+            ),
             investment_value=Decimal("100.000000"),
             investment_cost_basis=Decimal("80.000000"),
             liabilities_value=Decimal("0.000000"),
             total_value=Decimal("110.000000"),
             net_deposits_value=Decimal("0.000000"),
+            net_deposits_by_currency=(),
             realized_pnl_value=Decimal("0.000000"),
             unrealized_pnl_value=Decimal("20.000000"),
             fees_value=Decimal("0.000000"),
@@ -181,11 +205,16 @@ def test_thin_adapter_maps_exact_command_and_serializes_public_view(
         "calculationVersion": 1,
         "summary": {
             "cashValue": "10.000000",
+            "cashByCurrency": [
+                {"currency": "CZK", "amount": "250.000000"},
+                {"currency": "EUR", "amount": "10.000000"},
+            ],
             "investmentValue": "100.000000",
             "investmentCostBasis": "80.000000",
             "liabilitiesValue": "0.000000",
             "totalValue": "110.000000",
             "netDepositsValue": "0.000000",
+            "netDepositsByCurrency": [],
             "realizedPnlValue": "0.000000",
             "unrealizedPnlValue": "20.000000",
             "feesValue": "0.000000",
@@ -249,7 +278,6 @@ def test_response_has_no_binary_financial_floats_or_internal_evidence(
         "cashValueByCurrency",
         "investmentValueByCurrency",
         "investmentCostBasisByCurrency",
-        "netDepositsByCurrency",
         "realizedPnlByCurrency",
         "unrealizedPnlByCurrency",
         "feesByCurrency",

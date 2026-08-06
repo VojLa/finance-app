@@ -28,6 +28,7 @@ from app.modules.portfolio_snapshot.aggregation import build_multi_account_portf
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotItemSource,
     PortfolioSnapshotSource,
@@ -150,11 +151,18 @@ def _source(
         calculated_at=CREATED_AT,
         created_at=CREATED_AT,
         cash_value=cash_value,
+        cash_by_currency=(PortfolioCurrencyAmount(output_currency, cash_value),),
         investment_value=investment,
         investment_cost_basis=investment_cost,
         liabilities_value=liabilities,
         total_value=cash_value + investment - liabilities,
         net_deposits_value=_money("0" if structural_zero else "70"),
+        net_deposits_by_currency=(
+            PortfolioCurrencyAmount(
+                output_currency,
+                _money("0" if structural_zero else "70"),
+            ),
+        ),
         realized_pnl_value=_money("0" if structural_zero else "5"),
         unrealized_pnl_value=investment - investment_cost,
         fees_value=_money("0" if structural_zero else "2"),

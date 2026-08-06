@@ -5,6 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 
+from app.modules.portfolio_snapshot.currency_breakdown import (
+    PortfolioCurrencyBreakdownError,
+    validate_portfolio_currency_breakdown,
+)
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
@@ -191,6 +195,19 @@ def _validate_summary(source: PortfolioSnapshotSource) -> PortfolioSummaryView:
     unrealized_pnl_value = _exact(source.unrealized_pnl_value, _MONEY)
     fees_value = _exact(source.fees_value, _MONEY, nonnegative=True)
     taxes_value = _exact(source.taxes_value, _MONEY, nonnegative=True)
+    try:
+        cash_by_currency = validate_portfolio_currency_breakdown(
+            source.cash_by_currency,
+            scalar_total=cash_value,
+            output_currency=source.output_currency,
+        )
+        net_deposits_by_currency = validate_portfolio_currency_breakdown(
+            source.net_deposits_by_currency,
+            scalar_total=net_deposits_value,
+            output_currency=source.output_currency,
+        )
+    except PortfolioCurrencyBreakdownError as exc:
+        raise _fail() from exc
     if (
         _calculated(
             "subtract",
@@ -205,11 +222,13 @@ def _validate_summary(source: PortfolioSnapshotSource) -> PortfolioSummaryView:
         raise _fail()
     return PortfolioSummaryView(
         cash_value=cash_value,
+        cash_by_currency=cash_by_currency,
         investment_value=investment_value,
         investment_cost_basis=investment_cost_basis,
         liabilities_value=liabilities_value,
         total_value=total_value,
         net_deposits_value=net_deposits_value,
+        net_deposits_by_currency=net_deposits_by_currency,
         realized_pnl_value=realized_pnl_value,
         unrealized_pnl_value=unrealized_pnl_value,
         fees_value=fees_value,

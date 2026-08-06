@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from app.modules.portfolio_snapshot.models import (
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSummaryView,
     SnapshotGranularity,
@@ -18,11 +19,13 @@ class MultiAccountPortfolioSummary:
     """Exact output-currency totals across complete account snapshot views."""
 
     cash_value: Decimal
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
     investment_cost_basis: Decimal
     liabilities_value: Decimal
     total_value: Decimal
     net_deposits_value: Decimal
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
     realized_pnl_value: Decimal
     unrealized_pnl_value: Decimal
     fees_value: Decimal

@@ -223,8 +223,8 @@ without ECB, inverse, cross-rate, or manual fallback. R5-B3B changes no
 endpoint, frontend, schema, migration, or OpenAPI contract. R5-B3C now uses
 this service from import post-processing after canonical posting and Holding
 rebuild. The R5 final audit completed with verdict NOT READY, R5-B4 implements
-the identified alias-onboarding remediation, and an independent remediation
-re-audit remains planned. R5 remains in progress.
+the identified alias-onboarding remediation, and the independent remediation
+re-audit passed. R5 is implemented.
 
 ## Important relationships
 
@@ -285,6 +285,26 @@ AccountSnapshot persistence contract is not supported. Positions are
 canonically ordered by `(asset_type, symbol, listing_id, item_id)`; duplicate
 item, listing, or asset/listing identities fail closed.
 
+R6-A adds the already persisted AccountSnapshot `cashValueByCurrency` and
+`netDepositsByCurrency` fields to this presentation contract. Each entry is an
+immutable `(currency, amount)` value and public responses serialize the tuple
+as a deterministic currency-sorted array rather than an unordered JSON object.
+The decoder is the inverse of AccountSnapshot persistence: the physical value
+must be a JSON object whose keys are exact uppercase three-letter ASCII
+currencies and whose values are canonical six-decimal MONEY strings. Missing
+fields, JSON numbers, alternative decimal spellings, overprecision, overflow,
+NaN, and infinity fail closed. Empty objects are valid evidence only with a
+zero scalar; negative cash and negative net deposits remain valid.
+
+R6-A does not recalculate finance. A one-entry output-currency breakdown must
+equal its scalar. Multi-currency evidence is checked for exact canonical
+representation, but its scalar is not independently recomputed because the
+physical snapshot audit retains full snapshot-time rates while historical net
+deposit evidence retains only rate identities. Inventing another FX algorithm
+would violate AccountSnapshot writer ownership. The reader therefore performs
+no Transaction, Holding, price, or live-rate query and never falls back from a
+missing breakdown to its scalar.
+
 5L-B adds a read-only adapter for one exact persisted AccountSnapshot identity.
 It requires a caller-owned `REPEATABLE READ` or `SERIALIZABLE` transaction,
 loads only Account, AccountSnapshot, AccountSnapshotItem, AssetListing, and
@@ -331,6 +351,14 @@ are exact Decimal sums and must remain inside MONEY `NUMERIC(18,6)`. The
 aggregate rechecks only total-value, unrealized-P/L, account-count, and
 position-count invariants; it does not duplicate per-account or per-position
 valuation rules.
+
+R6-A also aggregates cash and net-deposit breakdowns by exact original currency.
+Entries from all accounts with the same currency are added with Decimal MONEY
+arithmetic, currencies are unique and sorted ascending, and a currency present
+in any input remains present even when its aggregate cancels to zero. No FX
+conversion, latest-rate lookup, synthetic currency, or float is permitted.
+The pre-existing scalar net-deposits value remains the exact sum of account
+scalars; R6-A changes only the accompanying presentation evidence.
 
 This aggregation has no database, authorization, snapshot selection, reader,
 price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,

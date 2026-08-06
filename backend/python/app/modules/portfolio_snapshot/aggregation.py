@@ -10,8 +10,13 @@ from app.modules.portfolio_snapshot.aggregate_models import (
     MultiAccountPortfolioSummary,
     MultiAccountPortfolioView,
 )
+from app.modules.portfolio_snapshot.currency_breakdown import (
+    PortfolioCurrencyBreakdownError,
+    validate_portfolio_currency_breakdown,
+)
 from app.modules.portfolio_snapshot.models import (
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioSnapshotView,
     PortfolioSummaryView,
     SnapshotGranularity,
@@ -73,6 +78,22 @@ def _sum_money(values: tuple[object, ...]) -> Decimal:
     return _exact_money(result)
 
 
+def _sum_breakdowns(
+    values: tuple[tuple[PortfolioCurrencyAmount, ...], ...],
+) -> tuple[PortfolioCurrencyAmount, ...]:
+    amounts: dict[str, list[Decimal]] = {}
+    for breakdown in values:
+        for item in breakdown:
+            amounts.setdefault(item.currency, []).append(item.amount)
+    return tuple(
+        PortfolioCurrencyAmount(
+            currency=currency,
+            amount=_sum_money(tuple(currency_amounts)),
+        )
+        for currency, currency_amounts in sorted(amounts.items())
+    )
+
+
 def _validate_view(view: object) -> PortfolioSnapshotView:
     if (
         not isinstance(view, PortfolioSnapshotView)
@@ -93,6 +114,19 @@ def _validate_view(view: object) -> PortfolioSnapshotView:
     _text(view.snapshot_id)
     _text(view.account.account_id)
     _currency(view.currency)
+    try:
+        validate_portfolio_currency_breakdown(
+            view.summary.cash_by_currency,
+            scalar_total=view.summary.cash_value,
+            output_currency=view.currency,
+        )
+        validate_portfolio_currency_breakdown(
+            view.summary.net_deposits_by_currency,
+            scalar_total=view.summary.net_deposits_value,
+            output_currency=view.currency,
+        )
+    except PortfolioCurrencyBreakdownError as exc:
+        raise _fail() from exc
     return view
 
 
@@ -100,11 +134,15 @@ def _summary(
     views: tuple[PortfolioSnapshotView, ...],
 ) -> MultiAccountPortfolioSummary:
     cash_value = _sum_money(tuple(view.summary.cash_value for view in views))
+    cash_by_currency = _sum_breakdowns(tuple(view.summary.cash_by_currency for view in views))
     investment_value = _sum_money(tuple(view.summary.investment_value for view in views))
     investment_cost_basis = _sum_money(tuple(view.summary.investment_cost_basis for view in views))
     liabilities_value = _sum_money(tuple(view.summary.liabilities_value for view in views))
     total_value = _sum_money(tuple(view.summary.total_value for view in views))
     net_deposits_value = _sum_money(tuple(view.summary.net_deposits_value for view in views))
+    net_deposits_by_currency = _sum_breakdowns(
+        tuple(view.summary.net_deposits_by_currency for view in views)
+    )
     realized_pnl_value = _sum_money(tuple(view.summary.realized_pnl_value for view in views))
     unrealized_pnl_value = _sum_money(tuple(view.summary.unrealized_pnl_value for view in views))
     fees_value = _sum_money(tuple(view.summary.fees_value for view in views))
@@ -125,11 +163,13 @@ def _summary(
         raise _fail()
     return MultiAccountPortfolioSummary(
         cash_value=cash_value,
+        cash_by_currency=cash_by_currency,
         investment_value=investment_value,
         investment_cost_basis=investment_cost_basis,
         liabilities_value=liabilities_value,
         total_value=total_value,
         net_deposits_value=net_deposits_value,
+        net_deposits_by_currency=net_deposits_by_currency,
         realized_pnl_value=realized_pnl_value,
         unrealized_pnl_value=unrealized_pnl_value,
         fees_value=fees_value,
