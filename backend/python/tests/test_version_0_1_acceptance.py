@@ -96,3 +96,24 @@ def test_active_browser_boundaries_are_thin_python_adapters() -> None:
     assert "readSnapshotBackedPortfolioHistory" in history
     for forbidden in ("@/lib/prisma", "importCsvFilesAsync", "getPortfolioSnapshotHistory"):
         assert forbidden not in active
+
+
+def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> None:
+    backend = _source(".github/workflows/backend-python.yml")
+    schema = _source(".github/workflows/database-schema.yml")
+    frontend = _source(".github/workflows/frontend.yml")
+
+    assert "name: Backend Python" in backend
+    assert "name: Database Schema" in schema
+    assert "name: Frontend" in frontend
+    for command in (
+        "npm ci",
+        "npm run api:python:check",
+        "npm test",
+        "npm run lint",
+        "npx tsc --noEmit --incremental false",
+        "npm run db:validate",
+        "git diff --check",
+        'test -z "$(git status --porcelain)"',
+    ):
+        assert command in frontend

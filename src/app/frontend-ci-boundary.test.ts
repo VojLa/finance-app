@@ -28,7 +28,7 @@ describe("Frontend GitHub Actions boundary", () => {
       "npm run api:python:check",
       "npm test",
       "npm run lint",
-      "npx tsc --noEmit",
+      "npx tsc --noEmit --incremental false",
       "npm run db:validate",
       "git diff --check",
       'test -z "$(git status --porcelain)"',
