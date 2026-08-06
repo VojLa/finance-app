@@ -12,7 +12,7 @@ thin and shared database infrastructure lives outside modules.
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A exact cash/deposit response contract implemented                       |
+| `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
 | transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                        |
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
@@ -223,6 +223,21 @@ multi-account response, and the aggregate summary expose required
 `cashByCurrency` and `netDepositsByCurrency` arrays. The dashboard contract is
 unchanged. R6-B owns rendering these fields in the portfolio UI; R6-A adds no
 visual frontend, schema, migration, or snapshot calculation change.
+
+R6-B consumes those fields only in the portfolio presentation. Scalar
+`cashValue` and `netDepositsValue` cards remain denominated in the selected
+view's output currency. Two semantic currency/value panels display
+`cashByCurrency` and `netDepositsByCurrency` as original-currency evidence.
+They preserve server order and exact Decimal strings, including negative and
+zero entries, and render explicit messages for empty arrays.
+
+The `Vše` view uses the server aggregate summary, while an account selection
+uses that account's server summary by reference. The switch is local state over
+the already loaded response and makes no request. The component performs no
+sorting, reduction, account aggregation, FX, scalar/breakdown reconstruction,
+legacy read, or history substitution. Dashboard presentation, OpenAPI,
+generated TypeScript, backend code, schema, and migrations remain unchanged.
+The R6 final audit is still required.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated

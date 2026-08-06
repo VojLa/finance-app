@@ -360,6 +360,21 @@ conversion, latest-rate lookup, synthetic currency, or float is permitted.
 The pre-existing scalar net-deposits value remains the exact sum of account
 scalars; R6-A changes only the accompanying presentation evidence.
 
+R6-B gives the two forms of evidence distinct presentation roles. The
+`Hotovost` and `Čisté vklady` scalar cards are output-currency values.
+`Hotovost podle měny` and `Čisté vklady podle měny` are original-currency
+evidence whose rows retain the canonical server order and exact Decimal
+strings. The UI does not imply that original-currency rows can be added without
+FX or that their simple sum must equal the scalar.
+
+Aggregate and selected-account views use their corresponding server summaries
+by reference. Account switching is local and performs no fetch or financial
+transformation. Empty breakdowns are explicit text states; negative amounts
+and zero amounts remain visible. R6-B adds no sorting, merging, FX conversion,
+scalar/breakdown reconstruction, legacy fallback, history override, backend
+change, public-contract change, or schema change. R6 remains in progress until
+the final audit.
+
 This aggregation has no database, authorization, snapshot selection, reader,
 price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,
 metadata mismatch, duplicate identity, corrupt structure, and aggregate

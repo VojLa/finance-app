@@ -172,11 +172,17 @@ describe("in-process portfolio browser flow", () => {
     const model = buildPortfolioPageModel(state.data)
     expect(model.aggregate.summary).toBe(state.data.summary)
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
+    expect(state.data.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
+    expect(state.data.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
+    expect(model.aggregate.summary.cashByCurrency).toBe(state.data.summary.cashByCurrency)
     expect(model.accounts[0]?.summary).toBe(state.data.accounts[0]?.summary)
     expect(model.accounts[0]?.positions[0]?.position.value).toBe("123.456789")
 
     const selected = selectPortfolioAccountView(model, "account-b")
     expect(selected?.summary).toBe(state.data.accounts[1]?.summary)
+    expect(selected?.summary.netDepositsByCurrency).toBe(
+      state.data.accounts[1]?.summary.netDepositsByCurrency
+    )
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(2)
   })
@@ -262,6 +268,7 @@ describe("portfolio financial authority and history isolation", () => {
       "src/app/portfolio/page.tsx",
       "src/modules/portfolio/snapshot-page-client.ts",
       "src/modules/portfolio/snapshot-page-model.ts",
+      "src/modules/portfolio/SnapshotCurrencyBreakdown.tsx",
       "src/modules/portfolio/SnapshotHoldingsTable.tsx",
     ]
     const content = (
@@ -272,9 +279,14 @@ describe("portfolio financial authority and history isolation", () => {
       /GET \/api\/portfolio|\/api\/rates|snapshots\/recalculate|latestHistoryPoint|history positions|history allocation/i
     )
     expect(content).not.toMatch(/\b(?:Prisma|YAHOO|FX service|price provider)\b/i)
-    expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt|Math\.round)\s*\(/)
+    expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
+    expect(content).not.toMatch(/\bMath\./)
     expect(content).not.toContain(".toFixed(")
     expect(content).not.toContain(".reduce(")
+    expect(content).not.toContain(".sort(")
+    expect(content).not.toContain("new Map(")
+    expect(content).not.toContain("Object.fromEntries(")
+    expect(content).not.toMatch(/\b(?:latest FX|legacy portfolio)\b/i)
   })
 
   it("isolates the only portfolio Decimal conversion at the chart leaf", async () => {

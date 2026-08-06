@@ -18,6 +18,14 @@ describe("snapshot portfolio page model", () => {
     const model = buildPortfolioPageModel(data)
 
     expect(model.aggregate.summary).toBe(data.summary)
+    expect(model.aggregate.summary.cashByCurrency).toBe(data.summary.cashByCurrency)
+    expect(model.aggregate.summary.netDepositsByCurrency).toBe(data.summary.netDepositsByCurrency)
+    expect(model.aggregate.summary.cashByCurrency.map((item) => item.currency)).toEqual([
+      "CZK",
+      "EUR",
+      "USD",
+    ])
+    expect(model.aggregate.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
     expect(model.aggregate.summary.totalValue).not.toBe("163.456789")
     expect(model.aggregate.positions).toHaveLength(2)
@@ -34,6 +42,10 @@ describe("snapshot portfolio page model", () => {
     expect(selected?.accountId).toBe("account-a")
     expect(selected?.accountCurrency).toBe("CZK")
     expect(selected?.summary).toBe(data.accounts[0]?.summary)
+    expect(selected?.summary.cashByCurrency).toBe(data.accounts[0]?.summary.cashByCurrency)
+    expect(selected?.summary.netDepositsByCurrency).toBe(
+      data.accounts[0]?.summary.netDepositsByCurrency
+    )
     expect(selected?.positions[0]?.accountId).toBe("account-a")
     expect(selected?.positions[0]?.position).toBe(data.accounts[0]?.positions[0])
     expect(selected?.hasServerAllocation).toBe(true)
@@ -48,6 +60,8 @@ describe("snapshot portfolio page model", () => {
     expect(model.aggregate.summary.liabilitiesValue).toBe("-123.450000")
     expect(model.aggregate.summary.investmentValue).toBe("999999999999.999999")
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
+    expect(model.aggregate.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
+    expect(model.aggregate.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
     expect(model.accounts[1]?.summary.totalValue).toBe("-57.660000")
     expect(account?.summary.investmentCostBasis).toBe("100.000001")
     expect(account?.positions[0]?.position.quantity).toBe("1.0000000000")
@@ -81,7 +95,9 @@ describe("snapshot portfolio page model", () => {
     expect(source).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
     expect(source).not.toMatch(/\bMath\./)
     expect(source).not.toContain(".toFixed(")
-    expect(source).not.toMatch(/\b(?:reduce|fetch|Prisma|latest)\b/)
+    expect(source).not.toContain(".sort(")
+    expect(source).not.toContain(".reduce(")
+    expect(source).not.toMatch(/\b(?:fetch|Prisma|latest)\b/)
     expect(source).not.toMatch(/\b(?:FX|exchange rate|price fallback)\b/i)
     expect(source).not.toContain("investmentValue +")
     expect(source).not.toContain("totalValue -")

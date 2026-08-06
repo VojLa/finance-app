@@ -45,6 +45,10 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(page).not.toContain("pnl / cost")
     expect(page).not.toContain("latestHistoryPoint")
     expect(page).not.toMatch(/\b(?:Prisma|YAHOO|FX lookup)\b/)
+    expect(page).toContain("view.summary.netDepositsValue")
+    expect(page).toContain("view.summary.cashByCurrency")
+    expect(page).toContain("view.summary.netDepositsByCurrency")
+    expect(page).toContain("<SnapshotCurrencyBreakdown")
     expect(client).toContain('method: "POST"')
     expect(client).not.toMatch(/\bbody\s*:/)
     expect(client).not.toContain("accountId")
@@ -67,12 +71,15 @@ describe("portfolio snapshot page cutover boundaries", () => {
     const page = await source("src/app/portfolio/page.tsx")
     const model = await source("src/modules/portfolio/snapshot-page-model.ts")
     const holdings = await source("src/modules/portfolio/SnapshotHoldingsTable.tsx")
+    const breakdown = await source("src/modules/portfolio/SnapshotCurrencyBreakdown.tsx")
     const allocation = await source("src/modules/portfolio/SnapshotAllocationPie.tsx")
 
-    for (const content of [page, model, holdings]) {
+    for (const content of [page, model, holdings, breakdown]) {
       expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
       expect(content).not.toMatch(/\bMath\./)
       expect(content).not.toContain(".toFixed(")
+      expect(content).not.toContain(".reduce(")
+      expect(content).not.toContain(".sort(")
     }
     expect(allocation.match(/\bNumber\s*\(/g)).toHaveLength(1)
     expect(allocation).toContain("Presentation-only conversion at the Recharts leaf boundary")
