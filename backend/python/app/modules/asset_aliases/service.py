@@ -122,6 +122,21 @@ def _alias_shape_is_valid(row: object) -> bool:
     )
 
 
+def _same_physical_alias(
+    left: AssetAliasModel,
+    right: AssetAliasModel,
+) -> bool:
+    return (
+        _alias_shape_is_valid(left)
+        and _alias_shape_is_valid(right)
+        and left.id == right.id
+        and left.asset_id == right.asset_id
+        and left.provider is right.provider
+        and left.external_id == right.external_id
+        and left.created_at == right.created_at
+    )
+
+
 def _created_row_matches(
     row: object,
     command: OnboardAssetAliasCommand,
@@ -161,6 +176,21 @@ def _assess_existing_state(
             and existing.provider is command.provider
             and existing.external_id == command.external_id
         ):
+            if external_alias is None:
+                raise AssetAliasStateError()
+            if not _alias_shape_is_valid(external_alias):
+                raise AssetAliasStateError()
+            if not _same_physical_alias(existing, external_alias):
+                raise AssetAliasConflictError()
+            expected_id = asset_alias_id(command.asset_id, command.provider)
+            if id_alias is None:
+                if existing.id == expected_id:
+                    raise AssetAliasStateError()
+            else:
+                if not _alias_shape_is_valid(id_alias):
+                    raise AssetAliasStateError()
+                if not _same_physical_alias(existing, id_alias):
+                    raise AssetAliasConflictError()
             return existing
         raise AssetAliasConflictError()
     if external_alias is not None:

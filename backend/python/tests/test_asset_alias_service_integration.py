@@ -333,6 +333,68 @@ async def test_existing_state_matrix_fails_without_repair(state: str) -> None:
         await _cleanup(prefix)
 
 
+@pytest.mark.asyncio
+async def test_historical_replay_rejects_foreign_deterministic_id_collision() -> None:
+    prefix = f"r5b4-historical-id-collision-{uuid4().hex[:8]}"
+    await _seed(prefix)
+    command = _command(prefix, external_id=f"requested-{prefix}")
+    historical_created_at = datetime(2025, 1, 1)
+    collision_created_at = datetime(2025, 2, 1)
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            session.add_all(
+                (
+                    AssetAliasModel(
+                        id=f"{prefix}-historical",
+                        asset_id=command.asset_id,
+                        provider=command.provider,
+                        external_id=command.external_id,
+                        created_at=historical_created_at,
+                    ),
+                    AssetAliasModel(
+                        id=asset_alias_id(command.asset_id, command.provider),
+                        asset_id=f"{prefix}-asset-b",
+                        provider=command.provider,
+                        external_id=f"collision-{prefix}",
+                        created_at=collision_created_at,
+                    ),
+                )
+            )
+            await session.commit()
+
+        before = tuple(
+            (
+                row.id,
+                row.asset_id,
+                row.provider,
+                row.external_id,
+                row.created_at,
+            )
+            for row in await _rows(prefix)
+        )
+        async with AsyncSession(engine) as session:
+            with pytest.raises(AssetAliasConflictError):
+                await AssetAliasOnboardingService(session).onboard(command)
+            assert not session.in_transaction()
+        after = tuple(
+            (
+                row.id,
+                row.asset_id,
+                row.provider,
+                row.external_id,
+                row.created_at,
+            )
+            for row in await _rows(prefix)
+        )
+
+        assert after == before
+        assert len(after) == 2
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
 class _ReloadFailureRepository(AssetAliasWriterRepository):
     async def reload_alias(self, alias_id: str) -> AssetAliasModel | None:
         return None

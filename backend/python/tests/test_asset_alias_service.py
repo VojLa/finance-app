@@ -233,6 +233,152 @@ async def test_writer_replays_historical_exact_alias_without_mutation() -> None:
     assert repository.flush_count == 0
 
 
+@pytest.mark.asyncio
+async def test_writer_replays_exact_alias_when_all_identity_lookups_match() -> None:
+    expected_id = asset_alias_id("asset-a", AssetAliasProvider.coingecko)
+    existing = _alias(id=expected_id)
+    repository = _Repository(
+        aliases=(existing,),
+        external_alias=_alias(id=expected_id),
+        id_alias=_alias(id=expected_id),
+    )
+    writer, session = _writer(repository)
+
+    result = await writer.write(_command(created_at=datetime(2026, 8, 5, 13)))
+
+    assert result.alias_id == expected_id
+    assert result.disposition is AssetAliasOnboardingDisposition.replayed
+    assert repository.pending is None
+    assert repository.flush_count == 0
+    assert not session.in_transaction()
+
+
+@pytest.mark.asyncio
+async def test_historical_exact_replay_rejects_deterministic_id_collision() -> None:
+    existing = _alias()
+    collision = _alias(
+        id=asset_alias_id("asset-a", AssetAliasProvider.coingecko),
+        asset_id="asset-b",
+        external_id="ethereum",
+    )
+    repository = _Repository(
+        aliases=(existing,),
+        external_alias=existing,
+        id_alias=collision,
+    )
+    writer, session = _writer(repository)
+
+    with pytest.raises(AssetAliasConflictError):
+        await writer.write(_command())
+
+    assert repository.pending is None
+    assert repository.flush_count == 0
+    assert not session.in_transaction()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_rejects_historical_replay_deterministic_id_collision() -> None:
+    existing = _alias()
+    collision = _alias(
+        id=asset_alias_id("asset-a", AssetAliasProvider.coingecko),
+        asset_id="asset-b",
+        external_id="ethereum",
+    )
+    repository = _Repository(
+        aliases=(existing,),
+        external_alias=existing,
+        id_alias=collision,
+    )
+    session = _Session()
+    fake_writer = _Writer(
+        OnboardAssetAliasResult(
+            alias_id="must-not-be-used",
+            asset_id="asset-a",
+            provider=AssetAliasProvider.coingecko,
+            external_id="bitcoin",
+            disposition=AssetAliasOnboardingDisposition.created,
+        )
+    )
+    service = AssetAliasOnboardingService(
+        cast(Any, session),
+        read_repository=repository,
+        writer=fake_writer,
+    )
+
+    with pytest.raises(AssetAliasConflictError):
+        await service.onboard(_command(), dry_run=True)
+
+    assert fake_writer.calls == []
+    assert repository.pending is None
+    assert repository.flush_count == 0
+    assert not session.in_transaction()
+
+
+@pytest.mark.parametrize(
+    ("repository", "error"),
+    [
+        (
+            _Repository(
+                aliases=(_alias(),),
+                external_alias=None,
+            ),
+            AssetAliasStateError,
+        ),
+        (
+            _Repository(
+                aliases=(_alias(),),
+                external_alias=_alias(id="other-alias", asset_id="asset-b"),
+            ),
+            AssetAliasConflictError,
+        ),
+        (
+            _Repository(
+                aliases=(
+                    _alias(
+                        id=asset_alias_id(
+                            "asset-a",
+                            AssetAliasProvider.coingecko,
+                        )
+                    ),
+                ),
+                external_alias=_alias(
+                    id=asset_alias_id(
+                        "asset-a",
+                        AssetAliasProvider.coingecko,
+                    )
+                ),
+                id_alias=None,
+            ),
+            AssetAliasStateError,
+        ),
+        (
+            _Repository(
+                aliases=(_alias(),),
+                external_alias=_alias(),
+                id_alias=_alias(
+                    id=asset_alias_id("asset-a", AssetAliasProvider.coingecko),
+                    created_at=datetime(2025, 1, 1, microsecond=1),
+                ),
+            ),
+            AssetAliasStateError,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_exact_replay_requires_coherent_lookup_state(
+    repository: _Repository,
+    error: type[Exception],
+) -> None:
+    writer, session = _writer(repository)
+
+    with pytest.raises(error):
+        await writer.write(_command())
+
+    assert repository.pending is None
+    assert repository.flush_count == 0
+    assert not session.in_transaction()
+
+
 @pytest.mark.parametrize(
     "repository,error",
     [
