@@ -301,10 +301,10 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     assert payload["timestamp"] == "2032-08-02T00:00:00.000"
     assert payload["summary"]["assetsValue"] == "108.000000"
     assert [position["allocationPct"] for position in payload["topPositions"]] == [
-        "60.0",
-        "40.0",
+        "60.0000",
+        "40.0000",
     ]
-    assert payload["assetTypeAllocations"][0]["allocationPct"] == "100"
+    assert payload["assetTypeAllocations"][0]["allocationPct"] == "100.0000"
     assert "priceCurrency" not in payload["topPositions"][0]
     assert "nativeValue" not in payload["topPositions"][0]
     assert "cashByCurrency" not in payload["summary"]
