@@ -123,6 +123,7 @@ def _inventory_document(item: UnresolvedAssetAlias) -> dict[str, object]:
 
 
 async def _execute(args: argparse.Namespace) -> object:
+    provider = _provider(args.provider)
     try:
         settings = Settings()
     except ValueError as exc:
@@ -132,7 +133,6 @@ async def _execute(args: argparse.Namespace) -> object:
         raise AssetAliasDatabaseUnavailableError()
     try:
         async with database.session_factory() as session:
-            provider = _provider(args.provider)
             if args.command == "list-unresolved":
                 unresolved = await AssetAliasInventoryService(session).list_unresolved(provider)
                 return [_inventory_document(item) for item in unresolved]

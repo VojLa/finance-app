@@ -9,8 +9,13 @@ from scripts import asset_alias
 
 
 def test_cli_rejects_unsupported_provider_as_safe_json(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    def must_not_load_settings() -> None:
+        raise AssertionError
+
+    monkeypatch.setattr(asset_alias, "Settings", must_not_load_settings)
     exit_code = asset_alias.main(
         [
             "list-unresolved",
