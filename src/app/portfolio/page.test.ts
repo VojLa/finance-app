@@ -60,6 +60,14 @@ describe("portfolio page snapshot workflow", () => {
     expect(state.status).toBe("ready")
     if (state.status === "ready") {
       expect(state.data.summary.totalValue).toBe("777.123456")
+      expect(state.data.summary.cashByCurrency[2]).toEqual({
+        currency: "USD",
+        amount: "-50.000000",
+      })
+      expect(state.data.summary.netDepositsByCurrency[1]).toEqual({
+        currency: "EUR",
+        amount: "500.000000",
+      })
       expect(state.data.accounts[0]?.positions[0]?.value).toBe("123.456789")
     }
   })
@@ -179,6 +187,10 @@ describe("portfolio page snapshot workflow", () => {
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(selected?.summary).toBe(data.accounts[1]?.summary)
+    expect(selected?.summary.cashByCurrency).toBe(data.accounts[1]?.summary.cashByCurrency)
+    expect(selected?.summary.netDepositsByCurrency).toBe(
+      data.accounts[1]?.summary.netDepositsByCurrency
+    )
     expect(selected?.positions[0]?.position).toBe(data.accounts[1]?.positions[0])
   })
 
@@ -189,6 +201,12 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain("void loadPortfolio()")
     expect(page).toContain("requestPortfolioPageState()")
     expect(page).toContain("view.summary.totalValue")
+    expect(page).toContain("view.summary.netDepositsValue")
+    expect(page).toContain("view.summary.cashByCurrency")
+    expect(page).toContain("view.summary.netDepositsByCurrency")
+    expect(page).toContain("SnapshotCurrencyBreakdown")
+    expect(page).toContain("Hotovost podle měny")
+    expect(page).toContain("Čisté vklady podle měny")
     expect(page).toContain("<SnapshotHoldingsTable")
     expect(page).toContain('state.status === "empty"')
     expect(page).toContain('state.status === "error"')

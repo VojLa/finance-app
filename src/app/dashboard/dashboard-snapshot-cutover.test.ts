@@ -115,7 +115,7 @@ describe("dashboard snapshot cutover boundaries", () => {
 
   it("keeps dashboard targets byte-identical and pins the approved portfolio contract", async () => {
     await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
-      "12b81e3b83b6d9c55004685f34461c935fbf93d3b23ca3ddb9e3744cba1b58a8"
+      "2e672ae2f1f80a216c9b7752bb2294d6276f594eae20f603563f0f7385933819"
     )
     await expect(sha256("src/app/api/dashboard/route.ts")).resolves.toBe(
       "018dfe28e81da5b780df309805ae81ff7c83fb35b9ce8b1ba8e33dda264ce9ee"

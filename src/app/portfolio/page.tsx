@@ -10,6 +10,7 @@ import {
   type PortfolioValueMode,
 } from "@/components/charts/PortfolioLineChart"
 import { SnapshotAllocationPie } from "@/modules/portfolio/SnapshotAllocationPie"
+import { SnapshotCurrencyBreakdown } from "@/modules/portfolio/SnapshotCurrencyBreakdown"
 import { SnapshotHoldingsTable } from "@/modules/portfolio/SnapshotHoldingsTable"
 import { requestPortfolioHistory } from "@/modules/portfolio/snapshot-history-client"
 import {
@@ -199,6 +200,7 @@ function ReadyPortfolio({
     ["Hodnota investic", view.summary.investmentValue],
     ["Nákladová báze investic", view.summary.investmentCostBasis],
     ["Hotovost", view.summary.cashValue],
+    ["Čisté vklady", view.summary.netDepositsValue],
     ["Realizované P/L", view.summary.realizedPnlValue],
     ["Nerealizované P/L", view.summary.unrealizedPnlValue],
   ] as const
@@ -239,13 +241,28 @@ function ReadyPortfolio({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {summaryCards.map(([label, value]) => (
-          <div key={label} className="rounded-xl border border-gray-200 bg-white p-5">
+          <div key={label} className="min-w-0 rounded-xl border border-gray-200 bg-white p-5">
             <p className="mb-1 text-sm text-gray-500">{label}</p>
-            <p className="text-xl font-semibold">{formatSnapshotAmount(value, view.currency)}</p>
+            <p className="break-all text-xl font-semibold">
+              {formatSnapshotAmount(value, view.currency)}
+            </p>
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <SnapshotCurrencyBreakdown
+          title="Hotovost podle měny"
+          emptyMessage="Snapshot neobsahuje žádnou hotovost podle měny."
+          items={view.summary.cashByCurrency}
+        />
+        <SnapshotCurrencyBreakdown
+          title="Čisté vklady podle měny"
+          emptyMessage="Snapshot neobsahuje žádné čisté vklady podle měny."
+          items={view.summary.netDepositsByCurrency}
+        />
       </div>
 
       {history.length > 1 && (
