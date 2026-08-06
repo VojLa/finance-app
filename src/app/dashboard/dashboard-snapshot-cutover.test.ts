@@ -113,9 +113,9 @@ describe("dashboard snapshot cutover boundaries", () => {
     expect(allocation).toContain("model.assetTypeAllocations.map")
   })
 
-  it("keeps dashboard targets byte-identical and pins the approved portfolio contract", async () => {
+  it("keeps dashboard targets byte-identical and pins the approved R7-B portfolio page", async () => {
     await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
-      "2e672ae2f1f80a216c9b7752bb2294d6276f594eae20f603563f0f7385933819"
+      "0b5ea1bfbb697882b66c4fedbffb63ca35f832a6be6ceb389680aec89153fba6"
     )
     await expect(sha256("src/app/api/dashboard/route.ts")).resolves.toBe(
       "018dfe28e81da5b780df309805ae81ff7c83fb35b9ce8b1ba8e33dda264ce9ee"

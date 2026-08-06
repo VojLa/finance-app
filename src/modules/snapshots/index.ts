@@ -4,6 +4,4 @@ export {
   createPortfolioSnapshot,
   getBackfilledPortfolioHistory,
   getNetWorthSnapshotHistory,
-  getPortfolioSnapshotHistory,
 } from "@/modules/snapshots/service"
-export type { PortfolioHistoryRange } from "@/modules/snapshots/service"
