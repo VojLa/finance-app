@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.modules.portfolio_snapshot.api_models import (
+    PortfolioCurrencyAmountResponse,
     PortfolioSnapshotAccountResponse,
     PortfolioSnapshotPositionResponse,
     PortfolioSnapshotSummaryResponse,
@@ -44,11 +45,17 @@ class MultiAccountPortfolioSummaryResponse(BaseModel):
     model_config = _MODEL_CONFIG
 
     cash_value: Decimal = Field(serialization_alias="cashValue")
+    cash_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] = Field(
+        serialization_alias="cashByCurrency"
+    )
     investment_value: Decimal = Field(serialization_alias="investmentValue")
     investment_cost_basis: Decimal = Field(serialization_alias="investmentCostBasis")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
     total_value: Decimal = Field(serialization_alias="totalValue")
     net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] = Field(
+        serialization_alias="netDepositsByCurrency"
+    )
     realized_pnl_value: Decimal = Field(serialization_alias="realizedPnlValue")
     unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
     fees_value: Decimal = Field(serialization_alias="feesValue")

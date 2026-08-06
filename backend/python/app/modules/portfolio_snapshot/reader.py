@@ -30,6 +30,9 @@ from app.db.models.enums import (
     SnapshotSource as DbSnapshotSource,
 )
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
+from app.modules.portfolio_snapshot.currency_breakdown import (
+    decode_portfolio_currency_breakdown,
+)
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
@@ -457,6 +460,16 @@ class PortfolioSnapshotReader:
                 account=account,
                 command=canonical,
             )
+            cash_by_currency = decode_portfolio_currency_breakdown(
+                snapshot.cash_value_by_currency,
+                scalar_total=snapshot.cash_value,
+                output_currency=snapshot.currency,
+            )
+            net_deposits_by_currency = decode_portfolio_currency_breakdown(
+                snapshot.net_deposits_by_currency,
+                scalar_total=snapshot.net_deposits_value,
+                output_currency=snapshot.currency,
+            )
             items, selected_item_ids = _items(
                 await self.repository.load_snapshot_items(snapshot.id),
                 snapshot=snapshot,
@@ -475,11 +488,13 @@ class PortfolioSnapshotReader:
                 calculated_at=snapshot.calculated_at,
                 created_at=snapshot.created_at,
                 cash_value=snapshot.cash_value,
+                cash_by_currency=cash_by_currency,
                 investment_value=snapshot.investment_value,
                 investment_cost_basis=snapshot.investment_cost_basis,
                 liabilities_value=snapshot.liabilities_value,
                 total_value=snapshot.total_value,
                 net_deposits_value=snapshot.net_deposits_value,
+                net_deposits_by_currency=net_deposits_by_currency,
                 realized_pnl_value=snapshot.realized_pnl_value,
                 unrealized_pnl_value=snapshot.unrealized_pnl_value,
                 fees_value=snapshot.fees_value,

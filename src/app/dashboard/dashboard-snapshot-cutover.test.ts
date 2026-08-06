@@ -113,7 +113,7 @@ describe("dashboard snapshot cutover boundaries", () => {
     expect(allocation).toContain("model.assetTypeAllocations.map")
   })
 
-  it("keeps forbidden implementation targets byte-identical", async () => {
+  it("keeps dashboard targets byte-identical and pins the approved portfolio contract", async () => {
     await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
       "12b81e3b83b6d9c55004685f34461c935fbf93d3b23ca3ddb9e3744cba1b58a8"
     )
@@ -127,12 +127,13 @@ describe("dashboard snapshot cutover boundaries", () => {
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
     await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "2b688f92f2f2f39ecf2642631a52a383d9d6293df5c8c0ef9fe75846c1b55f08"
+      "8d8b0a692fbc8f2fc2e4418316ff8b549a51b905d606a0109b667e24a9cbc968"
     )
   })
 
-  it("changes no Python, Prisma, migration, portfolio, workflow-route, or generated implementation", () => {
+  it("changes no dashboard, Prisma, migration, portfolio UI, or workflow-route implementation", () => {
     const changed = changedFiles()
+    const approvedPrefixes = ["backend/python/app/modules/portfolio_snapshot/"]
     const forbiddenPrefixes = [
       "backend/python/app/",
       "backend/python/database/",
@@ -147,11 +148,11 @@ describe("dashboard snapshot cutover boundaries", () => {
       "src/app/api/dashboard/route.ts",
       "src/app/api/snapshot-workflow/portfolio/route.ts",
       "src/app/api/snapshot-workflow/dashboard/route.ts",
-      "src/generated/python-api.ts",
     ]
 
     for (const file of changed) {
       if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) continue
+      if (approvedPrefixes.some((prefix) => file.startsWith(prefix))) continue
       expect(
         forbiddenPrefixes.some((prefix) => file === prefix || file.startsWith(prefix)),
         file

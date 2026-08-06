@@ -53,6 +53,14 @@ class SnapshotSource(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class PortfolioCurrencyAmount:
+    """One exact original-currency amount from persisted snapshot evidence."""
+
+    currency: str
+    amount: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class PortfolioSnapshotItemSource:
     """Complete validated evidence for one immutable AccountSnapshot item."""
 
@@ -95,11 +103,13 @@ class PortfolioSnapshotSource:
     calculated_at: datetime
     created_at: datetime
     cash_value: Decimal
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
     investment_cost_basis: Decimal
     liabilities_value: Decimal
     total_value: Decimal
     net_deposits_value: Decimal
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
     realized_pnl_value: Decimal
     unrealized_pnl_value: Decimal
     fees_value: Decimal
@@ -122,11 +132,13 @@ class PortfolioSummaryView:
     """Exact output-currency aggregates copied from AccountSnapshot evidence."""
 
     cash_value: Decimal
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
     investment_cost_basis: Decimal
     liabilities_value: Decimal
     total_value: Decimal
     net_deposits_value: Decimal
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
     realized_pnl_value: Decimal
     unrealized_pnl_value: Decimal
     fees_value: Decimal

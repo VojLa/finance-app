@@ -38,6 +38,7 @@ from app.modules.portfolio_snapshot.aggregate_models import (
 )
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.api_models import (
+    PortfolioCurrencyAmountResponse,
     PortfolioSnapshotAccountResponse,
     PortfolioSnapshotPositionResponse,
     PortfolioSnapshotResponse,
@@ -127,7 +128,6 @@ LEAKED_FIELDS = {
     "cashValueByCurrency",
     "investmentValueByCurrency",
     "investmentCostBasisByCurrency",
-    "netDepositsByCurrency",
     "realizedPnlByCurrency",
     "unrealizedPnlByCurrency",
     "feesByCurrency",
@@ -138,6 +138,8 @@ LEAKED_FIELDS = {
     "passwordHash",
 }
 DASHBOARD_FORBIDDEN = {
+    "cashByCurrency",
+    "netDepositsByCurrency",
     "quantity",
     "pricePerUnit",
     "priceCurrency",
@@ -201,11 +203,13 @@ def _source(
         calculated_at=CREATED_AT,
         created_at=CREATED_AT,
         cash_value=Decimal("0.000000"),
+        cash_by_currency=(),
         investment_value=money_value,
         investment_cost_basis=money_cost,
         liabilities_value=Decimal("0.000000"),
         total_value=money_value,
         net_deposits_value=Decimal("0.000000"),
+        net_deposits_by_currency=(),
         realized_pnl_value=Decimal("0.000000"),
         unrealized_pnl_value=money_value - money_cost,
         fees_value=Decimal("0.000000"),
@@ -232,11 +236,13 @@ def _liability_source(
         calculated_at=CREATED_AT,
         created_at=CREATED_AT,
         cash_value=Decimal("0.000000"),
+        cash_by_currency=(),
         investment_value=Decimal("0.000000"),
         investment_cost_basis=Decimal("0.000000"),
         liabilities_value=Decimal("25.000000"),
         total_value=Decimal("-25.000000"),
         net_deposits_value=Decimal("0.000000"),
+        net_deposits_by_currency=(),
         realized_pnl_value=Decimal("0.000000"),
         unrealized_pnl_value=Decimal("0.000000"),
         fees_value=Decimal("0.000000"),
@@ -261,11 +267,13 @@ def _empty_source(account_id: str) -> PortfolioSnapshotSource:
         calculated_at=source.calculated_at,
         created_at=source.created_at,
         cash_value=Decimal("0.000000"),
+        cash_by_currency=(),
         investment_value=Decimal("0.000000"),
         investment_cost_basis=Decimal("0.000000"),
         liabilities_value=Decimal("0.000000"),
         total_value=Decimal("0.000000"),
         net_deposits_value=Decimal("0.000000"),
+        net_deposits_by_currency=(),
         realized_pnl_value=Decimal("0.000000"),
         unrealized_pnl_value=Decimal("0.000000"),
         fees_value=Decimal("0.000000"),
@@ -866,6 +874,10 @@ def test_public_json_uses_decimal_strings_milliseconds_and_no_leakage() -> None:
 
 
 def test_public_nested_response_shapes_are_exact() -> None:
+    assert set(PortfolioCurrencyAmountResponse.model_fields) == {
+        "currency",
+        "amount",
+    }
     assert set(PortfolioSnapshotAccountResponse.model_fields) == {
         "account_id",
         "name",
@@ -874,11 +886,13 @@ def test_public_nested_response_shapes_are_exact() -> None:
     }
     assert set(PortfolioSnapshotSummaryResponse.model_fields) == {
         "cash_value",
+        "cash_by_currency",
         "investment_value",
         "investment_cost_basis",
         "liabilities_value",
         "total_value",
         "net_deposits_value",
+        "net_deposits_by_currency",
         "realized_pnl_value",
         "unrealized_pnl_value",
         "fees_value",
@@ -891,6 +905,22 @@ def test_public_nested_response_shapes_are_exact() -> None:
         "source",
         "summary",
         "positions",
+    }
+    assert set(MultiAccountPortfolioSummaryResponse.model_fields) == {
+        "cash_value",
+        "cash_by_currency",
+        "investment_value",
+        "investment_cost_basis",
+        "liabilities_value",
+        "total_value",
+        "net_deposits_value",
+        "net_deposits_by_currency",
+        "realized_pnl_value",
+        "unrealized_pnl_value",
+        "fees_value",
+        "taxes_value",
+        "account_count",
+        "position_count",
     }
     assert set(DashboardAssetTypeAllocationResponse.model_fields) == {
         "asset_type",

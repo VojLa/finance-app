@@ -80,7 +80,7 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps legacy routes, workflow routes, and generated OpenAPI byte-identical", async () => {
+  it("keeps legacy and workflow routes byte-identical and pins the approved OpenAPI", async () => {
     await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
       "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
     )
@@ -94,12 +94,13 @@ describe("portfolio snapshot page cutover boundaries", () => {
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
     await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "2b688f92f2f2f39ecf2642631a52a383d9d6293df5c8c0ef9fe75846c1b55f08"
+      "8d8b0a692fbc8f2fc2e4418316ff8b549a51b905d606a0109b667e24a9cbc968"
     )
   })
 
-  it("changes no Python, Prisma, migration, legacy, or workflow-route implementation", () => {
+  it("changes no unrelated Python, Prisma, migration, legacy, or workflow-route implementation", () => {
     const changed = changedFiles()
+    const approvedPrefixes = ["backend/python/app/modules/portfolio_snapshot/"]
     const forbiddenPrefixes = [
       "backend/python/app/",
       "backend/python/database/",
@@ -113,10 +114,10 @@ describe("portfolio snapshot page cutover boundaries", () => {
       "src/app/api/portfolio/history/route.ts",
       "src/app/api/snapshot-workflow/portfolio/route.ts",
       "src/app/api/snapshot-workflow/dashboard/route.ts",
-      "src/generated/python-api.ts",
     ]
 
     for (const file of changed) {
+      if (approvedPrefixes.some((prefix) => file.startsWith(prefix))) continue
       expect(
         forbiddenPrefixes.some((prefix) => file === prefix || file.startsWith(prefix)),
         file

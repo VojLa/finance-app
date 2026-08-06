@@ -24,6 +24,7 @@ from app.modules.portfolio_snapshot.aggregation import (
 from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
+    PortfolioCurrencyAmount,
     PortfolioSnapshotItemSource,
     PortfolioSnapshotSource,
     PortfolioSnapshotView,
@@ -86,6 +87,9 @@ def _source(
     calculation_version: int = 1,
     empty: bool = False,
     cash_value: Decimal | None = None,
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
+    net_deposits_value: Decimal | None = None,
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
 ) -> PortfolioSnapshotSource:
     liability = account_type in {
         AccountType.credit_card,
@@ -104,6 +108,13 @@ def _source(
     )
     liabilities = Decimal("25.000000") if liability else Decimal("0.000000")
     structural = liability
+    deposits = (
+        net_deposits_value
+        if net_deposits_value is not None
+        else Decimal("0.000000")
+        if structural
+        else Decimal("70.000000")
+    )
     return PortfolioSnapshotSource(
         snapshot_id=snapshot_id or f"{account_id}-snapshot",
         account_id=account_id,
@@ -118,11 +129,21 @@ def _source(
         calculated_at=CREATED_AT,
         created_at=CREATED_AT,
         cash_value=cash,
+        cash_by_currency=(
+            cash_by_currency
+            if cash_by_currency is not None
+            else (PortfolioCurrencyAmount(output_currency, cash),)
+        ),
         investment_value=investment,
         investment_cost_basis=cost,
         liabilities_value=liabilities,
         total_value=cash + investment - liabilities,
-        net_deposits_value=Decimal("0.000000") if structural else Decimal("70.000000"),
+        net_deposits_value=deposits,
+        net_deposits_by_currency=(
+            net_deposits_by_currency
+            if net_deposits_by_currency is not None
+            else (PortfolioCurrencyAmount(output_currency, deposits),)
+        ),
         realized_pnl_value=Decimal("0.000000") if structural else Decimal("5.000000"),
         unrealized_pnl_value=investment - cost,
         fees_value=Decimal("0.000000") if structural else Decimal("2.000000"),
@@ -142,11 +163,13 @@ def test_one_account_view_produces_identical_aggregate_summary() -> None:
 
     assert result.summary == MultiAccountPortfolioSummary(
         cash_value=view.summary.cash_value,
+        cash_by_currency=view.summary.cash_by_currency,
         investment_value=view.summary.investment_value,
         investment_cost_basis=view.summary.investment_cost_basis,
         liabilities_value=view.summary.liabilities_value,
         total_value=view.summary.total_value,
         net_deposits_value=view.summary.net_deposits_value,
+        net_deposits_by_currency=view.summary.net_deposits_by_currency,
         realized_pnl_value=view.summary.realized_pnl_value,
         unrealized_pnl_value=view.summary.unrealized_pnl_value,
         fees_value=view.summary.fees_value,
@@ -179,6 +202,56 @@ def test_two_investment_accounts_sum_exactly() -> None:
     assert result.summary.unrealized_pnl_value == Decimal("40.000000")
     assert result.summary.fees_value == Decimal("4.000000")
     assert result.summary.taxes_value == Decimal("2.000000")
+
+
+def test_currency_breakdowns_sum_overlapping_and_disjoint_currencies() -> None:
+    first = _view(
+        "account-a",
+        cash_by_currency=(
+            PortfolioCurrencyAmount("CZK", Decimal("10.000000")),
+            PortfolioCurrencyAmount("EUR", Decimal("-2.000000")),
+        ),
+        net_deposits_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("50.000000")),),
+    )
+    second = _view(
+        "account-b",
+        account_currency="USD",
+        cash_by_currency=(
+            PortfolioCurrencyAmount("EUR", Decimal("5.000000")),
+            PortfolioCurrencyAmount("USD", Decimal("7.000000")),
+        ),
+        net_deposits_value=Decimal("-10.000000"),
+        net_deposits_by_currency=(PortfolioCurrencyAmount("EUR", Decimal("-10.000000")),),
+    )
+
+    result = build_multi_account_portfolio_view((second, first))
+
+    assert result.summary.cash_by_currency == (
+        PortfolioCurrencyAmount("CZK", Decimal("10.000000")),
+        PortfolioCurrencyAmount("EUR", Decimal("3.000000")),
+        PortfolioCurrencyAmount("USD", Decimal("7.000000")),
+    )
+    assert result.summary.net_deposits_by_currency == (
+        PortfolioCurrencyAmount("CZK", Decimal("50.000000")),
+        PortfolioCurrencyAmount("EUR", Decimal("-10.000000")),
+    )
+
+
+def test_breakdown_cancellation_retains_input_currency() -> None:
+    result = build_multi_account_portfolio_view(
+        (
+            _view(
+                "account-a",
+                cash_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("10.000000")),),
+            ),
+            _view(
+                "account-b",
+                cash_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("-10.000000")),),
+            ),
+        )
+    )
+
+    assert result.summary.cash_by_currency == (PortfolioCurrencyAmount("CZK", Decimal("0.000000")),)
 
 
 def test_investment_and_liability_accounts_sum_exactly() -> None:
@@ -374,6 +447,24 @@ def test_aggregate_money_overflow_fails_closed() -> None:
     views = (
         _view("account-a", empty=True, cash_value=Decimal("600000000000.000000")),
         _view("account-b", empty=True, cash_value=Decimal("600000000000.000000")),
+    )
+
+    with pytest.raises(MultiAccountPortfolioProjectionError):
+        build_multi_account_portfolio_view(views)
+
+
+def test_aggregate_breakdown_overflow_fails_closed() -> None:
+    views = (
+        _view(
+            "account-a",
+            cash_value=Decimal("0.000000"),
+            cash_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("600000000000.000000")),),
+        ),
+        _view(
+            "account-b",
+            cash_value=Decimal("0.000000"),
+            cash_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("600000000000.000000")),),
+        ),
     )
 
     with pytest.raises(MultiAccountPortfolioProjectionError):

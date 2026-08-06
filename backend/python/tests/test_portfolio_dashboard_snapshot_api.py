@@ -30,6 +30,7 @@ from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotView,
     PortfolioSummaryView,
@@ -76,7 +77,6 @@ LEAKED_FIELDS = {
     "cashValueByCurrency",
     "investmentValueByCurrency",
     "investmentCostBasisByCurrency",
-    "netDepositsByCurrency",
     "realizedPnlByCurrency",
     "unrealizedPnlByCurrency",
     "feesByCurrency",
@@ -95,6 +95,25 @@ def _principal() -> AuthenticatedPrincipal:
 def _view(account_id: str, value: str, cost: str) -> PortfolioSnapshotView:
     money_value = Decimal(value).quantize(Decimal("0.000001"))
     money_cost = Decimal(cost).quantize(Decimal("0.000001"))
+    first = account_id == "account-a"
+    cash_value = Decimal("10.000000") if first else Decimal("-2.000000")
+    net_deposits_value = Decimal("20.000000") if first else Decimal("-5.000000")
+    cash_by_currency = (
+        (
+            PortfolioCurrencyAmount("CZK", Decimal("100.000000")),
+            PortfolioCurrencyAmount("EUR", Decimal("2.000000")),
+        )
+        if first
+        else (
+            PortfolioCurrencyAmount("EUR", Decimal("3.000000")),
+            PortfolioCurrencyAmount("USD", Decimal("-5.000000")),
+        )
+    )
+    net_deposits_by_currency = (
+        (PortfolioCurrencyAmount("CZK", Decimal("20.000000")),)
+        if first
+        else (PortfolioCurrencyAmount("EUR", Decimal("-5.000000")),)
+    )
     position = PortfolioPositionView(
         listing_id="shared-listing",
         asset_id="shared-asset",
@@ -130,12 +149,14 @@ def _view(account_id: str, value: str, cost: str) -> PortfolioSnapshotView:
         source=SnapshotSource.manual_recalculation,
         calculation_version=1,
         summary=PortfolioSummaryView(
-            cash_value=Decimal("0.000000"),
+            cash_value=cash_value,
+            cash_by_currency=cash_by_currency,
             investment_value=money_value,
             investment_cost_basis=money_cost,
             liabilities_value=Decimal("0.000000"),
-            total_value=money_value,
-            net_deposits_value=Decimal("0.000000"),
+            total_value=money_value + cash_value,
+            net_deposits_value=net_deposits_value,
+            net_deposits_by_currency=net_deposits_by_currency,
             realized_pnl_value=Decimal("0.000000"),
             unrealized_pnl_value=money_value - money_cost,
             fees_value=Decimal("0.000000"),
@@ -229,8 +250,22 @@ def test_portfolio_adapter_maps_command_once_and_serializes_aliases(
     assert payload["timestamp"] == "2032-08-02T00:00:00.000"
     assert payload["calculationVersion"] == 1
     assert payload["summary"]["investmentValue"] == "100.000000"
+    assert payload["summary"]["cashValue"] == "8.000000"
+    assert payload["summary"]["cashByCurrency"] == [
+        {"currency": "CZK", "amount": "100.000000"},
+        {"currency": "EUR", "amount": "5.000000"},
+        {"currency": "USD", "amount": "-5.000000"},
+    ]
+    assert payload["summary"]["netDepositsByCurrency"] == [
+        {"currency": "CZK", "amount": "20.000000"},
+        {"currency": "EUR", "amount": "-5.000000"},
+    ]
     assert payload["summary"]["accountCount"] == 2
     assert payload["accounts"][0]["snapshotId"] == "account-a-snapshot"
+    assert payload["accounts"][0]["summary"]["cashByCurrency"] == [
+        {"currency": "CZK", "amount": "100.000000"},
+        {"currency": "EUR", "amount": "2.000000"},
+    ]
     assert payload["accounts"][0]["positions"][0]["allocationPct"] == "100.0000"
     assert payload["accounts"][0]["positions"][0]["priceTimestamp"] == ("2032-08-01T12:30:00.123")
     _audit_no_leakage(payload)
@@ -264,7 +299,7 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     )
     payload = response.json()
     assert payload["timestamp"] == "2032-08-02T00:00:00.000"
-    assert payload["summary"]["assetsValue"] == "100.000000"
+    assert payload["summary"]["assetsValue"] == "108.000000"
     assert [position["allocationPct"] for position in payload["topPositions"]] == [
         "60.0",
         "40.0",
@@ -272,6 +307,8 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     assert payload["assetTypeAllocations"][0]["allocationPct"] == "100"
     assert "priceCurrency" not in payload["topPositions"][0]
     assert "nativeValue" not in payload["topPositions"][0]
+    assert "cashByCurrency" not in payload["summary"]
+    assert "netDepositsByCurrency" not in payload["summary"]
     _audit_no_leakage(payload)
 
 

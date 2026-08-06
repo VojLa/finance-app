@@ -162,10 +162,10 @@ def _snapshot(
         unrealized_pnl_value=investment - cost,
         fees_value=Decimal(0),
         taxes_value=Decimal(0),
-        cash_value_by_currency=None,
+        cash_value_by_currency={"EUR": format(cash, ".6f")},
         investment_value_by_currency=None,
         investment_cost_basis_by_currency=None,
-        net_deposits_by_currency=None,
+        net_deposits_by_currency={},
         realized_pnl_by_currency=None,
         unrealized_pnl_by_currency=None,
         fees_by_currency=None,
@@ -460,7 +460,57 @@ async def test_summary_only_and_empty_snapshot_shapes(
     assert result.view.summary.liabilities_value == (
         Decimal("25") if account_type is AccountType.loan else 0
     )
+    assert result.view.summary.cash_by_currency[0].currency == "EUR"
+    assert result.view.summary.cash_by_currency[0].amount == (
+        Decimal("0.000000") if account_type is AccountType.loan else Decimal("10.000000")
+    )
+    assert result.view.summary.net_deposits_by_currency == ()
     await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("cash_value_by_currency", None),
+        ("cash_value_by_currency", {"EUR": "10.0"}),
+        ("net_deposits_by_currency", {"eur": "0.000000"}),
+        ("net_deposits_by_currency", {"EUR": 0}),
+    ],
+)
+async def test_malformed_currency_breakdown_fails_closed_without_snapshot_fallback(
+    column: str,
+    value: object,
+) -> None:
+    prefix = f"l5b-breakdown-{column}-{type(value).__name__}"
+    await _cleanup(prefix)
+    account = _account(prefix)
+    selected = _snapshot(prefix, account, snapshot_suffix="selected", empty=True)
+    fallback = _snapshot(
+        prefix,
+        account,
+        snapshot_suffix="fallback",
+        timestamp=SNAPSHOT_AT + timedelta(days=1),
+        empty=True,
+    )
+    await _seed(accounts=(account,), snapshots=(selected, fallback))
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            await session.execute(
+                update(AccountSnapshotModel)
+                .where(AccountSnapshotModel.id == selected.id)
+                .values({column: value})
+            )
+            await session.commit()
+        with pytest.raises(PortfolioSnapshotReadError):
+            await _read(
+                engine,
+                _command(account, required_snapshot_id=selected.id),
+            )
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,7 @@ FINANCIAL_KEYS = {
     "allocationPct",
     "nativeValue",
     "nativeCostBasis",
+    "amount",
 }
 LEAKED_KEYS = {
     "userId",
@@ -72,10 +73,8 @@ LEAKED_KEYS = {
     "priceSnapshotId",
     "exchangeRateId",
     "exchangeRates",
-    "cashValueByCurrency",
     "investmentValueByCurrency",
     "investmentCostBasisByCurrency",
-    "netDepositsByCurrency",
     "realizedPnlByCurrency",
     "unrealizedPnlByCurrency",
     "feesByCurrency",
@@ -86,6 +85,8 @@ LEAKED_KEYS = {
     "passwordHash",
 }
 DASHBOARD_FORBIDDEN_KEYS = {
+    "cashByCurrency",
+    "netDepositsByCurrency",
     "quantity",
     "pricePerUnit",
     "priceCurrency",
@@ -341,6 +342,132 @@ async def test_single_multi_and_dashboard_share_one_exact_broker_view() -> None:
             dashboard_payload["summary"]["investmentValue"]
             == multi_payload["summary"]["investmentValue"]
         )
+    finally:
+        await single_support._cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_portfolio_exposes_exact_persisted_currency_breakdowns_without_dashboard_drift() -> (
+    None
+):
+    prefix = single_support._prefix("r6a-breakdowns")
+    await single_support._cleanup(prefix)
+    try:
+        user_id, accounts, snapshots = await multi_support._seed_pair(prefix)
+        engine = single_support._engine()
+        try:
+            async with AsyncSession(engine) as session:
+                await session.execute(
+                    update(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.id == snapshots[0])
+                    .values(
+                        cash_value=Decimal("15.000000"),
+                        cash_value_by_currency={
+                            "CZK": "10000.000000",
+                            "EUR": "500.000000",
+                        },
+                        net_deposits_value=Decimal("30.000000"),
+                        net_deposits_by_currency={"CZK": "25000.000000"},
+                        total_value=Decimal("115.000000"),
+                    )
+                )
+                await session.execute(
+                    update(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.id == snapshots[1])
+                    .values(
+                        cash_value=Decimal("-5.000000"),
+                        cash_value_by_currency={
+                            "USD": "-50.000000",
+                            "EUR": "100.000000",
+                        },
+                        net_deposits_value=Decimal("-5.000000"),
+                        net_deposits_by_currency={"EUR": "-5.000000"},
+                        total_value=Decimal("95.000000"),
+                    )
+                )
+                await session.commit()
+                rows = tuple(
+                    await session.execute(
+                        select(
+                            AccountSnapshotModel.id,
+                            AccountSnapshotModel.cash_value_by_currency,
+                            AccountSnapshotModel.net_deposits_by_currency,
+                        )
+                        .where(AccountSnapshotModel.id.in_(snapshots))
+                        .order_by(AccountSnapshotModel.id)
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        assert {row.id: row.cash_value_by_currency for row in rows} == {
+            snapshots[0]: {"CZK": "10000.000000", "EUR": "500.000000"},
+            snapshots[1]: {"EUR": "100.000000", "USD": "-50.000000"},
+        }
+        assert {row.id: row.net_deposits_by_currency for row in rows} == {
+            snapshots[0]: {"CZK": "25000.000000"},
+            snapshots[1]: {"EUR": "-5.000000"},
+        }
+
+        singles = tuple(
+            _single_call(
+                account_id,
+                user_id,
+                params=single_support._params(snapshotId=snapshot_id),
+            )
+            for account_id, snapshot_id in zip(accounts, snapshots, strict=True)
+        )
+        portfolio = _portfolio_call(user_id, accounts, snapshot_ids=snapshots)
+        dashboard = _dashboard_call(user_id, accounts, snapshot_ids=snapshots)
+
+        assert all(response.status_code == 200 for response in singles)
+        assert portfolio.status_code == dashboard.status_code == 200
+        assert singles[0].json()["snapshotId"] == snapshots[0]
+        assert singles[1].json()["snapshotId"] == snapshots[1]
+        assert singles[0].json()["summary"]["cashByCurrency"] == [
+            {"currency": "CZK", "amount": "10000.000000"},
+            {"currency": "EUR", "amount": "500.000000"},
+        ]
+        assert singles[1].json()["summary"]["cashByCurrency"] == [
+            {"currency": "EUR", "amount": "100.000000"},
+            {"currency": "USD", "amount": "-50.000000"},
+        ]
+
+        portfolio_payload = portfolio.json()
+        portfolio_summary = portfolio_payload["summary"]
+        assert [account["snapshotId"] for account in portfolio_payload["accounts"]] == list(
+            snapshots
+        )
+        assert portfolio_summary["cashValue"] == "10.000000"
+        assert portfolio_summary["cashByCurrency"] == [
+            {"currency": "CZK", "amount": "10000.000000"},
+            {"currency": "EUR", "amount": "600.000000"},
+            {"currency": "USD", "amount": "-50.000000"},
+        ]
+        assert portfolio_summary["netDepositsValue"] == "25.000000"
+        assert portfolio_summary["netDepositsByCurrency"] == [
+            {"currency": "CZK", "amount": "25000.000000"},
+            {"currency": "EUR", "amount": "-5.000000"},
+        ]
+        assert [
+            account["summary"]["cashByCurrency"] for account in portfolio_payload["accounts"]
+        ] == [
+            singles[0].json()["summary"]["cashByCurrency"],
+            singles[1].json()["summary"]["cashByCurrency"],
+        ]
+
+        dashboard_payload = dashboard.json()
+        for key in (
+            "cashValue",
+            "investmentValue",
+            "investmentCostBasis",
+            "liabilitiesValue",
+            "totalValue",
+            "netDepositsValue",
+        ):
+            assert dashboard_payload["summary"][key] == portfolio_summary[key]
+        _assert_public_json(portfolio_payload)
+        _assert_public_json(dashboard_payload, dashboard=True)
     finally:
         await single_support._cleanup(prefix)
 

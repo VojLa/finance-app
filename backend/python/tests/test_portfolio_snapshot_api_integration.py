@@ -234,10 +234,10 @@ async def _seed(
             unrealized_pnl_value=investment - cost_basis,
             fees_value=Decimal("0.000000"),
             taxes_value=Decimal("0.000000"),
-            cash_value_by_currency=None,
+            cash_value_by_currency={"EUR": format(cash, ".6f")},
             investment_value_by_currency=None,
             investment_cost_basis_by_currency=None,
-            net_deposits_by_currency=None,
+            net_deposits_by_currency={},
             realized_pnl_by_currency=None,
             unrealized_pnl_by_currency=None,
             fees_by_currency=None,
@@ -437,6 +437,8 @@ async def test_exact_response_preserves_currency_contract_and_leaks_no_audit() -
         ]
         assert {position["valueCurrency"] for position in payload["positions"]} == {"EUR"}
         assert {position["costCurrency"] for position in payload["positions"]} == {"EUR"}
+        assert payload["summary"]["cashByCurrency"] == [{"currency": "EUR", "amount": "10.000000"}]
+        assert payload["summary"]["netDepositsByCurrency"] == []
         assert payload["timestamp"].endswith(".000")
         assert all(position["priceTimestamp"].endswith(".000") for position in payload["positions"])
         assert before == after == (1, 2)
@@ -454,10 +456,8 @@ async def test_exact_response_preserves_currency_contract_and_leaks_no_audit() -
             "exchangeRates",
             "historicalRateIds",
             "snapshotRates",
-            "cashValueByCurrency",
             "investmentValueByCurrency",
             "investmentCostBasisByCurrency",
-            "netDepositsByCurrency",
             "realizedPnlByCurrency",
             "unrealizedPnlByCurrency",
             "feesByCurrency",
@@ -578,7 +578,10 @@ async def test_exact_selectors_never_fall_back(changes: dict[str, str]) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("corruption", ["aggregate", "future-price"])
+@pytest.mark.parametrize(
+    "corruption",
+    ["aggregate", "future-price", "missing-breakdown", "malformed-breakdown"],
+)
 async def test_corrupt_persisted_evidence_returns_generic_409(corruption: str) -> None:
     prefix = _prefix(corruption)
     await _cleanup(prefix)
@@ -592,11 +595,23 @@ async def test_corrupt_persisted_evidence_returns_generic_409(corruption: str) -
                     .where(AccountSnapshotModel.id == snapshot_id)
                     .values(total_value=Decimal("999.000000"))
                 )
-            else:
+            elif corruption == "future-price":
                 await session.execute(
                     update(AccountSnapshotItemModel)
                     .where(AccountSnapshotItemModel.snapshot_id == snapshot_id)
                     .values(price_timestamp=SNAPSHOT_AT + timedelta(days=1))
+                )
+            elif corruption == "missing-breakdown":
+                await session.execute(
+                    update(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.id == snapshot_id)
+                    .values(cash_value_by_currency=None)
+                )
+            else:
+                await session.execute(
+                    update(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.id == snapshot_id)
+                    .values(cash_value_by_currency={"EUR": "10.0"})
                 )
             await session.commit()
         await engine.dispose()

@@ -8,11 +8,11 @@ thin and shared database infrastructure lives outside modules.
 | --------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                     | Implemented                                                                 |
 | `accounts`            | Account lifecycle, memberships, and invitations                                      | Implemented                                                                 |
-| `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding           | R5-B4 implemented; remediation re-audit planned                             |
+| `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding           | R5-B4 implemented; remediation re-audit passed                              |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`  | Exact snapshot projection, reads, authorized APIs, and pure aggregation              | 5L complete; final cross-boundary audit passed                              |
+| `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A exact cash/deposit response contract implemented                       |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
 | transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                        |
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
@@ -147,7 +147,8 @@ without a CoinGecko alias is therefore unavailable. Trading212-style listed
 securities require their separate canonical Twelve Data alias; the adapter
 does not reuse the broker identity. R5-B3A composes the internal refresh and
 R5-B3B connects it to the approved manual endpoint and R5-B3C connects it to
-approved import post-processing. Overall R5 remains in progress.
+approved import post-processing. The post-B4 remediation re-audit passed and
+R5 is implemented.
 
 R5-B3A adds one internal orchestrator in `snapshot_refresh` without moving
 financial logic out of `market_data`, `snapshots`, or `net_worth`. Its
@@ -191,8 +192,37 @@ R5-B3B adds no new endpoint, scheduler, worker, queue, retry, cache, frontend,
 schema, migration, or OpenAPI surface. R5-B3C now makes the existing import
 post-processing boundary call the same market-backed service after posting and
 Holding rebuild. The R5 final audit completed with verdict NOT READY, R5-B4
-implements the identified alias-onboarding remediation, and an independent
-remediation re-audit remains planned. Overall R5 remains in progress.
+implements the identified alias-onboarding remediation, and the independent
+remediation re-audit passed. Overall R5 is implemented.
+
+## Exact portfolio currency breakdowns
+
+R6-A extends only the `portfolio_snapshot` presentation boundary. The physical
+AccountSnapshot `cashValueByCurrency` and `netDepositsByCurrency` JSONB columns
+already existed and remain owned by the snapshot persistence writer. The exact
+reader decodes them as canonical `MONEY NUMERIC(18,6)` strings, rejects absent
+or malformed evidence, and emits immutable currency/amount tuples sorted by
+currency. It never queries Transactions or Holdings, reconstructs a breakdown
+from a scalar, inserts an output-currency default, or reads live FX.
+
+The pure projection revalidates tuple type, currency identity, ordering,
+uniqueness, MONEY precision, and the coherence rules that can be proven without
+inventing another valuation algorithm. An empty breakdown requires a zero
+scalar; a breakdown containing only the output currency must equal its scalar.
+For multi-currency net deposits, the physical audit stores only historical rate
+identities rather than the full rate values, so independent scalar
+recalculation is not safe. The AccountSnapshot writer therefore retains
+ownership of that financial relationship while R6-A verifies canonical
+breakdown evidence exactly.
+
+Multi-account aggregation sums entries only within the same original currency
+using Decimal arithmetic and preserves currencies that cancel to zero. It
+sorts the unique result by currency and performs no FX conversion or rate
+lookup. Single-account summaries, account summaries nested in the
+multi-account response, and the aggregate summary expose required
+`cashByCurrency` and `netDepositsByCurrency` arrays. The dashboard contract is
+unchanged. R6-B owns rendering these fields in the portfolio UI; R6-A adds no
+visual frontend, schema, migration, or snapshot calculation change.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated
