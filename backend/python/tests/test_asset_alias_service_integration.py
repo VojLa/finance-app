@@ -4,6 +4,7 @@ import asyncio
 import os
 from dataclasses import replace
 from datetime import datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -11,8 +12,15 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.db.models.assets import AssetAliasModel, AssetModel
-from app.db.models.enums import AssetAliasProvider, AssetType
+from app.db.models.accounts import AccountModel
+from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.enums import (
+    AccountType,
+    AssetAliasProvider,
+    AssetType,
+    PriceSource,
+)
+from app.db.models.holdings import HoldingModel
 from app.db.url import normalize_database_url
 from app.modules.asset_aliases.models import (
     AssetAliasConflictError,
@@ -23,6 +31,7 @@ from app.modules.asset_aliases.models import (
 )
 from app.modules.asset_aliases.repository import AssetAliasWriterRepository
 from app.modules.asset_aliases.service import (
+    AssetAliasInventoryService,
     AssetAliasOnboardingService,
     AssetAliasWriter,
     asset_alias_id,
@@ -493,3 +502,133 @@ async def test_nonretryable_sql_failure_rolls_back_without_retry() -> None:
     finally:
         await engine.dispose()
         await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
+    prefix = f"r5b4-inventory-{uuid4().hex[:10]}"
+    account_id = f"{prefix}-account"
+    asset_specs = (
+        ("crypto", "BTC", AssetType.crypto, Decimal("1")),
+        ("stock", "AAPL", AssetType.stock, Decimal("2")),
+        ("cash", "USD", AssetType.cash, Decimal("3")),
+        ("zero", "ZERO", AssetType.crypto, Decimal("0")),
+        ("resolved", "ETH", AssetType.crypto, Decimal("4")),
+    )
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            session.add(
+                AccountModel(
+                    id=account_id,
+                    name="R5 alias inventory",
+                    type=AccountType.broker,
+                    currency="CZK",
+                    color=None,
+                    is_archived=False,
+                    archived_at=None,
+                    created_at=CREATED_AT,
+                    updated_at=CREATED_AT,
+                    notes=None,
+                )
+            )
+            for suffix, symbol, asset_type, _quantity in asset_specs:
+                session.add(
+                    AssetModel(
+                        id=f"{prefix}-asset-{suffix}",
+                        symbol=symbol,
+                        isin=None,
+                        name=f"Inventory {suffix}",
+                        asset_type=asset_type,
+                        currency="USD",
+                        created_at=CREATED_AT,
+                        updated_at=CREATED_AT,
+                    )
+                )
+            await session.flush()
+
+            for suffix, symbol, asset_type, quantity in asset_specs:
+                listing_ids = (
+                    (f"{prefix}-listing-stock-z", f"{prefix}-listing-stock-a")
+                    if suffix == "stock"
+                    else (f"{prefix}-listing-{suffix}",)
+                )
+                for index, listing_id in enumerate(listing_ids):
+                    sort_index = 0 if listing_id.endswith("-a") else index + 1
+                    session.add(
+                        AssetListingModel(
+                            id=listing_id,
+                            asset_id=f"{prefix}-asset-{suffix}",
+                            symbol=symbol,
+                            exchange=f"{prefix}-exchange-{suffix}-{index}",
+                            mic=None,
+                            currency="USD",
+                            country=None,
+                            provider=PriceSource.broker,
+                            provider_symbol=f"{symbol}-provider-{sort_index}",
+                            is_primary=index == 0,
+                            created_at=CREATED_AT,
+                            updated_at=CREATED_AT,
+                        )
+                    )
+                session.add(
+                    HoldingModel(
+                        id=f"{prefix}-holding-{suffix}",
+                        symbol=symbol,
+                        name=f"Inventory {suffix}",
+                        asset_type=asset_type,
+                        quantity=quantity,
+                        avg_buy_price=Decimal("1"),
+                        currency="USD",
+                        current_price=None,
+                        current_value=None,
+                        unrealized_pnl=None,
+                        realized_pnl=None,
+                        asset_id=f"{prefix}-asset-{suffix}",
+                        listing_id=listing_ids[0],
+                        account_id=account_id,
+                        calculated_at=CREATED_AT,
+                        updated_at=CREATED_AT,
+                    )
+                )
+            session.add(
+                AssetAliasModel(
+                    id=f"{prefix}-resolved-alias",
+                    asset_id=f"{prefix}-asset-resolved",
+                    provider=AssetAliasProvider.coingecko,
+                    external_id=f"resolved-{prefix}",
+                    created_at=CREATED_AT,
+                )
+            )
+            await session.commit()
+
+        async with AsyncSession(engine) as session:
+            coingecko = await AssetAliasInventoryService(session).list_unresolved(
+                AssetAliasProvider.coingecko
+            )
+            twelve_data = await AssetAliasInventoryService(session).list_unresolved(
+                AssetAliasProvider.twelve_data
+            )
+            assert not session.in_transaction()
+
+        assert tuple(item.asset_id for item in coingecko) == (f"{prefix}-asset-crypto",)
+        assert tuple(item.asset_id for item in twelve_data) == (f"{prefix}-asset-stock",)
+        assert tuple(listing.listing_id for listing in twelve_data[0].listings) == (
+            f"{prefix}-listing-stock-a",
+            f"{prefix}-listing-stock-z",
+        )
+    finally:
+        async with AsyncSession(engine) as session:
+            await session.execute(
+                delete(HoldingModel).where(HoldingModel.id.startswith(f"{prefix}-"))
+            )
+            await session.execute(
+                delete(AssetAliasModel).where(AssetAliasModel.asset_id.startswith(f"{prefix}-"))
+            )
+            await session.execute(
+                delete(AssetListingModel).where(AssetListingModel.asset_id.startswith(f"{prefix}-"))
+            )
+            await session.execute(delete(AssetModel).where(AssetModel.id.startswith(f"{prefix}-")))
+            await session.execute(delete(AccountModel).where(AccountModel.id == account_id))
+            await session.commit()
+        await engine.dispose()
