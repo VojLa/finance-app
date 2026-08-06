@@ -467,6 +467,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/portfolio/history": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read Portfolio History */
+    get: operations["read_portfolio_history_api_v1_portfolio_history_get"]
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/portfolio/snapshot": {
     parameters: {
       query?: never
@@ -1206,6 +1223,33 @@ export interface components {
       amount: string
       /** Currency */
       currency: string
+    }
+    /** PortfolioHistoryPointResponse */
+    PortfolioHistoryPointResponse: {
+      /** Cashvalue */
+      cashValue: string
+      /** Investmentvalue */
+      investmentValue: string
+      /** Liabilitiesvalue */
+      liabilitiesValue: string
+      /** Networthvalue */
+      netWorthValue: string
+      /** Timestamp */
+      timestamp: string
+    }
+    /**
+     * PortfolioHistoryRange
+     * @description Supported calendar ranges for public portfolio history.
+     * @enum {string}
+     */
+    PortfolioHistoryRange: "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL"
+    /** PortfolioHistoryResponse */
+    PortfolioHistoryResponse: {
+      /** Currency */
+      currency: string
+      /** Points */
+      points: components["schemas"]["PortfolioHistoryPointResponse"][]
+      range: components["schemas"]["PortfolioHistoryRange"]
     }
     /** PortfolioSnapshotAccountResponse */
     PortfolioSnapshotAccountResponse: {
@@ -2415,6 +2459,37 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["PortfolioSnapshotResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  read_portfolio_history_api_v1_portfolio_history_get: {
+    parameters: {
+      query?: {
+        range?: components["schemas"]["PortfolioHistoryRange"]
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["PortfolioHistoryResponse"]
         }
       }
       /** @description Validation Error */

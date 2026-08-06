@@ -101,7 +101,7 @@ describe("portfolio snapshot page cutover boundaries", () => {
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
     await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "8d8b0a692fbc8f2fc2e4418316ff8b549a51b905d606a0109b667e24a9cbc968"
+      "3bb922d9b15bd91a8bf7252cba35bcb76ca4c89e804fa1bf61e890edc059e4f6"
     )
   })
 

@@ -372,8 +372,39 @@ by reference. Account switching is local and performs no fetch or financial
 transformation. Empty breakdowns are explicit text states; negative amounts
 and zero amounts remain visible. R6-B adds no sorting, merging, FX conversion,
 scalar/breakdown reconstruction, legacy fallback, history override, backend
-change, public-contract change, or schema change. R6 remains in progress until
-the final audit.
+change, public-contract change, or schema change. The later R6 final audit
+passed.
+
+## Portfolio history read model
+
+R7-A defines portfolio history as a read-only presentation over persisted
+`NetWorthSnapshot`, not a replay of canonical transactions, investment events,
+movements, Holdings, prices, or FX. Each public point copies the physical
+timestamp, cash value, portfolio value as investment value, liabilities value,
+and total net worth. The persisted User base currency selects the single
+currency represented by the response; snapshots in a former or different
+currency are neither mixed nor converted.
+
+Every candidate point must have canonical naive UTC `TIMESTAMP(3)`, valid
+granularity/source enums and calculation version, exact finite MONEY values,
+nonnegative portfolio and liability values, and exact
+`cash + portfolio - liabilities == totalNetWorth`. Cash and total net worth may
+be negative. Any malformed selected evidence invalidates the complete read.
+Identical timestamps with different finance also fail closed; identical
+finance collapses by granularity priority and persisted ID.
+
+History range selection uses one injected clock read and calendar-safe
+boundaries. The immutable series is ascending and unique. At most 512 public
+points are retained; larger series keep the first and last values and the last
+persisted point of each deterministic UTC time bucket. Empty history is valid
+and never creates a synthetic current point.
+
+`NetWorthSnapshot` does not physically retain historical net deposits,
+investment cost basis, or the authoritative manifest of AccountSnapshot IDs
+that could prove those aggregates. R7-A therefore exposes none of those fields
+and invents no reconstruction. It adds no schema or writer change. The legacy
+browser history remains a temporary compatibility surface until R7-B consumes
+the exact Python timestamp and Decimal-string contract.
 
 This aggregation has no database, authorization, snapshot selection, reader,
 price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,
