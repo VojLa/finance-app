@@ -26,6 +26,9 @@ IMPORT_SERVICE = APP_ROOT / "modules" / "imports" / "post_processing_service.py"
 COORDINATOR = APP_ROOT / "modules" / "snapshot_refresh" / "market_backed_service.py"
 MANUAL_API = APP_ROOT / "modules" / "snapshot_refresh" / "api.py"
 IMPORT_API = APP_ROOT / "modules" / "imports" / "api.py"
+ASSET_ALIAS_MODULE = APP_ROOT / "modules" / "asset_aliases"
+ASSET_ALIAS_SERVICE = ASSET_ALIAS_MODULE / "service.py"
+ASSET_ALIAS_CLI = PYTHON_ROOT / "scripts" / "asset_alias.py"
 
 
 def _source(path: Path) -> str:
@@ -79,35 +82,87 @@ def test_public_boundaries_delegate_to_the_market_backed_coordinator() -> None:
     assert '"/{batch_id}/post"' in _source(IMPORT_API)
 
 
-def test_production_has_no_exact_asset_alias_write_or_reconciliation_path() -> None:
-    """R5-ALIAS-01 is intentionally a documented MISSING release gate."""
-
+def test_production_has_one_approved_alias_writer_and_operator_cli() -> None:
     production_alias_calls: list[str] = []
-    suspicious_production_symbols: list[str] = []
+    writer_classes: list[str] = []
+    onboarding_services: list[str] = []
     for path in APP_ROOT.rglob("*.py"):
         source = _source(path)
         tree = ast.parse(source, filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_name(node) == "AssetAliasModel":
-                production_alias_calls.append(str(path.relative_to(PYTHON_ROOT)))
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                normalized = node.name.casefold()
-                if "assetalias" in normalized and any(
-                    word in normalized for word in ("write", "create", "reconcile", "service")
-                ):
-                    suspicious_production_symbols.append(
-                        f"{path.relative_to(PYTHON_ROOT)}:{node.name}"
-                    )
+                production_alias_calls.append(path.relative_to(PYTHON_ROOT).as_posix())
+            if isinstance(node, ast.ClassDef):
+                if node.name == "AssetAliasWriter":
+                    writer_classes.append(path.relative_to(PYTHON_ROOT).as_posix())
+                if node.name == "AssetAliasOnboardingService":
+                    onboarding_services.append(path.relative_to(PYTHON_ROOT).as_posix())
 
-    assert production_alias_calls == []
-    assert suspicious_production_symbols == []
+    assert production_alias_calls == ["app/modules/asset_aliases/service.py"]
+    assert writer_classes == ["app/modules/asset_aliases/service.py"]
+    assert onboarding_services == ["app/modules/asset_aliases/service.py"]
+    assert ASSET_ALIAS_CLI.is_file()
+    cli_source = _source(ASSET_ALIAS_CLI)
+    assert cli_source.count("AssetAliasOnboardingService") == 2
+    assert "--database-url" not in cli_source
 
-    test_seed_sources = (
-        TEST_ROOT / "support" / "coingecko_price_integration.py",
-        TEST_ROOT / "support" / "twelve_data_price_integration.py",
-        TEST_ROOT / "test_import_market_backed_refresh_integration.py",
+
+def test_alias_onboarding_is_not_exposed_or_embedded_in_refresh_boundaries() -> None:
+    forbidden_boundaries = (
+        APP_ROOT / "modules" / "imports",
+        APP_ROOT / "modules" / "snapshot_refresh",
     )
-    assert all("AssetAliasModel(" in _source(path) for path in test_seed_sources)
+    for boundary in forbidden_boundaries:
+        for path in boundary.rglob("*.py"):
+            assert "AssetAliasModel(" not in _source(path)
+            assert "AssetAliasOnboardingService" not in _source(path)
+
+    assert not (ASSET_ALIAS_MODULE / "api.py").exists()
+    for path in APP_ROOT.rglob("api.py"):
+        source = _source(path)
+        assert "asset-alias" not in source.casefold()
+        assert "asset_alias" not in source.casefold()
+
+
+def test_alias_onboarding_contains_no_identity_inference_map_or_discovery() -> None:
+    audited_sources = (
+        *ASSET_ALIAS_MODULE.rglob("*.py"),
+        ASSET_ALIAS_CLI,
+        APP_ROOT / "modules" / "prices" / "providers" / "coingecko_identity.py",
+    )
+    forbidden_calls = {
+        "create_task",
+        "ensure_future",
+        "fetch",
+        "get",
+        "post",
+        "request",
+    }
+    forbidden_literal_pairs = {
+        ("BTC", "bitcoin"),
+        ("bitcoin", "BTC"),
+    }
+    for path in audited_sources:
+        tree = ast.parse(_source(path), filename=str(path))
+        call_names = {
+            name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            if (name := _call_name(node)) is not None
+        }
+        assert forbidden_calls.isdisjoint(call_names)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            pairs = {
+                (key.value, value.value)
+                for key, value in zip(node.keys, node.values, strict=True)
+                if isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+            }
+            assert forbidden_literal_pairs.isdisjoint(pairs)
 
 
 def test_public_response_models_do_not_expose_market_evidence_metadata() -> None:

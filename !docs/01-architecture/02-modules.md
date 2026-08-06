@@ -8,6 +8,7 @@ thin and shared database infrastructure lives outside modules.
 | --------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                     | Implemented                                                                 |
 | `accounts`            | Account lifecycle, memberships, and invitations                                      | Implemented                                                                 |
+| `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding           | R5-B4 implemented; remediation re-audit planned                             |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence  | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
@@ -44,6 +45,33 @@ database transaction. Production composition registers exactly
 `ExchangeRateSource.cnb` for direct foreign-currency-to-CZK evidence and
 `PriceSource.coingecko` for crypto and `PriceSource.twelve_data` for listed
 securities, each selected through one exact persisted provider AssetAlias.
+
+R5-B4 adds the `asset_aliases` application module and
+`scripts/asset_alias.py` as the supported server-operator boundary for those
+exact persisted identities. It deliberately has no FastAPI or browser
+surface. A read-only, deterministic unresolved inventory lists only
+provider-compatible Assets referenced by nonzero Holdings and missing the
+selected alias. Existing Listing symbols, providers, exchanges, and
+currencies are context for a human operator only: the inventory performs no
+identity recommendation, provider lookup, network request, or inference.
+
+The onboarding command requires the Asset ID plus exact expected symbol,
+Asset type, currency, and optional ISIN before it accepts a provider identity.
+CoinGecko is limited to crypto and one canonical CoinGecko ID. Twelve Data is
+limited to stock, ETF, bond, commodity, and other Assets and reuses the
+canonical quote identity parser for byte-exact
+`{"symbol":"AAPL","mic_code":"XNAS"}`. Cash is unsupported, and there is no
+provider fallback.
+
+The create-only writer owns one `SERIALIZABLE` transaction. It takes advisory
+locks for `(asset_id, provider)` and `(provider, external_id)` in canonical
+sorted order, then validates existing state and physically reloads a new row.
+New alias IDs use UUIDv5 namespace
+`b1d66d76-35f0-4db0-b1d9-0f5452d4a27c` with identity payload
+`asset_id + NUL + provider.value`. Exact state replays without updating even
+`createdAt`; any repoint, replacement, duplicate, corrupt state, or
+deterministic ID collision fails closed. Only SQLSTATE `40001`, `40P01`, or
+`23505` retries, for at most three complete attempts.
 
 R5-B2B0 adds `AssetAliasProvider.twelve_data` and
 `PriceSource.twelve_data` across PostgreSQL, SQLAlchemy, and the Prisma
@@ -162,8 +190,9 @@ fallback.
 R5-B3B adds no new endpoint, scheduler, worker, queue, retry, cache, frontend,
 schema, migration, or OpenAPI surface. R5-B3C now makes the existing import
 post-processing boundary call the same market-backed service after posting and
-Holding rebuild. The R5 final audit remains planned, and overall R5 remains in
-progress.
+Holding rebuild. The R5 final audit completed with verdict NOT READY, R5-B4
+implements the identified alias-onboarding remediation, and an independent
+remediation re-audit remains planned. Overall R5 remains in progress.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated

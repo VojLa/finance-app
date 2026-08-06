@@ -171,6 +171,62 @@ ENVIRONMENT=production
 Invalid production settings stop application startup instead of falling back to unsafe
 development defaults.
 
+## Exact provider alias onboarding
+
+`AssetAlias` is a global provider identity, so onboarding is restricted to a server
+operator and has no browser or public API surface. Configure `DATABASE_URL` through the
+environment or normal application settings; do not put credentials on the command line.
+
+List active compatible Assets whose exact provider alias is missing:
+
+```bash
+DATABASE_URL="postgresql://..." \
+uv run python scripts/asset_alias.py list-unresolved --provider coingecko
+DATABASE_URL="postgresql://..." \
+uv run python scripts/asset_alias.py list-unresolved --provider twelve_data
+```
+
+The deterministic read-only JSON inventory is identification context only. It does not
+recommend an ID, contact a provider, or infer identity from ticker, name, ISIN, broker
+symbol, Listing MIC, or exchange.
+
+Onboard an exact CoinGecko ID for a crypto Asset:
+
+```bash
+DATABASE_URL="postgresql://..." \
+uv run python scripts/asset_alias.py onboard \
+  --asset-id "<asset-id>" \
+  --expected-symbol "BTC" \
+  --expected-asset-type "crypto" \
+  --expected-currency "EUR" \
+  --provider "coingecko" \
+  --external-id "bitcoin"
+```
+
+Onboard canonical Twelve Data JSON for a listed security:
+
+```bash
+DATABASE_URL="postgresql://..." \
+uv run python scripts/asset_alias.py onboard \
+  --asset-id "<asset-id>" \
+  --expected-symbol "AAPL" \
+  --expected-asset-type "stock" \
+  --expected-currency "USD" \
+  --expected-isin "US0378331005" \
+  --provider "twelve_data" \
+  --external-id '{"symbol":"AAPL","mic_code":"XNAS"}'
+```
+
+Append `--dry-run` to validate the complete target and identity without opening the
+writer transaction or creating a row. Successful commands emit one JSON document on
+stdout. Expected failures emit one stable JSON error code on stderr with a nonzero exit
+status and omit tracebacks, SQL details, database URLs, and credentials.
+
+Onboarding is immutable and create-only: exact existing state replays, while a different
+alias, repoint, duplicate, or corrupt state fails closed. CoinGecko supports only crypto;
+Twelve Data supports stock, ETF, bond, commodity, and other Assets. The workflow never
+performs provider HTTP discovery or automatically creates an alias during import.
+
 ## API platform conventions
 
 Application errors use a stable envelope:

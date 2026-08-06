@@ -12,7 +12,7 @@ application service yet.
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                           |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                           |
 | Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                           |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence feeds manual and import refresh; R5 final audit remains planned    |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence plus R5-B4 server-operator exact alias onboarding                  |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                           |
 | Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented   |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                               |
@@ -35,6 +35,48 @@ registered. Otherwise it may use exactly one supported AssetAlias belonging to
 the same Asset. Missing or multiple supported aliases are unavailable or
 ambiguous; symbols, names, account type, or primary-listing flags never infer a
 provider identity.
+
+## Exact provider alias onboarding
+
+R5-B4 makes `AssetAlias` an explicitly onboarded, server-owned global catalog
+identity. It does not make aliases user/account data and adds no public
+mutation endpoint. The read-only unresolved inventory returns only compatible
+Assets referenced by nonzero Holdings and missing the selected provider
+alias. Listing symbols, provider symbols, exchanges, and currencies appear as
+operator context but can never supply or derive `externalId`.
+
+The only writable providers are `coingecko` and `twelve_data`. CoinGecko
+requires `Asset.assetType=crypto` and one exact ASCII CoinGecko ID with no
+whitespace repair, control characters, URL/list delimiters, or multi-ID list.
+Twelve Data permits only stock, ETF, bond, commodity, and other Assets; cash
+and crypto are rejected. Its `externalId` must already equal the canonical
+parser output, for example `{"symbol":"AAPL","mic_code":"XNAS"}`. There is no
+ticker, name, ISIN, broker-symbol, Listing-MIC, exchange, first-alias, or
+hard-coded BTC inference and no provider discovery HTTP.
+
+Before persistence the immutable command reloads the exact Asset and verifies
+the caller-supplied expected symbol, type, currency, and optional ISIN. Its
+naive UTC `createdAt` must already fit `TIMESTAMP(3)`; the application service
+does not read a clock or repair a timestamp. The server CLI reads its clock
+once and passes the value into the command.
+
+An alias is immutable under two identities: `(asset_id, provider)` and
+`(provider, external_id)`. The writer locks both scopes canonically inside one
+writer-owned `SERIALIZABLE` transaction. A new row uses UUIDv5 namespace
+`b1d66d76-35f0-4db0-b1d9-0f5452d4a27c` and payload
+`asset_id + NUL + provider.value`. That namespace is a public identity
+contract. Exact existing physical state, including a valid historical
+non-deterministic ID, replays without updating `createdAt`. A different alias
+for the same Asset/provider, an external identity owned by another Asset,
+multiple aliases, corrupt state, or deterministic-ID collision fails without
+update, delete, move, or replacement.
+
+After insert the writer flushes, reloads, and verifies exact ID, Asset,
+provider, external identity, and creation timestamp. At most three full
+transaction attempts are allowed, and only for serialization failure
+`40001`, deadlock `40P01`, or unique race `23505`. Validation, target mismatch,
+unsupported provider/type, corruption, and immutable conflicts never retry.
+Dry-run and unresolved inventory execute read-only and never enter the writer.
 
 FX requirements always describe one direct
 `from_currency -> output_currency` pair. Current requirements cover account,
@@ -180,7 +222,9 @@ needed; unsupported direct FX such as USD-to-EUR is generically unavailable
 without ECB, inverse, cross-rate, or manual fallback. R5-B3B changes no
 endpoint, frontend, schema, migration, or OpenAPI contract. R5-B3C now uses
 this service from import post-processing after canonical posting and Holding
-rebuild. The R5 final audit remains planned, and R5 remains in progress.
+rebuild. The R5 final audit completed with verdict NOT READY, R5-B4 implements
+the identified alias-onboarding remediation, and an independent remediation
+re-audit remains planned. R5 remains in progress.
 
 ## Important relationships
 
