@@ -13,6 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
+| `portfolio_history`   | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API implemented; browser cutover remains R7-B                    |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
 | transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                        |
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
@@ -237,7 +238,41 @@ the already loaded response and makes no request. The component performs no
 sorting, reduction, account aggregation, FX, scalar/breakdown reconstruction,
 legacy read, or history substitution. Dashboard presentation, OpenAPI,
 generated TypeScript, backend code, schema, and migrations remain unchanged.
-The R6 final audit is still required.
+The later R6 final audit passed; R7-A leaves this presentation contract unchanged.
+
+## Snapshot-backed portfolio history
+
+R7-A introduces `portfolio_history` as a separate read-only boundary. Its
+repository selects only persisted `User.id`, `User.baseCurrency`, and the
+physical NetWorthSnapshot ID, timestamp, granularity, source, calculation
+version, currency, cash, portfolio, liabilities, and total-net-worth fields.
+It does not import or query Transaction, InvestmentEvent, InvestmentMovement,
+Holding, AccountSnapshot, PriceSnapshot, ExchangeRate, import processing, or
+market providers.
+
+The authenticated principal is the sole user selector. The application service
+closes the authentication read, requires an idle request-scoped session, reads
+one injected naive UTC `TIMESTAMP(3)` clock value, and owns one
+`REPEATABLE READ, READ ONLY` transaction. That transaction loads the exact User
+and only candidate NetWorth rows in the current persisted base currency. Pure
+validation, equal-timestamp collapse, and deterministic downsampling happen
+after the transaction closes. No write, row/advisory lock, refresh, retry,
+cache, worker, or background task exists.
+
+Ranges are exact public enum values `1W`, `1M`, `3M`, `6M`, `1Y`, and `ALL`;
+the default is `1Y`. Month and year boundaries use calendar subtraction.
+Future rows are excluded. Equal timestamp rows must have identical finance and
+select minute, hour, day, week, then month granularity, with ascending snapshot
+ID as the final tie-break. The public series is timestamp-ascending, unique,
+and capped at 512 by deterministic UTC time buckets that retain both endpoints.
+
+The response is currency-generic and serializes exact MONEY values as
+six-decimal strings. It exposes only cash, investment value, liabilities, and
+net worth; persistence IDs and metadata do not cross the API. Historical net
+deposits and cost basis are not inferred because a NetWorthSnapshot row does
+not retain the authoritative selected AccountSnapshot lineage. The legacy
+Next.js history route remains active until R7-B, which owns browser/chart
+cutover to this contract.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated

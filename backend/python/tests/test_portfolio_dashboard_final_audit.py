@@ -88,6 +88,7 @@ SNAPSHOT_AT = datetime(2032, 8, 2)
 CREATED_AT = datetime(2032, 8, 2, 0, 0, 0, 123000)
 PRICE_AT = datetime(2032, 8, 1, 12, 30, 0, 123000)
 LEGACY_PATH = "/api/v1/portfolio"
+HISTORY_PATH = "/api/v1/portfolio/history"
 SINGLE_PATH = "/api/v1/portfolio/accounts/{account_id}/snapshot"
 PORTFOLIO_PATH = "/api/v1/portfolio/snapshot"
 DASHBOARD_PATH = "/api/v1/dashboard/snapshot"
@@ -384,6 +385,7 @@ def test_exact_production_route_inventory(test_settings: Settings) -> None:
     }
     assert relevant == {
         ("GET", LEGACY_PATH),
+        ("GET", HISTORY_PATH),
         ("GET", SINGLE_PATH),
         ("POST", PORTFOLIO_PATH),
         ("POST", DASHBOARD_PATH),
