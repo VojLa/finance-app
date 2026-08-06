@@ -3,9 +3,13 @@ import path from "node:path"
 
 import { jwtVerify } from "jose"
 import { getServerSession } from "next-auth"
+import { NextRequest } from "next/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { POST as portfolioWorkflowPost } from "@/app/api/snapshot-workflow/portfolio/route"
+import { GET as portfolioHistoryGet } from "@/app/api/portfolio/history/route"
+import { buildPortfolioHistoryChartPoints } from "@/components/charts/portfolio-history-chart"
+import { requestPortfolioHistory } from "@/modules/portfolio/snapshot-history-client"
 import {
   PORTFOLIO_WORKFLOW_PATH,
   requestPortfolioPageState,
@@ -230,6 +234,72 @@ describe("in-process portfolio browser flow", () => {
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(1)
   })
+
+  it("cuts browser history through NextAuth and one authenticated Python GET", async () => {
+    const history = {
+      range: "1Y" as const,
+      currency: "EUR",
+      points: [
+        {
+          timestamp: "2032-08-01T00:00:00.000",
+          cashValue: "10.000000",
+          investmentValue: "100.123456",
+          liabilitiesValue: "5.000000",
+          netWorthValue: "105.123456",
+        },
+      ],
+    }
+    let internalToken = ""
+    const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/portfolio/history?range=1Y`)
+      expect(request.method).toBe("GET")
+      expect(await request.text()).toBe("")
+      expect(request.headers.has("Cookie")).toBe(false)
+      internalToken = request.headers.get("Authorization")?.slice("Bearer ".length) ?? ""
+      const { payload } = await jwtVerify(internalToken, KEY, {
+        algorithms: ["HS256"],
+        issuer: "finance-app-next",
+        audience: "finance-app-python",
+      })
+      expect(payload.sub).toBe("portfolio-audit-user")
+      expect(payload.email).toBe("portfolio-audit@example.test")
+      return jsonResponse(history)
+    })
+    vi.stubGlobal("fetch", serverFetch)
+    const browserFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(input).toBe("/api/portfolio/history?range=1Y")
+      expect(init).toEqual({ method: "GET", cache: "no-store" })
+      return portfolioHistoryGet(
+        new NextRequest("http://next.test/api/portfolio/history?range=1Y", {
+          method: "GET",
+          headers: { Cookie: "next-auth=session-cookie" },
+        })
+      )
+    })
+
+    const result = await requestPortfolioHistory("1Y", "EUR", browserFetch)
+
+    expect(result).toEqual({ status: "ready", data: history })
+    expect(browserFetch).toHaveBeenCalledOnce()
+    expect(serverFetch).toHaveBeenCalledOnce()
+    expect(getSession).toHaveBeenCalledOnce()
+    expect(JSON.stringify(result)).not.toContain(internalToken)
+    if (result.status !== "ready") throw new Error("Expected ready history.")
+    expect(result.data.points[0]?.netWorthValue).toBe("105.123456")
+    expect(buildPortfolioHistoryChartPoints(result.data.points, "netWorth")[0]).toMatchObject({
+      exactValue: "105.123456",
+      displayValue: 105.123456,
+    })
+
+    const selected = selectPortfolioAccountView(
+      buildPortfolioPageModel(portfolioSnapshotFixture()),
+      "account-b"
+    )
+    expect(selected?.accountId).toBe("account-b")
+    expect(browserFetch).toHaveBeenCalledOnce()
+    expect(serverFetch).toHaveBeenCalledOnce()
+  })
 })
 
 describe("portfolio financial authority and history isolation", () => {
@@ -310,9 +380,12 @@ describe("portfolio financial authority and history isolation", () => {
     )
 
     expect(history).toContain("/api/portfolio/history?")
+    expect(history).toContain("parseSnapshotPortfolioHistory")
     expect(page).toContain("<PortfolioLineChart")
+    expect(page).toContain("Historie celého portfolia")
     expect(page).not.toContain("latestHistoryPoint")
     expect(page).not.toContain("activeHistoryPoint")
-    expect(page).not.toMatch(/history.*(?:summary|positions|allocation|accounts|currency)/i)
+    expect(page).not.toMatch(/historyState.*(?:summary|positions|allocation|accounts)/i)
+    expect(page).toContain("historyState.data.currency")
   })
 })

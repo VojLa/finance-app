@@ -402,9 +402,18 @@ and never creates a synthetic current point.
 `NetWorthSnapshot` does not physically retain historical net deposits,
 investment cost basis, or the authoritative manifest of AccountSnapshot IDs
 that could prove those aggregates. R7-A therefore exposes none of those fields
-and invents no reconstruction. It adds no schema or writer change. The legacy
-browser history remains a temporary compatibility surface until R7-B consumes
-the exact Python timestamp and Decimal-string contract.
+and invents no reconstruction. It adds no schema or writer change.
+
+R7-B consumes this exact generated contract through a thin authenticated Next
+adapter and strict browser validation. The validated series remains user-level
+when account selection changes, and its currency must equal the current Python
+portfolio response currency. The chart selects only `netWorthValue` or
+`investmentValue`; exact strings remain authoritative for visible tooltips, and
+one presentation-only numeric conversion supplies the Recharts coordinate.
+There is no inferred deposit/cost-basis baseline, FX conversion, TypeScript
+aggregation, or synthetic current point. The old TypeScript history service is
+not exported or reachable from the active browser workflow. R7 remains in
+progress pending its final audit.
 
 This aggregation has no database, authorization, snapshot selection, reader,
 price/FX lookup, Holding read, endpoint, clock, or side effect. Empty input,

@@ -5,14 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import {
   PortfolioLineChart,
-  type PortfolioChartDataPoint,
-  type PortfolioChartRange,
-  type PortfolioValueMode,
+  type PortfolioHistoryValueMode,
 } from "@/components/charts/PortfolioLineChart"
 import { SnapshotAllocationPie } from "@/modules/portfolio/SnapshotAllocationPie"
 import { SnapshotCurrencyBreakdown } from "@/modules/portfolio/SnapshotCurrencyBreakdown"
 import { SnapshotHoldingsTable } from "@/modules/portfolio/SnapshotHoldingsTable"
-import { requestPortfolioHistory } from "@/modules/portfolio/snapshot-history-client"
+import {
+  startPortfolioHistoryRequest,
+  type PortfolioHistoryLoadResult,
+} from "@/modules/portfolio/snapshot-history-client"
+import type { SnapshotPortfolioHistoryRange } from "@/modules/portfolio/snapshot-history-contract"
 import {
   requestPortfolioPageState,
   type PortfolioPageState,
@@ -30,9 +32,11 @@ export default function PortfolioPage() {
   const [state, setState] = useState<PortfolioPageState>({ status: "loading" })
   const [refreshing, setRefreshing] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
-  const [history, setHistory] = useState<PortfolioChartDataPoint[]>([])
-  const [historyRange, setHistoryRange] = useState<PortfolioChartRange>("1Y")
-  const [historyValueMode, setHistoryValueMode] = useState<PortfolioValueMode>("total")
+  const [historyState, setHistoryState] = useState<
+    PortfolioHistoryLoadResult | Readonly<{ status: "idle" | "loading" }>
+  >({ status: "idle" })
+  const [historyRange, setHistoryRange] = useState<SnapshotPortfolioHistoryRange>("1Y")
+  const [historyValueMode, setHistoryValueMode] = useState<PortfolioHistoryValueMode>("netWorth")
   const initialLoadStarted = useRef(false)
 
   const loadPortfolio = useCallback(async (isRefresh = false) => {
@@ -51,16 +55,6 @@ export default function PortfolioPage() {
     void loadPortfolio()
   }, [loadPortfolio])
 
-  useEffect(() => {
-    let active = true
-    void requestPortfolioHistory(historyRange).then((points) => {
-      if (active) setHistory(points)
-    })
-    return () => {
-      active = false
-    }
-  }, [historyRange])
-
   const pageModel = useMemo(
     () => (state.status === "ready" ? buildPortfolioPageModel(state.data) : null),
     [state]
@@ -75,6 +69,19 @@ export default function PortfolioPage() {
       setSelectedAccountId(null)
     }
   }, [pageModel, selectedAccount, selectedAccountId])
+
+  const historyCurrency = state.status === "ready" ? state.data.currency : null
+  const historySnapshotId = state.status === "ready" ? state.refresh.netWorthSnapshotId : null
+
+  useEffect(() => {
+    if (historyCurrency === null) {
+      setHistoryState({ status: "idle" })
+      return
+    }
+
+    setHistoryState({ status: "loading" })
+    return startPortfolioHistoryRequest(historyRange, historyCurrency, setHistoryState)
+  }, [historyCurrency, historyRange, historySnapshotId])
 
   const refreshDisabled = state.status === "loading" || refreshing
 
@@ -143,7 +150,7 @@ export default function PortfolioPage() {
           selectedAccountId={selectedAccountId}
           selectedAccount={selectedAccount}
           onSelectAccount={setSelectedAccountId}
-          history={history}
+          historyState={historyState}
           historyRange={historyRange}
           onHistoryRangeChange={setHistoryRange}
           historyValueMode={historyValueMode}
@@ -174,11 +181,11 @@ type ReadyPortfolioProps = {
   selectedAccountId: string | null
   selectedAccount: ReturnType<typeof selectPortfolioAccountView>
   onSelectAccount: (accountId: string | null) => void
-  history: PortfolioChartDataPoint[]
-  historyRange: PortfolioChartRange
-  onHistoryRangeChange: (range: PortfolioChartRange) => void
-  historyValueMode: PortfolioValueMode
-  onHistoryValueModeChange: (mode: PortfolioValueMode) => void
+  historyState: PortfolioHistoryLoadResult | Readonly<{ status: "idle" | "loading" }>
+  historyRange: SnapshotPortfolioHistoryRange
+  onHistoryRangeChange: (range: SnapshotPortfolioHistoryRange) => void
+  historyValueMode: PortfolioHistoryValueMode
+  onHistoryValueModeChange: (mode: PortfolioHistoryValueMode) => void
 }
 
 function ReadyPortfolio({
@@ -187,7 +194,7 @@ function ReadyPortfolio({
   selectedAccountId,
   selectedAccount,
   onSelectAccount,
-  history,
+  historyState,
   historyRange,
   onHistoryRangeChange,
   historyValueMode,
@@ -265,18 +272,37 @@ function ReadyPortfolio({
         />
       </div>
 
-      {history.length > 1 && (
-        <div className="rounded-xl border border-gray-200 bg-white p-6">
-          {/* 5M-C keeps legacy history chart-only; it never overrides current snapshot values. */}
+      <section
+        className="rounded-xl border border-gray-200 bg-white p-6"
+        aria-labelledby="portfolio-history-heading"
+      >
+        <h2 id="portfolio-history-heading" className="mb-1 text-lg font-medium">
+          Historie celého portfolia
+        </h2>
+        <p className="mb-4 text-sm text-gray-500">
+          Historie je souhrnná a při výběru účtu se nemění.
+        </p>
+        {historyState.status === "loading" && (
+          <p role="status" className="py-12 text-center text-sm text-gray-500">
+            Načítám historii portfolia…
+          </p>
+        )}
+        {historyState.status === "error" && (
+          <p role="alert" className="py-12 text-center text-sm text-red-700">
+            {historyState.message}
+          </p>
+        )}
+        {(historyState.status === "ready" || historyState.status === "empty") && (
           <PortfolioLineChart
-            data={history}
+            points={historyState.data.points}
+            currency={historyState.data.currency}
             range={historyRange}
             onRangeChange={onHistoryRangeChange}
             valueMode={historyValueMode}
             onValueModeChange={onHistoryValueModeChange}
           />
-        </div>
-      )}
+        )}
+      </section>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">

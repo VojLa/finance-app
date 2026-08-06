@@ -54,17 +54,30 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(client).not.toContain("accountId")
   })
 
-  it("keeps history chart-only and separate from current cards and positions", async () => {
+  it("uses strict Python snapshot history without changing current cards and positions", async () => {
     const page = await source("src/app/portfolio/page.tsx")
     const historyClient = await source("src/modules/portfolio/snapshot-history-client.ts")
+    const historyContract = await source("src/modules/portfolio/snapshot-history-contract.ts")
+    const route = await source("src/app/api/portfolio/history/route.ts")
+    const transport = await source("src/modules/python-api/server/portfolio-history.ts")
 
     expect(historyClient).toContain("/api/portfolio/history?")
     expect(historyClient).not.toContain("accountId")
-    expect(historyClient).toContain("History cutover is intentionally outside 5M-C")
+    expect(historyClient).toContain("parseSnapshotPortfolioHistory")
+    expect(historyContract).toContain('components["schemas"]["PortfolioHistoryResponse"]')
+    expect(historyContract).toContain("MAX_POINTS = 512")
+    expect(route).toContain("readSnapshotBackedPortfolioHistory")
+    expect(transport).toContain('client.GET("/api/v1/portfolio/history"')
+    expect(transport).toContain("createAuthenticatedPythonTransport")
     expect(page).not.toContain("activeHistoryPoint")
     expect(page).not.toContain("displayPoint")
     expect(page).not.toContain("latestHistoryPoint")
-    expect(page).not.toMatch(/history.*(?:summary|positions|currency)/i)
+    expect(page).toContain("Historie celého portfolia")
+    expect(page).toContain("historyState.data.currency")
+    expect(page).not.toMatch(/historyState.*(?:summary|positions|allocation)/i)
+    expect(`${route}\n${transport}\n${historyClient}`).not.toMatch(
+      /getPortfolioSnapshotHistory|@\/modules\/snapshots|@\/modules\/portfolio\/rates|@\/lib\/prisma|assertAccountAccess|historical price|historical FX|\/api\/rates/
+    )
   })
 
   it("isolates the only Decimal-to-number conversion in the leaf allocation chart", async () => {
@@ -87,12 +100,9 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps legacy and workflow routes byte-identical and pins the approved OpenAPI", async () => {
+  it("keeps unrelated routes byte-identical and pins the approved OpenAPI", async () => {
     await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
       "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
-    )
-    await expect(sha256("src/app/api/portfolio/history/route.ts")).resolves.toBe(
-      "2dfbcf8c5c6429c6eab0f9cb04e993ba14ad32bbacc9dba90c817faad1aba95c"
     )
     await expect(sha256("src/app/api/snapshot-workflow/portfolio/route.ts")).resolves.toBe(
       "add630f02a576ea7cfb826810b050f15a0480614fe9990b5a7b9367f2c06365c"
@@ -118,7 +128,6 @@ describe("portfolio snapshot page cutover boundaries", () => {
       "backend/python/uv.lock",
       "prisma/",
       "src/app/api/portfolio/route.ts",
-      "src/app/api/portfolio/history/route.ts",
       "src/app/api/snapshot-workflow/portfolio/route.ts",
       "src/app/api/snapshot-workflow/dashboard/route.ts",
     ]

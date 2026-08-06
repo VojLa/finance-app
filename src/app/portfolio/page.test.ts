@@ -7,6 +7,7 @@ import {
   PORTFOLIO_WORKFLOW_PATH,
   requestPortfolioPageState,
 } from "@/modules/portfolio/snapshot-page-client"
+import { startPortfolioHistoryRequest } from "@/modules/portfolio/snapshot-history-client"
 import {
   buildPortfolioPageModel,
   selectPortfolioAccountView,
@@ -194,12 +195,59 @@ describe("portfolio page snapshot workflow", () => {
     expect(selected?.positions[0]?.position).toBe(data.accounts[1]?.positions[0])
   })
 
+  it("cancels an obsolete history request without changing current portfolio data", async () => {
+    let resolveHistory: ((response: Response) => void) | undefined
+    const historyFetch = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveHistory = resolve
+        })
+    )
+    const current = portfolioSnapshotFixture()
+    const results: unknown[] = []
+
+    const cancel = startPortfolioHistoryRequest(
+      "1Y",
+      current.currency,
+      (result) => {
+        results.push(result)
+      },
+      historyFetch
+    )
+    cancel()
+    resolveHistory?.(
+      jsonResponse({
+        range: "1Y",
+        currency: current.currency,
+        points: [],
+      })
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(results).toEqual([])
+    expect(current.summary.totalValue).toBe("777.123456")
+    expect(current.accounts[0]?.positions[0]?.value).toBe("123.456789")
+  })
+
   it("guards the mount request and does not render a manifest or raw error fields", async () => {
     const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
 
     expect(page).toContain("initialLoadStarted.current")
     expect(page).toContain("void loadPortfolio()")
     expect(page).toContain("requestPortfolioPageState()")
+    expect(page).toContain('state.status === "ready" ? state.data.currency : null')
+    expect(page).toContain('state.status === "ready" ? state.refresh.netWorthSnapshotId : null')
+    expect(page).toContain("startPortfolioHistoryRequest(historyRange, historyCurrency")
+    expect(page).toContain("[historyCurrency, historyRange, historySnapshotId]")
+    expect(page).toContain('historyState.status === "loading"')
+    expect(page).toContain('historyState.status === "empty"')
+    expect(page).toContain('historyState.status === "error"')
+    expect(page).toContain('historyState.status === "ready"')
+    expect(page).toContain("Historie celého portfolia")
+    expect(page).toContain("Načítám historii portfolia…")
+    expect(page).toContain("historyState.data.points")
+    expect(page).toContain("historyState.data.currency")
     expect(page).toContain("view.summary.totalValue")
     expect(page).toContain("view.summary.netDepositsValue")
     expect(page).toContain("view.summary.cashByCurrency")
@@ -213,5 +261,7 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain("{state.message}")
     expect(page).not.toMatch(/\b(?:snapshotId|manifest|request_id|traceback|raw body)\b/i)
     expect(page).not.toContain("state.code")
+    expect(page).not.toContain("currentValueCzk")
+    expect(page).not.toContain("latestHistoryPoint")
   })
 })

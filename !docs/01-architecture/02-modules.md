@@ -13,7 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches        | R5-B3C market-backed post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX           | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
-| `portfolio_history`   | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API implemented; browser cutover remains R7-B                    |
+| `portfolio_history`   | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API and R7-B browser/chart cutover implemented                   |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                           | 5L complete; final cross-boundary audit passed                              |
 | transactions          | Cash transaction lifecycle and classification                                        | Database schema only                                                        |
 | ledger                | Investment events and movements                                                      | Database schema only                                                        |
@@ -270,9 +270,23 @@ The response is currency-generic and serializes exact MONEY values as
 six-decimal strings. It exposes only cash, investment value, liabilities, and
 net worth; persistence IDs and metadata do not cross the API. Historical net
 deposits and cost basis are not inferred because a NetWorthSnapshot row does
-not retain the authoritative selected AccountSnapshot lineage. The legacy
-Next.js history route remains active until R7-B, which owns browser/chart
-cutover to this contract.
+not retain the authoritative selected AccountSnapshot lineage.
+
+R7-B makes `/api/portfolio/history` a thin NextAuth adapter over the generated
+Python GET operation. It allows only `range`, rejects unknown query parameters,
+uses a fresh server-issued token, forwards no browser cookie or user/account
+selector, and returns no-store responses. Browser runtime validation preserves
+the exact generated strings and checks the requested range, current portfolio
+currency, canonical timestamps, ordering, uniqueness, and response cap.
+
+The chart labels this series as the history of the complete portfolio even
+while a specific account is locally selected. It displays either persisted net
+worth or persisted investment value as one series. Exact strings own tooltip
+presentation; one isolated numeric conversion owns only the Recharts
+coordinate. No historical deposits, cost basis, FX, baseline, account
+aggregation, or synthetic current point is created in TypeScript. The former
+TypeScript history service remains unexported dead code outside the active call
+graph. R7 final audit remains planned.
 
 The Python `portfolio_snapshot` module owns the pure 5L-A single-account
 presentation contract. It accepts only immutable, already validated
