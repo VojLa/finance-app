@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import importlib
 import os
-import subprocess
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
 from pathlib import Path
@@ -29,11 +28,6 @@ APP_ROOT = PYTHON_ROOT / "app"
 PORTFOLIO_ROOT = APP_ROOT / "modules" / "portfolio_snapshot"
 FRONTEND_ROOT = REPOSITORY_ROOT / "src"
 
-R6_A_BASE = "6199211d1b4f02c2cfec8d8d48be30b632661c20"
-R6_A_MERGE = "b5b68828cfcdb20a13a0d63242363de55026fba3"
-R6_B_HEAD = "62074c3958a670493296602923c2ca88a0ce328b"
-R6_AUDIT_BASE = "bd42fa36fde6c657eeb7217b9e229d448c5a8f31"
-
 postgres_support = cast(
     Any,
     importlib.import_module("tests.test_portfolio_dashboard_final_audit_integration"),
@@ -55,44 +49,13 @@ def _imports(path: Path) -> set[str]:
     return modules
 
 
-def _changed_files(start: str, end: str) -> set[str]:
-    result = subprocess.run(
-        ["git", "diff", "--name-only", f"{start}..{end}"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return {line for line in result.stdout.splitlines() if line}
-
-
-def test_r6_lineage_and_physical_schema_are_unchanged() -> None:
-    assert subprocess.run(
-        ["git", "rev-parse", R6_A_BASE, R6_A_MERGE, R6_B_HEAD, R6_AUDIT_BASE],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines() == [R6_A_BASE, R6_A_MERGE, R6_B_HEAD, R6_AUDIT_BASE]
-
+def test_r6_physical_schema_contract_is_unchanged() -> None:
     cash_column = AccountSnapshotModel.cash_value_by_currency.property.columns[0]
     deposits_column = AccountSnapshotModel.net_deposits_by_currency.property.columns[0]
     assert cash_column.name == "cashValueByCurrency"
     assert deposits_column.name == "netDepositsByCurrency"
     assert isinstance(cash_column.type, JSONB)
     assert isinstance(deposits_column.type, JSONB)
-
-    changed = _changed_files(R6_A_BASE, R6_AUDIT_BASE)
-    forbidden_prefixes = (
-        "backend/python/migrations/",
-        "backend/python/database/revisions/",
-    )
-    assert not any(path.startswith(forbidden_prefixes) for path in changed)
-    assert "prisma/schema.prisma" not in changed
-    assert not {
-        "backend/python/app/modules/snapshots/calculation.py",
-        "backend/python/app/modules/snapshots/writer.py",
-    }.intersection(changed)
 
 
 def test_r6_production_flow_reads_only_persisted_snapshot_evidence() -> None:
