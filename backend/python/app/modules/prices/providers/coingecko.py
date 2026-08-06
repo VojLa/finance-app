@@ -13,6 +13,10 @@ from app.modules.market_data.policy import (
     validate_market_evidence_policy,
 )
 from app.modules.prices.models import PriceObservation
+from app.modules.prices.providers.coingecko_identity import (
+    CoinGeckoAssetIdentityError,
+    parse_coingecko_asset_identity,
+)
 from app.modules.prices.providers.coingecko_models import CoinGeckoHttpResponse
 from app.modules.prices.providers.coingecko_parser import parse_coingecko_simple_price
 from app.modules.prices.providers.coingecko_transport import CoinGeckoPriceTransport
@@ -22,7 +26,6 @@ from app.modules.prices.validation import (
 )
 
 _CURRENCY_PATTERN = re.compile(r"[A-Z]{3}\Z")
-_FORBIDDEN_SYMBOL_CHARACTERS = frozenset(",&?#/\\")
 
 
 def _fail() -> MarketEvidenceStateError:
@@ -30,15 +33,11 @@ def _fail() -> MarketEvidenceStateError:
 
 
 def _valid_provider_symbol(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and value == value.strip()
-        and value.isascii()
-        and len(value) <= 128
-        and not any(character in _FORBIDDEN_SYMBOL_CHARACTERS for character in value)
-        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
-    )
+    try:
+        parse_coingecko_asset_identity(value)
+    except CoinGeckoAssetIdentityError:
+        return False
+    return True
 
 
 class CoinGeckoPriceProvider:
