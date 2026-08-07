@@ -109,6 +109,16 @@ export type ImportSummary = ImportFilesSummary & {
   snapshotRefreshStatus: ImportFinalizationStatus
 }
 
+export type ImportFinalizationRequest = {
+  accountId: string
+  batchIds: string[]
+}
+
+export type ImportFinalizationResult = {
+  batchIds: string[]
+  snapshotRefreshStatus: PythonImportFinalizeResponse["snapshot_refresh_status"]
+}
+
 export type ImportApiErrorResponse = {
   error: ImportPublicError
   partial?: ImportSummary
@@ -390,6 +400,65 @@ export function withImportFinalization(
   snapshotRefreshStatus: ImportFinalizationStatus
 ): ImportSummary {
   return { ...summary, snapshotRefreshStatus }
+}
+
+export function recoverableBatchIds(summary: ImportSummary): string[] {
+  return summary.files
+    .flatMap((file) => {
+      if (file.status === "completed" || file.status === "partially_completed") {
+        return [file.batchId]
+      }
+      if (
+        file.status === "failed" &&
+        file.lastSuccessfulStage === "posted" &&
+        file.batchId !== undefined
+      ) {
+        return [file.batchId]
+      }
+      return []
+    })
+    .sort()
+}
+
+export function requiresImportFinalizationRecovery(summary: ImportSummary): boolean {
+  return (
+    recoverableBatchIds(summary).length > 0 &&
+    ["not_run", "unavailable", "conflict"].includes(summary.snapshotRefreshStatus)
+  )
+}
+
+export function parseImportFinalizationResult(value: unknown): ImportFinalizationResult {
+  if (
+    !isPlainObject(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "batchIds") ||
+    !Object.hasOwn(value, "snapshotRefreshStatus") ||
+    !Array.isArray(value.batchIds)
+  ) {
+    throw new TypeError("Invalid import finalization result")
+  }
+  const batchIds = value.batchIds
+  const snapshotRefreshStatus = value.snapshotRefreshStatus
+  if (
+    batchIds.length === 0 ||
+    batchIds.length > 10 ||
+    batchIds.some(
+      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId.trim() !== batchId
+    ) ||
+    new Set(batchIds).size !== batchIds.length ||
+    batchIds.some((batchId, index) => index > 0 && batchId < batchIds[index - 1]) ||
+    typeof snapshotRefreshStatus !== "string" ||
+    !SNAPSHOT_REFRESH_STATUSES.includes(
+      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"]
+    )
+  ) {
+    throw new TypeError("Invalid import finalization result")
+  }
+  return {
+    batchIds,
+    snapshotRefreshStatus:
+      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"],
+  }
 }
 
 export function isImportApiErrorResponse(value: unknown): value is ImportApiErrorResponse {

@@ -794,8 +794,14 @@ whole-user snapshot execution.
 There is no outer transaction across files or phases. Earlier canonical
 batches remain committed when a later file fails, and no finalization runs for
 that incomplete logical request. A Holding, market, or snapshot failure after
-canonical posting truthfully preserves prior phases and can be retried with
-the same batch set. Existing deterministic replay and lock contracts converge
-concurrent finalization requests without duplicate Holdings, market evidence,
-AccountSnapshots, or NetWorthSnapshots. R10-A adds no schema, migration,
-worker, scheduler, queue, cache, or automatic retry.
+canonical posting truthfully preserves prior phases. The safe partial or
+nonterminal summary retains only batch IDs that reached canonical posting.
+The import page may pass that exact set to the thin authenticated
+`POST /api/import/finalize` adapter; it performs no upload and delegates to the
+existing Python finalizer. Python revalidates the principal, account, terminal
+batch state, and source before replaying canonical posting and the financial
+phases. Existing deterministic replay and lock contracts converge concurrent
+finalization requests without duplicate Holdings, market evidence,
+AccountSnapshots, or NetWorthSnapshots. Ordinary checksum duplicates have no
+synthetic recovery ID and remain `not_required`. R10-A adds no schema,
+migration, worker, scheduler, queue, cache, or automatic retry.

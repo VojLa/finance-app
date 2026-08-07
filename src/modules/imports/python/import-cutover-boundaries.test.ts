@@ -28,6 +28,7 @@ describe("R4 import call-graph boundaries", () => {
       .sort()
     expect(routes).toEqual([
       "src/app/api/import/anycoin/route.ts",
+      "src/app/api/import/finalize/route.ts",
       "src/app/api/import/raiffeisenbank/preview/route.ts",
       "src/app/api/import/raiffeisenbank/route.ts",
       "src/app/api/import/route.ts",
@@ -41,7 +42,7 @@ describe("R4 import call-graph boundaries", () => {
       expect(content).not.toMatch(
         /importCsvFilesAsync|DuplicateImportError|@\/modules\/imports["']|@\/imports\/utils\/api|@\/lib\/prisma|file\.text\(|prisma\.|userId/
       )
-      expect(content).toMatch(/handleImportPost|handleImportStatus/)
+      expect(content).toMatch(/handleImportPost|handleImportFinalize|handleImportStatus/)
     }
   })
 
@@ -91,6 +92,24 @@ describe("R4 import call-graph boundaries", () => {
     expect(route).not.toContain("runImportWorkflow")
     expect(api).toContain("canonicalPostImportBatch")
     expect(api).toContain("finalizeImportBatches")
+  })
+
+  it("keeps failed finalization explicitly recoverable through persisted batch IDs", async () => {
+    const page = await source("src/app/import/page.tsx")
+    const client = await source("src/modules/imports/python/import-client.ts")
+    const route = await source("src/modules/imports/python/import-route.ts")
+    const boundary = await source("src/app/api/import/finalize/route.ts")
+
+    expect(page).toContain("requestImportFinalization")
+    expect(page).toContain("recoverableBatchIds")
+    expect(page).toContain("Zkusit dokončit aktualizaci")
+    expect(client).toContain('export const IMPORT_FINALIZE_PATH = "/api/import/finalize"')
+    expect(route).toContain("handleImportFinalize")
+    expect(route).toContain("finalizeImportBatches")
+    expect(boundary).toContain("handleImportFinalize")
+    expect(`${page}\n${client}\n${route}\n${boundary}`).not.toMatch(
+      /sourceOverride|snapshotTimestamp|calculationVersion|holdingSelector|marketRequirements/
+    )
   })
 
   it("keeps token issuance, identity and raw Python bodies server-side", async () => {

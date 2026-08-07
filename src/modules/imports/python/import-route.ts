@@ -16,6 +16,8 @@ import {
   summarizeImportFiles,
   withImportFinalization,
   type ImportApiErrorResponse,
+  type ImportFinalizationRequest,
+  type ImportFinalizationResult,
   type ImportStatusResult,
   type PythonImportSource,
 } from "./import-contract"
@@ -93,6 +95,39 @@ function parseFiles(formData: FormData): File[] {
     }
   }
   return files
+}
+
+function parseFinalizationRequest(value: unknown): ImportFinalizationRequest {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw validationError()
+  }
+  const record = value as Record<string, unknown>
+  if (
+    Object.keys(record).length !== 2 ||
+    !Object.hasOwn(record, "accountId") ||
+    !Object.hasOwn(record, "batchIds") ||
+    typeof record.accountId !== "string" ||
+    record.accountId.length === 0 ||
+    record.accountId !== record.accountId.trim() ||
+    !Array.isArray(record.batchIds) ||
+    record.batchIds.length === 0 ||
+    record.batchIds.length > MAX_FILES ||
+    record.batchIds.some(
+      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId !== batchId.trim()
+    ) ||
+    new Set(record.batchIds).size !== record.batchIds.length
+  ) {
+    throw validationError()
+  }
+  return {
+    accountId: record.accountId,
+    batchIds: record.batchIds,
+  }
 }
 
 export async function handleImportPost(request: NextRequest, fixedSource?: PythonImportSource) {
@@ -179,6 +214,42 @@ export async function handleImportPost(request: NextRequest, fixedSource?: Pytho
     return NextResponse.json(withImportFinalization(summary, finalized.snapshot_refresh_status), {
       headers: NO_STORE_HEADERS,
     })
+  } catch (error) {
+    return safeAdapterResponse(error)
+  }
+}
+
+export async function handleImportFinalize(request: NextRequest) {
+  const session = await getServerSession(authOptions)
+  if (!session?.user || session.user.id.trim().length === 0) {
+    return authenticationRequired()
+  }
+  try {
+    let value: unknown
+    try {
+      value = await request.json()
+    } catch {
+      throw validationError()
+    }
+    const input = parseFinalizationRequest(value)
+    const expectedBatchIds = [...input.batchIds].sort()
+    const finalized = await createPythonImportApi({
+      userId: session.user.id,
+      email: session.user.email || undefined,
+    }).finalizeImportBatches(input.accountId, input.batchIds)
+    if (
+      finalized.batch_ids.length !== expectedBatchIds.length ||
+      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
+    ) {
+      throw contractError()
+    }
+    return NextResponse.json(
+      {
+        batchIds: finalized.batch_ids,
+        snapshotRefreshStatus: finalized.snapshot_refresh_status,
+      } satisfies ImportFinalizationResult,
+      { headers: NO_STORE_HEADERS }
+    )
   } catch (error) {
     return safeAdapterResponse(error)
   }

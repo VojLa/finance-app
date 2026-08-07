@@ -18,6 +18,7 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.modules.holdings.models import HoldingRebuildResponse
+from app.modules.holdings.orchestration import HoldingRebuildUnavailableError
 from app.modules.imports.multi_file_service import (
     FinalizeImportBatchesCommand,
     ImportBatchFinalizationStateError,
@@ -36,6 +37,7 @@ from app.modules.snapshot_refresh.executor import (
 from app.modules.snapshot_refresh.market_backed_models import (
     ExecuteMarketBackedSnapshotRefreshCommand,
     ExecuteMarketBackedSnapshotRefreshResult,
+    MarketBackedSnapshotRefreshConflictError,
     MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
@@ -310,6 +312,42 @@ async def test_market_failure_returns_unavailable_and_retry_can_complete() -> No
     failed = await failed_service.finalize(_command())
 
     assert failed.snapshot_refresh_status.value == "unavailable"
+    failed_holding_factory.assert_called_once()
+    failed_market.execute.assert_awaited_once()
+
+    retry_service, _, retry_holding_factory, retry_market = _service()
+    recovered = await retry_service.finalize(_command())
+
+    assert recovered.snapshot_refresh_status.value == "created"
+    retry_holding_factory.assert_called_once()
+    retry_market.execute.assert_awaited_once()
+
+
+async def test_holding_failure_remains_recoverable_with_the_same_batch_set() -> None:
+    failed_service, _, failed_holding_factory, failed_market = _service()
+    failed_holding_factory.return_value.rebuild.side_effect = HoldingRebuildUnavailableError()
+
+    failed = await failed_service.finalize(_command())
+
+    assert failed.snapshot_refresh_status.value == "unavailable"
+    failed_holding_factory.assert_called_once()
+    failed_market.execute.assert_not_awaited()
+
+    retry_service, _, retry_holding_factory, retry_market = _service()
+    recovered = await retry_service.finalize(_command())
+
+    assert recovered.snapshot_refresh_status.value == "created"
+    retry_holding_factory.assert_called_once()
+    retry_market.execute.assert_awaited_once()
+
+
+async def test_snapshot_conflict_remains_recoverable_with_the_same_batch_set() -> None:
+    failed_service, _, failed_holding_factory, failed_market = _service()
+    failed_market.execute.side_effect = MarketBackedSnapshotRefreshConflictError()
+
+    failed = await failed_service.finalize(_command())
+
+    assert failed.snapshot_refresh_status.value == "conflict"
     failed_holding_factory.assert_called_once()
     failed_market.execute.assert_awaited_once()
 

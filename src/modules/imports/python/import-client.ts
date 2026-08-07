@@ -1,7 +1,17 @@
-import type { ImportApiErrorResponse, ImportSummary, PythonImportSource } from "./import-contract"
-import { isImportApiErrorResponse, parseImportSummary } from "./import-contract"
+import type {
+  ImportApiErrorResponse,
+  ImportFinalizationResult,
+  ImportSummary,
+  PythonImportSource,
+} from "./import-contract"
+import {
+  isImportApiErrorResponse,
+  parseImportFinalizationResult,
+  parseImportSummary,
+} from "./import-contract"
 
 export const IMPORT_PATH = "/api/import"
+export const IMPORT_FINALIZE_PATH = "/api/import/finalize"
 
 type FetchImplementation = typeof fetch
 
@@ -66,6 +76,37 @@ export async function requestImport(
     }
     try {
       return parseImportSummary(value)
+    } catch {
+      throw contractError()
+    }
+  } catch (error) {
+    if (error instanceof ImportClientError) throw error
+    throw unavailableError()
+  }
+}
+
+export async function requestImportFinalization(
+  accountId: string,
+  batchIds: readonly string[],
+  fetchImplementation: FetchImplementation = globalThis.fetch
+): Promise<ImportFinalizationResult> {
+  try {
+    const response = await fetchImplementation(IMPORT_FINALIZE_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId, batchIds }),
+      cache: "no-store",
+    })
+    if (!response.headers.get("content-type")?.toLowerCase().includes("json")) {
+      throw unavailableError()
+    }
+    const value: unknown = await response.json()
+    if (!response.ok) {
+      if (!isImportApiErrorResponse(value)) throw unavailableError()
+      throw new ImportClientError(response.status, value.error.code, value.error.message)
+    }
+    try {
+      return parseImportFinalizationResult(value)
     } catch {
       throw contractError()
     }

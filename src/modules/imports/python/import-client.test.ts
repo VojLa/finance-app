@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { requestImport } from "./import-client"
+import { requestImport, requestImportFinalization } from "./import-client"
+import {
+  recoverableBatchIds,
+  requiresImportFinalizationRecovery,
+  withImportFinalization,
+  type ImportSummary,
+} from "./import-contract"
 
-function summary() {
+function summary(): ImportSummary {
   return {
     files: [
       {
@@ -115,5 +121,132 @@ describe("typed browser import client", () => {
     ).rejects.toMatchObject({
       code: "python_api_contract_error",
     })
+  })
+
+  it("retries finalization with exact persisted IDs and no file upload", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        batchIds: ["batch-1", "batch-2"],
+        snapshotRefreshStatus: "replayed",
+      })
+    )
+
+    const result = await requestImportFinalization(
+      "account-1",
+      ["batch-1", "batch-2"],
+      fetchImplementation
+    )
+
+    expect(result).toEqual({
+      batchIds: ["batch-1", "batch-2"],
+      snapshotRefreshStatus: "replayed",
+    })
+    const [path, init] = fetchImplementation.mock.calls[0]
+    expect(path).toBe("/api/import/finalize")
+    expect(init).toMatchObject({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+    })
+    expect(JSON.parse(String(init?.body))).toEqual({
+      accountId: "account-1",
+      batchIds: ["batch-1", "batch-2"],
+    })
+    expect(init?.body).not.toBeInstanceOf(FormData)
+  })
+
+  it("fails closed on malformed finalization success and preserves safe errors", async () => {
+    const malformed = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        batchIds: ["batch-2", "batch-1"],
+        snapshotRefreshStatus: "created",
+      })
+    )
+    await expect(
+      requestImportFinalization("account-1", ["batch-1", "batch-2"], malformed)
+    ).rejects.toMatchObject({ code: "python_api_contract_error" })
+
+    const rejected = vi.fn<typeof fetch>(async () =>
+      jsonResponse(
+        {
+          error: {
+            code: "import_batch_not_found",
+            message: "Import batch was not found.",
+            request_id: "hidden",
+          },
+        },
+        404
+      )
+    )
+    await expect(
+      requestImportFinalization("account-1", ["batch-1"], rejected)
+    ).rejects.toMatchObject({
+      status: 404,
+      code: "import_batch_not_found",
+      message: "Import batch was not found.",
+    })
+  })
+
+  it("derives recovery only from canonical-posted persisted batches", () => {
+    const base = summary()
+    const partial = {
+      ...base,
+      files: [
+        base.files[0],
+        {
+          filename: "posted.csv",
+          batchId: "batch-2",
+          status: "failed" as const,
+          lastSuccessfulStage: "posted" as const,
+          rowsTotal: 1,
+          rowsImported: 1,
+          rowsSkipped: 0,
+          rowsFailed: 0,
+          rowsNeedsReview: 0,
+          issues: { failed: 0, needsReview: 0 },
+          error: { code: "python_api_unavailable", message: "Unavailable." },
+        },
+        {
+          filename: "parsed.csv",
+          batchId: "batch-3",
+          status: "failed" as const,
+          lastSuccessfulStage: "parsed" as const,
+          rowsTotal: 1,
+          rowsImported: 0,
+          rowsSkipped: 0,
+          rowsFailed: 1,
+          rowsNeedsReview: 0,
+          issues: { failed: 1, needsReview: 0 },
+          error: { code: "import_parse_failed", message: "Parse failed." },
+        },
+        {
+          filename: "duplicate.csv",
+          status: "duplicate" as const,
+          rowsTotal: 0,
+          rowsImported: 0,
+          rowsSkipped: 0,
+          rowsFailed: 0,
+          rowsNeedsReview: 0,
+          issues: { failed: 0 as const, needsReview: 0 as const },
+          error: { code: "import_batch_exists", message: "Already imported." },
+        },
+      ],
+      snapshotRefreshStatus: "not_run" as const,
+    }
+
+    expect(recoverableBatchIds(partial)).toEqual(["batch-1", "batch-2"])
+    expect(requiresImportFinalizationRecovery(partial)).toBe(true)
+    expect(requiresImportFinalizationRecovery(withImportFinalization(partial, "created"))).toBe(
+      false
+    )
+    expect(
+      requiresImportFinalizationRecovery({
+        ...summary(),
+        files: [partial.files[3]],
+        completedFiles: 0,
+        duplicateFiles: 1,
+        snapshotRefreshStatus: "not_required",
+      })
+    ).toBe(false)
   })
 })

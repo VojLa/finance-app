@@ -1068,6 +1068,12 @@ The logical execution is deliberately multi-phase rather than atomic.
 Canonical batches already committed before a later file failure remain
 truthful persisted partial state, while request-level finalization is not run.
 Finalization failure preserves canonical finance and any valid phase already
-committed. Retrying the same batch set replays canonical state and converges
-through the existing immutable Holding, market, AccountSnapshot, and
-NetWorthSnapshot contracts.
+committed. Completed/partially-completed file results and failed results whose
+last successful stage is canonical `posted` retain their persisted batch IDs.
+The browser can submit that exact set through the authenticated same-origin
+finalization-retry adapter without uploading files again. The adapter adds no
+financial fields; Python revalidates the complete persisted batch set before
+replaying canonical state and converging through the existing immutable
+Holding, market, AccountSnapshot, and NetWorthSnapshot contracts. Files that
+failed before canonical posting and ordinary historical duplicates do not
+produce a recovery identity.

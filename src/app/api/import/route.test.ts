@@ -6,7 +6,13 @@ import {
   createPythonImportApi,
   runImportCanonicalWorkflow,
 } from "@/modules/imports/python/import-api"
+import {
+  recoverableBatchIds,
+  type PythonImportFinalizeResponse,
+} from "@/modules/imports/python/import-contract"
+import { forwardedPythonError } from "@/modules/python-api/server/errors"
 import * as anycoinRoute from "./anycoin/route"
+import * as finalizeRoute from "./finalize/route"
 import * as collectionRoute from "./route"
 import * as raiffeisenbankRoute from "./raiffeisenbank/route"
 import * as statusRoute from "./status/route"
@@ -28,10 +34,15 @@ vi.mock("@/modules/imports/python/import-api", () => ({
 const getSession = vi.mocked(getServerSession)
 const runWorkflow = vi.mocked(runImportCanonicalWorkflow)
 const createApi = vi.mocked(createPythonImportApi)
-const finalizeBatches = vi.fn(async (_accountId: string, batchIds: readonly string[]) => ({
-  batch_ids: [...batchIds].sort(),
-  snapshot_refresh_status: batchIds.length === 0 ? ("not_required" as const) : ("created" as const),
-}))
+const finalizeBatches = vi.fn(
+  async (
+    _accountId: string,
+    batchIds: readonly string[]
+  ): Promise<PythonImportFinalizeResponse> => ({
+    batch_ids: [...batchIds].sort(),
+    snapshot_refresh_status: batchIds.length === 0 ? "not_required" : "created",
+  })
+)
 
 function completed(filename: string, batchId = `batch-${filename}`) {
   return {
@@ -57,6 +68,14 @@ function request(
   const formData = new FormData()
   for (const [name, value] of fields) formData.append(name, value)
   return new NextRequest(path, { method: "POST", body: formData })
+}
+
+function finalizationRequest(body: unknown): NextRequest {
+  return new NextRequest("http://next.test/api/import/finalize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
 }
 
 const validFields = (): Array<[string, string | File]> => [
@@ -354,9 +373,11 @@ describe("POST /api/import", () => {
         ["file", new File(["same"], "duplicate.csv")],
       ])
     )
+    const body = await response.json()
 
     expect(response.status).toBe(200)
-    expect((await response.json()).snapshotRefreshStatus).toBe("not_required")
+    expect(body.snapshotRefreshStatus).toBe("not_required")
+    expect(recoverableBatchIds(body)).toEqual([])
     expect(finalizeBatches).toHaveBeenCalledWith("account-r4", [])
   })
 
@@ -376,6 +397,190 @@ describe("POST /api/import", () => {
       snapshotRefreshStatus: "not_run",
     })
     expect(JSON.stringify(body)).not.toContain("provider transport detail")
+  })
+
+  it("recovers a canonical subset after a later file fails without re-uploading", async () => {
+    runWorkflow.mockResolvedValueOnce(completed("first.csv", "batch-first")).mockResolvedValueOnce({
+      errorStatus: 409,
+      result: {
+        filename: "second.csv",
+        batchId: "batch-second",
+        status: "failed",
+        lastSuccessfulStage: "parsed",
+        rowsTotal: 1,
+        rowsImported: 0,
+        rowsSkipped: 0,
+        rowsFailed: 1,
+        rowsNeedsReview: 0,
+        issues: { failed: 1, needsReview: 0 },
+        error: { code: "import_parse_failed", message: "Import parsing failed." },
+      },
+    })
+
+    const initial = await collectionRoute.POST(
+      request([
+        ["accountId", "account-r4"],
+        ["source", "trading212"],
+        ["file", new File(["one"], "first.csv")],
+        ["file", new File(["bad"], "second.csv")],
+      ])
+    )
+    const partial = (await initial.json()).partial
+    const batchIds = recoverableBatchIds(partial)
+    const recovered = await finalizeRoute.POST(
+      finalizationRequest({ accountId: "account-r4", batchIds })
+    )
+
+    expect(initial.status).toBe(409)
+    expect(batchIds).toEqual(["batch-first"])
+    expect(recovered.status).toBe(200)
+    expect(await recovered.json()).toEqual({
+      batchIds: ["batch-first"],
+      snapshotRefreshStatus: "created",
+    })
+    expect(runWorkflow).toHaveBeenCalledTimes(2)
+    expect(finalizeBatches).toHaveBeenCalledOnce()
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-first"])
+  })
+
+  it("recovers every terminal canonical batch after a follow-up status failure", async () => {
+    runWorkflow.mockResolvedValueOnce(completed("first.csv", "batch-first")).mockResolvedValueOnce({
+      errorStatus: 502,
+      result: {
+        filename: "second.csv",
+        batchId: "batch-second",
+        status: "failed",
+        lastSuccessfulStage: "posted",
+        rowsTotal: 1,
+        rowsImported: 1,
+        rowsSkipped: 0,
+        rowsFailed: 0,
+        rowsNeedsReview: 0,
+        issues: { failed: 0, needsReview: 0 },
+        error: { code: "python_api_unavailable", message: "The Python API is unavailable." },
+      },
+    })
+
+    const initial = await collectionRoute.POST(
+      request([
+        ["accountId", "account-r4"],
+        ["source", "trading212"],
+        ["file", new File(["one"], "first.csv")],
+        ["file", new File(["two"], "second.csv")],
+      ])
+    )
+    const partial = (await initial.json()).partial
+    const batchIds = recoverableBatchIds(partial)
+    await finalizeRoute.POST(finalizationRequest({ accountId: "account-r4", batchIds }))
+
+    expect(batchIds).toEqual(["batch-first", "batch-second"])
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-first", "batch-second"])
+  })
+
+  it("retries the same persisted IDs after finalization transport failure", async () => {
+    finalizeBatches.mockRejectedValueOnce(new Error("transport detail")).mockResolvedValueOnce({
+      batch_ids: ["batch-fixture.csv"],
+      snapshot_refresh_status: "created",
+    })
+
+    const initial = await collectionRoute.POST(request(validFields()))
+    const partial = (await initial.json()).partial
+    const batchIds = recoverableBatchIds(partial)
+    const recovered = await finalizeRoute.POST(
+      finalizationRequest({ accountId: "account-r4", batchIds })
+    )
+
+    expect(batchIds).toEqual(["batch-fixture.csv"])
+    expect(recovered.status).toBe(200)
+    expect(runWorkflow).toHaveBeenCalledOnce()
+    expect(finalizeBatches.mock.calls).toEqual([
+      ["account-r4", ["batch-fixture.csv"]],
+      ["account-r4", ["batch-fixture.csv"]],
+    ])
+  })
+
+  it("retries market-unavailable finalization without re-running canonical staging", async () => {
+    finalizeBatches
+      .mockResolvedValueOnce({
+        batch_ids: ["batch-fixture.csv"],
+        snapshot_refresh_status: "unavailable",
+      })
+      .mockResolvedValueOnce({
+        batch_ids: ["batch-fixture.csv"],
+        snapshot_refresh_status: "created",
+      })
+
+    const initial = await collectionRoute.POST(request(validFields()))
+    const summary = await initial.json()
+    const batchIds = recoverableBatchIds(summary)
+    const recovered = await finalizeRoute.POST(
+      finalizationRequest({ accountId: "account-r4", batchIds })
+    )
+
+    expect(summary.snapshotRefreshStatus).toBe("unavailable")
+    expect((await recovered.json()).snapshotRefreshStatus).toBe("created")
+    expect(runWorkflow).toHaveBeenCalledOnce()
+    expect(finalizeBatches).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("POST /api/import/finalize", () => {
+  it("exports POST only and issues one authenticated Python finalization", async () => {
+    expect(Object.keys(finalizeRoute)).toEqual(["POST"])
+
+    const response = await finalizeRoute.POST(
+      finalizationRequest({
+        accountId: "account-r4",
+        batchIds: ["batch-b", "batch-a"],
+      })
+    )
+
+    expect(response.status).toBe(200)
+    expect(getSession).toHaveBeenCalledOnce()
+    expect(createApi).toHaveBeenCalledWith({
+      userId: "user-r4",
+      email: "user-r4@example.test",
+    })
+    expect(finalizeBatches).toHaveBeenCalledOnce()
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-b", "batch-a"])
+    expect(await response.json()).toEqual({
+      batchIds: ["batch-a", "batch-b"],
+      snapshotRefreshStatus: "created",
+    })
+  })
+
+  it.each([
+    {},
+    { accountId: "account-r4", batchIds: [] },
+    { accountId: " account-r4", batchIds: ["batch-a"] },
+    { accountId: "account-r4", batchIds: ["batch-a", "batch-a"] },
+    { accountId: "account-r4", batchIds: ["batch-a"], userId: "attacker" },
+    { accountId: "account-r4", batchIds: ["batch-a"], source: "trading212" },
+  ])("rejects an invalid or overpowered recovery request before Python", async (body) => {
+    const response = await finalizeRoute.POST(finalizationRequest(body))
+
+    expect(response.status).toBe(422)
+    expect(finalizeBatches).not.toHaveBeenCalled()
+  })
+
+  it("returns generic Python nondisclosure for a foreign batch set", async () => {
+    finalizeBatches.mockRejectedValueOnce(
+      forwardedPythonError(404, "import_batch_not_found", "Import batch was not found.")
+    )
+
+    const response = await finalizeRoute.POST(
+      finalizationRequest({ accountId: "account-r4", batchIds: ["foreign-batch"] })
+    )
+    const body = await response.json()
+
+    expect(response.status).toBe(404)
+    expect(body).toEqual({
+      error: {
+        code: "import_batch_not_found",
+        message: "Import batch was not found.",
+      },
+    })
+    expect(JSON.stringify(body)).not.toMatch(/foreign-user|owner|token/)
   })
 })
 
