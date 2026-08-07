@@ -39,6 +39,7 @@ _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
+_FX_PIVOT = "CZK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +260,60 @@ def _add_fx_requirement(
     ] = requirement
 
 
+def _add_conversion_requirements(
+    requirements: dict[
+        tuple[str, str, datetime, ExchangeRateSource],
+        ExchangeRateRequirement,
+    ],
+    *,
+    source_currency: str,
+    target_currency: str,
+    through: datetime,
+    provider: ExchangeRateSource | None,
+) -> None:
+    source = _currency(source_currency)
+    target = _currency(target_currency)
+    if source == target:
+        return
+    bases: tuple[str, ...]
+    if target == _FX_PIVOT:
+        bases = (source,)
+    elif source == _FX_PIVOT:
+        bases = (target,)
+    else:
+        bases = tuple(sorted({source, target}))
+    for base in bases:
+        _add_fx_requirement(
+            requirements,
+            from_currency=base,
+            to_currency=_FX_PIVOT,
+            through=through,
+            provider=provider,
+        )
+
+
+def _add_account_conversion_requirements(
+    requirements: dict[
+        tuple[str, str, datetime, ExchangeRateSource],
+        ExchangeRateRequirement,
+    ],
+    *,
+    source_currency: str,
+    account: AccountModel,
+    output_currency: str,
+    through: datetime,
+    provider: ExchangeRateSource | None,
+) -> None:
+    for target_currency in {output_currency, _currency(account.currency)}:
+        _add_conversion_requirements(
+            requirements,
+            source_currency=source_currency,
+            target_currency=target_currency,
+            through=through,
+            provider=provider,
+        )
+
+
 class MarketEvidenceRequirementsPlanner:
     """Build an immutable plan without I/O beyond repository reads."""
 
@@ -332,28 +387,30 @@ class MarketEvidenceRequirementsPlanner:
             ExchangeRateRequirement,
         ] = {}
         for account in accounts.values():
-            _add_fx_requirement(
+            _add_conversion_requirements(
                 fx,
-                from_currency=account.currency,
-                to_currency=output_currency,
+                source_currency=account.currency,
+                target_currency=output_currency,
                 through=snapshot_timestamp,
                 provider=self.fx_source,
             )
         for price in prices:
-            _add_fx_requirement(
+            _add_account_conversion_requirements(
                 fx,
-                from_currency=price.listing_currency,
-                to_currency=output_currency,
+                source_currency=price.listing_currency,
+                account=accounts[price.account_id],
+                output_currency=output_currency,
                 through=snapshot_timestamp,
                 provider=self.fx_source,
             )
         for persisted in holdings:
             if _finite_decimal(persisted.holding.quantity) == 0:
                 continue
-            _add_fx_requirement(
+            _add_account_conversion_requirements(
                 fx,
-                from_currency=persisted.holding.currency,
-                to_currency=output_currency,
+                source_currency=persisted.holding.currency,
+                account=accounts[persisted.holding.account_id],
+                output_currency=output_currency,
                 through=snapshot_timestamp,
                 provider=self.fx_source,
             )
@@ -367,10 +424,11 @@ class MarketEvidenceRequirementsPlanner:
             ):
                 raise _fail()
             liability_ids.add(liability_id)
-            _add_fx_requirement(
+            _add_account_conversion_requirements(
                 fx,
-                from_currency=liability.currency,
-                to_currency=output_currency,
+                source_currency=liability.currency,
+                account=accounts[liability.account_id],
+                output_currency=output_currency,
                 through=snapshot_timestamp,
                 provider=self.fx_source,
             )
@@ -390,10 +448,11 @@ class MarketEvidenceRequirementsPlanner:
             ):
                 raise _fail()
             if persisted_event.realized_pnl_currency is not None:
-                _add_fx_requirement(
+                _add_account_conversion_requirements(
                     fx,
-                    from_currency=persisted_event.realized_pnl_currency,
-                    to_currency=output_currency,
+                    source_currency=persisted_event.realized_pnl_currency,
+                    account=accounts[persisted_event.account_id],
+                    output_currency=output_currency,
                     through=persisted_event.date,
                     provider=self.fx_source,
                 )
@@ -409,26 +468,30 @@ class MarketEvidenceRequirementsPlanner:
             ):
                 raise _fail()
             movement_ids.add(movement_id)
+            movement_account = accounts[movement.account_id]
             if movement.kind is not InvestmentMovementKind.asset:
-                _add_fx_requirement(
+                _add_account_conversion_requirements(
                     fx,
-                    from_currency=movement.currency,
-                    to_currency=output_currency,
+                    source_currency=movement.currency,
+                    account=movement_account,
+                    output_currency=output_currency,
                     through=movement_event.date,
                     provider=self.fx_source,
                 )
-                _add_fx_requirement(
+                _add_account_conversion_requirements(
                     fx,
-                    from_currency=movement.currency,
-                    to_currency=output_currency,
+                    source_currency=movement.currency,
+                    account=movement_account,
+                    output_currency=output_currency,
                     through=snapshot_timestamp,
                     provider=self.fx_source,
                 )
             if movement.value_currency is not None:
-                _add_fx_requirement(
+                _add_account_conversion_requirements(
                     fx,
-                    from_currency=movement.value_currency,
-                    to_currency=output_currency,
+                    source_currency=movement.value_currency,
+                    account=movement_account,
+                    output_currency=output_currency,
                     through=movement_event.date,
                     provider=self.fx_source,
                 )
@@ -438,25 +501,29 @@ class MarketEvidenceRequirementsPlanner:
             if transaction_id in transaction_ids or transaction.account_id not in accounts:
                 raise _fail()
             transaction_ids.add(transaction_id)
-            _add_fx_requirement(
+            transaction_account = accounts[transaction.account_id]
+            _add_account_conversion_requirements(
                 fx,
-                from_currency=transaction.currency,
-                to_currency=output_currency,
+                source_currency=transaction.currency,
+                account=transaction_account,
+                output_currency=output_currency,
                 through=transaction.date,
                 provider=self.fx_source,
             )
-            _add_fx_requirement(
+            _add_account_conversion_requirements(
                 fx,
-                from_currency=transaction.currency,
-                to_currency=output_currency,
+                source_currency=transaction.currency,
+                account=transaction_account,
+                output_currency=output_currency,
                 through=snapshot_timestamp,
                 provider=self.fx_source,
             )
             if transaction.reporting_currency is not None:
-                _add_fx_requirement(
+                _add_account_conversion_requirements(
                     fx,
-                    from_currency=transaction.reporting_currency,
-                    to_currency=output_currency,
+                    source_currency=transaction.reporting_currency,
+                    account=transaction_account,
+                    output_currency=output_currency,
                     through=transaction.date,
                     provider=self.fx_source,
                 )

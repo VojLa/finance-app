@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
+from enum import StrEnum
 
 from sqlalchemy import Numeric
 
@@ -19,6 +21,7 @@ from app.db.models.enums import (
 )
 
 _ERROR_MESSAGE = "Account snapshot evidence cannot produce an exact valuation."
+FX_PIVOT_CURRENCY = "CZK"
 _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
@@ -41,6 +44,12 @@ class AccountSnapshotProjectionStateError(ValueError):
 
     def __init__(self) -> None:
         super().__init__(_ERROR_MESSAGE)
+
+
+class ExchangeRateConsumptionRole(StrEnum):
+    direct = "direct"
+    pivot_source = "pivot_source"
+    pivot_target = "pivot_target"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +137,14 @@ class ConsumedExchangeRate:
     rate: Decimal
     source: ExchangeRateSource
     timestamp: datetime
+    roles: tuple[ExchangeRateConsumptionRole, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CurrencyConversionLeg:
+    base_currency: str
+    quote_currency: str
+    role: ExchangeRateConsumptionRole
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +289,106 @@ def _calculated(
         else:
             raise RuntimeError("Unsupported snapshot calculation.")
     return _exact(result, numeric)
+
+
+def convert_currency_amount(
+    amount: Decimal,
+    *,
+    base_currency: str,
+    output_currency: str,
+    rates: Mapping[tuple[str, str], Decimal],
+    numeric: Numeric,
+) -> tuple[Decimal, tuple[CurrencyConversionLeg, ...]]:
+    """Convert once at high precision using only direct-to-CZK observations."""
+
+    base = _currency(base_currency)
+    output = _currency(output_currency)
+    if not isinstance(amount, Decimal) or not amount.is_finite():
+        raise _fail()
+    exact_amount = amount
+    if base == output:
+        if rates:
+            raise _fail()
+        return _exact(exact_amount, numeric), ()
+
+    direct_pair = (base, output)
+    direct_rate = rates.get(direct_pair)
+    if direct_rate is not None:
+        if set(rates) != {direct_pair}:
+            raise _fail()
+        return (
+            _calculated("multiply", exact_amount, direct_rate, numeric),
+            (
+                CurrencyConversionLeg(
+                    base_currency=direct_pair[0],
+                    quote_currency=direct_pair[1],
+                    role=ExchangeRateConsumptionRole.direct,
+                ),
+            ),
+        )
+
+    if output == FX_PIVOT_CURRENCY:
+        pair = (base, FX_PIVOT_CURRENCY)
+        rate = rates.get(pair)
+        if rate is None or set(rates) != {pair}:
+            raise _fail()
+        return (
+            _calculated("multiply", exact_amount, rate, numeric),
+            (
+                CurrencyConversionLeg(
+                    base_currency=pair[0],
+                    quote_currency=pair[1],
+                    role=ExchangeRateConsumptionRole.direct,
+                ),
+            ),
+        )
+
+    target_pair = (output, FX_PIVOT_CURRENCY)
+    target_rate = rates.get(target_pair)
+    if target_rate is None:
+        raise _fail()
+    legs: tuple[CurrencyConversionLeg, ...]
+    if base == FX_PIVOT_CURRENCY:
+        expected_pairs = {target_pair}
+        source_rate: Decimal | None = None
+        legs = (
+            CurrencyConversionLeg(
+                base_currency=target_pair[0],
+                quote_currency=target_pair[1],
+                role=ExchangeRateConsumptionRole.pivot_target,
+            ),
+        )
+    else:
+        source_pair = (base, FX_PIVOT_CURRENCY)
+        source_rate = rates.get(source_pair)
+        if source_rate is None:
+            raise _fail()
+        expected_pairs = {source_pair, target_pair}
+        legs = (
+            CurrencyConversionLeg(
+                base_currency=source_pair[0],
+                quote_currency=source_pair[1],
+                role=ExchangeRateConsumptionRole.pivot_source,
+            ),
+            CurrencyConversionLeg(
+                base_currency=target_pair[0],
+                quote_currency=target_pair[1],
+                role=ExchangeRateConsumptionRole.pivot_target,
+            ),
+        )
+    if set(rates) != expected_pairs:
+        raise _fail()
+    try:
+        with localcontext() as context:
+            context.prec = 112
+            result = (
+                exact_amount / target_rate
+                if source_rate is None
+                else exact_amount * source_rate / target_rate
+            )
+    except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
+        raise _fail() from exc
+    return _exact(result, numeric), legs
 
 
 def _sum(values: list[Decimal], numeric: Numeric) -> Decimal:
@@ -428,24 +545,43 @@ def _convert(
     base_currency: str,
     output_currency: str,
     rates: dict[tuple[str, str], SelectedExchangeRateEvidence],
-    consumed: set[tuple[str, str]],
+    consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]],
     numeric: Numeric,
 ) -> Decimal:
+    direct_pair = (base_currency, output_currency)
+    required_pairs: tuple[tuple[str, str], ...]
     if base_currency == output_currency:
-        return _exact(amount, numeric)
-    pair = (base_currency, output_currency)
-    rate = rates.get(pair)
-    if rate is None:
-        raise _fail()
-    consumed.add(pair)
-    return _calculated("multiply", amount, rate.rate, numeric)
+        required_pairs = ()
+    elif direct_pair in rates:
+        required_pairs = (direct_pair,)
+    elif output_currency == FX_PIVOT_CURRENCY:
+        required_pairs = ((base_currency, FX_PIVOT_CURRENCY),)
+    elif base_currency == FX_PIVOT_CURRENCY:
+        required_pairs = ((output_currency, FX_PIVOT_CURRENCY),)
+    else:
+        required_pairs = (
+            (base_currency, FX_PIVOT_CURRENCY),
+            (output_currency, FX_PIVOT_CURRENCY),
+        )
+    selected = {pair: rate.rate for pair in required_pairs if (rate := rates.get(pair)) is not None}
+    converted, legs = convert_currency_amount(
+        amount,
+        base_currency=base_currency,
+        output_currency=output_currency,
+        rates=selected,
+        numeric=numeric,
+    )
+    for leg in legs:
+        pair = (leg.base_currency, leg.quote_currency)
+        consumed.setdefault(pair, set()).add(leg.role)
+    return converted
 
 
 def _raw_items(
     holdings: dict[str, SnapshotHoldingEvidence],
     prices: dict[str, SelectedPriceEvidence],
     rates: dict[tuple[str, str], SelectedExchangeRateEvidence],
-    consumed: set[tuple[str, str]],
+    consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]],
     *,
     output_currency: str,
 ) -> tuple[
@@ -525,7 +661,7 @@ def _balances(
     account_id: str,
     output_currency: str,
     rates: dict[tuple[str, str], SelectedExchangeRateEvidence],
-    consumed: set[tuple[str, str]],
+    consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]],
 ) -> tuple[Decimal, tuple[CurrencyAmount, ...], Decimal, tuple[CurrencyAmount, ...]]:
     cash_by_currency: dict[str, Decimal] = {}
     cash_ids: set[str] = set()
@@ -608,7 +744,7 @@ def build_account_snapshot_projection(
     holdings = _validate_holdings(evidence, account_id=account_id)
     prices = _validate_prices(evidence, holdings=holdings)
     rates = _validate_rates(evidence)
-    consumed: set[tuple[str, str]] = set()
+    consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]] = {}
 
     items, investment_by_currency, costs_by_currency = _raw_items(
         holdings,
@@ -648,7 +784,7 @@ def build_account_snapshot_projection(
         rates=rates,
         consumed=consumed,
     )
-    if consumed != set(rates):
+    if set(consumed) != set(rates):
         raise _fail()
     total_value = _calculated(
         "subtract",
@@ -664,6 +800,7 @@ def build_account_snapshot_projection(
             rate=rates[pair].rate,
             source=rates[pair].source,
             timestamp=rates[pair].timestamp,
+            roles=tuple(sorted(consumed[pair], key=lambda role: role.value)),
         )
         for pair in sorted(consumed)
     )

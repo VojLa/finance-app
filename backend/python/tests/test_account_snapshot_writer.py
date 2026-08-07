@@ -310,6 +310,7 @@ def _persisted(
 def _writer(
     *,
     projection: ExpectedAccountSnapshotPersistence | None = None,
+    multi_currency: bool = False,
 ) -> tuple[AccountSnapshotWriter, _Session, _Repository, _Evidence, list[object]]:
     plan = projection or _projection()
     session = _Session()
@@ -319,7 +320,29 @@ def _writer(
 
     def build(evidence_value: object, metadata: object) -> ExpectedAccountSnapshotPersistence:
         projection_calls.extend((evidence_value, metadata))
-        return plan
+        evidence_command = cast(BuildAccountSnapshotEvidenceCommand, evidence.calls[-1])
+        currency = evidence_command.output_currency
+        assert currency is not None
+        if not multi_currency or currency == plan.snapshot.currency:
+            return plan
+        snapshot_id = f"snapshot-{currency.lower()}"
+        return replace(
+            plan,
+            snapshot=replace(
+                plan.snapshot,
+                id=snapshot_id,
+                currency=currency,
+            ),
+            items=tuple(
+                replace(
+                    item,
+                    id=f"{item.id}-{currency.lower()}",
+                    snapshot_id=snapshot_id,
+                    cost_currency=currency,
+                )
+                for item in plan.items
+            ),
+        )
 
     writer = AccountSnapshotWriter(
         cast(Any, session),
@@ -607,7 +630,10 @@ async def test_output_currency_resolves_lock_evidence_replay_and_result(
             projection,
             snapshot=replace(projection.snapshot, currency=expected),
         )
-    writer, _, repository, evidence, _ = _writer(projection=projection)
+    writer, _, repository, evidence, _ = _writer(
+        projection=projection,
+        multi_currency=expected == "EUR",
+    )
 
     result = await writer.write(_command(output_currency=requested))
 
@@ -618,8 +644,9 @@ async def test_output_currency_resolves_lock_evidence_replay_and_result(
         "granularity": SnapshotGranularity.day,
     }
     assert repository.existing_values == repository.snapshot_lock_values
-    evidence_command = cast(BuildAccountSnapshotEvidenceCommand, evidence.calls[0])
-    assert evidence_command.output_currency == expected
+    assert tuple(
+        cast(BuildAccountSnapshotEvidenceCommand, call).output_currency for call in evidence.calls
+    ) == (("CZK", "EUR") if expected == "EUR" else ("CZK",))
     assert result.currency == expected
 
 
@@ -630,7 +657,10 @@ async def test_mixed_currency_liability_lock_order_and_replay_identity() -> None
         projection,
         snapshot=replace(projection.snapshot, currency="EUR"),
     )
-    writer, _, repository, evidence, _ = _writer(projection=projection)
+    writer, _, repository, evidence, _ = _writer(
+        projection=projection,
+        multi_currency=True,
+    )
     repository.account.type = AccountType.loan
 
     await writer.write(_command(output_currency="EUR"))
@@ -638,12 +668,14 @@ async def test_mixed_currency_liability_lock_order_and_replay_identity() -> None
     assert repository.calls[:5] == [
         "account",
         "snapshot_lock",
+        "snapshot_lock",
         "liability_lock",
         "market_locks",
-        "existing",
     ]
     assert "canonical_locks" not in repository.calls
-    assert cast(BuildAccountSnapshotEvidenceCommand, evidence.calls[0]).output_currency == "EUR"
+    assert tuple(
+        cast(BuildAccountSnapshotEvidenceCommand, call).output_currency for call in evidence.calls
+    ) == ("CZK", "EUR")
     assert repository.existing_values is not None
     assert repository.existing_values["currency"] == "EUR"
 

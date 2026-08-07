@@ -815,7 +815,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
                 listing_ids=listing_ids,
             )
             assert counts_before[0] == 2
-            assert counts_before[2:] == (2, 1)
+            assert counts_before[2:] == (4, 1)
             await session.rollback()
             replay_service, _ = _service(
                 session,

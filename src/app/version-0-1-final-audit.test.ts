@@ -65,7 +65,10 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(roadmap).toContain("0.1-R10-A — multi-file import post-processing closure: implemented")
     expect(roadmap).toContain("0.1-R10-B — account-currency presentation: completed — NOT READY")
     expect(roadmap).toContain(
-      "0.1-R10-B1 — persisted account-currency valuation evidence and FX capability"
+      "0.1-R10-B1 — persisted account-currency valuation evidence: implemented"
+    )
+    expect(roadmap).toContain(
+      "0.1-R10-B2 — account-currency read/API/frontend presentation: planned"
     )
     expect(roadmap).toContain("Version 0.1 is not complete")
   })

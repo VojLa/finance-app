@@ -182,6 +182,7 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                 updated_at=EVIDENCE_AT,
             )
         )
+        needs_eur_pivot = False
         for spec in specs:
             account_id = _account_id(prefix, spec.suffix)
             session.add(
@@ -228,17 +229,30 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                 )
             )
             if spec.currency != "EUR" and spec.with_rate:
+                needs_eur_pivot = True
                 session.add(
                     ExchangeRateModel(
                         id=f"{prefix}-rate-{spec.suffix}",
                         from_currency=spec.currency,
-                        to_currency="EUR",
-                        rate=Decimal("0.90000000"),
+                        to_currency="CZK",
+                        rate=Decimal("18.00000000"),
                         date=EVIDENCE_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=EVIDENCE_AT,
                     )
                 )
+        if needs_eur_pivot:
+            session.add(
+                ExchangeRateModel(
+                    id=f"{prefix}-rate-eur-pivot",
+                    from_currency="EUR",
+                    to_currency="CZK",
+                    rate=Decimal("20.00000000"),
+                    date=EVIDENCE_AT,
+                    source=ExchangeRateSource.cnb,
+                    created_at=EVIDENCE_AT,
+                )
+            )
         await session.commit()
     await engine.dispose()
 
@@ -332,7 +346,7 @@ class _MutationNetWorthWriter:
 async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
     prefix = "k5d2-mixed"
     specs = (
-        _AccountSpec("a-owner"),
+        _AccountSpec("a-owner-gbp", currency="GBP"),
         _AccountSpec("b-editor-usd", AccountMemberRole.editor, "USD"),
         _AccountSpec("c-viewer", AccountMemberRole.viewer),
     )
@@ -355,7 +369,7 @@ async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
             ).execute(_command(prefix))
 
         expected_refresh = [
-            _account_id(prefix, "a-owner"),
+            _account_id(prefix, "a-owner-gbp"),
             _account_id(prefix, "b-editor-usd"),
         ]
         assert first_factory.calls == second_factory.calls == expected_refresh
@@ -378,7 +392,9 @@ async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
             for item in first.account_snapshots
         )
         assert second.net_worth_snapshot_id == first.net_worth_snapshot_id
-        assert before_replay == await _counts(prefix) == (3, 0, 1)
+        assert first.selected_account_snapshot_count == 3
+        assert len(first.required_account_snapshot_identities) == 3
+        assert before_replay == await _counts(prefix) == (5, 0, 1)
     finally:
         await engine.dispose()
         await _cleanup(prefix)
@@ -402,15 +418,26 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
         assert await _counts(prefix) == (1, 0, 0)
 
         async with AsyncSession(engine) as session:
-            session.add(
-                ExchangeRateModel(
-                    id=f"{prefix}-rate-b-xzz",
-                    from_currency="XZZ",
-                    to_currency="EUR",
-                    rate=Decimal("0.90000000"),
-                    date=EVIDENCE_AT,
-                    source=ExchangeRateSource.ecb,
-                    created_at=EVIDENCE_AT,
+            session.add_all(
+                (
+                    ExchangeRateModel(
+                        id=f"{prefix}-rate-b-xzz",
+                        from_currency="XZZ",
+                        to_currency="CZK",
+                        rate=Decimal("18.00000000"),
+                        date=EVIDENCE_AT,
+                        source=ExchangeRateSource.cnb,
+                        created_at=EVIDENCE_AT,
+                    ),
+                    ExchangeRateModel(
+                        id=f"{prefix}-rate-eur-pivot",
+                        from_currency="EUR",
+                        to_currency="CZK",
+                        rate=Decimal("20.00000000"),
+                        date=EVIDENCE_AT,
+                        source=ExchangeRateSource.cnb,
+                        created_at=EVIDENCE_AT,
+                    ),
                 )
             )
             await session.commit()
@@ -421,7 +448,8 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
             AccountSnapshotRefreshExecutionDisposition.replayed,
             AccountSnapshotRefreshExecutionDisposition.created,
         ]
-        assert await _counts(prefix) == (2, 0, 1)
+        assert resumed.selected_account_snapshot_count == 2
+        assert await _counts(prefix) == (3, 0, 1)
     finally:
         await engine.dispose()
         await _cleanup(prefix)

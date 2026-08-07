@@ -4,8 +4,6 @@ from dataclasses import fields
 from datetime import datetime
 from decimal import Decimal
 
-import pytest
-
 from app.db.models.enums import (
     AccountType,
     AssetType,
@@ -18,7 +16,6 @@ from app.db.models.enums import (
 from app.modules.portfolio_snapshot.models import PortfolioSnapshotSource
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
-    AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
     CurrencyAmount,
     LiabilityBalanceEvidence,
@@ -217,7 +214,7 @@ def test_eur_native_investment_account_still_persists_user_output_scalars() -> N
     assert "account_currency_summary" not in persisted.model_values()
 
 
-def test_mixed_native_eur_account_requires_missing_direct_usd_eur_rate() -> None:
+def test_mixed_native_eur_account_is_exactly_representable_with_czk_pivot() -> None:
     account_id = "account-c"
     usd_czk = _rate("USD", "CZK", "23.00000000", rate_id="account-c-usd-czk")
     eur_czk = _rate("EUR", "CZK", "25.00000000", rate_id="account-c-eur-czk")
@@ -238,19 +235,37 @@ def test_mixed_native_eur_account_requires_missing_direct_usd_eur_rate() -> None
         CurrencyAmount(currency="USD", amount=Decimal("200.0000000000")),
     )
 
-    with pytest.raises(AccountSnapshotProjectionStateError):
-        build_account_snapshot_projection(
-            _investment_input(
-                account_id,
-                price_currency="USD",
-                cost_currency="EUR",
-                rates=(usd_czk, eur_czk),
-                output_currency="EUR",
-            )
+    account_valuation = build_account_snapshot_projection(
+        _investment_input(
+            account_id,
+            price_currency="USD",
+            cost_currency="EUR",
+            rates=(usd_czk, eur_czk),
+            output_currency="EUR",
         )
+    )
+    persisted = _persist(
+        account_valuation,
+        selected_price_ids=(f"{account_id}-price",),
+        selected_rate_ids=(eur_czk.rate_id, usd_czk.rate_id),
+    )
+
+    assert account_valuation.currency == "EUR"
+    assert account_valuation.investment_value == Decimal("184.000000")
+    assert account_valuation.investment_cost_basis == Decimal("160.000000")
+    assert {
+        (rate.base_currency, rate.quote_currency, tuple(role.value for role in rate.roles))
+        for rate in account_valuation.exchange_rates
+    } == {
+        ("EUR", "CZK", ("pivot_target",)),
+        ("USD", "CZK", ("pivot_source",)),
+    }
+    assert persisted.currency == "EUR"
+    assert persisted.investment_value == Decimal("184.000000")
+    assert persisted.exchange_rates.to_json()["version"] == 2
 
 
-def test_liability_native_breakdown_is_validated_but_not_persisted() -> None:
+def test_liability_account_currency_is_persisted_as_companion_scalar() -> None:
     account_id = "account-d"
     eur_czk = _rate("EUR", "CZK", "25.00000000", rate_id="account-d-eur-czk")
     liability_id = "account-d-liability"
@@ -296,6 +311,41 @@ def test_liability_native_breakdown_is_validated_but_not_persisted() -> None:
         field.name for field in fields(ExpectedAccountSnapshotRow)
     }
     assert "liabilities_value_by_currency" not in persisted.model_values()
+
+    companion_valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id=account_id,
+            account_type=AccountType.loan,
+            account_currency="EUR",
+            output_currency="EUR",
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=1,
+            holdings=(),
+            prices=(),
+            exchange_rates=(),
+            cash_balances=(),
+            liabilities=(
+                LiabilityBalanceEvidence(
+                    liability_id=liability_id,
+                    account_id=account_id,
+                    currency="EUR",
+                    amount=Decimal("100.000000"),
+                    timestamp=SNAPSHOT_AT,
+                ),
+            ),
+        )
+    )
+    companion = _persist(
+        companion_valuation,
+        selected_price_ids=(),
+        selected_rate_ids=(),
+        liability_id=liability_id,
+    )
+    assert companion.currency == "EUR"
+    assert companion.liabilities_value == Decimal("100.000000")
+    assert companion.total_value == Decimal("-100.000000")
 
 
 def test_portfolio_read_contract_lacks_complete_account_currency_evidence() -> None:

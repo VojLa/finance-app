@@ -20,13 +20,16 @@ from app.db.models.enums import (
 from app.modules.snapshots.account_projection import (
     ConsumedExchangeRate,
     CurrencyAmount,
+    ExchangeRateConsumptionRole,
     ExpectedAccountSnapshotItem,
     ExpectedAccountSnapshotValuation,
+    convert_currency_amount,
 )
 from app.modules.snapshots.evidence_service import (
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
 )
+from app.modules.snapshots.financial_metrics import ConsumedHistoricalExchangeRate
 
 _ERROR_MESSAGE = "Account snapshot evidence is not physically persistable."
 _SNAPSHOT_ID_NAMESPACE = UUID("63a292f7-4329-5bae-acd7-5a7bde53a01c")
@@ -385,6 +388,7 @@ def _exchange_rates(
     *,
     selected_snapshot_ids: tuple[str, ...],
     historical_ids: tuple[str, ...],
+    historical_rates: tuple[ConsumedHistoricalExchangeRate, ...],
 ) -> CanonicalJsonObject:
     rates: list[tuple[tuple[str, str, str], CanonicalJsonObject]] = []
     rate_ids: set[str] = set()
@@ -399,7 +403,15 @@ def _exchange_rates(
         timestamp = _timestamp(rate.timestamp)
         source = _enum(rate.source, ExchangeRateSource)
         exact_rate = _exact(rate.rate, RATE, positive=True)
-        if rate_id in rate_ids or pair in pairs or base == quote:
+        roles = tuple(_enum(role, ExchangeRateConsumptionRole) for role in rate.roles)
+        expected_role = (
+            ExchangeRateConsumptionRole.direct
+            if quote == valuation.currency
+            else ExchangeRateConsumptionRole.pivot_target
+            if base == valuation.currency
+            else ExchangeRateConsumptionRole.pivot_source
+        )
+        if rate_id in rate_ids or pair in pairs or base == quote or roles != (expected_role,):
             raise _fail()
         rate_ids.add(rate_id)
         pairs.add(pair)
@@ -414,18 +426,81 @@ def _exchange_rates(
                         ("rate", _decimal_string(exact_rate, RATE)),
                         ("timestamp", timestamp.isoformat(timespec="milliseconds")),
                         ("source", source.value),
+                        ("roles", tuple(role.value for role in roles)),
                     )
                 ),
             )
         )
     if rate_ids != set(selected_snapshot_ids):
         raise _fail()
+    historical_entries: list[tuple[tuple[str, str, str, str], CanonicalJsonObject]] = []
+    historical_rate_ids: set[str] = set()
+    historical_keys: set[tuple[str, str, str]] = set()
+    for consumed in historical_rates:
+        if not isinstance(consumed, ConsumedHistoricalExchangeRate):
+            raise _fail()
+        rate_id = _nonblank(consumed.rate_id)
+        evidence_id = _nonblank(consumed.evidence_id)
+        base = _currency(consumed.base_currency)
+        quote = _currency(consumed.quote_currency)
+        exact_historical_rate = _exact(consumed.rate, RATE, positive=True)
+        timestamp = _timestamp(consumed.timestamp)
+        role = _enum(consumed.role, ExchangeRateConsumptionRole)
+        key = (evidence_id, base, quote)
+        expected_role = (
+            ExchangeRateConsumptionRole.direct
+            if quote == valuation.currency
+            else ExchangeRateConsumptionRole.pivot_target
+            if base == valuation.currency
+            else ExchangeRateConsumptionRole.pivot_source
+        )
+        if key in historical_keys or base == quote or role is not expected_role:
+            raise _fail()
+        historical_keys.add(key)
+        historical_rate_ids.add(rate_id)
+        historical_entries.append(
+            (
+                (evidence_id, base, quote, rate_id),
+                CanonicalJsonObject(
+                    (
+                        ("rateId", rate_id),
+                        ("evidenceId", evidence_id),
+                        ("from", base),
+                        ("to", quote),
+                        ("rate", _decimal_string(exact_historical_rate, RATE)),
+                        ("timestamp", timestamp.isoformat(timespec="milliseconds")),
+                        ("role", role.value),
+                    )
+                ),
+            )
+        )
+    if historical_rates and historical_rate_ids != set(historical_ids):
+        raise _fail()
+    uses_pivot = any(
+        rate.roles != (ExchangeRateConsumptionRole.direct,) for rate in valuation.exchange_rates
+    ) or any(rate.role is not ExchangeRateConsumptionRole.direct for rate in historical_rates)
+    snapshot_entries = tuple(item for _, item in sorted(rates))
+    if not uses_pivot:
+        snapshot_entries = tuple(
+            CanonicalJsonObject(tuple(entry for entry in item.entries if entry[0] != "roles"))
+            for item in snapshot_entries
+        )
     return CanonicalJsonObject(
         (
-            ("version", 1),
-            ("snapshotRates", tuple(item for _, item in sorted(rates))),
+            ("version", 2 if uses_pivot else 1),
+            ("snapshotRates", snapshot_entries),
             ("historicalRateIds", historical_ids),
-        )
+            *(
+                (
+                    (
+                        "historicalRates",
+                        tuple(item for _, item in sorted(historical_entries)),
+                    ),
+                )
+                if uses_pivot
+                else ()
+            ),
+        ),
     )
 
 
@@ -555,24 +630,34 @@ def _liability_audit(
             and native_amount == valuation.liabilities_value
         )
     else:
-        if len(valuation.exchange_rates) != 1 or len(snapshot_rate_ids) != 1:
-            raise _fail()
-        rate = valuation.exchange_rates[0]
-        if not isinstance(rate, ConsumedExchangeRate):
-            raise _fail()
-        rate_id = _nonblank(rate.rate_id)
-        valid_conversion = (
-            _currency(rate.base_currency) == native_currency
-            and _currency(rate.quote_currency) == valuation.currency
-            and native_currency != valuation.currency
-            and snapshot_rate_ids == (rate_id,)
-            and _calculated(
-                "multiply",
+        rates: dict[tuple[str, str], Decimal] = {}
+        role_by_pair: dict[
+            tuple[str, str],
+            tuple[ExchangeRateConsumptionRole, ...],
+        ] = {}
+        for rate in valuation.exchange_rates:
+            if not isinstance(rate, ConsumedExchangeRate):
+                raise _fail()
+            pair = (_currency(rate.base_currency), _currency(rate.quote_currency))
+            if pair in rates:
+                raise _fail()
+            rates[pair] = _exact(rate.rate, RATE, positive=True)
+            role_by_pair[pair] = rate.roles
+        try:
+            converted, legs = convert_currency_amount(
                 native_amount,
-                _exact(rate.rate, RATE, positive=True),
-                MONEY,
+                base_currency=native_currency,
+                output_currency=valuation.currency,
+                rates=rates,
+                numeric=MONEY,
             )
-            == valuation.liabilities_value
+        except ValueError as exc:
+            raise _fail() from exc
+        valid_conversion = (
+            snapshot_rate_ids == tuple(sorted(rate.rate_id for rate in valuation.exchange_rates))
+            and converted == valuation.liabilities_value
+            and role_by_pair
+            == {(leg.base_currency, leg.quote_currency): (leg.role,) for leg in legs}
         )
     if (
         selected_at > valuation.timestamp
@@ -688,6 +773,7 @@ def build_account_snapshot_persistence_projection(
             valuation,
             selected_snapshot_ids=snapshot_rate_ids,
             historical_ids=historical_rate_ids,
+            historical_rates=evidence.consumed_historical_exchange_rates,
         )
         snapshot_id = _snapshot_id(valuation)
         items = _items(
