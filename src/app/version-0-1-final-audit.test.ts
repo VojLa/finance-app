@@ -53,4 +53,12 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(currentAcceptance).not.toContain("execFileSync")
     expect(currentAcceptance).not.toMatch(/\b[0-9a-f]{40}\b/)
   })
+
+  it("records R8 implemented while leaving version 0.1 for the R9 final audit", async () => {
+    const roadmap = await source("ChatGPT/steps/0.1-remediation.md")
+
+    expect(roadmap).toContain("0.1-R8 — clean main scenario and frontend CI: implemented")
+    expect(roadmap).toContain("0.1-R9 — repeat final acceptance audit: planned")
+    expect(roadmap).toContain("Version 0.1 is not complete")
+  })
 })
