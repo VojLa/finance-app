@@ -1,100 +1,64 @@
-import { execFileSync } from "node:child_process"
-import { readdir, readFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 import { describe, expect, it } from "vitest"
 
 const ROOT = process.cwd()
-const BASE_SHA = "20db8a8b5466957868b8ec4e61bcde3d4f2cf265"
-const AUDIT_FINAL_SHA = "73a9aa668a6725e2bc7f2ba6dcd3ae1712841fc0"
-const AUDIT_FILES = [
-  "ChatGPT/audits/0.1-final-acceptance.md",
-  "ChatGPT/audits/0.1-requirement-matrix.md",
-  "backend/python/tests/test_snapshot_application_cutover_final_audit.py",
-  "backend/python/tests/test_version_0_1_acceptance.py",
-  "backend/python/tests/test_version_0_1_acceptance_integration.py",
-  "backend/python/tests/test_version_0_1_clean_database_flow_integration.py",
-  "src/app/version-0-1-final-audit.test.ts",
-  "src/modules/accounts/version-0-1-account-cutover-audit.test.ts",
-  "src/modules/imports/version-0-1-import-cutover-audit.test.ts",
-  "src/modules/python-api/version-0-1-boundary-audit.test.ts",
-]
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(ROOT, relativePath), "utf8")
 }
 
-async function routeFiles(relativeDirectory: string): Promise<string[]> {
-  const entries = await readdir(path.join(ROOT, relativeDirectory), { withFileTypes: true })
-  const nested = await Promise.all(
-    entries.map(async (entry) => {
-      const child = path.join(relativeDirectory, entry.name)
-      return entry.isDirectory() ? routeFiles(child) : [child]
-    })
-  )
-  return nested.flat()
-}
+describe("version 0.1 current browser boundary inventory", () => {
+  it("keeps the historical NOT READY audit immutable while testing current routes", async () => {
+    const historical = await source("ChatGPT/audits/0.1-final-acceptance.md")
+    const accounts = await source("src/app/api/accounts/route.ts")
+    const imports = await source("src/app/api/import/route.ts")
+    const importHandler = await source("src/modules/imports/python/import-route.ts")
+    const history = await source("src/app/api/portfolio/history/route.ts")
 
-function changedFiles(): string[] {
-  const rangeAvailable = [BASE_SHA, AUDIT_FINAL_SHA].every((commit) => {
-    try {
-      execFileSync("git", ["cat-file", "-e", `${commit}^{commit}`], {
-        cwd: ROOT,
-        stdio: "ignore",
-      })
-      return true
-    } catch {
-      return false
-    }
-  })
-  if (!rangeAvailable) {
-    return AUDIT_FILES
-  }
-  return execFileSync("git", ["diff", "--name-only", BASE_SHA, AUDIT_FINAL_SHA, "--"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((file) => file.replaceAll("\\", "/"))
-}
-
-describe("version 0.1 production freeze", () => {
-  it("changes only audit tests, helpers, and audit documentation", () => {
-    expect(changedFiles().sort()).toEqual([...AUDIT_FILES].sort())
-  })
-})
-
-describe("version 0.1 browser and route inventory", () => {
-  it("contains the two accepted snapshot workflow routes", async () => {
-    const routes = (await routeFiles("src/app/api"))
-      .filter((file) => file.endsWith("route.ts"))
-      .map((file) => file.replaceAll("\\", "/"))
-
-    expect(routes).toContain("src/app/api/snapshot-workflow/portfolio/route.ts")
-    expect(routes).toContain("src/app/api/snapshot-workflow/dashboard/route.ts")
+    expect(historical).toContain("B1 account browser cutover")
+    expect(historical).toContain("B2 import browser/status/multi-file cutover")
+    expect(historical).toContain("B6 portfolio history")
+    expect(accounts).toContain("createAccount")
+    expect(imports).toContain("handleImportPost")
+    expect(importHandler).toContain("runImportWorkflow")
+    expect(history).toContain("readSnapshotBackedPortfolioHistory")
+    expect(`${accounts}\n${imports}\n${importHandler}\n${history}`).not.toMatch(
+      /@\/lib\/prisma|importCsvFilesAsync|getPortfolioSnapshotHistory/
+    )
   })
 
-  it("records the account frontend blocker without weakening the scope", async () => {
-    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
+  it("contains the three current snapshot-backed browser read routes", async () => {
+    const portfolio = await source("src/app/api/snapshot-workflow/portfolio/route.ts")
+    const dashboard = await source("src/app/api/snapshot-workflow/dashboard/route.ts")
+    const history = await source("src/app/api/portfolio/history/route.ts")
 
-    expect(report).toContain("B1 account browser cutover")
-    expect(report).toContain("account UI calls Prisma-owning Next route")
-    expect(report).toContain("thin session adapter calls Python accounts")
+    expect(portfolio).toContain("runPortfolioSnapshotWorkflow")
+    expect(dashboard).toContain("runDashboardSnapshotWorkflow")
+    expect(history).toContain("readSnapshotBackedPortfolioHistory")
   })
 
-  it("records the import frontend blocker for every mandatory source", async () => {
-    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
+  it("keeps current acceptance independent of unavailable historical Git objects", async () => {
+    const currentAcceptance = (
+      await Promise.all(
+        [
+          "src/app/dashboard/dashboard-snapshot-cutover.test.ts",
+          "src/app/portfolio/portfolio-snapshot-cutover.test.ts",
+          "src/modules/accounts/account-cutover-boundaries.test.ts",
+        ].map(source)
+      )
+    ).join("\n")
 
-    expect(report).toContain("B2 import browser/status/multi-file cutover")
-    expect(report).toContain("B3 mandatory source completeness")
+    expect(currentAcceptance).not.toContain("execFileSync")
+    expect(currentAcceptance).not.toMatch(/\b[0-9a-f]{40}\b/)
   })
 
-  it("records that portfolio history is still a legacy Next business read", async () => {
-    const report = await source("ChatGPT/audits/0.1-final-acceptance.md")
+  it("records R8 implemented while leaving version 0.1 for the R9 final audit", async () => {
+    const roadmap = await source("ChatGPT/steps/0.1-remediation.md")
 
-    expect(report).toContain("B6 portfolio history")
-    expect(report).toContain("legacy Next read")
-    expect(report).toContain("Python snapshot-backed historical read")
+    expect(roadmap).toContain("0.1-R8 — clean main scenario and frontend CI: implemented")
+    expect(roadmap).toContain("0.1-R9 — repeat final acceptance audit: planned")
+    expect(roadmap).toContain("Version 0.1 is not complete")
   })
 })

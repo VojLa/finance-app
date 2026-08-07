@@ -1,8 +1,7 @@
-"""Static acceptance evidence for the version 0.1 architecture-lock audit."""
+"""Current static acceptance evidence for the version 0.1 production boundaries."""
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from app.config.settings import Settings
@@ -12,55 +11,13 @@ from app.modules.imports.parsers import PARSER_REGISTRY, parse_csv, parse_raiffe
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
-BASE_SHA = "20db8a8b5466957868b8ec4e61bcde3d4f2cf265"
-AUDIT_FINAL_SHA = "73a9aa668a6725e2bc7f2ba6dcd3ae1712841fc0"
-AUDIT_FILES = frozenset(
-    {
-        "ChatGPT/audits/0.1-final-acceptance.md",
-        "ChatGPT/audits/0.1-requirement-matrix.md",
-        "backend/python/tests/test_snapshot_application_cutover_final_audit.py",
-        "backend/python/tests/test_version_0_1_acceptance.py",
-        "backend/python/tests/test_version_0_1_acceptance_integration.py",
-        "backend/python/tests/test_version_0_1_clean_database_flow_integration.py",
-        "src/app/version-0-1-final-audit.test.ts",
-        "src/modules/accounts/version-0-1-account-cutover-audit.test.ts",
-        "src/modules/imports/version-0-1-import-cutover-audit.test.ts",
-        "src/modules/python-api/version-0-1-boundary-audit.test.ts",
-    }
-)
 
 
-def _changed_files() -> set[str]:
-    audit_range_available = all(
-        subprocess.run(
-            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
-            cwd=REPOSITORY_ROOT,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-        for commit in (BASE_SHA, AUDIT_FINAL_SHA)
-    )
-    if not audit_range_available:
-        assert all((REPOSITORY_ROOT / path).is_file() for path in AUDIT_FILES)
-        return set(AUDIT_FILES)
-
-    tracked = subprocess.run(
-        ["git", "diff", "--name-only", BASE_SHA, AUDIT_FINAL_SHA, "--"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return {value.replace("\\", "/") for value in tracked.splitlines() if value}
+def _source(relative_path: str) -> str:
+    return (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_audit_changes_no_production_file() -> None:
-    assert _changed_files() == AUDIT_FILES
-
-
-def test_python_api_inventory_contains_implemented_core_boundaries() -> None:
+def test_python_api_inventory_contains_the_current_public_boundaries() -> None:
     schema = create_app(
         Settings(
             environment="test",
@@ -92,10 +49,11 @@ def test_python_api_inventory_contains_implemented_core_boundaries() -> None:
         ("POST", "/api/v1/snapshot-refresh/recalculate"),
         ("POST", "/api/v1/portfolio/snapshot"),
         ("POST", "/api/v1/dashboard/snapshot"),
+        ("GET", "/api/v1/portfolio/history"),
     }.issubset(operations)
 
 
-def test_r2_preserves_existing_parsers_and_adds_raiffeisenbank_specific_parser() -> None:
+def test_required_import_sources_use_the_production_parser_registry() -> None:
     assert {
         source: PARSER_REGISTRY[source]
         for source in (
@@ -110,18 +68,60 @@ def test_r2_preserves_existing_parsers_and_adds_raiffeisenbank_specific_parser()
     }
 
 
-def test_python_has_no_price_or_fx_api_boundary_for_the_required_provider_workflow() -> None:
-    schema = create_app(
-        Settings(
-            environment="test",
-            database_url=None,
-            docs_enabled=True,
-            log_level="ERROR",
-            log_json=False,
-            internal_auth_secret="version-0-1-audit-secret-at-least-32-characters",
-            _env_file=None,
-        )
-    ).openapi()
-    paths = set(schema["paths"])
+def test_manual_and_import_boundaries_use_the_market_backed_coordinator() -> None:
+    manual = _source("backend/python/app/modules/snapshot_refresh/manual_service.py")
+    imports = _source("backend/python/app/modules/imports/post_processing_service.py")
 
-    assert not any("/prices" in path or "/fx" in path or "/rates" in path for path in paths)
+    assert "ExecuteMarketBackedSnapshotRefreshCommand" in manual
+    assert "ExecuteMarketBackedSnapshotRefreshCommand" in imports
+    for source in (manual, imports):
+        assert "UserSnapshotRefreshExecutor" not in source
+        assert "ExecuteUserSnapshotRefreshCommand" not in source
+
+
+def test_active_browser_boundaries_are_thin_python_adapters() -> None:
+    accounts = _source("src/app/api/accounts/route.ts")
+    imports = _source("src/app/api/import/route.ts")
+    import_handler = _source("src/modules/imports/python/import-route.ts")
+    portfolio = _source("src/app/api/snapshot-workflow/portfolio/route.ts")
+    dashboard = _source("src/app/api/snapshot-workflow/dashboard/route.ts")
+    history = _source("src/app/api/portfolio/history/route.ts")
+    active = "\n".join((accounts, imports, import_handler, portfolio, dashboard, history))
+
+    assert "createAccount" in accounts
+    assert "handleImportPost" in imports
+    assert "runImportWorkflow" in import_handler
+    assert "runPortfolioSnapshotWorkflow" in portfolio
+    assert "runDashboardSnapshotWorkflow" in dashboard
+    assert "readSnapshotBackedPortfolioHistory" in history
+    for forbidden in ("@/lib/prisma", "importCsvFilesAsync", "getPortfolioSnapshotHistory"):
+        assert forbidden not in active
+
+
+def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> None:
+    backend = _source(".github/workflows/backend-python.yml")
+    schema = _source(".github/workflows/database-schema.yml")
+    frontend = _source(".github/workflows/frontend.yml")
+
+    assert "name: Backend Python" in backend
+    assert "name: Database Schema" in schema
+    assert "name: Frontend" in frontend
+    for command in (
+        "npm ci",
+        "npm run api:python:check",
+        "npm test",
+        "npm run lint",
+        "npx tsc --noEmit --incremental false",
+        "npm run db:validate",
+        "git diff --check",
+        'test -z "$(git status --porcelain)"',
+    ):
+        assert command in frontend
+
+
+def test_release_roadmap_records_r8_implemented_and_r9_planned() -> None:
+    roadmap = _source("ChatGPT/steps/0.1-remediation.md")
+
+    assert "0.1-R8 — clean main scenario and frontend CI: implemented" in roadmap
+    assert "0.1-R9 — repeat final acceptance audit: planned" in roadmap
+    assert "Version 0.1 is not complete" in roadmap

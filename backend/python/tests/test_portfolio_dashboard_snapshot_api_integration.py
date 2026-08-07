@@ -309,7 +309,10 @@ async def test_dashboard_global_60_40_and_same_asset_remains_account_scoped() ->
 
         assert response.status_code == 200
         positions = response.json()["topPositions"]
-        assert [position["allocationPct"] for position in positions] == ["60.0", "40.0"]
+        assert [position["allocationPct"] for position in positions] == [
+            "60.0000",
+            "40.0000",
+        ]
         assert len(positions) == 2
         assert {position["accountId"] for position in positions} == set(accounts)
         assert len({position["listingId"] for position in positions}) == 1

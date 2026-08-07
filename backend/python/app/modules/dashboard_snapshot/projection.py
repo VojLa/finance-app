@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation, localcontext
 
 from app.modules.dashboard_snapshot.models import (
     DashboardAccountCard,
@@ -141,16 +141,38 @@ def _subtract(left: Decimal, right: Decimal, numeric: tuple[int, int]) -> Decima
     return _exact(result, numeric)
 
 
-def _percentage(value: Decimal, total: Decimal) -> Decimal:
-    if value < 0 or total <= 0:
+def _percentages(values: tuple[Decimal, ...], total: Decimal) -> tuple[Decimal, ...]:
+    if not values or total <= 0 or any(value < 0 for value in values):
         raise _fail()
     try:
         with localcontext() as context:
             context.prec = 112
-            result = value / total * Decimal(100)
+            quantum = Decimal("0.0001")
+            exact = tuple(value / total * Decimal(100) for value in values)
+            floored = tuple(value.quantize(quantum, rounding=ROUND_FLOOR) for value in exact)
+            residual_units = int((Decimal("100.0000") - sum(floored, Decimal(0))) / quantum)
     except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
         raise _fail() from exc
-    return _exact(result, _PERCENTAGE, nonnegative=True)
+    if residual_units < 0 or residual_units > len(values):
+        raise _fail()
+    recipients = {
+        index
+        for index, _remainder in sorted(
+            enumerate(tuple(value - floor for value, floor in zip(exact, floored, strict=True))),
+            key=lambda item: (item[1].copy_negate(), item[0]),
+        )[:residual_units]
+    }
+    result = tuple(
+        _exact(
+            floor + (quantum if index in recipients else Decimal(0)),
+            _PERCENTAGE,
+            nonnegative=True,
+        )
+        for index, floor in enumerate(floored)
+    )
+    if _sum(result, _PERCENTAGE) != Decimal("100.0000"):
+        raise _fail()
+    return result
 
 
 def _validate_summary(summary: object) -> MultiAccountPortfolioSummary:
@@ -296,30 +318,32 @@ def _allocations(
                 existing[1] + 1,
                 existing[2] | {account_id},
             )
-    allocations = tuple(
-        DashboardAssetTypeAllocation(
-            asset_type=asset_type,
-            value=value,
-            allocation_pct=_percentage(value, investment_value),
-            position_count=position_count,
-            account_count=len(account_ids),
-        )
-        for asset_type, (value, position_count, account_ids) in grouped.items()
-    )
-    ordered = tuple(
+    ordered_groups = tuple(
         sorted(
-            allocations,
-            key=lambda allocation: (
-                allocation.value.copy_negate(),
-                allocation.asset_type.value,
+            grouped.items(),
+            key=lambda item: (
+                item[1][0].copy_negate(),
+                item[0].value,
             ),
         )
     )
-    if _sum(tuple(item.value for item in ordered), _MONEY) != investment_value or _sum(
-        tuple(item.allocation_pct for item in ordered), _PERCENTAGE
-    ) != Decimal("100.0000"):
+    values = tuple(group[1][0] for group in ordered_groups)
+    if _sum(values, _MONEY) != investment_value:
         raise _fail()
-    return ordered
+    percentages = _percentages(values, investment_value)
+    return tuple(
+        DashboardAssetTypeAllocation(
+            asset_type=asset_type,
+            value=value,
+            allocation_pct=allocation_pct,
+            position_count=position_count,
+            account_count=len(account_ids),
+        )
+        for (
+            asset_type,
+            (value, position_count, account_ids),
+        ), allocation_pct in zip(ordered_groups, percentages, strict=True)
+    )
 
 
 def _top_positions(
@@ -328,7 +352,25 @@ def _top_positions(
 ) -> tuple[DashboardTopPosition, ...]:
     if investment_value == 0:
         return ()
-    projected = tuple(
+    ordered_positions = tuple(
+        sorted(
+            positions,
+            key=lambda item: (
+                item[1].value.copy_negate(),
+                item[1].unrealized_pnl.copy_negate(),
+                item[1].asset_type.value,
+                item[1].symbol,
+                item[0],
+                item[1].listing_id,
+                item[1].asset_id,
+            ),
+        )
+    )
+    values = tuple(position.value for _account_id, position in ordered_positions)
+    if _sum(values, _MONEY) != investment_value:
+        raise _fail()
+    percentages = _percentages(values, investment_value)
+    return tuple(
         DashboardTopPosition(
             account_id=account_id,
             listing_id=position.listing_id,
@@ -339,29 +381,12 @@ def _top_positions(
             value=position.value,
             value_currency=position.value_currency,
             unrealized_pnl=position.unrealized_pnl,
-            allocation_pct=_percentage(position.value, investment_value),
+            allocation_pct=allocation_pct,
         )
-        for account_id, position in positions
-    )
-    ordered = tuple(
-        sorted(
-            projected,
-            key=lambda position: (
-                position.value.copy_negate(),
-                position.unrealized_pnl.copy_negate(),
-                position.asset_type.value,
-                position.symbol,
-                position.account_id,
-                position.listing_id,
-                position.asset_id,
-            ),
+        for (account_id, position), allocation_pct in zip(
+            ordered_positions, percentages, strict=True
         )
     )
-    if _sum(tuple(item.value for item in ordered), _MONEY) != investment_value or _sum(
-        tuple(item.allocation_pct for item in ordered), _PERCENTAGE
-    ) != Decimal("100.0000"):
-        raise _fail()
-    return ordered
 
 
 def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> DashboardSnapshotView:

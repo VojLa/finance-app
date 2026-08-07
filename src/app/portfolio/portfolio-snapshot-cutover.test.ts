@@ -1,13 +1,10 @@
 import { createHash } from "node:crypto"
-import { execFileSync } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
 import { describe, expect, it } from "vitest"
 
 const ROOT = process.cwd()
-const BASE_SHA = "117ca8b09d09cab1bdc9363cf76661d8eedd2c44"
-const CUTOVER_SHA = "e34fc2d17915a6159fa2856520c503bf8b6f70b8"
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(ROOT, relativePath), "utf8")
@@ -17,16 +14,6 @@ async function sha256(relativePath: string): Promise<string> {
   return createHash("sha256")
     .update(await readFile(path.join(ROOT, relativePath)))
     .digest("hex")
-}
-
-function changedFiles(): string[] {
-  return execFileSync("git", ["diff", "--name-only", BASE_SHA, CUTOVER_SHA, "--"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  })
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((file) => file.replaceAll("\\", "/"))
 }
 
 describe("portfolio snapshot page cutover boundaries", () => {
@@ -113,31 +100,5 @@ describe("portfolio snapshot page cutover boundaries", () => {
     await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
       "3bb922d9b15bd91a8bf7252cba35bcb76ca4c89e804fa1bf61e890edc059e4f6"
     )
-  })
-
-  it("changes no unrelated Python, Prisma, migration, legacy, or workflow-route implementation", () => {
-    const changed = changedFiles()
-    const approvedPrefixes = ["backend/python/app/modules/portfolio_snapshot/"]
-    const forbiddenPrefixes = [
-      "backend/python/app/",
-      "backend/python/database/",
-      "backend/python/migrations/",
-      "backend/python/scripts/",
-      "backend/python/alembic.ini",
-      "backend/python/pyproject.toml",
-      "backend/python/uv.lock",
-      "prisma/",
-      "src/app/api/portfolio/route.ts",
-      "src/app/api/snapshot-workflow/portfolio/route.ts",
-      "src/app/api/snapshot-workflow/dashboard/route.ts",
-    ]
-
-    for (const file of changed) {
-      if (approvedPrefixes.some((prefix) => file.startsWith(prefix))) continue
-      expect(
-        forbiddenPrefixes.some((prefix) => file === prefix || file.startsWith(prefix)),
-        file
-      ).toBe(false)
-    }
   })
 })

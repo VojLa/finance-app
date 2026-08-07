@@ -644,14 +644,22 @@ def test_position_sum_must_match_aggregate_investment(presentation: str) -> None
     assert presentation
 
 
-def test_nonrepresentable_global_position_percentage_fails_closed() -> None:
+def test_nonterminating_global_position_percentages_are_deterministic() -> None:
     portfolio = _portfolio(
         _source("one", value="1", cost="1"),
         _source("two", value="2", cost="2"),
     )
 
-    with pytest.raises(DashboardSnapshotProjectionError):
-        build_dashboard_snapshot_view(portfolio)
+    result = build_dashboard_snapshot_view(portfolio)
+
+    assert [position.account_id for position in result.top_positions] == ["two", "one"]
+    assert [position.allocation_pct for position in result.top_positions] == [
+        Decimal("66.6667"),
+        Decimal("33.3333"),
+    ]
+    assert sum(
+        (position.allocation_pct for position in result.top_positions), Decimal(0)
+    ) == Decimal("100.0000")
 
 
 def test_account_position_count_must_match_positions_tuple() -> None:

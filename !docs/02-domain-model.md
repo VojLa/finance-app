@@ -4,19 +4,19 @@ The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                    |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                           |
-| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                           |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                        |
-| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                           |
-| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                           |
-| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                           |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence plus R5-B4 server-operator exact alias onboarding                  |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                           |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented   |
-| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                               |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                             |
+| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                                  |
+| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                         |
+| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                         |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                      |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | —                                                            | Schema only                                                                         |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | —                                                            | Schema only                                                                         |
+| Budgets                | `Budget` and related item/account/alert tables                         | —                                                            | Schema only                                                                         |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence plus R5-B4 server-operator exact alias onboarding               |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
+| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
+| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
 
 ## Exact market evidence
 
@@ -1005,3 +1005,31 @@ numeric scales, JSONB audits, existing foreign-key delete behavior, and
 currency-sensitive unique indexes. No 5K migration, job-state table,
 scheduler, worker, queue, background task, compensation path, or support for
 bank/cash/savings AccountSnapshots was introduced.
+
+## R8 clean production scenario
+
+R8 proves the current model from clean persisted state without introducing a
+new financial source. One CZK user owns three API-created accounts: a CZK bank
+account and EUR broker/exchange accounts. Source-format Raiffeisenbank,
+Trading212, and Anycoin files create canonical Transactions,
+InvestmentEvents, InvestmentMovements, Holdings, exact provider aliases,
+market evidence, AccountSnapshots, and NetWorthSnapshots through their
+production application boundaries.
+
+The user base currency owns every scalar snapshot, portfolio, dashboard, and
+history value. `cashValueByCurrency` and `netDepositsByCurrency` continue to
+preserve original currencies. Production ČNB evidence remains direct
+foreign-currency-to-CZK only; the architecture does not infer inverse or cross
+rates. CoinGecko and Twelve Data identities remain explicit immutable aliases
+created through the server-operator CLI.
+
+Replay is defined by stable canonical financial tuples and deterministic
+market/snapshot identities, not by creating duplicate finance rows. Equivalent
+re-import rows become duplicate/skipped evidence, and current public
+portfolio, dashboard, and history values do not drift.
+
+Dashboard allocation percentages are presentation evidence derived from exact
+position values. R8 permits deterministic four-decimal largest-remainder
+projection so repeating ratios are representable while every non-empty
+allocation set totals exactly `100.0000`. This does not alter value, cost,
+cash, liability, profit/loss, or FX meaning.
