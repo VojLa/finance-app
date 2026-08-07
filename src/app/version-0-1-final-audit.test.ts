@@ -38,4 +38,19 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(dashboard).toContain("runDashboardSnapshotWorkflow")
     expect(history).toContain("readSnapshotBackedPortfolioHistory")
   })
+
+  it("keeps current acceptance independent of unavailable historical Git objects", async () => {
+    const currentAcceptance = (
+      await Promise.all(
+        [
+          "src/app/dashboard/dashboard-snapshot-cutover.test.ts",
+          "src/app/portfolio/portfolio-snapshot-cutover.test.ts",
+          "src/modules/accounts/account-cutover-boundaries.test.ts",
+        ].map(source)
+      )
+    ).join("\n")
+
+    expect(currentAcceptance).not.toContain("execFileSync")
+    expect(currentAcceptance).not.toMatch(/\b[0-9a-f]{40}\b/)
+  })
 })
