@@ -124,6 +124,13 @@ Hlavni rizika:
 - duplikace business logiky,
 - nestabilni DB a read model hranice.
 
+Stav po 0.1-R9:
+
+- `0.1 - Architecture Locked` is a completed technical milestone.
+- Version 0.1 is complete as an internal architecture MVP.
+- This status does not mean production readiness, public beta, or the
+  Production MVP.
+
 ---
 
 ### 0.2 - Data Trusted

@@ -119,9 +119,9 @@ def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> No
         assert command in frontend
 
 
-def test_release_roadmap_records_r8_implemented_and_r9_planned() -> None:
+def test_release_roadmap_records_r9_pass_and_version_0_1_complete() -> None:
     roadmap = _source("ChatGPT/steps/0.1-remediation.md")
 
     assert "0.1-R8 — clean main scenario and frontend CI: implemented" in roadmap
-    assert "0.1-R9 — repeat final acceptance audit: planned" in roadmap
-    assert "Version 0.1 is not complete" in roadmap
+    assert "0.1-R9 — repeat final acceptance audit: implemented — PASS" in roadmap
+    assert "Version 0.1 — complete" in roadmap
