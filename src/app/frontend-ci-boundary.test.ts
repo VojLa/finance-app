@@ -21,6 +21,9 @@ describe("Frontend GitHub Actions boundary", () => {
     expect(source).toContain("actions/setup-node@v4")
     expect(source).toContain("actions/setup-python@v5")
     expect(source).toContain("astral-sh/setup-uv@v6")
+    expect(source).toContain(
+      "DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app"
+    )
     for (const command of [
       "uv sync --frozen --extra dev",
       "npm ci",
@@ -43,7 +46,7 @@ describe("Frontend GitHub Actions boundary", () => {
     expect(source).toContain("group: frontend-${{ github.workflow }}-${{ github.ref }}")
     expect(source).toContain("cancel-in-progress: true")
     expect(source).not.toMatch(
-      /continue-on-error|npm audit fix|\bnpm run dev\b|\bnext dev\b|localhost:3010|\|\|\s*true/
+      /continue-on-error|npm audit fix|\bnpm run dev\b|\bnext dev\b|localhost:3010|services:|\|\|\s*true/
     )
     expect(source).not.toMatch(/\bauto-merge\b/)
   })

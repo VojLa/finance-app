@@ -86,6 +86,8 @@ jobs:
 
       - name: Validate Prisma schema
         run: npm run db:validate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
 
       - name: Check whitespace and generated cleanliness
         shell: bash
