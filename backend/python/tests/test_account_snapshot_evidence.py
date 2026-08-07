@@ -190,7 +190,7 @@ def _rate(
     *,
     base_currency: str = "EUR",
     quote_currency: str = "CZK",
-    source: ExchangeRateSource = ExchangeRateSource.ecb,
+    source: ExchangeRateSource = ExchangeRateSource.cnb,
 ) -> ExchangeRateModel:
     return ExchangeRateModel(
         id=rate_id,
@@ -305,7 +305,7 @@ async def test_empty_mixed_currency_account_uses_requested_output_without_fx(
     assert result.selected_historical_exchange_rate_ids == ()
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         (),
-        "EUR",
+        "CZK",
         through=NOW,
     )
 
@@ -570,7 +570,7 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
 
 
 @pytest.mark.asyncio
-async def test_mixed_currency_investment_selects_only_actual_direct_native_pairs() -> None:
+async def test_mixed_currency_investment_selects_only_direct_czk_pivot_legs() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
         load_holdings=_holding_rows(holding_currency="USD"),
@@ -580,24 +580,31 @@ async def test_mixed_currency_investment_selects_only_actual_direct_native_pairs
         load_exchange_rate_candidates=(
             _rate(
                 "rate-usd",
-                "0.9",
+                "18",
                 NOW,
                 base_currency="USD",
-                quote_currency="EUR",
+                quote_currency="CZK",
             ),
             _rate(
                 "rate-chf",
-                "1.05",
+                "21",
                 NOW,
                 base_currency="CHF",
-                quote_currency="EUR",
+                quote_currency="CZK",
             ),
             _rate(
                 "rate-gbp",
-                "1.2",
+                "24",
                 NOW,
                 base_currency="GBP",
-                quote_currency="EUR",
+                quote_currency="CZK",
+            ),
+            _rate(
+                "rate-eur",
+                "20",
+                NOW,
+                base_currency="EUR",
+                quote_currency="CZK",
             ),
         ),
     )
@@ -621,15 +628,41 @@ async def test_mixed_currency_investment_selects_only_actual_direct_native_pairs
     )
     assert result.selected_snapshot_exchange_rate_ids == (
         "rate-chf",
+        "rate-eur",
         "rate-gbp",
         "rate-usd",
     )
     assert result.selected_historical_exchange_rate_ids == ()
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
-        ("CHF", "GBP", "USD"),
-        "EUR",
+        ("CHF", "EUR", "GBP", "USD"),
+        "CZK",
         through=NOW,
     )
+
+
+@pytest.mark.asyncio
+async def test_account_currency_pivot_rejects_non_cnb_observation() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(holding_currency="EUR"),
+        load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),
+        load_exchange_rate_candidates=(
+            _rate("eur-czk", "20", NOW, base_currency="EUR"),
+            _rate(
+                "usd-czk",
+                "18",
+                NOW,
+                base_currency="USD",
+                source=ExchangeRateSource.ecb,
+            ),
+        ),
+    )
+
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command(output_currency="EUR"))
 
 
 @pytest.mark.asyncio
@@ -642,18 +675,32 @@ async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_sepa
         load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),
         load_exchange_rate_candidates=(
             _rate(
-                "event-rate",
-                "0.8",
+                "event-usd",
+                "16",
                 EARLIER,
                 base_currency="USD",
-                quote_currency="EUR",
+                quote_currency="CZK",
             ),
             _rate(
-                "snapshot-rate",
-                "0.9",
+                "snapshot-usd",
+                "18",
                 NOW,
                 base_currency="USD",
-                quote_currency="EUR",
+                quote_currency="CZK",
+            ),
+            _rate(
+                "event-eur",
+                "20",
+                EARLIER,
+                base_currency="EUR",
+                quote_currency="CZK",
+            ),
+            _rate(
+                "snapshot-eur",
+                "20",
+                NOW,
+                base_currency="EUR",
+                quote_currency="CZK",
             ),
         ),
     )
@@ -670,8 +717,14 @@ async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_sepa
         Decimal("8.000000"),
         (CurrencyAmount("USD", Decimal("10.000000")),),
     )
-    assert result.selected_snapshot_exchange_rate_ids == ("snapshot-rate",)
-    assert result.selected_historical_exchange_rate_ids == ("event-rate",)
+    assert result.selected_snapshot_exchange_rate_ids == (
+        "snapshot-eur",
+        "snapshot-usd",
+    )
+    assert result.selected_historical_exchange_rate_ids == (
+        "event-eur",
+        "event-usd",
+    )
 
 
 @pytest.mark.asyncio
@@ -684,11 +737,18 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
         ),
         load_exchange_rate_candidates=(
             _rate(
-                "usd-eur",
-                "0.9",
+                "usd-czk",
+                "18",
                 NOW,
                 base_currency="USD",
-                quote_currency="EUR",
+                quote_currency="CZK",
+            ),
+            _rate(
+                "eur-czk",
+                "20",
+                NOW,
+                base_currency="EUR",
+                quote_currency="CZK",
             ),
         ),
     )
@@ -704,7 +764,7 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
         CurrencyAmount("EUR", Decimal("20.000000")),
         CurrencyAmount("USD", Decimal("100.000000")),
     )
-    assert result.selected_snapshot_exchange_rate_ids == ("usd-eur",)
+    assert result.selected_snapshot_exchange_rate_ids == ("eur-czk", "usd-czk")
     assert result.selected_historical_exchange_rate_ids == ()
     structural_zero = ExactSnapshotMetric(Decimal(0), ())
     assert result.net_deposits == structural_zero
@@ -968,16 +1028,23 @@ def _selected_liability(
 
 
 @pytest.mark.asyncio
-async def test_mixed_currency_liability_selects_and_audits_direct_snapshot_rate() -> None:
+async def test_mixed_currency_liability_selects_and_audits_czk_pivot_legs() -> None:
     repository = _repository(
         load_account=_account(AccountType.loan, currency="USD"),
         load_exchange_rate_candidates=(
             _rate(
-                "usd-eur",
-                "0.9",
+                "usd-czk",
+                "18",
                 NOW,
                 base_currency="USD",
-                quote_currency="EUR",
+                quote_currency="CZK",
+            ),
+            _rate(
+                "eur-czk",
+                "20",
+                NOW,
+                base_currency="EUR",
+                quote_currency="CZK",
             ),
         ),
     )
@@ -995,7 +1062,7 @@ async def test_mixed_currency_liability_selects_and_audits_direct_snapshot_rate(
     assert result.valuation.liabilities_value_by_currency == (
         CurrencyAmount("USD", Decimal("115.000000")),
     )
-    assert result.selected_snapshot_exchange_rate_ids == ("usd-eur",)
+    assert result.selected_snapshot_exchange_rate_ids == ("eur-czk", "usd-czk")
     assert result.selected_historical_exchange_rate_ids == ()
     assert result.selected_liability_balance_id == "liability-balance-1"
     assert result.selected_liability_effective_at == EARLIER

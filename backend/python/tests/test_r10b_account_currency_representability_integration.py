@@ -105,6 +105,7 @@ def _investment(
     price_currency: str,
     cost_currency: str,
     rates: tuple[SelectedExchangeRateEvidence, ...],
+    output_currency: str = "CZK",
 ) -> ExpectedAccountSnapshotRow:
     account_id = f"{PREFIX}-{suffix}"
     price_id = f"{account_id}-price"
@@ -113,7 +114,7 @@ def _investment(
             account_id=account_id,
             account_type=AccountType.broker,
             account_currency="EUR",
-            output_currency="CZK",
+            output_currency=output_currency,
             snapshot_timestamp=SNAPSHOT_AT,
             granularity=SnapshotGranularity.minute,
             source=SnapshotSource.manual_recalculation,
@@ -182,7 +183,7 @@ def _cash() -> ExpectedAccountSnapshotRow:
     return _persist(valuation)
 
 
-def _liability() -> ExpectedAccountSnapshotRow:
+def _liability(*, output_currency: str = "CZK") -> ExpectedAccountSnapshotRow:
     account_id = f"{PREFIX}-d"
     liability_id = f"{account_id}-liability"
     valuation = build_account_snapshot_projection(
@@ -190,14 +191,18 @@ def _liability() -> ExpectedAccountSnapshotRow:
             account_id=account_id,
             account_type=AccountType.loan,
             account_currency="EUR",
-            output_currency="CZK",
+            output_currency=output_currency,
             snapshot_timestamp=SNAPSHOT_AT,
             granularity=SnapshotGranularity.minute,
             source=SnapshotSource.manual_recalculation,
             calculation_version=1,
             holdings=(),
             prices=(),
-            exchange_rates=(_rate("EUR", "25.00000000", suffix="d-eur-czk"),),
+            exchange_rates=(
+                ()
+                if output_currency == "EUR"
+                else (_rate("EUR", "25.00000000", suffix="d-eur-czk"),)
+            ),
             cash_balances=(),
             liabilities=(
                 LiabilityBalanceEvidence(
@@ -214,7 +219,7 @@ def _liability() -> ExpectedAccountSnapshotRow:
 
 
 @pytest.mark.asyncio
-async def test_postgresql_proves_account_currency_presentation_is_not_representable() -> None:
+async def test_postgresql_proves_primary_and_account_currency_rows_are_representable() -> None:
     rows = (
         _cash(),
         _investment(
@@ -233,6 +238,24 @@ async def test_postgresql_proves_account_currency_presentation_is_not_representa
             ),
         ),
         _liability(),
+        _investment(
+            "b",
+            price_currency="EUR",
+            cost_currency="EUR",
+            rates=(),
+            output_currency="EUR",
+        ),
+        _investment(
+            "c",
+            price_currency="USD",
+            cost_currency="EUR",
+            rates=(
+                _rate("USD", "23.00000000", suffix="c-usd-czk"),
+                _rate("EUR", "25.00000000", suffix="c-eur-czk"),
+            ),
+            output_currency="EUR",
+        ),
+        _liability(output_currency="EUR"),
     )
     account_types = (
         AccountType.bank,
@@ -250,6 +273,7 @@ async def test_postgresql_proves_account_currency_presentation_is_not_representa
                 )
             )
             await session.execute(delete(AccountModel).where(AccountModel.id.startswith(PREFIX)))
+            unique_rows = {row.account_id: row for row in rows}
             session.add_all(
                 AccountModel(
                     id=row.account_id,
@@ -264,7 +288,12 @@ async def test_postgresql_proves_account_currency_presentation_is_not_representa
                     notes=None,
                 )
                 for index, (row, account_type, account_currency) in enumerate(
-                    zip(rows, account_types, account_currencies, strict=True),
+                    zip(
+                        tuple(unique_rows.values()),
+                        account_types,
+                        account_currencies,
+                        strict=True,
+                    ),
                     start=1,
                 )
             )
@@ -287,7 +316,7 @@ async def test_postgresql_proves_account_currency_presentation_is_not_representa
                     AccountSnapshotModel.account_id == AccountModel.id,
                 )
                 .where(AccountModel.id.startswith(PREFIX))
-                .order_by(AccountModel.id)
+                .order_by(AccountModel.id, AccountSnapshotModel.currency)
             )
             currencies = tuple((row[0], row[1]) for row in currency_rows)
             liability_column = await session.scalar(
@@ -305,18 +334,27 @@ async def test_postgresql_proves_account_currency_presentation_is_not_representa
         assert currencies == (
             ("CZK", "CZK"),
             ("EUR", "CZK"),
+            ("EUR", "EUR"),
             ("EUR", "CZK"),
+            ("EUR", "EUR"),
             ("EUR", "CZK"),
+            ("EUR", "EUR"),
         )
-        assert len(physical) == 4
-        mixed_rates = physical[2].exchange_rates
+        assert len(physical) == 7
+        mixed_companion = next(
+            row for row in physical if row.account_id == f"{PREFIX}-c" and row.currency == "EUR"
+        )
+        mixed_rates = mixed_companion.exchange_rates
         assert mixed_rates is not None
         assert {(entry["from"], entry["to"]) for entry in mixed_rates["snapshotRates"]} == {
             ("EUR", "CZK"),
             ("USD", "CZK"),
         }
+        assert mixed_companion.investment_value == Decimal("184.000000")
         assert all(entry["to"] != "EUR" for entry in mixed_rates["snapshotRates"])
-        assert physical[3].liabilities_value == Decimal("2500.000000")
+        liability_rows = {row.currency: row for row in physical if row.account_id == f"{PREFIX}-d"}
+        assert liability_rows["CZK"].liabilities_value == Decimal("2500.000000")
+        assert liability_rows["EUR"].liabilities_value == Decimal("100.000000")
         assert liability_column == 0
     finally:
         async with AsyncSession(engine) as session:

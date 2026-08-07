@@ -406,21 +406,21 @@ async def test_persisted_cash_output_currency_conversion_is_exact_and_read_only(
                         currency="EUR",
                     ),
                     ExchangeRateModel(
-                        id=f"{prefix}-usd-eur",
+                        id=f"{prefix}-usd-czk",
                         from_currency="USD",
-                        to_currency="EUR",
-                        rate=Decimal("0.90000000"),
+                        to_currency="CZK",
+                        rate=Decimal("10.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                     ExchangeRateModel(
-                        id=f"{prefix}-eur-usd",
+                        id=f"{prefix}-eur-czk",
                         from_currency="EUR",
-                        to_currency="USD",
-                        rate=Decimal("1.10000000"),
+                        to_currency="CZK",
+                        rate=Decimal("20.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                 ]
@@ -443,12 +443,15 @@ async def test_persisted_cash_output_currency_conversion_is_exact_and_read_only(
 
             assert default == explicit_account_currency
             assert converted.valuation.currency == "EUR"
-            assert converted.valuation.cash_value == Decimal("110.000000")
+            assert converted.valuation.cash_value == Decimal("70.000000")
             assert converted.valuation.cash_value_by_currency == (
                 CurrencyAmount("EUR", Decimal("20.000000")),
                 CurrencyAmount("USD", Decimal("100.000000")),
             )
-            assert converted.selected_snapshot_exchange_rate_ids == (f"{prefix}-usd-eur",)
+            assert converted.selected_snapshot_exchange_rate_ids == (
+                f"{prefix}-eur-czk",
+                f"{prefix}-usd-czk",
+            )
             assert converted.selected_historical_exchange_rate_ids == ()
             assert (
                 await _evidence_state_counts(
@@ -754,37 +757,55 @@ async def test_persisted_mixed_currency_investment_uses_snapshot_and_event_time_
                     ExchangeRateModel(
                         id=f"{prefix}-usd-event",
                         from_currency="USD",
-                        to_currency="EUR",
-                        rate=Decimal("0.80000000"),
+                        to_currency="CZK",
+                        rate=Decimal("16.00000000"),
                         date=EVENT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=EVENT_AT,
                     ),
                     ExchangeRateModel(
                         id=f"{prefix}-usd-snapshot",
                         from_currency="USD",
-                        to_currency="EUR",
-                        rate=Decimal("0.90000000"),
+                        to_currency="CZK",
+                        rate=Decimal("18.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                     ExchangeRateModel(
                         id=f"{prefix}-gbp-snapshot",
                         from_currency="GBP",
-                        to_currency="EUR",
-                        rate=Decimal("1.20000000"),
+                        to_currency="CZK",
+                        rate=Decimal("24.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                     ExchangeRateModel(
                         id=f"{prefix}-chf-snapshot",
                         from_currency="CHF",
-                        to_currency="EUR",
-                        rate=Decimal("1.05000000"),
+                        to_currency="CZK",
+                        rate=Decimal("21.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
+                        created_at=SNAPSHOT_AT,
+                    ),
+                    ExchangeRateModel(
+                        id=f"{prefix}-eur-event",
+                        from_currency="EUR",
+                        to_currency="CZK",
+                        rate=Decimal("20.00000000"),
+                        date=EVENT_AT,
+                        source=ExchangeRateSource.cnb,
+                        created_at=EVENT_AT,
+                    ),
+                    ExchangeRateModel(
+                        id=f"{prefix}-eur-snapshot",
+                        from_currency="EUR",
+                        to_currency="CZK",
+                        rate=Decimal("20.00000000"),
+                        date=SNAPSHOT_AT,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                 ]
@@ -903,10 +924,14 @@ async def test_persisted_mixed_currency_investment_uses_snapshot_and_event_time_
             )
             assert result.selected_snapshot_exchange_rate_ids == (
                 f"{prefix}-chf-snapshot",
+                f"{prefix}-eur-snapshot",
                 f"{prefix}-gbp-snapshot",
                 f"{prefix}-usd-snapshot",
             )
-            assert result.selected_historical_exchange_rate_ids == (f"{prefix}-usd-event",)
+            assert result.selected_historical_exchange_rate_ids == (
+                f"{prefix}-eur-event",
+                f"{prefix}-usd-event",
+            )
             assert (
                 await _evidence_state_counts(
                     session,
@@ -1069,12 +1094,21 @@ async def test_persisted_liability_converts_to_output_currency_read_only() -> No
                         created_at=EVENT_AT,
                     ),
                     ExchangeRateModel(
-                        id=f"{prefix}-usd-eur",
+                        id=f"{prefix}-usd-czk",
                         from_currency="USD",
-                        to_currency="EUR",
-                        rate=Decimal("0.90000000"),
+                        to_currency="CZK",
+                        rate=Decimal("18.00000000"),
                         date=SNAPSHOT_AT,
-                        source=ExchangeRateSource.ecb,
+                        source=ExchangeRateSource.cnb,
+                        created_at=SNAPSHOT_AT,
+                    ),
+                    ExchangeRateModel(
+                        id=f"{prefix}-eur-czk",
+                        from_currency="EUR",
+                        to_currency="CZK",
+                        rate=Decimal("20.00000000"),
+                        date=SNAPSHOT_AT,
+                        source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
                 ]
@@ -1100,7 +1134,10 @@ async def test_persisted_liability_converts_to_output_currency_read_only() -> No
             assert result.selected_liability_balance_id == f"{prefix}-balance"
             assert result.selected_liability_effective_at == EVENT_AT
             assert result.selected_liability_source is LiabilityBalanceSource.statement
-            assert result.selected_snapshot_exchange_rate_ids == (f"{prefix}-usd-eur",)
+            assert result.selected_snapshot_exchange_rate_ids == (
+                f"{prefix}-eur-czk",
+                f"{prefix}-usd-czk",
+            )
             assert result.selected_historical_exchange_rate_ids == ()
             assert (
                 await _evidence_state_counts(

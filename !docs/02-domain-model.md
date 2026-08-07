@@ -1111,3 +1111,45 @@ remediation must establish complete write-time account-currency summary
 evidence, persist liability-native evidence, and define an explicit supported
 FX contract. Until then, account-level public scalar values remain accurately
 identified as output-currency values rather than being relabeled.
+
+## Account-currency companion snapshots
+
+R10-B1 resolves the representability blocker through the existing
+`AccountSnapshot(accountId, timestamp, currency, granularity)` identity. When
+`Account.currency` differs from `User.baseCurrency`, the same refresh
+atomically persists:
+
+- a primary snapshot in `User.baseCurrency`; and
+- an account-presentation companion in `Account.currency`.
+
+The two rows have distinct deterministic IDs but identical account, timestamp,
+granularity, source, calculation version, and selected canonical business
+evidence. When the currencies match, the primary row serves both authorities
+and no companion is created. Only primary IDs enter `NetWorthSnapshot`;
+companions never increase its required account count.
+
+Each companion owns all existing scalar MONEY fields and its own
+`AccountSnapshotItem` rows in the account currency. Item native value,
+native cost, and native currency fields remain unchanged source evidence. A
+liability companion persists the exact native liability in
+`liabilitiesValue`, so account-currency presentation no longer depends on a
+missing `liabilitiesValueByCurrency` physical column.
+
+The conversion contract composes only persisted direct-to-CZK observations at
+snapshot write time. For foreign source A and foreign target B, the one exact
+expression is `amount * rate(A -> CZK) / rate(B -> CZK)`. The calculation uses
+high-precision `Decimal` arithmetic and accepts only an exactly representable
+final MONEY value. It neither rounds an intermediate result nor persists a
+synthetic A-to-B `ExchangeRate`. Each pivot leg must be a persisted direct ČNB
+observation; a different provider fails closed.
+
+Snapshot-time components use snapshot-as-of direct legs. Historical net
+deposits, realized P/L, fees, and taxes select both source and target pivot
+legs using the existing event-date policy. Versioned internal exchange-rate
+audit evidence records the exact persisted observation IDs and consumption
+roles. Missing, stale, future, wrong-pair, conflicting, or non-representable
+evidence causes the complete primary/companion write to fail closed.
+
+This remediation changes no public portfolio, dashboard, or history contract.
+Those readers continue to consume the primary user-base snapshot until
+R10-B2 performs the explicit account-currency presentation cutover.

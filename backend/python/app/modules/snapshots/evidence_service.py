@@ -40,6 +40,7 @@ from app.modules.market_data.policy import (
     validate_market_evidence_policy,
 )
 from app.modules.snapshots.account_projection import (
+    FX_PIVOT_CURRENCY,
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
@@ -57,6 +58,7 @@ from app.modules.snapshots.evidence_repository import (
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
+    ConsumedHistoricalExchangeRate,
     ExactFinancialMetrics,
     HistoricalMetricEvidence,
     HistoricalMetricKind,
@@ -123,6 +125,7 @@ class CompleteAccountSnapshotEvidence:
     selected_price_ids: tuple[str, ...]
     selected_snapshot_exchange_rate_ids: tuple[str, ...]
     selected_historical_exchange_rate_ids: tuple[str, ...]
+    consumed_historical_exchange_rates: tuple[ConsumedHistoricalExchangeRate, ...] = ()
     selected_liability_balance_id: str | None = None
     selected_liability_effective_at: datetime | None = None
     selected_liability_source: LiabilityBalanceSource | None = None
@@ -293,6 +296,58 @@ def _selected_snapshot_rate(
         source=selected.source,
         timestamp=selected.date,
     )
+
+
+def _conversion_pairs(
+    base_currency: str,
+    output_currency: str,
+) -> tuple[tuple[str, str], ...]:
+    base = canonical_currency(base_currency)
+    output = canonical_currency(output_currency)
+    if base == output:
+        return ()
+    if output == FX_PIVOT_CURRENCY:
+        return ((base, FX_PIVOT_CURRENCY),)
+    if base == FX_PIVOT_CURRENCY:
+        return ((output, FX_PIVOT_CURRENCY),)
+    return tuple(
+        sorted(
+            {
+                (base, FX_PIVOT_CURRENCY),
+                (output, FX_PIVOT_CURRENCY),
+            }
+        )
+    )
+
+
+def _selected_snapshot_rates(
+    candidates: tuple[ExchangeRateModel, ...],
+    *,
+    source_currencies: set[str],
+    output_currency: str,
+    through: datetime,
+    policy: MarketEvidencePolicy,
+) -> tuple[SelectedExchangeRateEvidence, ...]:
+    pairs = {
+        pair
+        for source_currency in source_currencies
+        for pair in _conversion_pairs(source_currency, output_currency)
+    }
+    selected = tuple(
+        _selected_snapshot_rate(
+            candidates,
+            base_currency=base_currency,
+            quote_currency=quote_currency,
+            through=through,
+            policy=policy,
+        )
+        for base_currency, quote_currency in sorted(pairs)
+    )
+    if output_currency != FX_PIVOT_CURRENCY and any(
+        rate.source is not ExchangeRateSource.cnb for rate in selected
+    ):
+        raise _fail()
+    return selected
 
 
 def _validate_snapshot_rate_audit(
@@ -645,6 +700,7 @@ def _liability_complete_evidence(
         selected_price_ids=(),
         selected_snapshot_exchange_rate_ids=selected_snapshot_rate_ids,
         selected_historical_exchange_rate_ids=(),
+        consumed_historical_exchange_rates=(),
         selected_liability_balance_id=selected.balance_id,
         selected_liability_effective_at=selected.effective_at,
         selected_liability_source=selected.source,
@@ -708,27 +764,27 @@ class AccountSnapshotEvidenceService:
                         snapshot_timestamp=snapshot_timestamp,
                     )
                 )
+                liability_pairs = _conversion_pairs(account_currency, output_currency)
                 liability_snapshot_rates: tuple[SelectedExchangeRateEvidence, ...] = ()
-                if account_currency != output_currency:
+                if liability_pairs:
+                    liability_bases = tuple(sorted({pair[0] for pair in liability_pairs}))
                     loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
-                        (account_currency,),
-                        output_currency,
+                        liability_bases,
+                        FX_PIVOT_CURRENCY,
                         through=snapshot_timestamp,
                     )
                     rate_candidates = _validate_rate_candidates(
                         loaded_rate_candidates,
-                        base_currencies=(account_currency,),
-                        quote_currency=output_currency,
+                        base_currencies=liability_bases,
+                        quote_currency=FX_PIVOT_CURRENCY,
                         through=snapshot_timestamp,
                     )
-                    liability_snapshot_rates = (
-                        _selected_snapshot_rate(
-                            rate_candidates,
-                            base_currency=account_currency,
-                            quote_currency=output_currency,
-                            through=snapshot_timestamp,
-                            policy=self.policy,
-                        ),
+                    liability_snapshot_rates = _selected_snapshot_rates(
+                        rate_candidates,
+                        source_currencies={account_currency},
+                        output_currency=output_currency,
+                        through=snapshot_timestamp,
+                        policy=self.policy,
                     )
                 return _liability_complete_evidence(
                     command=command,
@@ -790,54 +846,60 @@ class AccountSnapshotEvidenceService:
                 *(item.currency for item in prices),
                 *(item.cost_currency for item in holdings),
                 *(item.currency for item in cash_balances),
-            } - {output_currency}
-            historical_currencies = {item.currency for item in historical_evidence} - {
-                output_currency
             }
-            required_currencies = tuple(sorted(snapshot_currencies | historical_currencies))
+            historical_currencies = {item.currency for item in historical_evidence}
+            required_pairs = {
+                pair
+                for currency in snapshot_currencies | historical_currencies
+                for pair in _conversion_pairs(currency, output_currency)
+            }
+            required_currencies = tuple(sorted({pair[0] for pair in required_pairs}))
             loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                 required_currencies,
-                output_currency,
+                FX_PIVOT_CURRENCY,
                 through=snapshot_timestamp,
             )
             rate_candidates = _validate_rate_candidates(
                 loaded_rate_candidates,
                 base_currencies=required_currencies,
-                quote_currency=output_currency,
+                quote_currency=FX_PIVOT_CURRENCY,
                 through=snapshot_timestamp,
             )
-            snapshot_rates: list[SelectedExchangeRateEvidence] = []
-            for currency in sorted(snapshot_currencies):
-                snapshot_rates.append(
-                    _selected_snapshot_rate(
-                        rate_candidates,
-                        base_currency=currency,
-                        quote_currency=output_currency,
-                        through=snapshot_timestamp,
-                        policy=self.policy,
-                    )
-                )
+            snapshot_rates = _selected_snapshot_rates(
+                rate_candidates,
+                source_currencies=snapshot_currencies,
+                output_currency=output_currency,
+                through=snapshot_timestamp,
+                policy=self.policy,
+            )
             historical_rates: list[SelectedHistoricalRate] = []
             for evidence in historical_evidence:
-                if evidence.currency == output_currency:
-                    continue
-                selected = _select_latest_rate(
-                    rate_candidates,
-                    base_currency=evidence.currency,
-                    quote_currency=output_currency,
-                    through=evidence.timestamp,
-                    policy=self.policy,
-                )
-                historical_rates.append(
-                    SelectedHistoricalRate(
-                        rate_id=selected.id,
-                        evidence_id=evidence.evidence_id,
-                        base_currency=evidence.currency,
-                        quote_currency=output_currency,
-                        rate=selected.rate,
-                        timestamp=selected.date,
+                for base_currency, quote_currency in _conversion_pairs(
+                    evidence.currency,
+                    output_currency,
+                ):
+                    selected = _select_latest_rate(
+                        rate_candidates,
+                        base_currency=base_currency,
+                        quote_currency=quote_currency,
+                        through=evidence.timestamp,
+                        policy=self.policy,
                     )
-                )
+                    if (
+                        output_currency != FX_PIVOT_CURRENCY
+                        and selected.source is not ExchangeRateSource.cnb
+                    ):
+                        raise _fail()
+                    historical_rates.append(
+                        SelectedHistoricalRate(
+                            rate_id=selected.id,
+                            evidence_id=evidence.evidence_id,
+                            base_currency=base_currency,
+                            quote_currency=quote_currency,
+                            rate=selected.rate,
+                            timestamp=selected.date,
+                        )
+                    )
 
             valuation = build_account_snapshot_projection(
                 AccountSnapshotProjectionInput(
@@ -851,7 +913,7 @@ class AccountSnapshotEvidenceService:
                     calculation_version=command.calculation_version,
                     holdings=holdings,
                     prices=prices,
-                    exchange_rates=tuple(snapshot_rates),
+                    exchange_rates=snapshot_rates,
                     cash_balances=cash_balances,
                     liabilities=(),
                 )
@@ -859,7 +921,7 @@ class AccountSnapshotEvidenceService:
             selected_snapshot_rate_ids = _validate_snapshot_rate_audit(
                 valuation,
                 output_currency=output_currency,
-                snapshot_rates=tuple(snapshot_rates),
+                snapshot_rates=snapshot_rates,
             )
             if account_type in _CASH_ACCOUNT_TYPES:
                 structural_zero = ExactSnapshotMetric(value=Decimal(0), breakdown=())
@@ -896,6 +958,9 @@ class AccountSnapshotEvidenceService:
                     breakdown=metrics.taxes_by_currency,
                 )
                 selected_historical_rate_ids = metrics.selected_historical_rate_ids
+                consumed_historical_exchange_rates = metrics.consumed_historical_exchange_rates
+            if account_type in _CASH_ACCOUNT_TYPES:
+                consumed_historical_exchange_rates = ()
             return CompleteAccountSnapshotEvidence(
                 valuation=valuation,
                 net_deposits=net_deposits,
@@ -906,6 +971,7 @@ class AccountSnapshotEvidenceService:
                 selected_price_ids=tuple(sorted(item.price_id for item in prices)),
                 selected_snapshot_exchange_rate_ids=selected_snapshot_rate_ids,
                 selected_historical_exchange_rate_ids=selected_historical_rate_ids,
+                consumed_historical_exchange_rates=consumed_historical_exchange_rates,
             )
         except AccountSnapshotEvidenceStateError:
             raise

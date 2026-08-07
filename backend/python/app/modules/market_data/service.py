@@ -171,7 +171,7 @@ def _validate_plan(
         )
         if (
             from_currency == to_currency
-            or to_currency != output_currency
+            or to_currency not in {output_currency, "CZK"}
             or through > snapshot_timestamp
             or fx_key in fx_keys
         ):

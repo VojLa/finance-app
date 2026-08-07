@@ -9,8 +9,11 @@ from enum import StrEnum
 
 from app.db.models.common import MONEY, RATE, TIMESTAMP
 from app.modules.snapshots.account_projection import (
+    FX_PIVOT_CURRENCY,
     CurrencyAmount,
+    ExchangeRateConsumptionRole,
     ExpectedAccountSnapshotValuation,
+    convert_currency_amount,
 )
 
 _ERROR_MESSAGE = "Persisted evidence cannot produce a complete account snapshot."
@@ -50,6 +53,17 @@ class SelectedHistoricalRate:
 
 
 @dataclass(frozen=True, slots=True)
+class ConsumedHistoricalExchangeRate:
+    rate_id: str
+    evidence_id: str
+    base_currency: str
+    quote_currency: str
+    rate: Decimal
+    timestamp: datetime
+    role: ExchangeRateConsumptionRole
+
+
+@dataclass(frozen=True, slots=True)
 class ExactFinancialMetrics:
     net_deposits_value: Decimal
     realized_pnl_value: Decimal
@@ -62,6 +76,7 @@ class ExactFinancialMetrics:
     fees_by_currency: tuple[CurrencyAmount, ...]
     taxes_by_currency: tuple[CurrencyAmount, ...]
     selected_historical_rate_ids: tuple[str, ...]
+    consumed_historical_exchange_rates: tuple[ConsumedHistoricalExchangeRate, ...]
 
 
 def _fail() -> AccountSnapshotEvidenceStateError:
@@ -166,26 +181,37 @@ def build_financial_metrics(
             raise _fail()
         evidence_by_id[item.evidence_id] = item
 
-    rate_by_evidence: dict[str, SelectedHistoricalRate] = {}
+    rates_by_evidence: dict[
+        str,
+        dict[tuple[str, str], SelectedHistoricalRate],
+    ] = {}
+    physical_rates: dict[str, tuple[str, str, Decimal, datetime]] = {}
     used_rate_ids: set[str] = set()
     for selected in historical_rates:
         if (
             not isinstance(selected, SelectedHistoricalRate)
             or not selected.rate_id
             or selected.rate_id != selected.rate_id.strip()
-            or selected.evidence_id in rate_by_evidence
         ):
             raise _fail()
         metric_item = evidence_by_id.get(selected.evidence_id)
+        base_currency = canonical_currency(selected.base_currency)
+        quote_currency = canonical_currency(selected.quote_currency)
+        timestamp = canonical_timestamp(selected.timestamp)
+        rate = exact_rate(selected.rate)
+        pair = (base_currency, quote_currency)
         if (
             metric_item is None
-            or canonical_currency(selected.base_currency) != metric_item.currency
-            or canonical_currency(selected.quote_currency) != output_currency
-            or canonical_timestamp(selected.timestamp) > metric_item.timestamp
+            or quote_currency not in {output_currency, FX_PIVOT_CURRENCY}
+            or timestamp > metric_item.timestamp
+            or pair in rates_by_evidence.setdefault(selected.evidence_id, {})
         ):
             raise _fail()
-        exact_rate(selected.rate)
-        rate_by_evidence[selected.evidence_id] = selected
+        physical = (base_currency, quote_currency, rate, timestamp)
+        previous = physical_rates.setdefault(selected.rate_id, physical)
+        if previous != physical:
+            raise _fail()
+        rates_by_evidence[selected.evidence_id][pair] = selected
         used_rate_ids.add(selected.rate_id)
 
     native: dict[HistoricalMetricKind, dict[str, Decimal]] = {
@@ -194,6 +220,7 @@ def build_financial_metrics(
     converted: dict[HistoricalMetricKind, Decimal] = {
         kind: Decimal(0) for kind in HistoricalMetricKind
     }
+    consumed_historical: list[ConsumedHistoricalExchangeRate] = []
     for item in sorted(historical_evidence, key=lambda value: (value.timestamp, value.evidence_id)):
         bucket = native[item.kind]
         bucket[item.currency] = _calculated(
@@ -201,23 +228,41 @@ def build_financial_metrics(
             item.amount,
             multiply=False,
         )
-        if item.currency == output_currency:
-            if item.evidence_id in rate_by_evidence:
-                raise _fail()
-            output_amount = item.amount
-        else:
-            selected_rate = rate_by_evidence.get(item.evidence_id)
-            if selected_rate is None:
-                raise _fail()
-            output_amount = _calculated(item.amount, selected_rate.rate, multiply=True)
+        selected_rates = rates_by_evidence.get(item.evidence_id, {})
+        try:
+            output_amount, legs = convert_currency_amount(
+                item.amount,
+                base_currency=item.currency,
+                output_currency=output_currency,
+                rates={pair: selected.rate for pair, selected in selected_rates.items()},
+                numeric=MONEY,
+            )
+        except ValueError as exc:
+            raise _fail() from exc
+        expected_pairs = {(leg.base_currency, leg.quote_currency) for leg in legs}
+        if set(selected_rates) != expected_pairs:
+            raise _fail()
+        role_by_pair: dict[tuple[str, str], ExchangeRateConsumptionRole] = {
+            (leg.base_currency, leg.quote_currency): leg.role for leg in legs
+        }
+        for pair, selected_rate in sorted(selected_rates.items()):
+            consumed_historical.append(
+                ConsumedHistoricalExchangeRate(
+                    rate_id=selected_rate.rate_id,
+                    evidence_id=item.evidence_id,
+                    base_currency=pair[0],
+                    quote_currency=pair[1],
+                    rate=selected_rate.rate,
+                    timestamp=selected_rate.timestamp,
+                    role=role_by_pair[pair],
+                )
+            )
         converted[item.kind] = _calculated(
             converted[item.kind],
             output_amount,
             multiply=False,
         )
-    if set(rate_by_evidence) != {
-        item.evidence_id for item in historical_evidence if item.currency != output_currency
-    }:
+    if set(rates_by_evidence) - set(evidence_by_id):
         raise _fail()
 
     unrealized = _calculated(
@@ -253,4 +298,16 @@ def build_financial_metrics(
         fees_by_currency=_breakdown(native[HistoricalMetricKind.fee]),
         taxes_by_currency=_breakdown(native[HistoricalMetricKind.tax]),
         selected_historical_rate_ids=tuple(sorted(used_rate_ids)),
+        consumed_historical_exchange_rates=tuple(
+            sorted(
+                consumed_historical,
+                key=lambda value: (
+                    value.evidence_id,
+                    value.base_currency,
+                    value.quote_currency,
+                    value.rate_id,
+                    value.role.value,
+                ),
+            )
+        ),
     )

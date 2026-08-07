@@ -269,7 +269,7 @@ def _validate_projection_identity(
 
 
 class AccountSnapshotWriter:
-    """Own one outer transaction and persist or replay one exact snapshot."""
+    """Persist one primary snapshot and its account-currency companion atomically."""
 
     def __init__(
         self,
@@ -315,75 +315,91 @@ class AccountSnapshotWriter:
         output_currency = (
             account_currency if command.output_currency is None else command.output_currency
         )
-        await self.repository.acquire_snapshot_lock(
-            account_id=command.account_id,
-            timestamp=command.snapshot_timestamp,
-            currency=output_currency,
-            granularity=command.granularity,
-        )
+        currencies = tuple(sorted({output_currency, account_currency}))
+        for currency in currencies:
+            await self.repository.acquire_snapshot_lock(
+                account_id=command.account_id,
+                timestamp=command.snapshot_timestamp,
+                currency=currency,
+                granularity=command.granularity,
+            )
         if account_type in _LIABILITY_ACCOUNT_TYPES:
             await self.repository.lock_liability_evidence_table()
-            if account_currency != output_currency:
+            if len(currencies) > 1:
                 await self.repository.lock_market_evidence_tables()
         else:
             await self.repository.lock_canonical_evidence(command.account_id)
             await self.repository.lock_market_evidence_tables()
-        evidence = await self.evidence_service.build(
-            BuildAccountSnapshotEvidenceCommand(
-                account_id=command.account_id,
-                snapshot_timestamp=command.snapshot_timestamp,
-                granularity=command.granularity,
-                source=command.source,
-                calculation_version=command.calculation_version,
-                output_currency=output_currency,
+
+        projections: dict[str, ExpectedAccountSnapshotPersistence] = {}
+        for currency in currencies:
+            evidence = await self.evidence_service.build(
+                BuildAccountSnapshotEvidenceCommand(
+                    account_id=command.account_id,
+                    snapshot_timestamp=command.snapshot_timestamp,
+                    granularity=command.granularity,
+                    source=command.source,
+                    calculation_version=command.calculation_version,
+                    output_currency=currency,
+                )
             )
-        )
-        projection = self.projection_builder(
-            evidence,
-            AccountSnapshotPersistenceMetadata(
-                calculated_at=command.calculated_at,
-                created_at=command.created_at,
-                is_recalculated=command.is_recalculated,
-            ),
-        )
-        _validate_projection_identity(
-            projection,
-            command=command,
-            output_currency=output_currency,
-        )
+            projection = self.projection_builder(
+                evidence,
+                AccountSnapshotPersistenceMetadata(
+                    calculated_at=command.calculated_at,
+                    created_at=command.created_at,
+                    is_recalculated=command.is_recalculated,
+                ),
+            )
+            _validate_projection_identity(
+                projection,
+                command=command,
+                output_currency=currency,
+            )
+            projections[currency] = projection
 
-        existing = await self.repository.load_existing_snapshot(
-            account_id=command.account_id,
-            timestamp=command.snapshot_timestamp,
-            currency=output_currency,
-            granularity=command.granularity,
-        )
-        if existing is not None:
-            items = await self.repository.load_snapshot_items(existing.id)
-            if not _matches_snapshot(existing, projection.snapshot) or not _matches_items(
-                items, projection.items
-            ):
+        dispositions: dict[str, AccountSnapshotWriteDisposition] = {}
+        for currency in currencies:
+            projection = projections[currency]
+            existing = await self.repository.load_existing_snapshot(
+                account_id=command.account_id,
+                timestamp=command.snapshot_timestamp,
+                currency=currency,
+                granularity=command.granularity,
+            )
+            if existing is not None:
+                items = await self.repository.load_snapshot_items(existing.id)
+                if not _matches_snapshot(existing, projection.snapshot) or not _matches_items(
+                    items, projection.items
+                ):
+                    raise AccountSnapshotWriteConflictError()
+                dispositions[currency] = AccountSnapshotWriteDisposition.replayed
+                continue
+            id_conflict = await self.repository.load_snapshot_by_id(projection.snapshot.id)
+            if id_conflict is not None:
                 raise AccountSnapshotWriteConflictError()
-            return _result(projection, AccountSnapshotWriteDisposition.replayed)
 
-        id_conflict = await self.repository.load_snapshot_by_id(projection.snapshot.id)
-        if id_conflict is not None:
-            raise AccountSnapshotWriteConflictError()
-        self.repository.add_snapshot(AccountSnapshotModel(**projection.snapshot.model_values()))
-        await self.repository.flush()
-        self.repository.add_items(
-            tuple(AccountSnapshotItemModel(**item.model_values()) for item in projection.items)
-        )
-        await self.repository.flush()
-        persisted = await self.repository.reload_snapshot(projection.snapshot.id)
-        persisted_items = await self.repository.reload_snapshot_items(projection.snapshot.id)
-        if (
-            persisted is None
-            or not _matches_snapshot(persisted, projection.snapshot)
-            or not _matches_items(persisted_items, projection.items)
-        ):
-            raise _fail()
-        return _result(projection, AccountSnapshotWriteDisposition.created)
+        for currency in currencies:
+            if currency in dispositions:
+                continue
+            projection = projections[currency]
+            self.repository.add_snapshot(AccountSnapshotModel(**projection.snapshot.model_values()))
+            await self.repository.flush()
+            self.repository.add_items(
+                tuple(AccountSnapshotItemModel(**item.model_values()) for item in projection.items)
+            )
+            await self.repository.flush()
+            persisted = await self.repository.reload_snapshot(projection.snapshot.id)
+            persisted_items = await self.repository.reload_snapshot_items(projection.snapshot.id)
+            if (
+                persisted is None
+                or not _matches_snapshot(persisted, projection.snapshot)
+                or not _matches_items(persisted_items, projection.items)
+            ):
+                raise _fail()
+            dispositions[currency] = AccountSnapshotWriteDisposition.created
+
+        return _result(projections[output_currency], dispositions[output_currency])
 
 
 def _validate_account(account: AccountModel, account_id: str) -> tuple[str, AccountType]:

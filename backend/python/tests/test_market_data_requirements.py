@@ -545,6 +545,7 @@ async def test_fx_requirements_separate_snapshot_and_event_time() -> None:
     assert ("USD", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert ("GBP", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("CHF", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
+    assert ("EUR", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("JPY", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert (
         "CAD",
@@ -591,6 +592,26 @@ async def test_direct_fx_requirement_never_inverts_or_derives() -> None:
     assert not any(
         item.from_currency == "CZK" and item.to_currency == "EUR" for item in plan.fx_requirements
     )
+
+
+@pytest.mark.asyncio
+async def test_non_czk_targets_plan_only_direct_czk_pivot_observations() -> None:
+    repository = _Repository()
+    repository.user = _user(currency="EUR")
+    repository.accounts = (_account(currency="USD"),)
+    repository.holdings = (_holding(cost_currency="EUR", listing_currency="GBP"),)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert {
+        (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
+    } == {
+        ("EUR", "CZK", SNAPSHOT_AT),
+        ("GBP", "CZK", SNAPSHOT_AT),
+        ("USD", "CZK", SNAPSHOT_AT),
+    }
 
 
 @pytest.mark.asyncio
