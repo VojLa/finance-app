@@ -26,6 +26,7 @@ function summary() {
     completedFiles: 1,
     duplicateFiles: 0,
     failedFiles: 0,
+    snapshotRefreshStatus: "created",
   }
 }
 

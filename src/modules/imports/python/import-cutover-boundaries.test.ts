@@ -56,7 +56,7 @@ describe("R4 import call-graph boundaries", () => {
     )
   })
 
-  it("keeps binary hashing and all eight generated paths in the server-only client", async () => {
+  it("keeps binary hashing, canonical staging, and finalization in the server-only client", async () => {
     const api = await source("src/modules/imports/python/import-api.ts")
     const contract = await source("src/modules/imports/python/import-contract.ts")
     const transport = await source("src/modules/python-api/server/transport.ts")
@@ -74,11 +74,23 @@ describe("R4 import call-graph boundaries", () => {
       "/normalize",
       "/deduplicate",
       "/classify",
-      "/post",
+      "/canonical-post",
+      "/finalize",
     ]) {
       expect(api).toContain(suffix)
     }
     expect(api).toContain("getImportBatch")
+  })
+
+  it("stages every file canonically and invokes one Python-owned finalization", async () => {
+    const route = await source("src/modules/imports/python/import-route.ts")
+    const api = await source("src/modules/imports/python/import-api.ts")
+
+    expect(route).toContain("runImportCanonicalWorkflow")
+    expect(route).toContain("finalizeImportBatches")
+    expect(route).not.toContain("runImportWorkflow")
+    expect(api).toContain("canonicalPostImportBatch")
+    expect(api).toContain("finalizeImportBatches")
   })
 
   it("keeps token issuance, identity and raw Python bodies server-side", async () => {

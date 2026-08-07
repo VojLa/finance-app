@@ -125,3 +125,37 @@ class ImportPostResponse(BaseModel):
     completed_at: datetime
     replayed: bool
     snapshot_refresh_status: ImportSnapshotRefreshStatus
+
+
+class ImportCanonicalPostResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch_id: str
+    status: ImportStatus
+    rows_total: int
+    rows_imported: int
+    rows_skipped: int
+    completed_at: datetime
+    replayed: bool
+
+
+class FinalizeImportBatchesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch_ids: tuple[str, ...] = Field(max_length=10)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def validate_batch_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not batch_id or batch_id != batch_id.strip() for batch_id in value):
+            raise ValueError("Batch IDs must be non-blank canonical strings.")
+        if len(set(value)) != len(value):
+            raise ValueError("Batch IDs must be unique.")
+        return value
+
+
+class FinalizeImportBatchesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch_ids: tuple[str, ...]
+    snapshot_refresh_status: ImportSnapshotRefreshStatus

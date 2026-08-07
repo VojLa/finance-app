@@ -116,7 +116,6 @@ describe("version 0.1 R4 browser import acceptance", () => {
         rows_skipped: 0,
         replayed: false,
         completed_at: "2036-08-03T10:01:00Z",
-        snapshot_refresh_status: "created",
       },
       {
         id: "batch-r4",
@@ -133,6 +132,10 @@ describe("version 0.1 R4 browser import acceptance", () => {
         created_at: "2036-08-03T10:00:00Z",
         completed_at: "2036-08-03T10:01:00Z",
         token: "must-not-leak",
+      },
+      {
+        batch_ids: ["batch-r4"],
+        snapshot_refresh_status: "created",
       },
     ]
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
@@ -164,7 +167,7 @@ describe("version 0.1 R4 browser import acceptance", () => {
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(browserPaths).toEqual(["/api/import"])
     expect(getSession).toHaveBeenCalledTimes(1)
-    expect(pythonRequests).toHaveLength(8)
+    expect(pythonRequests).toHaveLength(9)
     expect(
       pythonRequests.map((request) => `${request.method} ${new URL(request.url).pathname}`)
     ).toEqual([
@@ -174,13 +177,14 @@ describe("version 0.1 R4 browser import acceptance", () => {
       "POST /api/v1/accounts/account-r4/imports/batch-r4/normalize",
       "POST /api/v1/accounts/account-r4/imports/batch-r4/deduplicate",
       "POST /api/v1/accounts/account-r4/imports/batch-r4/classify",
-      "POST /api/v1/accounts/account-r4/imports/batch-r4/post",
+      "POST /api/v1/accounts/account-r4/imports/batch-r4/canonical-post",
       "GET /api/v1/accounts/account-r4/imports/batch-r4",
+      "POST /api/v1/accounts/account-r4/imports/finalize",
     ])
     const tokens = pythonRequests.map((request) =>
       request.headers.get("Authorization")?.replace("Bearer ", "")
     )
-    expect(new Set(tokens).size).toBe(8)
+    expect(new Set(tokens).size).toBe(9)
     expect(
       tokens.map((token) => {
         const claims = decodeJwt(token ?? "")
@@ -198,6 +202,7 @@ describe("version 0.1 R4 browser import acceptance", () => {
     expect(new Uint8Array(await pythonRequests[1].arrayBuffer())).toEqual(bytes)
     expect(result).toMatchObject({
       completedFiles: 1,
+      snapshotRefreshStatus: "created",
       files: [
         {
           filename: "fixture.csv",

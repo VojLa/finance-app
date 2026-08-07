@@ -10,7 +10,7 @@ thin and shared database infrastructure lives outside modules.
 | `accounts`            | Account lifecycle, memberships, and invitations                                       | Implemented                                                                 |
 | `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding            | R5-B4 implemented; remediation re-audit passed                              |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
-| `imports`             | Register, stage, post, and coordinate snapshot refresh for CSV import batches         | R5-B3C market-backed post-processing implemented                            |
+| `imports`             | Register, canonical-post, and finalize logical multi-file CSV histories               | R10-A request-level post-processing implemented                             |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
 | `portfolio_history`   | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API and R7-B browser/chart cutover implemented                  |
@@ -765,3 +765,37 @@ Valid dashboard allocation ratios are projected as deterministic exact
 four-decimal presentation percentages using largest-remainder distribution.
 This presentation step preserves every financial value and guarantees a
 `100.0000` total for non-empty allocation sets.
+
+## Logical multi-file import finalization
+
+R10-A separates per-file canonical staging from request-level financial
+post-processing. The active browser request still accepts one account, one
+source, and one to ten files. Each file retains its own `ImportBatch` and runs
+the existing Python create, upload, parse, normalize, deduplicate, classify,
+and `ImportBatchPostingService` canonical-post path. That path does not rebuild
+Holdings or refresh snapshots when called through the multi-file adapter.
+
+After every nonfatal file outcome is known, the browser makes exactly one
+generated Python finalization request containing only the persisted batch IDs.
+Python owns the financial decision. It authorizes the principal, requires all
+batches to belong to the same principal and account, requires one exact
+persisted source and terminal state, and rejects duplicate or noncanonical
+command IDs. The browser cannot supply a Holding selector, affected account
+set, market plan, snapshot timestamp, calculation version, or output currency.
+
+The finalizer reuses canonical posting replay as its persisted-state
+validation boundary. It derives the final timestamp as the maximum persisted
+`ImportBatch.completedAt` and floors it to the canonical import minute. If the
+aggregate imported row count is zero, finalization is `not_required`.
+Otherwise, any investment-event evidence causes one account-level Holding
+rebuild, followed by exactly one R5-B3A market-backed refresh and its one
+whole-user snapshot execution.
+
+There is no outer transaction across files or phases. Earlier canonical
+batches remain committed when a later file fails, and no finalization runs for
+that incomplete logical request. A Holding, market, or snapshot failure after
+canonical posting truthfully preserves prior phases and can be retried with
+the same batch set. Existing deterministic replay and lock contracts converge
+concurrent finalization requests without duplicate Holdings, market evidence,
+AccountSnapshots, or NetWorthSnapshots. R10-A adds no schema, migration,
+worker, scheduler, queue, cache, or automatic retry.

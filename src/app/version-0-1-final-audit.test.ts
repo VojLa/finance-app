@@ -22,7 +22,8 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(historical).toContain("B6 portfolio history")
     expect(accounts).toContain("createAccount")
     expect(imports).toContain("handleImportPost")
-    expect(importHandler).toContain("runImportWorkflow")
+    expect(importHandler).toContain("runImportCanonicalWorkflow")
+    expect(importHandler).toContain("finalizeImportBatches")
     expect(history).toContain("readSnapshotBackedPortfolioHistory")
     expect(`${accounts}\n${imports}\n${importHandler}\n${history}`).not.toMatch(
       /@\/lib\/prisma|importCsvFilesAsync|getPortfolioSnapshotHistory/
@@ -54,11 +55,15 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(currentAcceptance).not.toMatch(/\b[0-9a-f]{40}\b/)
   })
 
-  it("records R8 implemented while leaving version 0.1 for the R9 final audit", async () => {
+  it("records R10-A while leaving version 0.1 remediation open", async () => {
     const roadmap = await source("ChatGPT/steps/0.1-remediation.md")
 
     expect(roadmap).toContain("0.1-R8 — clean main scenario and frontend CI: implemented")
-    expect(roadmap).toContain("0.1-R9 — repeat final acceptance audit: planned")
+    expect(roadmap).toContain(
+      "0.1-R9 — repeat final acceptance audit: completed — NOT READY after independent"
+    )
+    expect(roadmap).toContain("0.1-R10-A — multi-file import post-processing closure: implemented")
+    expect(roadmap).toContain("0.1-R10-B — account-currency presentation: planned")
     expect(roadmap).toContain("Version 0.1 is not complete")
   })
 })

@@ -144,13 +144,19 @@ def _currency(value: object) -> str:
 def _validate_command(value: object) -> PostImportBatchCommand:
     if not isinstance(value, PostImportBatchCommand):
         raise _runtime_error()
-    principal = value.principal
+    _validate_principal_account(value.principal, value.account_id)
+    _nonblank(value.batch_id)
+    return value
+
+
+def _validate_principal_account(
+    principal: object,
+    account_id: object,
+) -> tuple[AuthenticatedPrincipal, str]:
     if not isinstance(principal, AuthenticatedPrincipal):
         raise _runtime_error()
     _nonblank(principal.user_id)
-    _nonblank(value.account_id)
-    _nonblank(value.batch_id)
-    return value
+    return principal, _nonblank(account_id)
 
 
 def _validate_posting_result(
@@ -380,31 +386,53 @@ class ImportBatchPostProcessingService:
             canonical,
         )
         await self._require_idle("Import posting dependency left an active transaction.")
-        if posting.rows_imported == 0:
-            return self._response(posting, ImportSnapshotRefreshStatus.not_required)
+        status = await self._finalize_postings(
+            principal=canonical.principal,
+            account_id=canonical.account_id,
+            postings=(posting,),
+        )
+        return self._response(posting, status)
 
-        bucket = canonical_import_snapshot_bucket(posting.completed_at)
+    async def _finalize_postings(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        postings: tuple[PostImportBatchResult, ...],
+    ) -> ImportSnapshotRefreshStatus:
+        _validate_principal_account(principal, account_id)
+        if not postings:
+            raise _runtime_error()
+        total_rows_imported = sum(posting.rows_imported for posting in postings)
+        if total_rows_imported == 0:
+            return ImportSnapshotRefreshStatus.not_required
+
+        completed_at = max(posting.completed_at for posting in postings)
+        bucket = canonical_import_snapshot_bucket(completed_at)
         audits: list[_ExpectedAudit] = []
-        if posting.investment_event_rows_imported > 0:
+        investment_postings = tuple(
+            posting for posting in postings if posting.investment_event_rows_imported > 0
+        )
+        if investment_postings:
             await self._require_idle("Holding rebuild requires an idle session.")
             holding_service = self.holding_service_factory(
                 self.session,
-                lambda: posting.completed_at,
+                lambda: completed_at,
             )
             await self._require_idle("Holding rebuild factory left an active transaction.")
             try:
                 holding_result = await holding_service.rebuild(
                     RebuildHoldingsCommand(
-                        principal=canonical.principal,
-                        account_id=canonical.account_id,
+                        principal=principal,
+                        account_id=account_id,
                     )
                 )
             except HoldingRebuildUnavailableError:
                 await self._require_idle("Holding rebuild left an active transaction.")
                 version_marker = coordinated_snapshot_calculation_version_marker()
-                audits.append(
+                audits.extend(
                     _audit(
-                        posting=posting,
+                        posting=item,
                         event=ImportLogEvent.snapshot_validation_failed,
                         level=ImportLogLevel.warning,
                         message=_FAILURE_MESSAGE,
@@ -412,21 +440,26 @@ class ImportBatchPostProcessingService:
                         version_marker=version_marker,
                         outcome="holding_unavailable",
                     )
+                    for item in postings
                 )
                 await self._write_audits(audits)
-                return self._response(posting, ImportSnapshotRefreshStatus.unavailable)
+                return ImportSnapshotRefreshStatus.unavailable
             except Exception:
                 await self._rollback_active()
                 raise
             await self._require_idle("Holding rebuild left an active transaction.")
             holding_result = _validate_holding_result(
                 holding_result,
-                command=canonical,
-                completed_at=posting.completed_at,
+                command=PostImportBatchCommand(
+                    principal=principal,
+                    account_id=account_id,
+                    batch_id=postings[0].batch_id,
+                ),
+                completed_at=completed_at,
             )
-            audits.append(
+            audits.extend(
                 _audit(
-                    posting=posting,
+                    posting=item,
                     event=ImportLogEvent.holdings_recalculated,
                     level=ImportLogLevel.info,
                     message=_HOLDINGS_MESSAGE,
@@ -434,14 +467,15 @@ class ImportBatchPostProcessingService:
                     version_marker=coordinated_snapshot_calculation_version_marker(),
                     outcome="replayed" if holding_result.replayed else "rebuilt",
                 )
+                for item in investment_postings
             )
 
         try:
             version = current_coordinated_snapshot_calculation_version()
         except ValueError:
-            audits.append(
+            audits.extend(
                 _audit(
-                    posting=posting,
+                    posting=item,
                     event=ImportLogEvent.snapshot_validation_failed,
                     level=ImportLogLevel.warning,
                     message=_FAILURE_MESSAGE,
@@ -449,13 +483,14 @@ class ImportBatchPostProcessingService:
                     version_marker=coordinated_snapshot_calculation_version_marker(),
                     outcome="version_unavailable",
                 )
+                for item in postings
             )
             await self._write_audits(audits)
-            return self._response(posting, ImportSnapshotRefreshStatus.unavailable)
+            return ImportSnapshotRefreshStatus.unavailable
 
         await self._require_idle("Market-backed snapshot refresh requires an idle session.")
         market_backed_command = ExecuteMarketBackedSnapshotRefreshCommand(
-            user_id=canonical.principal.user_id,
+            user_id=principal.user_id,
             snapshot_timestamp=bucket,
             granularity=SnapshotGranularity.minute,
             source=SnapshotSource.import_event,
@@ -488,7 +523,11 @@ class ImportBatchPostProcessingService:
                 raise _runtime_error()
             validated = _validate_executor_result(
                 combined_result.snapshots,
-                command=canonical,
+                command=PostImportBatchCommand(
+                    principal=principal,
+                    account_id=account_id,
+                    batch_id=postings[0].batch_id,
+                ),
                 bucket=bucket,
                 version=version,
             )
@@ -510,9 +549,9 @@ class ImportBatchPostProcessingService:
             event = ImportLogEvent.snapshot_validation_failed
             level = ImportLogLevel.warning
             message = _FAILURE_MESSAGE
-        audits.append(
+        audits.extend(
             _audit(
-                posting=posting,
+                posting=item,
                 event=event,
                 level=level,
                 message=message,
@@ -520,9 +559,10 @@ class ImportBatchPostProcessingService:
                 version_marker=str(version),
                 outcome=outcome,
             )
+            for item in postings
         )
         await self._write_audits(audits)
-        return self._response(posting, status)
+        return status
 
     async def _write_audits(self, audits: list[_ExpectedAudit]) -> None:
         if not audits:

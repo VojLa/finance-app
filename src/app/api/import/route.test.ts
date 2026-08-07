@@ -2,7 +2,10 @@ import { getServerSession } from "next-auth"
 import { NextRequest } from "next/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { createPythonImportApi, runImportWorkflow } from "@/modules/imports/python/import-api"
+import {
+  createPythonImportApi,
+  runImportCanonicalWorkflow,
+} from "@/modules/imports/python/import-api"
 import * as anycoinRoute from "./anycoin/route"
 import * as collectionRoute from "./route"
 import * as raiffeisenbankRoute from "./raiffeisenbank/route"
@@ -18,13 +21,17 @@ vi.mock("@/lib/auth", () => ({
 }))
 
 vi.mock("@/modules/imports/python/import-api", () => ({
-  runImportWorkflow: vi.fn(),
+  runImportCanonicalWorkflow: vi.fn(),
   createPythonImportApi: vi.fn(),
 }))
 
 const getSession = vi.mocked(getServerSession)
-const runWorkflow = vi.mocked(runImportWorkflow)
+const runWorkflow = vi.mocked(runImportCanonicalWorkflow)
 const createApi = vi.mocked(createPythonImportApi)
+const finalizeBatches = vi.fn(async (_accountId: string, batchIds: readonly string[]) => ({
+  batch_ids: [...batchIds].sort(),
+  snapshot_refresh_status: batchIds.length === 0 ? ("not_required" as const) : ("created" as const),
+}))
 
 function completed(filename: string, batchId = `batch-${filename}`) {
   return {
@@ -114,6 +121,9 @@ beforeEach(() => {
     expires: "2036-01-01",
   })
   runWorkflow.mockImplementation(async (_identity, input) => completed(input.filename))
+  createApi.mockReturnValue({ finalizeImportBatches: finalizeBatches } as unknown as ReturnType<
+    typeof createPythonImportApi
+  >)
 })
 
 describe("POST /api/import", () => {
@@ -221,6 +231,12 @@ describe("POST /api/import", () => {
     })
     expect([...runWorkflow.mock.calls[0][1].bytes]).toEqual([0xef, 0xbb, 0xbf, 1])
     expect([...runWorkflow.mock.calls[1][1].bytes]).toEqual([2, 0x0d, 0x0a])
+    expect(finalizeBatches).toHaveBeenCalledTimes(1)
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", [
+      "batch-first.csv",
+      "batch-second.csv",
+    ])
+    expect((await response.clone().json()).snapshotRefreshStatus).toBe("created")
     expect(JSON.stringify(await response.json())).not.toMatch(
       /user-r4@example|Authorization|Cookie|token/
     )
@@ -253,6 +269,7 @@ describe("POST /api/import", () => {
         ["source", "trading212"],
         ["file", new File(["one"], "first.csv")],
         ["file", new File(["two"], "second.csv")],
+        ["file", new File(["three"], "third.csv")],
       ])
     )
     const body = await response.json()
@@ -261,11 +278,104 @@ describe("POST /api/import", () => {
     expect(body.partial.files.map((file: { filename: string }) => file.filename)).toEqual([
       "first.csv",
       "second.csv",
+      "third.csv",
     ])
     expect(body.partial.files[1]).toMatchObject({
       batchId: "batch-second",
       lastSuccessfulStage: "parsed",
     })
+    expect(body.partial.snapshotRefreshStatus).toBe("not_run")
+    expect(runWorkflow).toHaveBeenCalledTimes(3)
+    expect(finalizeBatches).not.toHaveBeenCalled()
+  })
+
+  it("continues past duplicate files and finalizes only persisted canonical batches", async () => {
+    runWorkflow
+      .mockResolvedValueOnce({
+        result: {
+          filename: "duplicate.csv",
+          status: "duplicate",
+          rowsTotal: 0,
+          rowsImported: 0,
+          rowsSkipped: 0,
+          rowsFailed: 0,
+          rowsNeedsReview: 0,
+          issues: { failed: 0, needsReview: 0 },
+          error: {
+            code: "import_batch_exists",
+            message: "This file was already imported.",
+          },
+        },
+      })
+      .mockResolvedValueOnce(completed("new.csv", "batch-new"))
+
+    const response = await collectionRoute.POST(
+      request([
+        ["accountId", "account-r4"],
+        ["source", "trading212"],
+        ["file", new File(["same"], "duplicate.csv")],
+        ["file", new File(["new"], "new.csv")],
+      ])
+    )
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      duplicateFiles: 1,
+      completedFiles: 1,
+      snapshotRefreshStatus: "created",
+    })
+    expect(finalizeBatches).toHaveBeenCalledOnce()
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-new"])
+  })
+
+  it("asks Python to classify an all-duplicate request as not required", async () => {
+    runWorkflow.mockResolvedValue({
+      result: {
+        filename: "duplicate.csv",
+        status: "duplicate",
+        rowsTotal: 0,
+        rowsImported: 0,
+        rowsSkipped: 0,
+        rowsFailed: 0,
+        rowsNeedsReview: 0,
+        issues: { failed: 0, needsReview: 0 },
+        error: {
+          code: "import_batch_exists",
+          message: "This file was already imported.",
+        },
+      },
+    })
+
+    const response = await collectionRoute.POST(
+      request([
+        ["accountId", "account-r4"],
+        ["source", "trading212"],
+        ["file", new File(["same"], "duplicate.csv")],
+      ])
+    )
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).snapshotRefreshStatus).toBe("not_required")
+    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", [])
+  })
+
+  it("reports committed canonical files when request-level finalization fails", async () => {
+    finalizeBatches.mockRejectedValueOnce(new Error("provider transport detail"))
+
+    const response = await collectionRoute.POST(request(validFields()))
+    const body = await response.json()
+
+    expect(response.status).toBe(502)
+    expect(body.error).toEqual({
+      code: "python_api_unavailable",
+      message: "The Python API is unavailable.",
+    })
+    expect(body.partial).toMatchObject({
+      completedFiles: 1,
+      snapshotRefreshStatus: "not_run",
+    })
+    expect(JSON.stringify(body)).not.toContain("provider transport detail")
   })
 })
 
@@ -288,6 +398,7 @@ describe("provider compatibility wrappers", () => {
     expect(response.status).toBe(200)
     expect(runWorkflow).toHaveBeenCalledTimes(1)
     expect(runWorkflow.mock.calls[0][1].source).toBe(source)
+    expect(finalizeBatches).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -14,11 +14,12 @@ import {
 import {
   isPythonImportSource,
   summarizeImportFiles,
+  withImportFinalization,
   type ImportApiErrorResponse,
   type ImportStatusResult,
   type PythonImportSource,
 } from "./import-contract"
-import { createPythonImportApi, runImportWorkflow } from "./import-api"
+import { createPythonImportApi, runImportCanonicalWorkflow } from "./import-api"
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 const MAX_FILES = 10
@@ -121,7 +122,7 @@ export async function handleImportPost(request: NextRequest, fixedSource?: Pytho
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer())
       executions.push(
-        await runImportWorkflow(identity, {
+        await runImportCanonicalWorkflow(identity, {
           accountId,
           source,
           filename: file.name,
@@ -140,13 +141,44 @@ export async function handleImportPost(request: NextRequest, fixedSource?: Pytho
               code: "python_api_contract_error",
               message: "The Python API returned an incompatible response.",
             }
-      const body: ImportApiErrorResponse = { error, partial: summary }
+      const body: ImportApiErrorResponse = {
+        error,
+        partial: withImportFinalization(summary, "not_run"),
+      }
       return NextResponse.json(body, {
         status: failed.errorStatus,
         headers: NO_STORE_HEADERS,
       })
     }
-    return NextResponse.json(summary, { headers: NO_STORE_HEADERS })
+    const batchIds = executions.flatMap((execution) =>
+      "batchId" in execution.result && execution.result.status !== "failed"
+        ? [execution.result.batchId]
+        : []
+    )
+    const expectedBatchIds = [...batchIds].sort()
+    let finalized
+    try {
+      finalized = await createPythonImportApi(identity).finalizeImportBatches(accountId, batchIds)
+    } catch (error) {
+      const mapped = toErrorResponse(normalizeAdapterError(error))
+      const body: ImportApiErrorResponse = {
+        error: mapped.body.error,
+        partial: withImportFinalization(summary, "not_run"),
+      }
+      return NextResponse.json(body, {
+        status: mapped.status,
+        headers: NO_STORE_HEADERS,
+      })
+    }
+    if (
+      finalized.batch_ids.length !== expectedBatchIds.length ||
+      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
+    ) {
+      throw contractError()
+    }
+    return NextResponse.json(withImportFinalization(summary, finalized.snapshot_refresh_status), {
+      headers: NO_STORE_HEADERS,
+    })
   } catch (error) {
     return safeAdapterResponse(error)
   }

@@ -122,6 +122,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/accounts/{account_id}/imports/finalize": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Finalize Import Batches */
+    post: operations["finalize_import_batches_api_v1_accounts__account_id__imports_finalize_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/accounts/{account_id}/imports/{batch_id}": {
     parameters: {
       query?: never
@@ -133,6 +150,23 @@ export interface paths {
     get: operations["get_import_batch_api_v1_accounts__account_id__imports__batch_id__get"]
     put?: never
     post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Canonical Post Import Batch */
+    post: operations["canonical_post_import_batch_api_v1_accounts__account_id__imports__batch_id__canonical_post_post"]
     delete?: never
     options?: never
     head?: never
@@ -922,6 +956,17 @@ export interface components {
        */
       timestamp: string
     }
+    /** FinalizeImportBatchesRequest */
+    FinalizeImportBatchesRequest: {
+      /** Batch Ids */
+      batch_ids: string[]
+    }
+    /** FinalizeImportBatchesResponse */
+    FinalizeImportBatchesResponse: {
+      /** Batch Ids */
+      batch_ids: string[]
+      snapshot_refresh_status: components["schemas"]["ImportSnapshotRefreshStatus"]
+    }
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -1013,6 +1058,25 @@ export interface components {
       /** Rows Total */
       rows_total: number | null
       source: components["schemas"]["ImportSource"]
+      status: components["schemas"]["ImportStatus"]
+    }
+    /** ImportCanonicalPostResponse */
+    ImportCanonicalPostResponse: {
+      /** Batch Id */
+      batch_id: string
+      /**
+       * Completed At
+       * Format: date-time
+       */
+      completed_at: string
+      /** Replayed */
+      replayed: boolean
+      /** Rows Imported */
+      rows_imported: number
+      /** Rows Skipped */
+      rows_skipped: number
+      /** Rows Total */
+      rows_total: number
       status: components["schemas"]["ImportStatus"]
     }
     /** ImportClassifyResponse */
@@ -1777,6 +1841,41 @@ export interface operations {
       }
     }
   }
+  finalize_import_batches_api_v1_accounts__account_id__imports_finalize_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["FinalizeImportBatchesRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["FinalizeImportBatchesResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   get_import_batch_api_v1_accounts__account_id__imports__batch_id__get: {
     parameters: {
       query?: never
@@ -1796,6 +1895,38 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["ImportBatchResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  canonical_post_import_batch_api_v1_accounts__account_id__imports__batch_id__canonical_post_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+        batch_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportCanonicalPostResponse"]
         }
       }
       /** @description Validation Error */

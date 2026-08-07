@@ -46,6 +46,8 @@ def test_python_api_inventory_contains_the_current_public_boundaries() -> None:
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/deduplicate"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/classify"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/post"),
+        ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post"),
+        ("POST", "/api/v1/accounts/{account_id}/imports/finalize"),
         ("POST", "/api/v1/snapshot-refresh/recalculate"),
         ("POST", "/api/v1/portfolio/snapshot"),
         ("POST", "/api/v1/dashboard/snapshot"),
@@ -90,7 +92,8 @@ def test_active_browser_boundaries_are_thin_python_adapters() -> None:
 
     assert "createAccount" in accounts
     assert "handleImportPost" in imports
-    assert "runImportWorkflow" in import_handler
+    assert "runImportCanonicalWorkflow" in import_handler
+    assert "finalizeImportBatches" in import_handler
     assert "runPortfolioSnapshotWorkflow" in portfolio
     assert "runDashboardSnapshotWorkflow" in dashboard
     assert "readSnapshotBackedPortfolioHistory" in history
@@ -119,9 +122,14 @@ def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> No
         assert command in frontend
 
 
-def test_release_roadmap_records_r8_implemented_and_r9_planned() -> None:
+def test_release_roadmap_records_r10a_and_remaining_release_work() -> None:
     roadmap = _source("ChatGPT/steps/0.1-remediation.md")
 
     assert "0.1-R8 — clean main scenario and frontend CI: implemented" in roadmap
-    assert "0.1-R9 — repeat final acceptance audit: planned" in roadmap
+    assert (
+        "0.1-R9 — repeat final acceptance audit: completed — NOT READY after "
+        "independent\n  scope review"
+    ) in roadmap
+    assert "0.1-R10-A — multi-file import post-processing closure: implemented" in roadmap
+    assert "0.1-R10-B — account-currency presentation: planned" in roadmap
     assert "Version 0.1 is not complete" in roadmap
