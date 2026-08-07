@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
 import type { PythonApiConfig } from "@/modules/python-api/server/config"
-import { runImportWorkflow } from "./import-api"
+import { runImportCanonicalWorkflow } from "./import-api"
 import type { PythonImportSource } from "./import-contract"
 
 const CONFIG: PythonApiConfig = {
@@ -121,7 +121,7 @@ function workflow(
   tokenIssuer = vi.fn(async () => "token-r4")
 ) {
   return {
-    result: runImportWorkflow(
+    result: runImportCanonicalWorkflow(
       IDENTITY,
       {
         accountId: "account-r4",
@@ -178,7 +178,7 @@ describe.each(["raiffeisenbank", "trading212", "anycoin"] as const)(
         "POST /base/api/v1/accounts/account-r4/imports/batch-r4/normalize",
         "POST /base/api/v1/accounts/account-r4/imports/batch-r4/deduplicate",
         "POST /base/api/v1/accounts/account-r4/imports/batch-r4/classify",
-        "POST /base/api/v1/accounts/account-r4/imports/batch-r4/post",
+        "POST /base/api/v1/accounts/account-r4/imports/batch-r4/canonical-post",
         "GET /base/api/v1/accounts/account-r4/imports/batch-r4",
       ])
       expect(tokenIssuer).toHaveBeenCalledTimes(8)
@@ -289,7 +289,6 @@ describe("import transport evidence", () => {
 
     expect(fetchImplementation).toHaveBeenCalledTimes(1)
     expect(execution).toEqual({
-      errorStatus: 409,
       result: {
         filename: "fixture.csv",
         status: "duplicate",

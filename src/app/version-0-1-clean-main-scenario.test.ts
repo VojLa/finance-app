@@ -30,7 +30,8 @@ describe("version 0.1 clean main browser call graph", () => {
     expect(accountRoute).toContain("createAccount")
     expect(accountAdapter).toContain('client.POST("/api/v1/accounts"')
     expect(importRoute).toContain("handleImportPost")
-    expect(importHandler).toContain("runImportWorkflow")
+    expect(importHandler).toContain("runImportCanonicalWorkflow")
+    expect(importHandler).toContain("finalizeImportBatches")
     for (const stage of [
       "createImportBatch",
       "uploadImportFile",

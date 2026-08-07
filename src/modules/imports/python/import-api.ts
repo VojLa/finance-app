@@ -22,8 +22,10 @@ import type {
   ImportWorkflowStage,
   PythonImportBatch,
   PythonImportBatchCreateRequest,
+  PythonImportCanonicalPostResponse,
   PythonImportClassifyResponse,
   PythonImportDeduplicateResponse,
+  PythonImportFinalizeResponse,
   PythonImportNormalizeResponse,
   PythonImportParseResponse,
   PythonImportPostResponse,
@@ -32,8 +34,10 @@ import type {
 } from "./import-contract"
 import {
   parseImportBatch,
+  parseImportCanonicalPost,
   parseImportClassify,
   parseImportDeduplicate,
+  parseImportFinalize,
   parseImportNormalize,
   parseImportParse,
   parseImportPost,
@@ -176,6 +180,33 @@ export function createPythonImportApi(
       return requireParsed(parseImportClassify, value)
     },
 
+    async canonicalPostImportBatch(
+      accountId: string,
+      batchId: string
+    ): Promise<PythonImportCanonicalPostResponse> {
+      const value = await responseData(
+        client.POST("/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post", {
+          params: { path: { account_id: accountId, batch_id: batchId } },
+        }),
+        mapImportPythonError
+      )
+      return requireParsed(parseImportCanonicalPost, value)
+    },
+
+    async finalizeImportBatches(
+      accountId: string,
+      batchIds: readonly string[]
+    ): Promise<PythonImportFinalizeResponse> {
+      const value = await responseData(
+        client.POST("/api/v1/accounts/{account_id}/imports/finalize", {
+          params: { path: { account_id: accountId } },
+          body: { batch_ids: [...batchIds] },
+        }),
+        mapImportPythonError
+      )
+      return requireParsed(parseImportFinalize, value)
+    },
+
     async postImportBatch(accountId: string, batchId: string): Promise<PythonImportPostResponse> {
       const value = await responseData(
         client.POST("/api/v1/accounts/{account_id}/imports/{batch_id}/post", {
@@ -215,7 +246,6 @@ function failedResult(
 ): ImportWorkflowExecution {
   if (!state.batchId && error.status === 409 && error.code === "import_batch_exists") {
     return {
-      errorStatus: 409,
       result: {
         filename: input.filename,
         status: "duplicate",
@@ -249,7 +279,7 @@ function failedResult(
   return { result, errorStatus: error.status }
 }
 
-export async function runImportWorkflow(
+export async function runImportCanonicalWorkflow(
   identity: ServerIdentity,
   input: ImportWorkflowInput,
   options: PythonApiClientOptions = {}
@@ -328,7 +358,7 @@ export async function runImportWorkflow(
     state.rowsFailed = classified.rows_failed
     state.rowsNeedsReview = classified.rows_needs_review
 
-    const posted = await api.postImportBatch(input.accountId, batch.id)
+    const posted = await api.canonicalPostImportBatch(input.accountId, batch.id)
     requireIdentity(batch.id, posted)
     state.lastSuccessfulStage = "posted"
     state.rowsTotal = posted.rows_total

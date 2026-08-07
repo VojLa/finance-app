@@ -47,6 +47,7 @@ describe("import page Python cutover", () => {
     expect(source).toContain('{ status: "error"; message: string }')
     expect(source).toContain('{ status: "idle" }')
     expect(source).toContain('{ status: "uploading"; completed: number; total: number }')
+    expect(source).toContain('{ status: "recovering"; result: ImportSummary }')
     expect(source).toContain('{ status: "completed"; result: ImportSummary }')
     expect(source).toContain('{ status: "error"; message: string; partial?: ImportSummary }')
     expect(source).toContain("safeError.partial")
@@ -61,6 +62,23 @@ describe("import page Python cutover", () => {
     expect(source).toContain("file.lastSuccessfulStage")
     expect(source).toContain("handleReset")
     expect(source).toContain('setPageState({ status: "idle" })')
+  })
+
+  it("offers persisted-batch recovery without uploading files again", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+    const recovery = source.slice(
+      source.indexOf("async function handleFinalizationRetry"),
+      source.indexOf("const isBusy")
+    )
+
+    expect(source).toContain("requiresImportFinalizationRecovery")
+    expect(source).toContain("Zkusit dokončit aktualizaci")
+    expect(source).toContain("Data byla zaúčtována")
+    expect(recovery).toContain("recoverableBatchIds(result)")
+    expect(recovery).toContain("requestImportFinalization(accountId, batchIds)")
+    expect(recovery).not.toContain("requestImport(")
+    expect(recovery).not.toContain("File")
+    expect(recovery).not.toContain("FormData")
   })
 
   it("has no preview request, status polling, timer, legacy parser, or raw account fetch", async () => {

@@ -6,8 +6,17 @@ import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
 import type { AccountPageModel } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
-import type { ImportSummary } from "@/modules/imports/python/import-contract"
-import { ImportClientError, requestImport } from "@/modules/imports/python/import-client"
+import {
+  recoverableBatchIds,
+  requiresImportFinalizationRecovery,
+  withImportFinalization,
+  type ImportSummary,
+} from "@/modules/imports/python/import-contract"
+import {
+  ImportClientError,
+  requestImport,
+  requestImportFinalization,
+} from "@/modules/imports/python/import-client"
 import { IMPORT_SOURCE_OPTIONS } from "@/modules/imports/python/import-sources"
 
 type AccountLoadState =
@@ -18,6 +27,7 @@ type AccountLoadState =
 type ImportPageState =
   | { status: "idle" }
   | { status: "uploading"; completed: number; total: number }
+  | { status: "recovering"; result: ImportSummary }
   | { status: "completed"; result: ImportSummary }
   | { status: "error"; message: string; partial?: ImportSummary }
 
@@ -89,9 +99,33 @@ function DropZone({ onFiles, files }: { onFiles: (files: File[]) => void; files:
   )
 }
 
-function ImportResult({ result }: { result: ImportSummary }) {
+function ImportResult({
+  result,
+  onRetry,
+  retrying = false,
+}: {
+  result: ImportSummary
+  onRetry?: () => void
+  retrying?: boolean
+}) {
+  const recoveryRequired = requiresImportFinalizationRecovery(result)
   return (
     <div className="space-y-3">
+      {recoveryRequired && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p>Data byla zaúčtována, ale aktualizaci portfolia se nepodařilo dokončit.</p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              className="mt-2 rounded-lg bg-amber-800 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {retrying ? "Dokončuji aktualizaci…" : "Zkusit dokončit aktualizaci"}
+            </button>
+          )}
+        </div>
+      )}
       <div
         className={`rounded-lg border px-4 py-3 text-sm ${
           result.failedFiles > 0
@@ -195,7 +229,8 @@ export default function ImportPage() {
       accountLoadState.status !== "ready" ||
       accountId.length === 0 ||
       files.length === 0 ||
-      pageState.status === "uploading"
+      pageState.status === "uploading" ||
+      pageState.status === "recovering"
     ) {
       return
     }
@@ -205,11 +240,19 @@ export default function ImportPage() {
       const result = await requestImport(accountId, source.value, files)
       setPageState({ status: "completed", result })
       setFiles([])
-      setToast({
-        kind: "success",
-        title: "Import dokončen",
-        message: `Dokončeno ${result.completedFiles} souborů.`,
-      })
+      if (requiresImportFinalizationRecovery(result)) {
+        setToast({
+          kind: "error",
+          title: "Aktualizace portfolia není dokončena",
+          message: "Import je zaúčtovaný a lze bezpečně zopakovat pouze jeho dokončení.",
+        })
+      } else {
+        setToast({
+          kind: "success",
+          title: "Import dokončen",
+          message: `Dokončeno ${result.completedFiles} souborů.`,
+        })
+      }
     } catch (error) {
       const safeError =
         error instanceof ImportClientError
@@ -228,11 +271,51 @@ export default function ImportPage() {
     }
   }
 
+  async function handleFinalizationRetry(result: ImportSummary) {
+    const batchIds = recoverableBatchIds(result)
+    if (accountId.length === 0 || batchIds.length === 0 || pageState.status === "recovering") {
+      return
+    }
+    setPageState({ status: "recovering", result })
+    setToast(null)
+    try {
+      const finalized = await requestImportFinalization(accountId, batchIds)
+      const recovered = withImportFinalization(result, finalized.snapshotRefreshStatus)
+      setPageState({ status: "completed", result: recovered })
+      if (requiresImportFinalizationRecovery(recovered)) {
+        setToast({
+          kind: "error",
+          title: "Aktualizace portfolia není dokončena",
+          message: "Zaúčtovaná data zůstávají bezpečně dostupná pro další pokus.",
+        })
+      } else {
+        setToast({
+          kind: "success",
+          title: "Aktualizace portfolia dokončena",
+          message: "Zaúčtovaná data byla úspěšně promítnuta do portfolia.",
+        })
+      }
+    } catch (error) {
+      const safeError =
+        error instanceof ImportClientError
+          ? error
+          : new ImportClientError(502, "python_api_unavailable", "Import API není dostupné.")
+      setPageState({
+        status: "error",
+        message: safeError.message,
+        partial: withImportFinalization(result, "not_run"),
+      })
+      setToast({
+        kind: "error",
+        title: "Aktualizaci portfolia se nepodařilo dokončit",
+        message: safeError.message,
+      })
+    }
+  }
+
+  const isBusy = pageState.status === "uploading" || pageState.status === "recovering"
   const canImport =
-    accountLoadState.status === "ready" &&
-    accountId.length > 0 &&
-    files.length > 0 &&
-    pageState.status !== "uploading"
+    accountLoadState.status === "ready" && accountId.length > 0 && files.length > 0 && !isBusy
 
   return (
     <div className="max-w-2xl">
@@ -259,7 +342,7 @@ export default function ImportPage() {
                 key={candidate.value}
                 type="button"
                 onClick={() => handleSourceChange(candidate)}
-                disabled={pageState.status === "uploading"}
+                disabled={isBusy}
                 className={`rounded-lg border px-4 py-2 text-sm font-medium ${
                   source.value === candidate.value
                     ? "border-blue-600 bg-blue-600 text-white"
@@ -286,7 +369,7 @@ export default function ImportPage() {
           ) : (
             <select
               value={accountId}
-              disabled={pageState.status === "uploading"}
+              disabled={isBusy}
               onChange={(event) => {
                 setAccountId(event.target.value)
                 resetResult()
@@ -318,13 +401,33 @@ export default function ImportPage() {
             Zpracovávám {pageState.total} souborů přes Python API…
           </p>
         )}
+        {pageState.status === "recovering" && (
+          <p className="text-sm text-blue-700">Dokončuji aktualizaci portfolia přes Python API…</p>
+        )}
         {pageState.status === "error" && (
           <div className="space-y-3">
             <p className="text-sm text-red-700">{pageState.message}</p>
-            {pageState.partial && <ImportResult result={pageState.partial} />}
+            {pageState.partial && (
+              <ImportResult
+                result={pageState.partial}
+                onRetry={() => handleFinalizationRetry(pageState.partial!)}
+              />
+            )}
           </div>
         )}
-        {pageState.status === "completed" && <ImportResult result={pageState.result} />}
+        {pageState.status === "recovering" && (
+          <ImportResult
+            result={pageState.result}
+            onRetry={() => handleFinalizationRetry(pageState.result)}
+            retrying
+          />
+        )}
+        {pageState.status === "completed" && (
+          <ImportResult
+            result={pageState.result}
+            onRetry={() => handleFinalizationRetry(pageState.result)}
+          />
+        )}
 
         <div className="flex gap-2">
           <button
@@ -333,8 +436,10 @@ export default function ImportPage() {
             disabled={!canImport}
             className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            {pageState.status === "uploading"
-              ? "Importuji…"
+            {isBusy
+              ? pageState.status === "recovering"
+                ? "Dokončuji…"
+                : "Importuji…"
               : files.length > 1
                 ? `Importovat ${files.length} souborů`
                 : "Importovat"}
@@ -345,7 +450,7 @@ export default function ImportPage() {
             <button
               type="button"
               onClick={handleReset}
-              disabled={pageState.status === "uploading"}
+              disabled={isBusy}
               className="rounded-lg border border-gray-300 px-4 py-2 text-sm"
             >
               Reset

@@ -7,6 +7,9 @@ export type PythonImportParseResponse = components["schemas"]["ImportParseRespon
 export type PythonImportNormalizeResponse = components["schemas"]["ImportNormalizeResponse"]
 export type PythonImportDeduplicateResponse = components["schemas"]["ImportDeduplicateResponse"]
 export type PythonImportClassifyResponse = components["schemas"]["ImportClassifyResponse"]
+export type PythonImportCanonicalPostResponse = components["schemas"]["ImportCanonicalPostResponse"]
+export type PythonImportFinalizeRequest = components["schemas"]["FinalizeImportBatchesRequest"]
+export type PythonImportFinalizeResponse = components["schemas"]["FinalizeImportBatchesResponse"]
 export type PythonImportPostResponse = components["schemas"]["ImportPostResponse"]
 export type PythonImportSource = Extract<
   components["schemas"]["ImportSource"],
@@ -86,7 +89,11 @@ export type ImportFileResult =
   | DuplicateImportFileResult
   | FailedImportFileResult
 
-export type ImportSummary = {
+export type ImportFinalizationStatus =
+  | PythonImportFinalizeResponse["snapshot_refresh_status"]
+  | "not_run"
+
+export type ImportFilesSummary = {
   files: ImportFileResult[]
   rowsTotal: number
   rowsImported: number
@@ -96,6 +103,20 @@ export type ImportSummary = {
   completedFiles: number
   duplicateFiles: number
   failedFiles: number
+}
+
+export type ImportSummary = ImportFilesSummary & {
+  snapshotRefreshStatus: ImportFinalizationStatus
+}
+
+export type ImportFinalizationRequest = {
+  accountId: string
+  batchIds: string[]
+}
+
+export type ImportFinalizationResult = {
+  batchIds: string[]
+  snapshotRefreshStatus: PythonImportFinalizeResponse["snapshot_refresh_status"]
 }
 
 export type ImportApiErrorResponse = {
@@ -298,8 +319,55 @@ export function parseImportPost(value: unknown): PythonImportPostResponse {
   }
 }
 
-export function summarizeImportFiles(files: readonly ImportFileResult[]): ImportSummary {
-  return files.reduce<ImportSummary>(
+export function parseImportCanonicalPost(value: unknown): PythonImportCanonicalPostResponse {
+  if (!isPlainObject(value)) throw new TypeError("Invalid canonical post response")
+  const completedAt = stringField(value, "completed_at")
+  if (Number.isNaN(Date.parse(completedAt)) || typeof value.replayed !== "boolean") {
+    throw new TypeError("Invalid canonical post response")
+  }
+  return {
+    batch_id: stringField(value, "batch_id"),
+    status: importStatus(value.status),
+    rows_total: countField(value, "rows_total"),
+    rows_imported: countField(value, "rows_imported"),
+    rows_skipped: countField(value, "rows_skipped"),
+    completed_at: completedAt,
+    replayed: value.replayed,
+  }
+}
+
+const SNAPSHOT_REFRESH_STATUSES = [
+  "created",
+  "replayed",
+  "not_required",
+  "unavailable",
+  "conflict",
+] as const satisfies readonly PythonImportFinalizeResponse["snapshot_refresh_status"][]
+
+export function parseImportFinalize(value: unknown): PythonImportFinalizeResponse {
+  if (
+    !isPlainObject(value) ||
+    !Array.isArray(value.batch_ids) ||
+    value.batch_ids.some(
+      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId.trim() !== batchId
+    ) ||
+    new Set(value.batch_ids).size !== value.batch_ids.length ||
+    typeof value.snapshot_refresh_status !== "string" ||
+    !SNAPSHOT_REFRESH_STATUSES.includes(
+      value.snapshot_refresh_status as PythonImportFinalizeResponse["snapshot_refresh_status"]
+    )
+  ) {
+    throw new TypeError("Invalid import finalization response")
+  }
+  return {
+    batch_ids: value.batch_ids,
+    snapshot_refresh_status:
+      value.snapshot_refresh_status as PythonImportFinalizeResponse["snapshot_refresh_status"],
+  }
+}
+
+export function summarizeImportFiles(files: readonly ImportFileResult[]): ImportFilesSummary {
+  return files.reduce<ImportFilesSummary>(
     (summary, file) => ({
       files: [...summary.files, file],
       rowsTotal: summary.rowsTotal + file.rowsTotal,
@@ -325,6 +393,72 @@ export function summarizeImportFiles(files: readonly ImportFileResult[]): Import
       failedFiles: 0,
     }
   )
+}
+
+export function withImportFinalization(
+  summary: ImportFilesSummary,
+  snapshotRefreshStatus: ImportFinalizationStatus
+): ImportSummary {
+  return { ...summary, snapshotRefreshStatus }
+}
+
+export function recoverableBatchIds(summary: ImportSummary): string[] {
+  return summary.files
+    .flatMap((file) => {
+      if (file.status === "completed" || file.status === "partially_completed") {
+        return [file.batchId]
+      }
+      if (
+        file.status === "failed" &&
+        file.lastSuccessfulStage === "posted" &&
+        file.batchId !== undefined
+      ) {
+        return [file.batchId]
+      }
+      return []
+    })
+    .sort()
+}
+
+export function requiresImportFinalizationRecovery(summary: ImportSummary): boolean {
+  return (
+    recoverableBatchIds(summary).length > 0 &&
+    ["not_run", "unavailable", "conflict"].includes(summary.snapshotRefreshStatus)
+  )
+}
+
+export function parseImportFinalizationResult(value: unknown): ImportFinalizationResult {
+  if (
+    !isPlainObject(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "batchIds") ||
+    !Object.hasOwn(value, "snapshotRefreshStatus") ||
+    !Array.isArray(value.batchIds)
+  ) {
+    throw new TypeError("Invalid import finalization result")
+  }
+  const batchIds = value.batchIds
+  const snapshotRefreshStatus = value.snapshotRefreshStatus
+  if (
+    batchIds.length === 0 ||
+    batchIds.length > 10 ||
+    batchIds.some(
+      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId.trim() !== batchId
+    ) ||
+    new Set(batchIds).size !== batchIds.length ||
+    batchIds.some((batchId, index) => index > 0 && batchId < batchIds[index - 1]) ||
+    typeof snapshotRefreshStatus !== "string" ||
+    !SNAPSHOT_REFRESH_STATUSES.includes(
+      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"]
+    )
+  ) {
+    throw new TypeError("Invalid import finalization result")
+  }
+  return {
+    batchIds,
+    snapshotRefreshStatus:
+      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"],
+  }
 }
 
 export function isImportApiErrorResponse(value: unknown): value is ImportApiErrorResponse {
@@ -441,5 +575,14 @@ export function parseImportSummary(value: unknown): ImportSummary {
       throw new TypeError(`Invalid ${key}`)
     }
   }
-  return projected
+  const finalizationStatus = stringField(value, "snapshotRefreshStatus")
+  if (
+    finalizationStatus !== "not_run" &&
+    !SNAPSHOT_REFRESH_STATUSES.includes(
+      finalizationStatus as PythonImportFinalizeResponse["snapshot_refresh_status"]
+    )
+  ) {
+    throw new TypeError("Invalid snapshotRefreshStatus")
+  }
+  return withImportFinalization(projected, finalizationStatus as ImportFinalizationStatus)
 }

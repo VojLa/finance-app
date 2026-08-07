@@ -14,11 +14,14 @@ import {
 import {
   isPythonImportSource,
   summarizeImportFiles,
+  withImportFinalization,
   type ImportApiErrorResponse,
+  type ImportFinalizationRequest,
+  type ImportFinalizationResult,
   type ImportStatusResult,
   type PythonImportSource,
 } from "./import-contract"
-import { createPythonImportApi, runImportWorkflow } from "./import-api"
+import { createPythonImportApi, runImportCanonicalWorkflow } from "./import-api"
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 const MAX_FILES = 10
@@ -94,6 +97,39 @@ function parseFiles(formData: FormData): File[] {
   return files
 }
 
+function parseFinalizationRequest(value: unknown): ImportFinalizationRequest {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw validationError()
+  }
+  const record = value as Record<string, unknown>
+  if (
+    Object.keys(record).length !== 2 ||
+    !Object.hasOwn(record, "accountId") ||
+    !Object.hasOwn(record, "batchIds") ||
+    typeof record.accountId !== "string" ||
+    record.accountId.length === 0 ||
+    record.accountId !== record.accountId.trim() ||
+    !Array.isArray(record.batchIds) ||
+    record.batchIds.length === 0 ||
+    record.batchIds.length > MAX_FILES ||
+    record.batchIds.some(
+      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId !== batchId.trim()
+    ) ||
+    new Set(record.batchIds).size !== record.batchIds.length
+  ) {
+    throw validationError()
+  }
+  return {
+    accountId: record.accountId,
+    batchIds: record.batchIds,
+  }
+}
+
 export async function handleImportPost(request: NextRequest, fixedSource?: PythonImportSource) {
   const session = await getServerSession(authOptions)
   if (!session?.user || session.user.id.trim().length === 0) {
@@ -121,7 +157,7 @@ export async function handleImportPost(request: NextRequest, fixedSource?: Pytho
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer())
       executions.push(
-        await runImportWorkflow(identity, {
+        await runImportCanonicalWorkflow(identity, {
           accountId,
           source,
           filename: file.name,
@@ -140,13 +176,80 @@ export async function handleImportPost(request: NextRequest, fixedSource?: Pytho
               code: "python_api_contract_error",
               message: "The Python API returned an incompatible response.",
             }
-      const body: ImportApiErrorResponse = { error, partial: summary }
+      const body: ImportApiErrorResponse = {
+        error,
+        partial: withImportFinalization(summary, "not_run"),
+      }
       return NextResponse.json(body, {
         status: failed.errorStatus,
         headers: NO_STORE_HEADERS,
       })
     }
-    return NextResponse.json(summary, { headers: NO_STORE_HEADERS })
+    const batchIds = executions.flatMap((execution) =>
+      "batchId" in execution.result && execution.result.status !== "failed"
+        ? [execution.result.batchId]
+        : []
+    )
+    const expectedBatchIds = [...batchIds].sort()
+    let finalized
+    try {
+      finalized = await createPythonImportApi(identity).finalizeImportBatches(accountId, batchIds)
+    } catch (error) {
+      const mapped = toErrorResponse(normalizeAdapterError(error))
+      const body: ImportApiErrorResponse = {
+        error: mapped.body.error,
+        partial: withImportFinalization(summary, "not_run"),
+      }
+      return NextResponse.json(body, {
+        status: mapped.status,
+        headers: NO_STORE_HEADERS,
+      })
+    }
+    if (
+      finalized.batch_ids.length !== expectedBatchIds.length ||
+      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
+    ) {
+      throw contractError()
+    }
+    return NextResponse.json(withImportFinalization(summary, finalized.snapshot_refresh_status), {
+      headers: NO_STORE_HEADERS,
+    })
+  } catch (error) {
+    return safeAdapterResponse(error)
+  }
+}
+
+export async function handleImportFinalize(request: NextRequest) {
+  const session = await getServerSession(authOptions)
+  if (!session?.user || session.user.id.trim().length === 0) {
+    return authenticationRequired()
+  }
+  try {
+    let value: unknown
+    try {
+      value = await request.json()
+    } catch {
+      throw validationError()
+    }
+    const input = parseFinalizationRequest(value)
+    const expectedBatchIds = [...input.batchIds].sort()
+    const finalized = await createPythonImportApi({
+      userId: session.user.id,
+      email: session.user.email || undefined,
+    }).finalizeImportBatches(input.accountId, input.batchIds)
+    if (
+      finalized.batch_ids.length !== expectedBatchIds.length ||
+      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
+    ) {
+      throw contractError()
+    }
+    return NextResponse.json(
+      {
+        batchIds: finalized.batch_ids,
+        snapshotRefreshStatus: finalized.snapshot_refresh_status,
+      } satisfies ImportFinalizationResult,
+      { headers: NO_STORE_HEADERS }
+    )
   } catch (error) {
     return safeAdapterResponse(error)
   }
