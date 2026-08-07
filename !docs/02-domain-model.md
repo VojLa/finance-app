@@ -1077,3 +1077,37 @@ replaying canonical state and converging through the existing immutable
 Holding, market, AccountSnapshot, and NetWorthSnapshot contracts. Files that
 failed before canonical posting and ordinary historical duplicates do not
 produce a recovery identity.
+
+## Account-currency presentation evidence
+
+`Account.currency` is the intended denomination for primary account-level
+presentation. It is distinct from `User.baseCurrency`, which owns the current
+aggregate AccountSnapshot set, NetWorthSnapshot, portfolio aggregate,
+dashboard global summary, and history.
+
+The current physical AccountSnapshot contract does not store both
+denominations. Its `currency` and scalar MONEY fields are the snapshot output
+currency. Original/native components are preserved in selected
+`*ByCurrency` JSONB fields, while `AccountSnapshotItem.value` and `costBasis`
+are also output-currency values. Native item value and cost fields remain
+component evidence rather than a complete account summary.
+
+The calculation result includes `liabilities_value_by_currency` and verifies
+it against the selected liability balance and direct output conversion.
+Persistence uses that tuple for an audit, then omits it from
+`ExpectedAccountSnapshotRow`; the physical AccountSnapshot table has no
+`liabilitiesValueByCurrency` column. This makes an exact liability
+account-currency read impossible from the persisted snapshot.
+
+For mixed-native investment accounts, persisted snapshot rates contain only
+the direct pairs consumed by the output-currency valuation. An EUR account
+inside a CZK user snapshot can therefore contain `USD -> CZK` and
+`EUR -> CZK`, but no `USD -> EUR`. Original-currency breakdowns cannot be
+treated as account-currency totals, and the read layer must not infer an
+inverse or cross rate.
+
+R10-B's representability gate is consequently NOT READY. The planned R10-B1
+remediation must establish complete write-time account-currency summary
+evidence, persist liability-native evidence, and define an explicit supported
+FX contract. Until then, account-level public scalar values remain accurately
+identified as output-currency values rather than being relabeled.
