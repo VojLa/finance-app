@@ -190,7 +190,7 @@ describe("in-process dashboard browser flow", () => {
     expect(model.accounts).toBe(state.data.accounts)
     expect(model.assetTypeAllocations).toBe(state.data.assetTypeAllocations)
     expect(model.topPositions).toBe(state.data.topPositions)
-    expect(model.summary.totalValue).toBe("98765432109876543210.123456")
+    expect(model.summary.totalValue).toBe("999999999999.123456")
     expect(model.accounts.map(({ accountId }) => accountId)).toEqual(["account-z", "account-a"])
     expect(model.topPositions.map(({ symbol }) => symbol)).toEqual(["ZZZ", "AAA"])
   })

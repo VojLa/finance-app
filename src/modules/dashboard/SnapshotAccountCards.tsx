@@ -31,24 +31,24 @@ export function SnapshotAccountCards({ model }: Props) {
               <div>
                 <dt className="text-xs text-gray-400">Celkem</dt>
                 <dd className="font-medium">
-                  {formatSnapshotAmount(account.totalValue, account.outputCurrency)}
+                  {formatSnapshotAmount(account.totalValue, account.accountCurrency)}
                 </dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-400">Hotovost</dt>
-                <dd>{formatSnapshotAmount(account.cashValue, account.outputCurrency)}</dd>
+                <dd>{formatSnapshotAmount(account.cashValue, account.accountCurrency)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-400">Investice</dt>
-                <dd>{formatSnapshotAmount(account.investmentValue, account.outputCurrency)}</dd>
+                <dd>{formatSnapshotAmount(account.investmentValue, account.accountCurrency)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-400">Závazky</dt>
-                <dd>{formatSnapshotAmount(account.liabilitiesValue, account.outputCurrency)}</dd>
+                <dd>{formatSnapshotAmount(account.liabilitiesValue, account.accountCurrency)}</dd>
               </div>
               <div className="col-span-2">
                 <dt className="text-xs text-gray-400">Nerealizované P/L</dt>
-                <dd>{formatSnapshotAmount(account.unrealizedPnlValue, account.outputCurrency)}</dd>
+                <dd>{formatSnapshotAmount(account.unrealizedPnlValue, account.accountCurrency)}</dd>
               </div>
             </dl>
           </article>

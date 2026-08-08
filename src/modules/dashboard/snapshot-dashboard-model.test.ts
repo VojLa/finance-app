@@ -19,10 +19,15 @@ describe("snapshot dashboard model", () => {
     expect(model.accounts).toBe(dashboardSnapshotFixture.accounts)
     expect(model.assetTypeAllocations).toBe(dashboardSnapshotFixture.assetTypeAllocations)
     expect(model.topPositions).toBe(dashboardSnapshotFixture.topPositions)
-    expect(model.summary.totalValue).toBe("98765432109876543210.123456")
+    expect(model.summary.totalValue).toBe("999999999999.123456")
     expect(model.summary.liabilitiesValue).toBe("-789.876545")
     expect(model.summary.realizedPnlValue).toBe("-0.000001")
     expect(model.accounts.map(({ accountId }) => accountId)).toEqual(["account-z", "account-a"])
+    expect(model.accounts[0]?.primarySnapshotId).toBe("snapshot-z")
+    expect(model.accounts[0]?.snapshotId).toBe("snapshot-z-usd")
+    expect(model.accounts[0]?.accountCurrency).toBe("USD")
+    expect(model.accounts[0]?.outputCurrency).toBe("USD")
+    expect(model.currency).toBe("CZK")
     expect(model.assetTypeAllocations.map(({ assetType }) => assetType)).toEqual([
       "crypto",
       "stock",

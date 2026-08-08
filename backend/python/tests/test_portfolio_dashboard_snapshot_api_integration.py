@@ -528,7 +528,7 @@ async def test_corrupt_item_listing_asset_graph_returns_generic_409() -> None:
 
 
 @pytest.mark.asyncio
-async def test_nonrepresentable_dashboard_percentage_returns_generic_409() -> None:
+async def test_repeating_dashboard_percentage_uses_exact_largest_remainder() -> None:
     prefix = _prefix("5lf-percentage")
     await _cleanup(prefix)
     try:
@@ -548,9 +548,11 @@ async def test_nonrepresentable_dashboard_percentage_returns_generic_409() -> No
 
         response = _call(DASHBOARD_PATH, user_id, _body(accounts))
 
-        assert response.status_code == 409
-        assert response.json()["error"]["code"] == "portfolio_snapshot_unavailable"
-        assert all(account_id not in response.text for account_id in accounts)
+        assert response.status_code == 200
+        assert [position["allocationPct"] for position in response.json()["topPositions"]] == [
+            "66.6667",
+            "33.3333",
+        ]
     finally:
         await _cleanup(prefix)
 

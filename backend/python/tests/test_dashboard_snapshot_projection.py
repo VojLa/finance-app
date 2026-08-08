@@ -23,7 +23,10 @@ from app.modules.dashboard_snapshot.projection import (
     DashboardSnapshotProjectionError,
     build_dashboard_snapshot_view,
 )
-from app.modules.portfolio_snapshot.aggregate_models import MultiAccountPortfolioView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.models import (
     AccountType,
@@ -277,6 +280,7 @@ def test_account_cards_copy_exact_account_scoped_values() -> None:
         DashboardAccountCard(
             account_id="broker",
             snapshot_id="broker-snapshot",
+            primary_snapshot_id="broker-snapshot",
             name="Broker Alpha",
             account_type=AccountType.broker,
             account_currency="CZK",
@@ -289,6 +293,55 @@ def test_account_cards_copy_exact_account_scoped_values() -> None:
             position_count=1,
         ),
     )
+
+
+def test_account_cards_use_companion_while_global_finance_uses_primary() -> None:
+    portfolio = _portfolio(
+        _source(
+            "broker",
+            account_currency="USD",
+            output_currency="EUR",
+            value="100",
+            cost="80",
+            cash="0",
+        )
+    )
+    primary = portfolio.accounts[0]
+    presentation_position = replace(
+        primary.positions[0],
+        value=_money("25"),
+        value_currency="USD",
+        cost_basis=_quantity("20"),
+        cost_currency="USD",
+        unrealized_pnl=_quantity("5"),
+    )
+    presentation = AccountPortfolioPresentationView(
+        primary_snapshot_id=primary.snapshot_id,
+        presentation_snapshot_id="broker-usd-snapshot",
+        currency="USD",
+        account=primary.account,
+        source=primary.source,
+        summary=replace(
+            primary.summary,
+            investment_value=_money("25"),
+            investment_cost_basis=_money("20"),
+            total_value=_money("25"),
+            unrealized_pnl_value=_money("5"),
+        ),
+        positions=(presentation_position,),
+    )
+
+    result = build_dashboard_snapshot_view(portfolio, (presentation,))
+
+    assert result.currency == "EUR"
+    assert result.summary.investment_value == _money("100")
+    assert result.asset_type_allocations[0].value == _money("100")
+    assert result.top_positions[0].value == _money("100")
+    assert result.top_positions[0].value_currency == "EUR"
+    assert result.accounts[0].snapshot_id == "broker-usd-snapshot"
+    assert result.accounts[0].primary_snapshot_id == primary.snapshot_id
+    assert result.accounts[0].output_currency == "USD"
+    assert result.accounts[0].investment_value == _money("25")
 
 
 def test_different_account_currencies_and_snapshot_sources_are_preserved_upstream() -> None:
@@ -782,7 +835,7 @@ def test_projection_is_synchronous_with_one_pure_input() -> None:
     signature = inspect.signature(build_dashboard_snapshot_view)
 
     assert not inspect.iscoroutinefunction(build_dashboard_snapshot_view)
-    assert tuple(signature.parameters) == ("portfolio",)
+    assert tuple(signature.parameters) == ("portfolio", "account_presentations")
     assert signature.return_annotation == "DashboardSnapshotView"
 
 

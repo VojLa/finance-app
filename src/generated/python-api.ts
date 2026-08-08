@@ -824,6 +824,8 @@ export interface components {
       outputCurrency: string
       /** Positioncount */
       positionCount: number
+      /** Primarysnapshotid */
+      primarySnapshotId: string
       /** Snapshotid */
       snapshotId: string
       /** Totalvalue */
@@ -1211,17 +1213,36 @@ export interface components {
     /** MultiAccountPortfolioAccountResponse */
     MultiAccountPortfolioAccountResponse: {
       account: components["schemas"]["PortfolioSnapshotAccountResponse"]
+      /** Currency */
+      currency: string
       /** Positions */
       positions: components["schemas"]["PortfolioSnapshotPositionResponse"][]
+      /** Primarysnapshotid */
+      primarySnapshotId: string
       /** Snapshotid */
       snapshotId: string
       source: components["schemas"]["SnapshotSource"]
       summary: components["schemas"]["PortfolioSnapshotSummaryResponse"]
     }
+    /**
+     * MultiAccountPortfolioAggregatePositionResponse
+     * @description One primary-currency position with its account presentation context.
+     */
+    MultiAccountPortfolioAggregatePositionResponse: {
+      /** Accountcurrency */
+      accountCurrency: string
+      /** Accountid */
+      accountId: string
+      /** Accountname */
+      accountName: string
+      position: components["schemas"]["PortfolioSnapshotPositionResponse"]
+    }
     /** MultiAccountPortfolioResponse */
     MultiAccountPortfolioResponse: {
       /** Accounts */
       accounts: components["schemas"]["MultiAccountPortfolioAccountResponse"][]
+      /** Aggregatepositions */
+      aggregatePositions: components["schemas"]["MultiAccountPortfolioAggregatePositionResponse"][]
       /** Calculationversion */
       calculationVersion: number
       /** Currency */

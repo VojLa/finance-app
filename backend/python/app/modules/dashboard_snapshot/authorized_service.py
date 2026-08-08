@@ -12,7 +12,10 @@ from app.modules.dashboard_snapshot.projection import (
     DashboardSnapshotProjectionError,
     build_dashboard_snapshot_view,
 )
-from app.modules.portfolio_snapshot.aggregate_models import MultiAccountPortfolioView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.authorized_reader import (
     PortfolioSnapshotUnavailableError,
     portfolio_snapshot_unavailable,
@@ -37,7 +40,10 @@ class _PortfolioService(Protocol):
     ) -> ReadAuthorizedMultiAccountPortfolioSnapshotResult: ...
 
 
-type DashboardBuilder = Callable[[MultiAccountPortfolioView], DashboardSnapshotView]
+type DashboardBuilder = Callable[
+    [MultiAccountPortfolioView, tuple[AccountPortfolioPresentationView, ...]],
+    DashboardSnapshotView,
+]
 
 
 class AuthorizedDashboardSnapshotService:
@@ -60,7 +66,10 @@ class AuthorizedDashboardSnapshotService:
             result = await self.portfolio_service.read(command)
             if type(result) is not ReadAuthorizedMultiAccountPortfolioSnapshotResult:
                 raise portfolio_snapshot_unavailable()
-            dashboard = self.dashboard_builder(result.portfolio)
+            dashboard = self.dashboard_builder(
+                result.portfolio,
+                result.account_presentations,
+            )
             if type(dashboard) is not DashboardSnapshotView:
                 raise portfolio_snapshot_unavailable()
             return ReadAuthorizedDashboardSnapshotResult(dashboard=dashboard)

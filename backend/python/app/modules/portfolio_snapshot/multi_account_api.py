@@ -15,9 +15,46 @@ from app.modules.portfolio_snapshot.multi_account_service import (
     AuthorizedMultiAccountPortfolioSnapshotService,
     ExactAccountSnapshotSelection,
     ReadAuthorizedMultiAccountPortfolioSnapshotCommand,
+    ReadAuthorizedMultiAccountPortfolioSnapshotResult,
 )
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio-snapshot"])
+
+
+def build_multi_account_portfolio_response(
+    result: ReadAuthorizedMultiAccountPortfolioSnapshotResult,
+) -> MultiAccountPortfolioResponse:
+    """Map primary aggregate and account presentations without mixing currencies."""
+
+    return MultiAccountPortfolioResponse(
+        timestamp=result.portfolio.timestamp,
+        granularity=result.portfolio.granularity,
+        currency=result.portfolio.currency,
+        calculation_version=result.portfolio.calculation_version,
+        summary=result.portfolio.summary,
+        accounts=tuple(
+            {
+                "snapshot_id": account.presentation_snapshot_id,
+                "primary_snapshot_id": account.primary_snapshot_id,
+                "currency": account.currency,
+                "account": account.account,
+                "source": account.source,
+                "summary": account.summary,
+                "positions": account.positions,
+            }
+            for account in result.account_presentations
+        ),
+        aggregate_positions=tuple(
+            {
+                "account_id": account.account.account_id,
+                "account_name": account.account.name,
+                "account_currency": account.account.currency,
+                "position": position,
+            }
+            for account in result.portfolio.accounts
+            for position in account.positions
+        ),
+    )
 
 
 def get_authorized_multi_account_portfolio_snapshot_service(
@@ -55,7 +92,4 @@ async def read_multi_account_portfolio_snapshot(
             ),
         )
     )
-    return MultiAccountPortfolioResponse.model_validate(
-        result.portfolio,
-        from_attributes=True,
-    )
+    return build_multi_account_portfolio_response(result)

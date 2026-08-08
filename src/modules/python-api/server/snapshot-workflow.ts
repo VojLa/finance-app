@@ -20,6 +20,11 @@ type ValidatedRefresh = {
   manifest: ExactPortfolioSnapshotManifest | null
 }
 
+const CURRENCY = /^[A-Z]{3}$/
+const MONEY = /^-?(?:0|[1-9]\d{0,11})\.\d{6}$/
+const QUANTITY = /^-?(?:0|[1-9]\d{0,17})\.\d{10}$/
+const PERCENTAGE = /^(?:0|[1-9]\d{0,3})\.\d{4}$/
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -38,6 +43,112 @@ function nonNegativeInteger(value: unknown): value is number {
 
 function positiveInteger(value: unknown): value is number {
   return nonNegativeInteger(value) && value > 0
+}
+
+function currency(value: unknown): value is string {
+  return typeof value === "string" && CURRENCY.test(value)
+}
+
+function exactDecimal(value: unknown, pattern: RegExp): value is string {
+  return typeof value === "string" && pattern.test(value)
+}
+
+function validateCurrencyAmounts(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw contractError()
+  }
+  const currencies = new Set<string>()
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      !currency(item.currency) ||
+      !exactDecimal(item.amount, MONEY) ||
+      currencies.has(item.currency)
+    ) {
+      throw contractError()
+    }
+    currencies.add(item.currency)
+  }
+}
+
+function validatePortfolioSummary(value: unknown, positionCount: number): void {
+  if (!isRecord(value) || value.positionCount !== positionCount) {
+    throw contractError()
+  }
+  const moneyFields = [
+    "cashValue",
+    "investmentValue",
+    "investmentCostBasis",
+    "liabilitiesValue",
+    "totalValue",
+    "netDepositsValue",
+    "realizedPnlValue",
+    "unrealizedPnlValue",
+    "feesValue",
+    "taxesValue",
+  ] as const
+  if (moneyFields.some((field) => !exactDecimal(value[field], MONEY))) {
+    throw contractError()
+  }
+  validateCurrencyAmounts(value.cashByCurrency)
+  validateCurrencyAmounts(value.netDepositsByCurrency)
+}
+
+function validatePortfolioPosition(value: unknown, outputCurrency: string): void {
+  if (
+    !isRecord(value) ||
+    !trimmedNonBlankString(value.listingId) ||
+    !trimmedNonBlankString(value.assetId) ||
+    !trimmedNonBlankString(value.symbol) ||
+    !trimmedNonBlankString(value.name) ||
+    !exactDecimal(value.quantity, QUANTITY) ||
+    !exactDecimal(value.pricePerUnit, QUANTITY) ||
+    !currency(value.priceCurrency) ||
+    !trimmedNonBlankString(value.priceTimestamp) ||
+    !exactDecimal(value.value, MONEY) ||
+    value.valueCurrency !== outputCurrency ||
+    !exactDecimal(value.costBasis, QUANTITY) ||
+    value.costCurrency !== outputCurrency ||
+    !exactDecimal(value.unrealizedPnl, QUANTITY) ||
+    !exactDecimal(value.allocationPct, PERCENTAGE) ||
+    !exactDecimal(value.nativeValue, QUANTITY) ||
+    !currency(value.nativeValueCurrency) ||
+    !exactDecimal(value.nativeCostBasis, QUANTITY) ||
+    !currency(value.nativeCostCurrency)
+  ) {
+    throw contractError()
+  }
+}
+
+function validateDashboardSummary(value: unknown): void {
+  if (!isRecord(value)) {
+    throw contractError()
+  }
+  const moneyFields = [
+    "totalValue",
+    "assetsValue",
+    "liabilitiesValue",
+    "cashValue",
+    "investmentValue",
+    "investmentCostBasis",
+    "netDepositsValue",
+    "realizedPnlValue",
+    "unrealizedPnlValue",
+    "feesValue",
+    "taxesValue",
+  ] as const
+  const countFields = [
+    "accountCount",
+    "investmentAccountCount",
+    "liabilityAccountCount",
+    "positionCount",
+  ] as const
+  if (
+    moneyFields.some((field) => !exactDecimal(value[field], MONEY)) ||
+    countFields.some((field) => !nonNegativeInteger(value[field]))
+  ) {
+    throw contractError()
+  }
 }
 
 function validateRefresh(value: unknown): ValidatedRefresh {
@@ -163,9 +274,16 @@ function validatePortfolio(
   manifest: ExactPortfolioSnapshotManifest
 ): PortfolioSnapshotData {
   validateCommonIdentity(value, manifest)
-  if (!Array.isArray(value.accounts) || value.accounts.length !== manifest.accounts.length) {
+  if (
+    !currency(value.currency) ||
+    !Array.isArray(value.accounts) ||
+    value.accounts.length !== manifest.accounts.length ||
+    !Array.isArray(value.aggregatePositions)
+  ) {
     throw contractError()
   }
+  const accountById = new Map<string, Record<string, unknown>>()
+  let accountPositionCount = 0
   for (const [index, account] of value.accounts.entries()) {
     const selector = manifest.accounts[index]
     if (
@@ -173,11 +291,46 @@ function validatePortfolio(
       !isRecord(account) ||
       !isRecord(account.account) ||
       account.account.accountId !== selector.accountId ||
-      account.snapshotId !== selector.snapshotId
+      account.primarySnapshotId !== selector.snapshotId ||
+      !trimmedNonBlankString(account.snapshotId) ||
+      !trimmedNonBlankString(account.currency) ||
+      account.currency !== account.account.currency ||
+      !currency(account.currency) ||
+      !Array.isArray(account.positions)
     ) {
       throw contractError()
     }
+    for (const position of account.positions) {
+      validatePortfolioPosition(position, account.currency)
+    }
+    validatePortfolioSummary(account.summary, account.positions.length)
+    accountPositionCount += account.positions.length
+    accountById.set(selector.accountId, account)
   }
+  for (const item of value.aggregatePositions) {
+    if (
+      !isRecord(item) ||
+      !trimmedNonBlankString(item.accountId) ||
+      !trimmedNonBlankString(item.accountName) ||
+      !currency(item.accountCurrency)
+    ) {
+      throw contractError()
+    }
+    const account = accountById.get(item.accountId)
+    if (
+      account === undefined ||
+      !isRecord(account.account) ||
+      item.accountName !== account.account.name ||
+      item.accountCurrency !== account.account.currency
+    ) {
+      throw contractError()
+    }
+    validatePortfolioPosition(item.position, value.currency)
+  }
+  if (value.aggregatePositions.length !== accountPositionCount) {
+    throw contractError()
+  }
+  validatePortfolioSummary(value.summary, value.aggregatePositions.length)
   return value as PortfolioSnapshotData
 }
 
@@ -186,24 +339,70 @@ function validateDashboard(
   manifest: ExactPortfolioSnapshotManifest
 ): DashboardSnapshotData {
   validateCommonIdentity(value, manifest)
-  if (!Array.isArray(value.accounts) || value.accounts.length !== manifest.accounts.length) {
+  if (
+    !currency(value.currency) ||
+    !Array.isArray(value.accounts) ||
+    value.accounts.length !== manifest.accounts.length ||
+    !Array.isArray(value.assetTypeAllocations) ||
+    !Array.isArray(value.topPositions)
+  ) {
     throw contractError()
   }
+  validateDashboardSummary(value.summary)
   const expectedAccountIds = new Set(manifest.accounts.map((account) => account.accountId))
   const actualAccountIds = new Set<string>()
   for (const account of value.accounts) {
     if (
       !isRecord(account) ||
       !trimmedNonBlankString(account.accountId) ||
+      !trimmedNonBlankString(account.primarySnapshotId) ||
+      !trimmedNonBlankString(account.snapshotId) ||
+      !currency(account.outputCurrency) ||
+      !currency(account.accountCurrency) ||
+      account.outputCurrency !== account.accountCurrency ||
+      !exactDecimal(account.totalValue, MONEY) ||
+      !exactDecimal(account.cashValue, MONEY) ||
+      !exactDecimal(account.investmentValue, MONEY) ||
+      !exactDecimal(account.liabilitiesValue, MONEY) ||
+      !exactDecimal(account.unrealizedPnlValue, MONEY) ||
+      !nonNegativeInteger(account.positionCount) ||
       !expectedAccountIds.has(account.accountId) ||
       actualAccountIds.has(account.accountId)
     ) {
+      throw contractError()
+    }
+    const selector = manifest.accounts.find((item) => item.accountId === account.accountId)
+    if (selector === undefined || account.primarySnapshotId !== selector.snapshotId) {
       throw contractError()
     }
     actualAccountIds.add(account.accountId)
   }
   if (actualAccountIds.size !== expectedAccountIds.size) {
     throw contractError()
+  }
+  for (const allocation of value.assetTypeAllocations) {
+    if (
+      !isRecord(allocation) ||
+      !exactDecimal(allocation.value, MONEY) ||
+      !exactDecimal(allocation.allocationPct, PERCENTAGE) ||
+      !nonNegativeInteger(allocation.accountCount) ||
+      !nonNegativeInteger(allocation.positionCount)
+    ) {
+      throw contractError()
+    }
+  }
+  for (const position of value.topPositions) {
+    if (
+      !isRecord(position) ||
+      !trimmedNonBlankString(position.accountId) ||
+      !expectedAccountIds.has(position.accountId) ||
+      !exactDecimal(position.value, MONEY) ||
+      position.valueCurrency !== value.currency ||
+      !exactDecimal(position.unrealizedPnl, QUANTITY) ||
+      !exactDecimal(position.allocationPct, PERCENTAGE)
+    ) {
+      throw contractError()
+    }
   }
   return value as DashboardSnapshotData
 }

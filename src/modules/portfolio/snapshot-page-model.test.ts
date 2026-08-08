@@ -29,8 +29,10 @@ describe("snapshot portfolio page model", () => {
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
     expect(model.aggregate.summary.totalValue).not.toBe("163.456789")
     expect(model.aggregate.positions).toHaveLength(2)
-    expect(model.aggregate.positions[0]?.position).toBe(data.accounts[0]?.positions[0])
-    expect(model.aggregate.positions[0]?.position.allocationPct).toBe("60.000000")
+    expect(model.aggregate.positions[0]?.position).toBe(data.aggregatePositions[0]?.position)
+    expect(model.aggregate.positions[0]?.position.allocationPct).toBe("60.0000")
+    expect(model.aggregate.positions[0]?.position.valueCurrency).toBe("EUR")
+    expect(model.aggregate.currency).toBe("EUR")
     expect(model.aggregate.hasServerAllocation).toBe(false)
   })
 
@@ -41,6 +43,7 @@ describe("snapshot portfolio page model", () => {
 
     expect(selected?.accountId).toBe("account-a")
     expect(selected?.accountCurrency).toBe("CZK")
+    expect(selected?.currency).toBe("CZK")
     expect(selected?.summary).toBe(data.accounts[0]?.summary)
     expect(selected?.summary.cashByCurrency).toBe(data.accounts[0]?.summary.cashByCurrency)
     expect(selected?.summary.netDepositsByCurrency).toBe(
@@ -48,6 +51,8 @@ describe("snapshot portfolio page model", () => {
     )
     expect(selected?.positions[0]?.accountId).toBe("account-a")
     expect(selected?.positions[0]?.position).toBe(data.accounts[0]?.positions[0])
+    expect(selected?.positions[0]?.position.valueCurrency).toBe("CZK")
+    expect(selected?.positions[0]?.position.costCurrency).toBe("CZK")
     expect(selected?.hasServerAllocation).toBe(true)
     expect(selectPortfolioAccountView(model, "unknown-account")).toBeNull()
   })
@@ -63,14 +68,16 @@ describe("snapshot portfolio page model", () => {
     expect(model.aggregate.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
     expect(model.aggregate.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
     expect(model.accounts[1]?.summary.totalValue).toBe("-57.660000")
+    expect(model.accounts[1]?.currency).toBe("USD")
+    expect(model.accounts[1]?.positions[0]?.position.valueCurrency).toBe("USD")
     expect(account?.summary.investmentCostBasis).toBe("100.000001")
     expect(account?.positions[0]?.position.quantity).toBe("1.0000000000")
     expect(account?.positions[0]?.position.value).toBe("123.456789")
-    expect(account?.positions[0]?.position.costBasis).toBe("100.000001")
+    expect(account?.positions[0]?.position.costBasis).toBe("100.0000010000")
     expect(account?.positions[0]?.position.costBasis).not.toBe(
       account?.positions[0]?.position.value
     )
-    expect(account?.positions[0]?.position.allocationPct).toBe("60.000000")
+    expect(account?.positions[0]?.position.allocationPct).toBe("60.0000")
   })
 
   it("is deterministic and does not mutate or financially aggregate its input", () => {

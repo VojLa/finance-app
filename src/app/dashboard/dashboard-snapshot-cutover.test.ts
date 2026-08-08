@@ -114,7 +114,7 @@ describe("dashboard snapshot cutover boundaries", () => {
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
     await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "02f13a292cd5599a207434e4f4341943f570f508417b6594dfb6c8094b777a88"
+      "1218f1f610008ab4244c84a280a65fc1424f07b93f7df800064402aabd6f1283"
     )
   })
 })

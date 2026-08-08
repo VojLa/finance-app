@@ -49,16 +49,13 @@ function positionRows(account: PortfolioAccountSnapshot): PortfolioPagePosition[
   }))
 }
 
-function accountView(
-  account: PortfolioAccountSnapshot,
-  outputCurrency: string
-): PortfolioPageAccountView {
+function accountView(account: PortfolioAccountSnapshot): PortfolioPageAccountView {
   return {
     scope: "account",
     accountId: account.account.accountId,
     accountCurrency: account.account.currency,
     label: account.account.name,
-    currency: outputCurrency,
+    currency: account.currency,
     summary: account.summary,
     positions: positionRows(account),
     hasServerAllocation: true,
@@ -66,7 +63,7 @@ function accountView(
 }
 
 export function buildPortfolioPageModel(data: PortfolioSnapshotData): PortfolioPageModel {
-  const accounts = data.accounts.map((account) => accountView(account, data.currency))
+  const accounts = data.accounts.map(accountView)
   return {
     timestamp: data.timestamp,
     granularity: data.granularity,
@@ -78,7 +75,12 @@ export function buildPortfolioPageModel(data: PortfolioSnapshotData): PortfolioP
       label: "Vše",
       currency: data.currency,
       summary: data.summary,
-      positions: data.accounts.flatMap(positionRows),
+      positions: data.aggregatePositions.map((item) => ({
+        accountId: item.accountId,
+        accountName: item.accountName,
+        accountCurrency: item.accountCurrency,
+        position: item.position,
+      })),
       hasServerAllocation: data.accounts.length === 1,
     },
     accounts,
