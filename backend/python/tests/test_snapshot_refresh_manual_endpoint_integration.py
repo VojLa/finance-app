@@ -646,7 +646,7 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
                         .select_from(AccountSnapshotModel)
                         .where(AccountSnapshotModel.account_id.in_(account_ids))
                     )
-                    == 2
+                    == 4
                 )
                 assert (
                     await session.scalar(

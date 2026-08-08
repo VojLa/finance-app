@@ -1197,3 +1197,43 @@ the browser rejects malformed successful responses rather than normalizing
 them. R10-C does not reconstruct deposits from transactions, currency
 breakdowns, history, holdings, or FX, and changes no snapshot calculation or
 current-value semantics.
+
+## Current value versus daily-baseline delta
+
+The authoritative Version 0.1 invariant defines current/live value as the
+latest exact daily snapshot advanced by canonical events after that snapshot.
+The observed production model currently implements a different persisted
+identity: a current-clock, minute-aligned complete AccountSnapshot and
+NetWorthSnapshot graph. Portfolio and dashboard read that exact graph; they do
+not advance an older daily state.
+
+A daily AccountSnapshot contains aggregate cash, investment, liability,
+historical metrics, exact items, native breakdowns, and selected market audit,
+but it does not contain the canonical event set or watermark included in those
+aggregates. AccountSnapshotItem contains quantity and aggregate cost evidence,
+not a canonical movement cursor. NetWorthSnapshot contains totals but does not
+physically retain its selected primary AccountSnapshot manifest. Consequently,
+a later-ingested backdated transaction or movement cannot be classified as
+already in the baseline or part of the delta from persisted snapshot evidence
+alone.
+
+LiabilityBalance is an immutable effective-at state observation. Snapshot
+calculation selects the unique latest eligible balance, but AccountSnapshot
+does not persist a liability delta chain. Exact liability advancement from a
+daily value is therefore unavailable. Current Holdings are rebuilt from full
+movement history and cannot substitute for post-baseline event lineage.
+
+Current valuation also needs a separately specified price and FX as-of
+contract. Existing provider evidence is safely acquired and persisted by the
+coordinated complete refresh. Historical net deposits, realized P/L, fees, and
+taxes use event-date FX, while current cash, positions, and liabilities use
+snapshot-time evidence. No independent daily-plus-delta market projection
+currently owns both primary `User.baseCurrency` and companion
+`Account.currency` outputs.
+
+R10-D therefore leaves current production unchanged and records a NOT READY
+representability verdict. A strict implementation first requires persisted
+baseline membership and canonical cutoff evidence, then one server-side delta
+projector that produces both currency authorities without read-time FX or
+browser-selected lineage. History remains a separate persisted
+NetWorthSnapshot series and receives no synthetic current point.
