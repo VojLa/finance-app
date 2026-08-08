@@ -47,6 +47,10 @@ export function SnapshotAccountCards({ model }: Props) {
                 <dd>{formatSnapshotAmount(account.liabilitiesValue, account.accountCurrency)}</dd>
               </div>
               <div className="col-span-2">
+                <dt className="text-xs text-gray-400">Čisté vklady</dt>
+                <dd>{formatSnapshotAmount(account.netDepositsValue, account.accountCurrency)}</dd>
+              </div>
+              <div className="col-span-2">
                 <dt className="text-xs text-gray-400">Nerealizované P/L</dt>
                 <dd>{formatSnapshotAmount(account.unrealizedPnlValue, account.accountCurrency)}</dd>
               </div>

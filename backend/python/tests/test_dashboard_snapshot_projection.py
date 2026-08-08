@@ -104,6 +104,7 @@ def _source(
     value: str = "100",
     cost: str = "80",
     cash: str = "10",
+    net_deposits: str | None = None,
     asset_type: AssetType = AssetType.stock,
     symbol: str = "AAA",
     items: tuple[PortfolioSnapshotItemSource, ...] | None = None,
@@ -140,6 +141,9 @@ def _source(
     cash_value = _money("0" if liability else cash)
     liabilities = _money("25" if liability else "0")
     structural_zero = liability or cash_only
+    net_deposits_value = _money(
+        net_deposits if net_deposits is not None else ("0" if structural_zero else "70")
+    )
     return PortfolioSnapshotSource(
         snapshot_id=snapshot_id or f"{account_id}-snapshot",
         account_id=account_id,
@@ -159,11 +163,11 @@ def _source(
         investment_cost_basis=investment_cost,
         liabilities_value=liabilities,
         total_value=cash_value + investment - liabilities,
-        net_deposits_value=_money("0" if structural_zero else "70"),
+        net_deposits_value=net_deposits_value,
         net_deposits_by_currency=(
             PortfolioCurrencyAmount(
                 output_currency,
-                _money("0" if structural_zero else "70"),
+                net_deposits_value,
             ),
         ),
         realized_pnl_value=_money("0" if structural_zero else "5"),
@@ -289,6 +293,7 @@ def test_account_cards_copy_exact_account_scoped_values() -> None:
             cash_value=_money("12"),
             investment_value=_money("60"),
             liabilities_value=_money("0"),
+            net_deposits_value=_money("70"),
             unrealized_pnl_value=_money("10"),
             position_count=1,
         ),
@@ -326,6 +331,7 @@ def test_account_cards_use_companion_while_global_finance_uses_primary() -> None
             investment_value=_money("25"),
             investment_cost_basis=_money("20"),
             total_value=_money("25"),
+            net_deposits_value=_money("125"),
             unrealized_pnl_value=_money("5"),
         ),
         positions=(presentation_position,),
@@ -335,6 +341,7 @@ def test_account_cards_use_companion_while_global_finance_uses_primary() -> None
 
     assert result.currency == "EUR"
     assert result.summary.investment_value == _money("100")
+    assert result.summary.net_deposits_value == _money("70")
     assert result.asset_type_allocations[0].value == _money("100")
     assert result.top_positions[0].value == _money("100")
     assert result.top_positions[0].value_currency == "EUR"
@@ -342,6 +349,41 @@ def test_account_cards_use_companion_while_global_finance_uses_primary() -> None
     assert result.accounts[0].primary_snapshot_id == primary.snapshot_id
     assert result.accounts[0].output_currency == "USD"
     assert result.accounts[0].investment_value == _money("25")
+    assert result.accounts[0].net_deposits_value == _money("125")
+
+
+@pytest.mark.parametrize("value", ["0", "-125.500000"])
+def test_account_card_retains_zero_and_signed_net_deposits(value: str) -> None:
+    result = _dashboard(_source("account", net_deposits=value))
+
+    assert result.accounts[0].net_deposits_value == _money(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "10.000000",
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("0.0000001"),
+        Decimal("1000000000000.000000"),
+    ],
+)
+def test_invalid_account_net_deposits_fail_closed(value: object) -> None:
+    portfolio = _portfolio(_source("account"))
+    account = portfolio.accounts[0]
+    corrupt = replace(
+        portfolio,
+        accounts=(
+            replace(
+                account,
+                summary=replace(account.summary, net_deposits_value=cast(Any, value)),
+            ),
+        ),
+    )
+
+    with pytest.raises(DashboardSnapshotProjectionError):
+        build_dashboard_snapshot_view(corrupt)
 
 
 def test_different_account_currencies_and_snapshot_sources_are_preserved_upstream() -> None:

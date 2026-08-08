@@ -14,6 +14,7 @@ export function SnapshotSummaryCards({ model }: Props) {
     ["Hotovost", model.summary.cashValue],
     ["Investice", model.summary.investmentValue],
     ["Nákladová báze", model.summary.investmentCostBasis],
+    ["Čisté vklady", model.summary.netDepositsValue],
     ["Realizované P/L", model.summary.realizedPnlValue],
     ["Nerealizované P/L", model.summary.unrealizedPnlValue],
   ] as const

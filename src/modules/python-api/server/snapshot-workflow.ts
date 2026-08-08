@@ -364,6 +364,7 @@ function validateDashboard(
       !exactDecimal(account.cashValue, MONEY) ||
       !exactDecimal(account.investmentValue, MONEY) ||
       !exactDecimal(account.liabilitiesValue, MONEY) ||
+      !exactDecimal(account.netDepositsValue, MONEY) ||
       !exactDecimal(account.unrealizedPnlValue, MONEY) ||
       !nonNegativeInteger(account.positionCount) ||
       !expectedAccountIds.has(account.accountId) ||

@@ -68,6 +68,7 @@ class DashboardAccountCardResponse(BaseModel):
     cash_value: Decimal = Field(serialization_alias="cashValue")
     investment_value: Decimal = Field(serialization_alias="investmentValue")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
+    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
     unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
     position_count: int = Field(serialization_alias="positionCount")
 
@@ -76,6 +77,7 @@ class DashboardAccountCardResponse(BaseModel):
         "cash_value",
         "investment_value",
         "liabilities_value",
+        "net_deposits_value",
         "unrealized_pnl_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:

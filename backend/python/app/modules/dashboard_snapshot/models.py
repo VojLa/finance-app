@@ -47,6 +47,7 @@ class DashboardAccountCard:
     cash_value: Decimal
     investment_value: Decimal
     liabilities_value: Decimal
+    net_deposits_value: Decimal
     unrealized_pnl_value: Decimal
     position_count: int
 
