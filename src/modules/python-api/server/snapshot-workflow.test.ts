@@ -206,6 +206,7 @@ const DASHBOARD_RESPONSE = {
       cashValue: "10.000001",
       investmentValue: "0.000000",
       liabilitiesValue: "0.000000",
+      netDepositsValue: "0.000000",
       unrealizedPnlValue: "0.000000",
       positionCount: 0,
     },
@@ -219,6 +220,7 @@ const DASHBOARD_RESPONSE = {
       cashValue: "0.000000",
       investmentValue: "20.000001",
       liabilitiesValue: "0.000000",
+      netDepositsValue: "1100.000000",
       unrealizedPnlValue: "10.000001",
       positionCount: 1,
     },
@@ -445,6 +447,8 @@ describe("dashboard snapshot workflow", () => {
         "account-b",
       ])
       expect(result.data.summary.totalValue).toBe("123456789.123456")
+      expect(result.data.summary.netDepositsValue).toBe("100.000000")
+      expect(result.data.accounts[1].netDepositsValue).toBe("1100.000000")
     }
   })
 
@@ -504,6 +508,34 @@ describe("dashboard snapshot workflow", () => {
         ],
       },
     })
+    await expectContractError(runDashboardSnapshotWorkflow(IDENTITY, mocks.api))
+  })
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["JSON number", 10],
+    ["exponent", "1e2"],
+    ["plus prefix", "+1.000000"],
+    ["wrong scale", "1.00"],
+    ["overprecision", "1.0000000"],
+    ["overflow", "1000000000000.000000"],
+    ["NaN", "NaN"],
+    ["Infinity", "Infinity"],
+  ])("fails closed on %s account netDepositsValue", async (label, value) => {
+    const malformed: Record<string, unknown> = { ...DASHBOARD_RESPONSE.accounts[0] }
+    if (label === "missing") {
+      delete malformed.netDepositsValue
+    } else {
+      malformed.netDepositsValue = value
+    }
+    const mocks = apiMocks({
+      dashboard: {
+        ...DASHBOARD_RESPONSE,
+        accounts: [malformed, DASHBOARD_RESPONSE.accounts[1]],
+      },
+    })
+
     await expectContractError(runDashboardSnapshotWorkflow(IDENTITY, mocks.api))
   })
 })

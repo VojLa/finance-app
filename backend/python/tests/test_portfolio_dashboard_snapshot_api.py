@@ -343,6 +343,8 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     assert payload["assetTypeAllocations"][0]["allocationPct"] == "100.0000"
     assert payload["accounts"][0]["primarySnapshotId"] == "account-a-snapshot"
     assert payload["accounts"][0]["outputCurrency"] == "CZK"
+    assert payload["accounts"][0]["netDepositsValue"] == "20.000000"
+    assert payload["accounts"][1]["netDepositsValue"] == "-5.000000"
     assert "priceCurrency" not in payload["topPositions"][0]
     assert "nativeValue" not in payload["topPositions"][0]
     assert "cashByCurrency" not in payload["summary"]

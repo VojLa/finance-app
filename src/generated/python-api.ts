@@ -820,6 +820,8 @@ export interface components {
       liabilitiesValue: string
       /** Name */
       name: string
+      /** Netdepositsvalue */
+      netDepositsValue: string
       /** Outputcurrency */
       outputCurrency: string
       /** Positioncount */

@@ -1175,3 +1175,25 @@ Top-level portfolio summary and explicit aggregate positions remain in
 also remain primary-currency evidence, while dashboard account cards use the
 companion. Missing or inconsistent companion evidence invalidates the exact
 read; it is never synthesized from the primary row or reconstructed with FX.
+
+## Dashboard net-deposit authority
+
+R10-C makes the already persisted net-deposit scalar visible on both dashboard
+levels. The global `netDepositsValue` remains part of the primary aggregate in
+`User.baseCurrency`; it is not a sum of account-presentation values. Every
+account card receives its own exact `netDepositsValue` from the R10-B2
+presentation summary in `Account.currency`.
+
+When account and user currencies match, `snapshotId == primarySnapshotId` is a
+valid single physical authority. When they differ, `snapshotId` identifies the
+companion that owns the account-currency value and `primarySnapshotId`
+identifies the manifest-selected contribution to global finance. Deliberately
+different primary and companion values therefore remain correct and cannot
+cross into the other presentation boundary.
+
+The value is signed MONEY evidence: negative net deposits and exact zero are
+valid and visible. API serialization is a canonical six-decimal string, and
+the browser rejects malformed successful responses rather than normalizing
+them. R10-C does not reconstruct deposits from transactions, currency
+breakdowns, history, holdings, or FX, and changes no snapshot calculation or
+current-value semantics.

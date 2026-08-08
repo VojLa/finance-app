@@ -263,7 +263,7 @@ def _account_card(
     _exact(summary.investment_cost_basis, _MONEY, nonnegative=True)
     liabilities = _exact(summary.liabilities_value, _MONEY, nonnegative=True)
     total = _exact(summary.total_value, _MONEY)
-    _exact(summary.net_deposits_value, _MONEY)
+    net_deposits = _exact(summary.net_deposits_value, _MONEY)
     _exact(summary.realized_pnl_value, _MONEY)
     unrealized = _exact(summary.unrealized_pnl_value, _MONEY)
     _exact(summary.fees_value, _MONEY, nonnegative=True)
@@ -296,6 +296,7 @@ def _account_card(
             cash_value=cash,
             investment_value=investment,
             liabilities_value=liabilities,
+            net_deposits_value=net_deposits,
             unrealized_pnl_value=unrealized,
             position_count=len(scoped_positions),
         ),
