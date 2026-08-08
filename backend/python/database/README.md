@@ -10,7 +10,7 @@ The governing decision is ADR 0006 in `!planning/decisions`.
 - current migration owner: Alembic
 - target migration owner: Alembic
 - cutover status: completed
-- SQLAlchemy mirror: complete for all 31 application tables and 28 PostgreSQL enum types
+- SQLAlchemy mirror: complete for all 36 application tables and 28 PostgreSQL enum types
 - Alembic revision graph: inherited baseline `3d0001base` followed by ownership marker
   `3e0001cutover`
 - active deployment runner: `scripts/database_migrate.py`
@@ -105,7 +105,7 @@ schema is a runtime compatibility mirror, not the migration source of truth.
 
 The complete SQLAlchemy mirror covers:
 
-- 31 application tables,
+- 36 application tables,
 - 28 PostgreSQL enum types,
 - columns, names, types, nullability, and server defaults,
 - primary keys, foreign keys, and delete behavior,
@@ -167,3 +167,11 @@ Revision `3h0001twdata` adds the explicit `twelve_data` value to the
 `AssetAliasProvider` and `PriceSource` enums. It changes provider identity
 ownership without adding tables, an HTTP adapter, or a production provider
 registration.
+
+Revision `3i0001d1base` adds five server-only lineage tables for commit-ordered
+canonical account revisions, immutable day AccountSnapshot boundaries, and
+normalized complete daily baseline manifests. Its deterministic historical
+journal backfill does not claim to reproduce pre-D1 commit order, leaves
+Holding watermarks unproven until rebuild, and does not promote existing
+historical snapshots to D1 baselines. The schema advances to 36 application
+tables and remains at 28 enum types.

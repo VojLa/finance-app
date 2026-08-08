@@ -25,9 +25,10 @@ FIRST_HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add
 LIABILITY_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3g0001liabbal_add_liability_balances.py"
 )
-HEAD_PATH = (
+TWELVE_DATA_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3h0001twdata_add_twelve_data_provider_identity.py"
 )
+HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3i0001d1base_add_daily_baseline_lineage.py"
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
 
@@ -87,7 +88,7 @@ def test_liability_schema_revision_metadata_and_data_loss_guard() -> None:
     revision = load_revision(LIABILITY_PATH, "liability_balances")
     source = LIABILITY_PATH.read_text(encoding="utf-8")
 
-    assert revision.revision == PREVIOUS_HEAD_REVISION
+    assert revision.revision == "3g0001liabbal"
     assert revision.down_revision == "3f0001acctnote"
     assert revision.schema_change is True
     assert revision.schema_change_kind == "add_liability_balance_contract"
@@ -100,11 +101,11 @@ def test_liability_schema_revision_metadata_and_data_loss_guard() -> None:
 
 
 def test_twelve_data_identity_revision_metadata_and_downgrade_policy() -> None:
-    revision = load_revision(HEAD_PATH, "twelve_data_provider_identity")
-    source = HEAD_PATH.read_text(encoding="utf-8")
+    revision = load_revision(TWELVE_DATA_PATH, "twelve_data_provider_identity")
+    source = TWELVE_DATA_PATH.read_text(encoding="utf-8")
 
-    assert revision.revision == HEAD_REVISION
-    assert revision.down_revision == PREVIOUS_HEAD_REVISION
+    assert revision.revision == PREVIOUS_HEAD_REVISION
+    assert revision.down_revision == "3g0001liabbal"
     assert revision.schema_change is True
     assert revision.schema_change_kind == "extend_market_provider_identity_enums"
     assert revision.affected_tables == ("AssetAlias", "AssetListing", "PriceSnapshot")
@@ -115,18 +116,39 @@ def test_twelve_data_identity_revision_metadata_and_downgrade_policy() -> None:
         revision.downgrade()
 
 
+def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> None:
+    revision = load_revision(HEAD_PATH, "daily_baseline_lineage")
+    source = HEAD_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == HEAD_REVISION
+    assert revision.down_revision == PREVIOUS_HEAD_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_daily_baseline_lineage"
+    assert revision.data_migration is True
+    assert set(revision.affected_tables) == {
+        "AccountCanonicalState",
+        "AccountCanonicalChange",
+        "AccountSnapshotCanonicalBoundary",
+        "DailySnapshotBaseline",
+        "DailySnapshotBaselineAccount",
+    }
+    assert "row_number() OVER" in source
+    assert '"holdingRevision"' in source
+    assert 'DROP TABLE "public"."DailySnapshotBaseline"' not in source
+
+
 def test_manifest_records_first_alembic_schema_head() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 9
+    assert manifest["schema_version"] == 10
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 5
+    assert baseline["revision_count"] == 6
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 5
+    assert alembic["revision_count"] == 6
 
     verify_manifest()
     verify_revision_graph()
@@ -138,13 +160,13 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(30, 27, (CUTOVER_REVISION,)))
     verify_database_state(DatabaseState(30, 27, ("3f0001acctnote",)))
     verify_database_state(DatabaseState(31, 28, (PREVIOUS_HEAD_REVISION,)))
-    verify_database_state(DatabaseState(31, 28, (HEAD_REVISION,)))
+    verify_database_state(DatabaseState(36, 28, (HEAD_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:
-    with pytest.raises(RuntimeError, match="Expected 31 application tables"):
-        verify_database_state(DatabaseState(30, 28, (HEAD_REVISION,)))
+    with pytest.raises(RuntimeError, match="Expected 36 application tables"):
+        verify_database_state(DatabaseState(31, 28, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="Expected 28 enums"):
-        verify_database_state(DatabaseState(31, 27, (HEAD_REVISION,)))
+        verify_database_state(DatabaseState(36, 27, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="unknown Alembic revisions"):
         verify_database_state(DatabaseState(30, 27, ("unknown",)))

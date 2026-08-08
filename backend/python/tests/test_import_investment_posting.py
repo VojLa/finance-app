@@ -33,6 +33,11 @@ class _Rows:
         return self.values
 
 
+class _CanonicalState:
+    async def record(self, **_: object) -> None:
+        return None
+
+
 class _Session:
     def __init__(self, *, scalar_values: list[object] | None = None) -> None:
         self.scalar_values = list(scalar_values or [])
@@ -159,7 +164,10 @@ def _resolved() -> ResolvedInvestmentAsset:
 
 
 def _writer(session: _Session) -> ImportInvestmentPostingWriter:
-    return ImportInvestmentPostingWriter(cast(AsyncSession, session))
+    return ImportInvestmentPostingWriter(
+        cast(AsyncSession, session),
+        canonical_state=cast(Any, _CanonicalState()),
+    )
 
 
 def _run(coro: object) -> Any:

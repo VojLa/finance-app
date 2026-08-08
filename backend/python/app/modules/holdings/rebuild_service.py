@@ -379,7 +379,41 @@ class HoldingRebuildService:
         timestamp = _validate_rebuilt_at(rebuilt_at)
         await self.repository.lock_rebuild_scope(canonical_account_id)
         await self.repository.lock_canonical_history_scopes(canonical_account_id)
+        canonical_state = await self.repository.lock_canonical_state(canonical_account_id)
+        if (
+            canonical_state is None
+            or canonical_state.account_id != canonical_account_id
+            or not isinstance(canonical_state.last_revision, int)
+            or isinstance(canonical_state.last_revision, bool)
+            or not isinstance(canonical_state.last_investment_revision, int)
+            or isinstance(canonical_state.last_investment_revision, bool)
+            or not 0 <= canonical_state.last_investment_revision <= canonical_state.last_revision
+        ):
+            raise HoldingRebuildStateError()
         events = await self.repository.load_active_events_for_update(canonical_account_id)
+        investment_changes = await self.repository.load_investment_changes_for_update(
+            canonical_account_id
+        )
+        events_by_id = {event.id: event for event in events}
+        if (
+            len(events_by_id) != len(events)
+            or len(investment_changes) != len(events)
+            or tuple(change.revision for change in investment_changes)
+            != tuple(sorted(change.revision for change in investment_changes))
+            or (investment_changes[-1].revision if investment_changes else 0)
+            != canonical_state.last_investment_revision
+        ):
+            raise HoldingRebuildStateError()
+        for change in investment_changes:
+            event = events_by_id.get(change.entity_id)
+            if (
+                event is None
+                or change.account_id != canonical_account_id
+                or change.kind != "investment_event"
+                or change.financial_timestamp != event.date
+                or change.created_at != event.created_at
+            ):
+                raise HoldingRebuildStateError()
         movements = await self.repository.load_active_account_movements_for_update(
             canonical_account_id
         )
@@ -491,6 +525,9 @@ class HoldingRebuildService:
                     raise HoldingRebuildStateError()
                 await self.repository.delete_holding(holding)
             await self.repository.flush()
+        canonical_state.holding_revision = canonical_state.last_investment_revision
+        canonical_state.updated_at = timestamp
+        await self.repository.flush()
         return HoldingRebuildResult(
             account_id=canonical_account_id,
             created=len(plan.creates),

@@ -1,6 +1,6 @@
 # Domain Model
 
-The PostgreSQL schema contains 31 application tables. SQLAlchemy has a complete
+The PostgreSQL schema contains 36 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
@@ -1237,3 +1237,49 @@ baseline membership and canonical cutoff evidence, then one server-side delta
 projector that produces both currency authorities without read-time FX or
 browser-selected lineage. History remains a separate persisted
 NetWorthSnapshot series and receives no synthetic current point.
+
+## Canonical revisions and eligible daily baselines
+
+R10-D1 persists canonical inclusion independently of economic time. Every
+Account has one `AccountCanonicalState`. `lastRevision` advances by exactly one
+for each newly committed Transaction, InvestmentEvent root, or
+LiabilityBalance. `lastInvestmentRevision` advances only for an InvestmentEvent
+and `holdingRevision` identifies the exact investment revision represented by
+the current Holding set. The append-only `AccountCanonicalChange` stores only
+root identity, kind, financial timestamp, and commit-ordered revision; amounts,
+currencies, quantities, and movements remain in their authoritative tables.
+
+One InvestmentEvent and its atomic InvestmentMovement set are one revision.
+LiabilityBalance remains a replacement observation rather than an additive
+delta. Exact replay validates the journal without advancing state. The account
+state row lock makes visible revision order equivalent to committed canonical
+state order and prevents sequence gaps caused by independently allocated
+numbers.
+
+Every newly created day AccountSnapshot carries one immutable
+`AccountSnapshotCanonicalBoundary`. Cash accounts retain the canonical cutoff.
+Investment accounts also require equal investment and Holding watermarks.
+Liability accounts retain the exact selected LiabilityBalance ID and validate
+that its journal revision was included. A mixed-currency primary and companion
+pair shares identical canonical, Holding, and liability lineage.
+
+`DailySnapshotBaseline` names one exact day NetWorthSnapshot. Its normalized
+account rows record every active supported account exactly once, with account
+type/currency, exact primary and presentation snapshot IDs, revisions, Holding
+watermark, and selected liability. NetWorth continues to contain primaries
+only. Same-currency presentation may reuse the primary identity; a
+mixed-currency presentation must name its companion.
+
+The internal newest-baseline selector validates user base currency, current
+active account set, account type/currency/archive state, calculation version,
+all snapshot and boundary identities, contiguous physical journal roots,
+fresh Holdings, and liability lineage. If the newest candidate is invalid it
+fails closed and never selects an older baseline.
+
+A later revision with `financialTimestamp <= baseline.timestamp` proves a
+backfill that was absent from the baseline but economically belongs at or
+before it, so the baseline becomes unavailable until a new daily baseline is
+created. Only higher revisions with strictly later financial timestamps are
+classified as forward lineage. D1 performs no finance, market, FX, position,
+or liability delta calculation and is not connected to current reads; the
+current minute workflow remains active pending R10-D2.

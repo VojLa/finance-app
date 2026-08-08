@@ -18,6 +18,13 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.daily_baselines import (
+    DailyBaselineDisposition,
+    DailyBaselineError,
+    DailySnapshotBaselineService,
+    PersistDailySnapshotBaselineCommand,
+    PersistDailySnapshotBaselineResult,
+)
 from app.modules.net_worth.evidence_service import (
     NetWorthEvidenceStateError,
     SelectedAccountSnapshotIdentity,
@@ -172,9 +179,17 @@ class _NetWorthWriter(Protocol):
     ) -> NetWorthSnapshotWriteResult: ...
 
 
+class _DailyBaselineWriter(Protocol):
+    async def persist(
+        self,
+        command: PersistDailySnapshotBaselineCommand,
+    ) -> PersistDailySnapshotBaselineResult: ...
+
+
 type CoverageServiceFactory = Callable[[AsyncSession], _CoverageService]
 type AccountSnapshotWriterFactory = Callable[[AsyncSession], _AccountWriter]
 type NetWorthSnapshotWriterFactory = Callable[[AsyncSession], _NetWorthWriter]
+type DailyBaselineWriterFactory = Callable[[AsyncSession], _DailyBaselineWriter]
 
 
 def _fail() -> SnapshotRefreshExecutionStateError:
@@ -507,12 +522,14 @@ class UserSnapshotRefreshExecutor:
         coverage_service_factory: CoverageServiceFactory = (SnapshotRefreshEvidenceService),
         account_writer_factory: AccountSnapshotWriterFactory = AccountSnapshotWriter,
         net_worth_writer_factory: NetWorthSnapshotWriterFactory = (NetWorthSnapshotWriter),
+        daily_baseline_writer_factory: DailyBaselineWriterFactory = (DailySnapshotBaselineService),
     ) -> None:
         self.session = session
         self.repository = repository or SnapshotRefreshExecutorRepository(session)
         self.coverage_service_factory = coverage_service_factory
         self.account_writer_factory = account_writer_factory
         self.net_worth_writer_factory = net_worth_writer_factory
+        self.daily_baseline_writer_factory = daily_baseline_writer_factory
 
     async def _dependency_must_leave_idle(self) -> None:
         if self.session.in_transaction():
@@ -650,6 +667,38 @@ class UserSnapshotRefreshExecutor:
             target=net_target,
             identities=required_identities,
         )
+
+        if canonical.granularity is SnapshotGranularity.day:
+            await self._dependency_must_leave_idle()
+            baseline_writer = self.daily_baseline_writer_factory(self.session)
+            await self._dependency_must_leave_idle()
+            try:
+                baseline_result = await baseline_writer.persist(
+                    PersistDailySnapshotBaselineCommand(
+                        user_id=canonical.user_id,
+                        net_worth_snapshot_id=net_worth_result.snapshot_id,
+                        timestamp=canonical.snapshot_timestamp,
+                        currency=coverage.plan.output_currency,
+                        calculation_version=canonical.calculation_version,
+                        source=canonical.source,
+                        created_at=canonical.created_at,
+                        primary_snapshot_identities=required_identities,
+                    )
+                )
+            except DailyBaselineError as exc:
+                await self._dependency_must_leave_idle()
+                raise _fail() from exc
+            await self._dependency_must_leave_idle()
+            if (
+                not isinstance(baseline_result, PersistDailySnapshotBaselineResult)
+                or not isinstance(baseline_result.baseline_id, str)
+                or not baseline_result.baseline_id
+                or baseline_result.baseline_id != baseline_result.baseline_id.strip()
+                or baseline_result.net_worth_snapshot_id != net_worth_result.snapshot_id
+                or baseline_result.account_count != len(required_identities)
+                or not isinstance(baseline_result.disposition, DailyBaselineDisposition)
+            ):
+                raise _fail()
 
         return ExecuteUserSnapshotRefreshResult(
             user_id=canonical.user_id,

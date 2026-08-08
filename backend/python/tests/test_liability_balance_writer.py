@@ -33,6 +33,13 @@ from app.modules.liabilities.writer_repository import (
 
 EFFECTIVE_AT = datetime(2026, 7, 28, 10, 20, 30, 123000)
 CREATED_AT = datetime(2026, 7, 28, 10, 21, 0, 456000)
+
+
+class _CanonicalState:
+    async def record(self, **_: object) -> None:
+        return None
+
+
 _NAMESPACE = UUID("ea19c471-9ff6-59bd-8fe2-33201b0ad13e")
 
 
@@ -164,7 +171,11 @@ def _writer() -> tuple[LiabilityBalanceWriter, _Session, _Repository]:
     session = _Session()
     repository = _Repository()
     return (
-        LiabilityBalanceWriter(cast(Any, session), repository=repository),
+        LiabilityBalanceWriter(
+            cast(Any, session),
+            repository=repository,
+            canonical_state=cast(Any, _CanonicalState()),
+        ),
         session,
         repository,
     )

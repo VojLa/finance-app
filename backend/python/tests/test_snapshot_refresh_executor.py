@@ -14,6 +14,8 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.daily_baselines import PersistDailySnapshotBaselineResult
+from app.modules.daily_baselines.service import DailyBaselineDisposition
 from app.modules.net_worth.evidence_service import (
     NetWorthEvidenceStateError,
     SelectedAccountSnapshotIdentity,
@@ -203,6 +205,23 @@ class _NetWorthWriter:
         return self.value
 
 
+class _DailyBaselineWriter:
+    def __init__(self) -> None:
+        self.commands: list[Any] = []
+
+    def __call__(self, session: object) -> _DailyBaselineWriter:
+        return self
+
+    async def persist(self, command: Any) -> PersistDailySnapshotBaselineResult:
+        self.commands.append(command)
+        return PersistDailySnapshotBaselineResult(
+            baseline_id="baseline-1",
+            net_worth_snapshot_id=command.net_worth_snapshot_id,
+            account_count=len(command.primary_snapshot_identities),
+            disposition=DailyBaselineDisposition.created,
+        )
+
+
 def _command(**changes: object) -> ExecuteUserSnapshotRefreshCommand:
     values: dict[str, object] = {
         "user_id": "user-1",
@@ -356,6 +375,7 @@ def _executor(
     account_leave_active_for: str | None = None,
     net_error: Exception | None = None,
     net_leave_active: bool = False,
+    daily_baseline_writer: _DailyBaselineWriter | None = None,
 ) -> tuple[
     UserSnapshotRefreshExecutor,
     _Session,
@@ -391,12 +411,14 @@ def _executor(
         session=active_session,
         leave_active=net_leave_active,
     )
+    baseline_writer = daily_baseline_writer or _DailyBaselineWriter()
     executor = UserSnapshotRefreshExecutor(
         cast(Any, active_session),
         repository=cast(Any, _Repository(calls, repository_error)),
         coverage_service_factory=cast(Any, Mock(return_value=coverage)),
         account_writer_factory=cast(Any, accounts),
         net_worth_writer_factory=cast(Any, net),
+        daily_baseline_writer_factory=cast(Any, baseline_writer),
     )
     return executor, active_session, coverage, accounts, net, calls
 
@@ -533,6 +555,30 @@ async def test_all_reuse_and_empty_plans_skip_account_writer() -> None:
         assert accounts.commands == []
         assert result.required_account_snapshot_identities == _identities(coverage_value)
         assert len(net.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_day_execution_persists_exact_baseline_after_net_worth() -> None:
+    baseline = _DailyBaselineWriter()
+    coverage_value = _coverage()
+    executor, _, _, _, _, calls = _executor(
+        coverage_value,
+        daily_baseline_writer=baseline,
+    )
+
+    result = await executor.execute(_command())
+
+    assert len(baseline.commands) == 1
+    command = baseline.commands[0]
+    assert command.user_id == "user-1"
+    assert command.net_worth_snapshot_id == result.net_worth_snapshot_id
+    assert command.timestamp == AT
+    assert command.currency == "EUR"
+    assert command.calculation_version == 1
+    assert command.source is SnapshotSource.manual_recalculation
+    assert command.created_at == CREATED_AT
+    assert command.primary_snapshot_identities == _identities(coverage_value)
+    assert calls.index("net-worth writer") > calls.index("account writer account-b")
 
 
 @pytest.mark.parametrize(

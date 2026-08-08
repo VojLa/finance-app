@@ -8,6 +8,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+)
 from app.db.models.enums import ImportSource
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
@@ -43,6 +47,14 @@ class HoldingRebuildRepository:
         for lock_id in lock_ids:
             await self.session.execute(select(func.pg_advisory_xact_lock(lock_id)))
 
+    async def lock_canonical_state(self, account_id: str) -> AccountCanonicalStateModel | None:
+        return await self.session.scalar(
+            select(AccountCanonicalStateModel)
+            .where(AccountCanonicalStateModel.account_id == account_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     async def load_active_events_for_update(
         self,
         account_id: str,
@@ -55,6 +67,22 @@ class HoldingRebuildRepository:
                 InvestmentEventModel.deleted_at.is_(None),
             )
             .order_by(InvestmentEventModel.date, InvestmentEventModel.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(result.all())
+
+    async def load_investment_changes_for_update(
+        self,
+        account_id: str,
+    ) -> list[AccountCanonicalChangeModel]:
+        result = await self.session.scalars(
+            select(AccountCanonicalChangeModel)
+            .where(
+                AccountCanonicalChangeModel.account_id == account_id,
+                AccountCanonicalChangeModel.kind == "investment_event",
+            )
+            .order_by(AccountCanonicalChangeModel.revision)
             .with_for_update()
             .execution_options(populate_existing=True)
         )

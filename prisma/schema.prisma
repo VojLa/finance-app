@@ -10,33 +10,34 @@ datasource db {
 // ─── User Domain ─────────────────────────────────────────────────────────────
 
 model User {
-  id                 String             @id @default(cuid())
-  email              String             @unique
+  id                 String                  @id @default(cuid())
+  email              String                  @unique
   name               String?
   passwordHash       String?
-  baseCurrency       String             @default("CZK")
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  baseCurrency       String                  @default("CZK")
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
   accountMemberships AccountMember[]
   budgets            Budget[]
   budgetAlerts       BudgetAlert[]
   importBatches      ImportBatch[]
   counterparties     Counterparty[]
   netWorthSnapshots  NetWorthSnapshot[]
-  sentInvites        AccountInvite[]    @relation("SentAccountInvites")
-  acceptedInvites    AccountInvite[]    @relation("AcceptedAccountInvites")
+  dailyBaselines     DailySnapshotBaseline[]
+  sentInvites        AccountInvite[]         @relation("SentAccountInvites")
+  acceptedInvites    AccountInvite[]         @relation("AcceptedAccountInvites")
 }
 
 // ─── Account Domain ───────────────────────────────────────────────────────────
 
 model Account {
-  id                  String               @id @default(cuid())
+  id                  String                             @id @default(cuid())
   name                String
   type                AccountType
   currency            String
   color               String?
   notes               String?
-  isArchived          Boolean              @default(false)
+  isArchived          Boolean                            @default(false)
   archivedAt          DateTime?
   members             AccountMember[]
   investmentEvents    InvestmentEvent[]
@@ -47,9 +48,13 @@ model Account {
   importBatches       ImportBatch[]
   snapshots           AccountSnapshot[]
   liabilityBalances   LiabilityBalance[]
+  canonicalState      AccountCanonicalState?
+  canonicalChanges    AccountCanonicalChange[]
+  snapshotBoundaries  AccountSnapshotCanonicalBoundary[]
+  dailyBaselineRows   DailySnapshotBaselineAccount[]
   invites             AccountInvite[]
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
+  createdAt           DateTime                           @default(now())
+  updatedAt           DateTime                           @updatedAt
 
   @@index([type])
   @@index([isArchived])
@@ -139,18 +144,20 @@ enum LiabilityBalanceSource {
 }
 
 model LiabilityBalance {
-  id                   String                 @id @default(cuid())
+  id                   String                             @id @default(cuid())
   accountId            String
-  account              Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  effectiveAt          DateTime               @db.Timestamp(3)
+  account              Account                            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  effectiveAt          DateTime                           @db.Timestamp(3)
   currency             String
-  outstandingPrincipal Decimal                @db.Decimal(18, 6)
-  accruedInterest      Decimal                @db.Decimal(18, 6)
-  feesOutstanding      Decimal                @db.Decimal(18, 6)
-  totalOutstanding     Decimal                @db.Decimal(18, 6)
+  outstandingPrincipal Decimal                            @db.Decimal(18, 6)
+  accruedInterest      Decimal                            @db.Decimal(18, 6)
+  feesOutstanding      Decimal                            @db.Decimal(18, 6)
+  totalOutstanding     Decimal                            @db.Decimal(18, 6)
   source               LiabilityBalanceSource
   externalId           String?
-  createdAt            DateTime               @db.Timestamp(3)
+  createdAt            DateTime                           @db.Timestamp(3)
+  snapshotBoundaries   AccountSnapshotCanonicalBoundary[]
+  dailyBaselineRows    DailySnapshotBaselineAccount[]
 
   @@unique([accountId, effectiveAt, source])
   @@unique([accountId, source, externalId])
@@ -661,6 +668,31 @@ model Holding {
   @@index([listingId])
 }
 
+// ─── Canonical Revision Lineage ────────────────────────────────────────
+
+model AccountCanonicalState {
+  accountId              String   @id
+  account                Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  lastRevision           BigInt   @default(0)
+  lastInvestmentRevision BigInt   @default(0)
+  holdingRevision        BigInt?
+  updatedAt              DateTime @db.Timestamp(3)
+}
+
+model AccountCanonicalChange {
+  accountId          String
+  account            Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  revision           BigInt
+  kind               String
+  entityId           String
+  financialTimestamp DateTime @db.Timestamp(3)
+  createdAt          DateTime @db.Timestamp(3)
+
+  @@id([accountId, revision])
+  @@unique([kind, entityId])
+  @@index([accountId, financialTimestamp, revision], map: "AccountCanonicalChange_account_financial_revision_idx")
+}
+
 // ─── Market Data ──────────────────────────────────────────────────────────────
 
 model ExchangeRate {
@@ -797,26 +829,27 @@ enum ImportLogEvent {
 // ─── Snapshot Domain ──────────────────────────────────────────────────────────
 
 model NetWorthSnapshot {
-  id                         String              @id @default(cuid())
+  id                         String                 @id @default(cuid())
   userId                     String
-  user                       User                @relation(fields: [userId], references: [id])
+  user                       User                   @relation(fields: [userId], references: [id])
   timestamp                  DateTime
   granularity                SnapshotGranularity
   source                     SnapshotSource
-  currency                   String              @default("CZK")
-  cashValue                  Decimal             @db.Decimal(18, 6)
-  portfolioValue             Decimal             @db.Decimal(18, 6)
-  liabilitiesValue           Decimal             @db.Decimal(18, 6)
-  totalNetWorth              Decimal             @db.Decimal(18, 6)
+  currency                   String                 @default("CZK")
+  cashValue                  Decimal                @db.Decimal(18, 6)
+  portfolioValue             Decimal                @db.Decimal(18, 6)
+  liabilitiesValue           Decimal                @db.Decimal(18, 6)
+  totalNetWorth              Decimal                @db.Decimal(18, 6)
   cashValueByCurrency        Json?
   portfolioValueByCurrency   Json?
   liabilitiesValueByCurrency Json?
   totalNetWorthByCurrency    Json?
   exchangeRates              Json?
-  isRecalculated             Boolean             @default(false)
-  calculatedAt               DateTime            @default(now())
-  calculationVersion         Int                 @default(1)
-  createdAt                  DateTime            @default(now())
+  isRecalculated             Boolean                @default(false)
+  calculatedAt               DateTime               @default(now())
+  calculationVersion         Int                    @default(1)
+  createdAt                  DateTime               @default(now())
+  dailyBaseline              DailySnapshotBaseline?
 
   @@unique([userId, timestamp, currency, granularity])
   @@index([userId, granularity, timestamp])
@@ -840,23 +873,23 @@ enum SnapshotSource {
 }
 
 model AccountSnapshot {
-  id                            String                @id @default(cuid())
+  id                            String                            @id @default(cuid())
   accountId                     String
-  account                       Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account                       Account                           @relation(fields: [accountId], references: [id], onDelete: Cascade)
   timestamp                     DateTime
   granularity                   SnapshotGranularity
   source                        SnapshotSource
-  currency                      String                @default("CZK")
-  cashValue                     Decimal               @db.Decimal(18, 6)
-  investmentValue               Decimal               @db.Decimal(18, 6)
-  investmentCostBasis           Decimal               @default(0) @db.Decimal(18, 6)
-  netDepositsValue              Decimal               @default(0) @db.Decimal(18, 6)
-  realizedPnlValue              Decimal               @default(0) @db.Decimal(18, 6)
-  unrealizedPnlValue            Decimal               @default(0) @db.Decimal(18, 6)
-  feesValue                     Decimal               @default(0) @db.Decimal(18, 6)
-  taxesValue                    Decimal               @default(0) @db.Decimal(18, 6)
-  liabilitiesValue              Decimal               @db.Decimal(18, 6)
-  totalValue                    Decimal               @db.Decimal(18, 6)
+  currency                      String                            @default("CZK")
+  cashValue                     Decimal                           @db.Decimal(18, 6)
+  investmentValue               Decimal                           @db.Decimal(18, 6)
+  investmentCostBasis           Decimal                           @default(0) @db.Decimal(18, 6)
+  netDepositsValue              Decimal                           @default(0) @db.Decimal(18, 6)
+  realizedPnlValue              Decimal                           @default(0) @db.Decimal(18, 6)
+  unrealizedPnlValue            Decimal                           @default(0) @db.Decimal(18, 6)
+  feesValue                     Decimal                           @default(0) @db.Decimal(18, 6)
+  taxesValue                    Decimal                           @default(0) @db.Decimal(18, 6)
+  liabilitiesValue              Decimal                           @db.Decimal(18, 6)
+  totalValue                    Decimal                           @db.Decimal(18, 6)
   cashValueByCurrency           Json?
   investmentValueByCurrency     Json?
   investmentCostBasisByCurrency Json?
@@ -866,11 +899,14 @@ model AccountSnapshot {
   feesByCurrency                Json?
   taxesByCurrency               Json?
   exchangeRates                 Json?
-  isRecalculated                Boolean               @default(false)
-  calculatedAt                  DateTime              @default(now())
-  calculationVersion            Int                   @default(1)
+  isRecalculated                Boolean                           @default(false)
+  calculatedAt                  DateTime                          @default(now())
+  calculationVersion            Int                               @default(1)
   items                         AccountSnapshotItem[]
-  createdAt                     DateTime              @default(now())
+  createdAt                     DateTime                          @default(now())
+  canonicalBoundary             AccountSnapshotCanonicalBoundary?
+  primaryBaselineRows           DailySnapshotBaselineAccount[]    @relation("DailyBaselinePrimarySnapshot")
+  presentationBaselineRows      DailySnapshotBaselineAccount[]    @relation("DailyBaselinePresentationSnapshot")
 
   @@unique([accountId, timestamp, currency, granularity])
   @@index([accountId, granularity, timestamp])
@@ -904,4 +940,60 @@ model AccountSnapshotItem {
   @@unique([snapshotId, listingId])
   @@index([assetId])
   @@index([listingId])
+}
+
+model AccountSnapshotCanonicalBoundary {
+  snapshotId                 String            @id
+  snapshot                   AccountSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  accountId                  String
+  account                    Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  canonicalRevision          BigInt
+  investmentRevision         BigInt?
+  holdingRevision            BigInt?
+  selectedLiabilityBalanceId String?
+  selectedLiabilityBalance   LiabilityBalance? @relation(fields: [selectedLiabilityBalanceId], references: [id], onDelete: Restrict, map: "AccountSnapshotBoundary_liabilityBalanceId_fkey")
+  createdAt                  DateTime          @db.Timestamp(3)
+
+  @@index([accountId, canonicalRevision], map: "AccountSnapshotBoundary_account_canonicalRevision_idx")
+}
+
+model DailySnapshotBaseline {
+  id                 String                         @id
+  userId             String
+  user               User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  netWorthSnapshotId String                         @unique
+  netWorthSnapshot   NetWorthSnapshot               @relation(fields: [netWorthSnapshotId], references: [id], onDelete: Cascade)
+  timestamp          DateTime                       @db.Timestamp(3)
+  granularity        SnapshotGranularity
+  currency           String
+  calculationVersion Int
+  source             SnapshotSource
+  createdAt          DateTime                       @db.Timestamp(3)
+  accounts           DailySnapshotBaselineAccount[]
+
+  @@unique([userId, timestamp, currency, calculationVersion], map: "DailyBaseline_user_timestamp_currency_version_key")
+  @@index([userId, timestamp])
+}
+
+model DailySnapshotBaselineAccount {
+  baselineId                 String
+  baseline                   DailySnapshotBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  accountId                  String
+  account                    Account               @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  accountType                AccountType
+  accountCurrency            String
+  primarySnapshotId          String
+  primarySnapshot            AccountSnapshot       @relation("DailyBaselinePrimarySnapshot", fields: [primarySnapshotId], references: [id], onDelete: Restrict)
+  presentationSnapshotId     String
+  presentationSnapshot       AccountSnapshot       @relation("DailyBaselinePresentationSnapshot", fields: [presentationSnapshotId], references: [id], onDelete: Restrict)
+  canonicalRevision          BigInt
+  investmentRevision         BigInt?
+  holdingRevision            BigInt?
+  selectedLiabilityBalanceId String?
+  selectedLiabilityBalance   LiabilityBalance?     @relation(fields: [selectedLiabilityBalanceId], references: [id], onDelete: Restrict)
+
+  @@id([baselineId, accountId])
+  @@unique([baselineId, primarySnapshotId])
+  @@unique([baselineId, presentationSnapshotId], map: "DailyBaselineAccount_baseline_presentationSnapshot_key")
+  @@index([accountId, baselineId])
 }

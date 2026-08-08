@@ -11,6 +11,10 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+)
 from app.db.models.enums import AccountType, LiabilityBalanceSource
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
@@ -197,6 +201,19 @@ async def test_credit_card_create_exact_replay_and_read_selector_compatibility()
     assert rows[0].fees_outstanding == Decimal("3.100000")
     assert rows[0].total_outstanding == evidence.total_outstanding == Decimal("105.223457")
     assert rows[0].created_at == CREATED_AT
+    async with AsyncSession(engine) as session:
+        state = await session.get(AccountCanonicalStateModel, command.account_id)
+        change = await session.scalar(
+            select(AccountCanonicalChangeModel).where(
+                AccountCanonicalChangeModel.kind == "liability_balance",
+                AccountCanonicalChangeModel.entity_id == rows[0].id,
+            )
+        )
+        assert state is not None and change is not None
+        assert (state.last_revision, state.last_investment_revision) == (1, 0)
+        assert change.revision == 1
+        assert change.financial_timestamp == command.effective_at
+        assert change.created_at == command.created_at
     assert await _out_of_scope_counts(prefix) == (0, 0, 0)
     await engine.dispose()
     await _cleanup(prefix)
