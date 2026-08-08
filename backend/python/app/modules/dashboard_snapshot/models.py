@@ -38,6 +38,7 @@ class DashboardAccountCard:
 
     account_id: str
     snapshot_id: str
+    primary_snapshot_id: str
     name: str
     account_type: AccountType
     account_currency: str

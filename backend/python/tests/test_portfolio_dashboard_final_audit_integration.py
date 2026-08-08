@@ -329,6 +329,8 @@ async def test_single_multi_and_dashboard_share_one_exact_broker_view() -> None:
         contribution = multi_payload["accounts"][0]
         assert contribution == {
             "snapshotId": single_payload["snapshotId"],
+            "primarySnapshotId": single_payload["snapshotId"],
+            "currency": single_payload["account"]["currency"],
             "account": single_payload["account"],
             "source": single_payload["source"],
             "summary": single_payload["summary"],

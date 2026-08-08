@@ -13,6 +13,7 @@ from app.modules.dashboard_snapshot.models import (
     DashboardTopPosition,
 )
 from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
     MultiAccountPortfolioAccountView,
     MultiAccountPortfolioSummary,
     MultiAccountPortfolioView,
@@ -225,6 +226,7 @@ def _account_card(
     output_currency: str,
     account_ids: set[str],
     snapshot_ids: set[str],
+    primary_snapshot_id: str | None = None,
 ) -> tuple[
     DashboardAccountCard,
     tuple[tuple[str, PortfolioPositionView], ...],
@@ -240,6 +242,7 @@ def _account_card(
         raise _fail()
     account_id = _text(account_view.account.account_id)
     snapshot_id = _text(account_view.snapshot_id)
+    primary_snapshot_id = _text(primary_snapshot_id or snapshot_id)
     if account_id in account_ids or snapshot_id in snapshot_ids:
         raise _fail()
     account_ids.add(account_id)
@@ -284,6 +287,7 @@ def _account_card(
         DashboardAccountCard(
             account_id=account_id,
             snapshot_id=snapshot_id,
+            primary_snapshot_id=primary_snapshot_id,
             name=name,
             account_type=account_type,
             account_currency=account_currency,
@@ -389,7 +393,10 @@ def _top_positions(
     )
 
 
-def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> DashboardSnapshotView:
+def build_dashboard_snapshot_view(
+    portfolio: MultiAccountPortfolioView,
+    account_presentations: tuple[AccountPortfolioPresentationView, ...] | None = None,
+) -> DashboardSnapshotView:
     """Project one coherent 5L-D portfolio into immutable dashboard values."""
 
     try:
@@ -407,7 +414,7 @@ def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> Dashb
         summary = _validate_summary(portfolio.summary)
         account_ids: set[str] = set()
         snapshot_ids: set[str] = set()
-        cards: list[DashboardAccountCard] = []
+        primary_by_account: dict[str, DashboardAccountCard] = {}
         positions: list[tuple[str, PortfolioPositionView]] = []
         investment_account_count = 0
         liability_account_count = 0
@@ -418,12 +425,69 @@ def build_dashboard_snapshot_view(portfolio: MultiAccountPortfolioView) -> Dashb
                 account_ids=account_ids,
                 snapshot_ids=snapshot_ids,
             )
-            cards.append(card)
+            if card.snapshot_id != card.primary_snapshot_id:
+                raise _fail()
+            primary_by_account[card.account_id] = card
             positions.extend(scoped_positions)
             investment_account_count += int(is_investment)
             liability_account_count += int(is_liability)
-        if summary.account_count != len(cards) or summary.position_count != len(positions):
+        if summary.account_count != len(primary_by_account) or summary.position_count != len(
+            positions
+        ):
             raise _fail()
+        presentation_account_ids: set[str] = set()
+        presentation_snapshot_ids: set[str] = set()
+        cards: list[DashboardAccountCard] = []
+        if account_presentations is None:
+            presentation_views = tuple(
+                (account, currency, account.snapshot_id) for account in portfolio.accounts
+            )
+        else:
+            if type(account_presentations) is not tuple or len(account_presentations) != len(
+                portfolio.accounts
+            ):
+                raise _fail()
+            presentation_views = tuple(
+                (
+                    MultiAccountPortfolioAccountView(
+                        snapshot_id=presentation.presentation_snapshot_id,
+                        account=presentation.account,
+                        source=presentation.source,
+                        summary=presentation.summary,
+                        positions=presentation.positions,
+                    ),
+                    presentation.currency,
+                    presentation.primary_snapshot_id,
+                )
+                for presentation in account_presentations
+                if type(presentation) is AccountPortfolioPresentationView
+            )
+            if len(presentation_views) != len(account_presentations):
+                raise _fail()
+        for account_view, presentation_currency, primary_snapshot_id in presentation_views:
+            card, _presentation_positions, is_investment, is_liability = _account_card(
+                account_view,
+                output_currency=presentation_currency,
+                account_ids=presentation_account_ids,
+                snapshot_ids=presentation_snapshot_ids,
+                primary_snapshot_id=primary_snapshot_id,
+            )
+            primary = primary_by_account.get(card.account_id)
+            if (
+                primary is None
+                or card.primary_snapshot_id != primary.snapshot_id
+                or card.name != primary.name
+                or card.account_type is not primary.account_type
+                or card.account_currency != primary.account_currency
+                or (
+                    account_presentations is not None
+                    and card.output_currency != card.account_currency
+                )
+                or is_investment is not (primary.account_type in _INVESTMENT_ACCOUNT_TYPES)
+                or is_liability is not (primary.account_type in _LIABILITY_ACCOUNT_TYPES)
+            ):
+                raise _fail()
+            cards.append(card)
         scoped = tuple(positions)
         if (
             _sum(tuple(position.value for _, position in scoped), _MONEY)

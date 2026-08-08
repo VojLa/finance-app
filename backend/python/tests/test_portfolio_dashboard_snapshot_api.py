@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -24,7 +25,10 @@ from app.modules.dashboard_snapshot.authorized_service import (
     ReadAuthorizedDashboardSnapshotResult,
 )
 from app.modules.dashboard_snapshot.projection import build_dashboard_snapshot_view
-from app.modules.portfolio_snapshot.aggregate_models import MultiAccountPortfolioView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.models import (
     AccountType,
@@ -176,6 +180,30 @@ def _portfolio() -> MultiAccountPortfolioView:
     )
 
 
+def _presentations(
+    portfolio: MultiAccountPortfolioView,
+) -> tuple[AccountPortfolioPresentationView, ...]:
+    return tuple(
+        AccountPortfolioPresentationView(
+            primary_snapshot_id=account.snapshot_id,
+            presentation_snapshot_id=f"{account.account.account_id}-presentation",
+            currency=account.account.currency,
+            account=account.account,
+            source=account.source,
+            summary=account.summary,
+            positions=tuple(
+                replace(
+                    position,
+                    value_currency=account.account.currency,
+                    cost_currency=account.account.currency,
+                )
+                for position in account.positions
+            ),
+        )
+        for account in portfolio.accounts
+    )
+
+
 def _client(settings: Settings) -> tuple[TestClient, AsyncSession]:
     app = create_app(settings)
     session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
@@ -224,7 +252,10 @@ def test_portfolio_adapter_maps_command_once_and_serializes_aliases(
 ) -> None:
     portfolio = _portfolio()
     read = AsyncMock(
-        return_value=ReadAuthorizedMultiAccountPortfolioSnapshotResult(portfolio=portfolio)
+        return_value=ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+            portfolio=portfolio,
+            account_presentations=_presentations(portfolio),
+        )
     )
     monkeypatch.setattr(AuthorizedMultiAccountPortfolioSnapshotService, "read", read)
     client, _ = _client(test_settings)
@@ -261,13 +292,18 @@ def test_portfolio_adapter_maps_command_once_and_serializes_aliases(
         {"currency": "EUR", "amount": "-5.000000"},
     ]
     assert payload["summary"]["accountCount"] == 2
-    assert payload["accounts"][0]["snapshotId"] == "account-a-snapshot"
+    assert payload["accounts"][0]["snapshotId"] == "account-a-presentation"
+    assert payload["accounts"][0]["primarySnapshotId"] == "account-a-snapshot"
+    assert payload["accounts"][0]["currency"] == "CZK"
     assert payload["accounts"][0]["summary"]["cashByCurrency"] == [
         {"currency": "CZK", "amount": "100.000000"},
         {"currency": "EUR", "amount": "2.000000"},
     ]
     assert payload["accounts"][0]["positions"][0]["allocationPct"] == "100.0000"
     assert payload["accounts"][0]["positions"][0]["priceTimestamp"] == ("2032-08-01T12:30:00.123")
+    assert payload["accounts"][0]["positions"][0]["valueCurrency"] == "CZK"
+    assert payload["accounts"][0]["positions"][0]["costCurrency"] == "CZK"
+    assert payload["aggregatePositions"][0]["position"]["valueCurrency"] == "EUR"
     _audit_no_leakage(payload)
 
 
@@ -276,7 +312,7 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     portfolio = _portfolio()
-    dashboard = build_dashboard_snapshot_view(portfolio)
+    dashboard = build_dashboard_snapshot_view(portfolio, _presentations(portfolio))
     read = AsyncMock(return_value=ReadAuthorizedDashboardSnapshotResult(dashboard=dashboard))
     monkeypatch.setattr(AuthorizedDashboardSnapshotService, "read", read)
     client, _ = _client(test_settings)
@@ -305,6 +341,8 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
         "40.0000",
     ]
     assert payload["assetTypeAllocations"][0]["allocationPct"] == "100.0000"
+    assert payload["accounts"][0]["primarySnapshotId"] == "account-a-snapshot"
+    assert payload["accounts"][0]["outputCurrency"] == "CZK"
     assert "priceCurrency" not in payload["topPositions"][0]
     assert "nativeValue" not in payload["topPositions"][0]
     assert "cashByCurrency" not in payload["summary"]

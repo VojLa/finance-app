@@ -50,17 +50,125 @@ const PORTFOLIO_RESPONSE = {
   summary: {
     totalValue: "123456789.123456",
     investmentValue: "100.000001",
+    investmentCostBasis: "80.000001",
+    liabilitiesValue: "0.000000",
+    cashValue: "23.456788",
+    cashByCurrency: [],
+    netDepositsValue: "100.000000",
+    netDepositsByCurrency: [],
+    realizedPnlValue: "0.000000",
+    unrealizedPnlValue: "20.000000",
+    feesValue: "0.000000",
+    taxesValue: "0.000000",
+    accountCount: 2,
+    positionCount: 1,
   },
   accounts: [
     {
-      snapshotId: "snapshot-b",
-      account: { accountId: "account-b" },
-      summary: { totalValue: "20.000001" },
+      snapshotId: "presentation-b",
+      primarySnapshotId: "snapshot-b",
+      currency: "USD",
+      source: "manual_recalculation",
+      account: {
+        accountId: "account-b",
+        name: "Account B",
+        accountType: "broker",
+        currency: "USD",
+      },
+      summary: {
+        totalValue: "20.000001",
+        investmentValue: "20.000001",
+        investmentCostBasis: "10.000000",
+        liabilitiesValue: "0.000000",
+        cashValue: "0.000000",
+        cashByCurrency: [],
+        netDepositsValue: "10.000000",
+        netDepositsByCurrency: [],
+        realizedPnlValue: "0.000000",
+        unrealizedPnlValue: "10.000001",
+        feesValue: "0.000000",
+        taxesValue: "0.000000",
+        positionCount: 1,
+      },
+      positions: [
+        {
+          listingId: "listing-b",
+          assetId: "asset-b",
+          symbol: "BBB",
+          name: "Asset B",
+          assetType: "stock",
+          quantity: "1.0000000000",
+          pricePerUnit: "20.0000010000",
+          priceCurrency: "USD",
+          priceTimestamp: VALID_REFRESH.timestamp,
+          value: "20.000001",
+          valueCurrency: "USD",
+          costBasis: "10.0000000000",
+          costCurrency: "USD",
+          unrealizedPnl: "10.0000010000",
+          allocationPct: "100.0000",
+          nativeValue: "20.0000010000",
+          nativeValueCurrency: "USD",
+          nativeCostBasis: "10.0000000000",
+          nativeCostCurrency: "USD",
+        },
+      ],
     },
     {
-      snapshotId: "snapshot-a",
-      account: { accountId: "account-a" },
-      summary: { totalValue: "10.000001" },
+      snapshotId: "presentation-a",
+      primarySnapshotId: "snapshot-a",
+      currency: "CZK",
+      source: "manual_recalculation",
+      account: {
+        accountId: "account-a",
+        name: "Account A",
+        accountType: "bank",
+        currency: "CZK",
+      },
+      summary: {
+        totalValue: "10.000001",
+        investmentValue: "0.000000",
+        investmentCostBasis: "0.000000",
+        liabilitiesValue: "0.000000",
+        cashValue: "10.000001",
+        cashByCurrency: [],
+        netDepositsValue: "10.000001",
+        netDepositsByCurrency: [],
+        realizedPnlValue: "0.000000",
+        unrealizedPnlValue: "0.000000",
+        feesValue: "0.000000",
+        taxesValue: "0.000000",
+        positionCount: 0,
+      },
+      positions: [],
+    },
+  ],
+  aggregatePositions: [
+    {
+      accountId: "account-b",
+      accountName: "Account B",
+      accountCurrency: "USD",
+      position: {
+        listingId: "listing-b",
+        assetId: "asset-b",
+        symbol: "BBB",
+        name: "Asset B",
+        assetType: "stock",
+        quantity: "1.0000000000",
+        pricePerUnit: "20.0000010000",
+        priceCurrency: "USD",
+        priceTimestamp: VALID_REFRESH.timestamp,
+        value: "100.000001",
+        valueCurrency: "EUR",
+        costBasis: "80.0000010000",
+        costCurrency: "EUR",
+        unrealizedPnl: "20.0000000000",
+        allocationPct: "100.0000",
+        nativeValue: "20.0000010000",
+        nativeValueCurrency: "USD",
+        nativeCostBasis: "10.0000000000",
+        nativeCostCurrency: "USD",
+      },
     },
   ],
 } as unknown as PortfolioSnapshotData
@@ -72,14 +180,72 @@ const DASHBOARD_RESPONSE = {
   calculationVersion: VALID_REFRESH.calculationVersion,
   summary: {
     totalValue: "123456789.123456",
+    assetsValue: "123456789.123456",
+    liabilitiesValue: "0.000000",
+    cashValue: "23.456788",
     investmentValue: "100.000001",
+    investmentCostBasis: "80.000001",
+    netDepositsValue: "100.000000",
+    realizedPnlValue: "0.000000",
+    unrealizedPnlValue: "20.000000",
+    feesValue: "0.000000",
+    taxesValue: "0.000000",
+    accountCount: 2,
+    investmentAccountCount: 1,
+    liabilityAccountCount: 0,
+    positionCount: 1,
   },
   accounts: [
-    { accountId: "account-a", snapshotId: "snapshot-a", totalValue: "10.000001" },
-    { accountId: "account-b", snapshotId: "snapshot-b", totalValue: "20.000001" },
+    {
+      accountId: "account-a",
+      snapshotId: "presentation-a",
+      primarySnapshotId: "snapshot-a",
+      accountCurrency: "CZK",
+      outputCurrency: "CZK",
+      totalValue: "10.000001",
+      cashValue: "10.000001",
+      investmentValue: "0.000000",
+      liabilitiesValue: "0.000000",
+      unrealizedPnlValue: "0.000000",
+      positionCount: 0,
+    },
+    {
+      accountId: "account-b",
+      snapshotId: "presentation-b",
+      primarySnapshotId: "snapshot-b",
+      accountCurrency: "USD",
+      outputCurrency: "USD",
+      totalValue: "20.000001",
+      cashValue: "0.000000",
+      investmentValue: "20.000001",
+      liabilitiesValue: "0.000000",
+      unrealizedPnlValue: "10.000001",
+      positionCount: 1,
+    },
   ],
-  assetTypeAllocations: [{ value: "100.000001", allocationPct: "100.000000" }],
-  topPositions: [{ accountId: "account-b", value: "100.000001" }],
+  assetTypeAllocations: [
+    {
+      assetType: "stock",
+      value: "100.000001",
+      allocationPct: "100.0000",
+      accountCount: 1,
+      positionCount: 1,
+    },
+  ],
+  topPositions: [
+    {
+      accountId: "account-b",
+      listingId: "listing-b",
+      assetId: "asset-b",
+      symbol: "BBB",
+      name: "Asset B",
+      assetType: "stock",
+      value: "100.000001",
+      valueCurrency: "EUR",
+      unrealizedPnl: "20.0000000000",
+      allocationPct: "100.0000",
+    },
+  ],
 } as unknown as DashboardSnapshotData
 
 type ApiMocks = {
@@ -195,7 +361,10 @@ describe("portfolio snapshot workflow", () => {
       portfolio: {
         ...PORTFOLIO_RESPONSE,
         accounts: [
-          { snapshotId: "snapshot-b", account: { accountId: "wrong-account" } },
+          {
+            ...PORTFOLIO_RESPONSE.accounts[0],
+            account: { ...PORTFOLIO_RESPONSE.accounts[0].account, accountId: "wrong-account" },
+          },
           PORTFOLIO_RESPONSE.accounts[1],
         ],
       },
@@ -208,7 +377,39 @@ describe("portfolio snapshot workflow", () => {
       portfolio: {
         ...PORTFOLIO_RESPONSE,
         accounts: [
-          { snapshotId: "wrong-snapshot", account: { accountId: "account-b" } },
+          { ...PORTFOLIO_RESPONSE.accounts[0], primarySnapshotId: "wrong-snapshot" },
+          PORTFOLIO_RESPONSE.accounts[1],
+        ],
+      },
+    })
+    await expectContractError(runPortfolioSnapshotWorkflow(IDENTITY, mocks.api))
+  })
+
+  it("fails closed on a malformed account MONEY string", async () => {
+    const mocks = apiMocks({
+      portfolio: {
+        ...PORTFOLIO_RESPONSE,
+        accounts: [
+          {
+            ...PORTFOLIO_RESPONSE.accounts[0],
+            summary: { ...PORTFOLIO_RESPONSE.accounts[0].summary, totalValue: "20.0" },
+          },
+          PORTFOLIO_RESPONSE.accounts[1],
+        ],
+      },
+    })
+    await expectContractError(runPortfolioSnapshotWorkflow(IDENTITY, mocks.api))
+  })
+
+  it("fails closed when a presentation position uses the primary currency", async () => {
+    const mocks = apiMocks({
+      portfolio: {
+        ...PORTFOLIO_RESPONSE,
+        accounts: [
+          {
+            ...PORTFOLIO_RESPONSE.accounts[0],
+            positions: [{ ...PORTFOLIO_RESPONSE.accounts[0].positions[0], valueCurrency: "EUR" }],
+          },
           PORTFOLIO_RESPONSE.accounts[1],
         ],
       },
@@ -275,6 +476,32 @@ describe("dashboard snapshot workflow", () => {
       dashboard: {
         ...DASHBOARD_RESPONSE,
         accounts: [DASHBOARD_RESPONSE.accounts[0], DASHBOARD_RESPONSE.accounts[0]],
+      },
+    })
+    await expectContractError(runDashboardSnapshotWorkflow(IDENTITY, mocks.api))
+  })
+
+  it("fails closed on malformed dashboard account finance", async () => {
+    const mocks = apiMocks({
+      dashboard: {
+        ...DASHBOARD_RESPONSE,
+        accounts: [
+          { ...DASHBOARD_RESPONSE.accounts[0], totalValue: 10 },
+          DASHBOARD_RESPONSE.accounts[1],
+        ],
+      },
+    })
+    await expectContractError(runDashboardSnapshotWorkflow(IDENTITY, mocks.api))
+  })
+
+  it("fails closed when a dashboard card relabels its output currency", async () => {
+    const mocks = apiMocks({
+      dashboard: {
+        ...DASHBOARD_RESPONSE,
+        accounts: [
+          { ...DASHBOARD_RESPONSE.accounts[0], outputCurrency: "EUR" },
+          DASHBOARD_RESPONSE.accounts[1],
+        ],
       },
     })
     await expectContractError(runDashboardSnapshotWorkflow(IDENTITY, mocks.api))

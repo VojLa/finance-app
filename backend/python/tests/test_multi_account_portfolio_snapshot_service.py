@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
+from dataclasses import FrozenInstanceError, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import permutations
 from pathlib import Path
@@ -20,7 +20,10 @@ from app.modules.dashboard_snapshot.authorized_service import (
 )
 from app.modules.dashboard_snapshot.models import DashboardSnapshotView
 from app.modules.dashboard_snapshot.projection import DashboardSnapshotProjectionError
-from app.modules.portfolio_snapshot.aggregate_models import MultiAccountPortfolioView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import (
     MultiAccountPortfolioProjectionError,
     build_multi_account_portfolio_view,
@@ -34,6 +37,7 @@ from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotView,
     PortfolioSummaryView,
@@ -105,7 +109,7 @@ def _view(
             account_id=account_id,
             name=f"{account_id} name",
             account_type=account_type,
-            currency="CZK" if account_id == "account-a" else "USD",
+            currency="EUR",
         ),
         timestamp=SNAPSHOT_AT,
         granularity=SnapshotGranularity.day,
@@ -152,6 +156,23 @@ def _command(
     }
     values.update(changes)
     return ReadAuthorizedMultiAccountPortfolioSnapshotCommand(**values)  # type: ignore[arg-type]
+
+
+def _presentations(
+    portfolio: MultiAccountPortfolioView,
+) -> tuple[AccountPortfolioPresentationView, ...]:
+    return tuple(
+        AccountPortfolioPresentationView(
+            primary_snapshot_id=account.snapshot_id,
+            presentation_snapshot_id=account.snapshot_id,
+            currency=account.account.currency,
+            account=account.account,
+            source=account.source,
+            summary=account.summary,
+            positions=account.positions,
+        )
+        for account in portfolio.accounts
+    )
 
 
 class _Transaction:
@@ -229,7 +250,15 @@ class _AuthorizedReader:
         self.transaction_ids.append(self.session.transaction_id)
         if command.account_id == self.failure_at and self.failure is not None:
             raise self.failure
-        return ReadAuthorizedPortfolioSnapshotResult(view=self.views[command.account_id])
+        primary = self.views[command.account_id]
+        key = (
+            command.account_id
+            if primary.currency == command.currency
+            else f"{command.account_id}:{command.currency}"
+        )
+        if key not in self.views:
+            raise PortfolioSnapshotUnavailableError()
+        return ReadAuthorizedPortfolioSnapshotResult(view=self.views[key])
 
 
 def _service(
@@ -311,6 +340,142 @@ async def test_two_investment_accounts_use_one_reader_and_one_aggregate_call() -
         "read:account-b",
         "commit-read",
     ]
+
+
+@pytest.mark.asyncio
+async def test_different_account_currency_reads_exact_companion_without_aggregating_it() -> None:
+    base = _view("account-b", value="100", cost="80")
+    primary = replace(base, account=replace(base.account, currency="USD"))
+    companion_position = replace(
+        primary.positions[0],
+        value=Decimal("25.000000"),
+        value_currency="USD",
+        cost_basis=Decimal("20.0000000000"),
+        cost_currency="USD",
+        unrealized_pnl=Decimal("5.0000000000"),
+    )
+    companion = replace(
+        primary,
+        snapshot_id="account-b-usd-snapshot",
+        currency="USD",
+        summary=replace(
+            primary.summary,
+            investment_value=Decimal("25.000000"),
+            investment_cost_basis=Decimal("20.000000"),
+            total_value=Decimal("25.000000"),
+            unrealized_pnl_value=Decimal("5.000000"),
+        ),
+        positions=(companion_position,),
+    )
+    service, session, reader, _, aggregate_calls = _service(
+        views={
+            "account-b": primary,
+            "account-b:USD": companion,
+        }
+    )
+
+    result = await service.read(
+        _command((ExactAccountSnapshotSelection("account-b", primary.snapshot_id),))
+    )
+
+    assert result.portfolio.summary.investment_value == Decimal("100.000000")
+    assert aggregate_calls == [(primary,)]
+    assert result.account_presentations == (
+        AccountPortfolioPresentationView(
+            primary_snapshot_id=primary.snapshot_id,
+            presentation_snapshot_id=companion.snapshot_id,
+            currency="USD",
+            account=companion.account,
+            source=companion.source,
+            summary=companion.summary,
+            positions=companion.positions,
+        ),
+    )
+    assert [(call.currency, call.required_snapshot_id) for call in reader.calls] == [
+        ("EUR", primary.snapshot_id),
+        ("USD", None),
+    ]
+    assert reader.transaction_ids == [1, 1]
+    assert session.in_transaction() is False
+
+
+@pytest.mark.asyncio
+async def test_missing_required_companion_fails_closed_without_partial_result() -> None:
+    primary = replace(
+        _view("account-b"),
+        account=replace(_view("account-b").account, currency="USD"),
+    )
+    service, session, reader, _, aggregate_calls = _service(views={"account-b": primary})
+
+    with pytest.raises(PortfolioSnapshotUnavailableError):
+        await service.read(_command((ExactAccountSnapshotSelection("account-b"),)))
+
+    assert [call.currency for call in reader.calls] == ["EUR", "USD"]
+    assert aggregate_calls == []
+    assert session.in_transaction() is False
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "timestamp",
+        "granularity",
+        "account",
+        "currency",
+        "calculation_version",
+        "position_lineage",
+        "missing_position",
+        "native_breakdown",
+    ),
+)
+@pytest.mark.asyncio
+async def test_corrupt_companion_fails_closed_without_primary_fallback(
+    corruption: str,
+) -> None:
+    base = _view("account-b", value="100", cost="80")
+    primary = replace(base, account=replace(base.account, currency="USD"))
+    companion = replace(primary, snapshot_id="account-b-usd-snapshot", currency="USD")
+    if corruption == "timestamp":
+        companion = replace(companion, timestamp=SNAPSHOT_AT + timedelta(minutes=1))
+    elif corruption == "granularity":
+        companion = replace(companion, granularity=SnapshotGranularity.minute)
+    elif corruption == "account":
+        companion = replace(
+            companion,
+            account=replace(companion.account, account_id="foreign-account"),
+        )
+    elif corruption == "currency":
+        companion = replace(companion, currency="GBP")
+    elif corruption == "calculation_version":
+        companion = replace(companion, calculation_version=2)
+    elif corruption == "position_lineage":
+        companion = replace(
+            companion,
+            positions=(replace(companion.positions[0], native_value=Decimal("101.0000000000")),),
+        )
+    elif corruption == "missing_position":
+        companion = replace(companion, positions=())
+    elif corruption == "native_breakdown":
+        companion = replace(
+            companion,
+            summary=replace(
+                companion.summary,
+                cash_by_currency=(
+                    PortfolioCurrencyAmount(currency="USD", amount=Decimal("1.000000")),
+                ),
+            ),
+        )
+    else:  # pragma: no cover - the parameter list is exhaustive
+        raise AssertionError(corruption)
+    service, session, _, _, aggregate_calls = _service(
+        views={"account-b": primary, "account-b:USD": companion}
+    )
+
+    with pytest.raises(PortfolioSnapshotUnavailableError):
+        await service.read(_command((ExactAccountSnapshotSelection("account-b"),)))
+
+    assert aggregate_calls == []
+    assert session.in_transaction() is False
 
 
 @pytest.mark.asyncio
@@ -504,7 +669,10 @@ async def test_service_fails_if_session_is_not_idle_after_read() -> None:
 def test_multi_account_command_and_result_are_frozen() -> None:
     command = _command()
     portfolio = build_multi_account_portfolio_view((_view("account-a", value="60", cost="50"),))
-    result = ReadAuthorizedMultiAccountPortfolioSnapshotResult(portfolio=portfolio)
+    result = ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+        portfolio=portfolio,
+        account_presentations=_presentations(portfolio),
+    )
 
     with pytest.raises(FrozenInstanceError):
         command.currency = "USD"  # type: ignore[misc]
@@ -538,15 +706,21 @@ async def test_dashboard_service_composes_portfolio_and_projection_once() -> Non
         )
     )
     portfolio_service = _PortfolioService(
-        ReadAuthorizedMultiAccountPortfolioSnapshotResult(portfolio=portfolio)
+        ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+            portfolio=portfolio,
+            account_presentations=_presentations(portfolio),
+        )
     )
     projected: list[MultiAccountPortfolioView] = []
 
-    def projector(value: MultiAccountPortfolioView) -> DashboardSnapshotView:
+    def projector(
+        value: MultiAccountPortfolioView,
+        presentations: tuple[AccountPortfolioPresentationView, ...],
+    ) -> DashboardSnapshotView:
         projected.append(value)
         from app.modules.dashboard_snapshot.projection import build_dashboard_snapshot_view
 
-        return build_dashboard_snapshot_view(value)
+        return build_dashboard_snapshot_view(value, presentations)
 
     service = AuthorizedDashboardSnapshotService(
         portfolio_service,
@@ -580,8 +754,15 @@ async def test_dashboard_service_preserves_portfolio_errors(failure: BaseExcepti
 async def test_dashboard_projection_failure_maps_to_unavailable() -> None:
     portfolio = build_multi_account_portfolio_view((_view("account-a"),))
     service = AuthorizedDashboardSnapshotService(
-        _PortfolioService(ReadAuthorizedMultiAccountPortfolioSnapshotResult(portfolio=portfolio)),
-        dashboard_builder=lambda _value: (_ for _ in ()).throw(DashboardSnapshotProjectionError()),
+        _PortfolioService(
+            ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+                portfolio=portfolio,
+                account_presentations=_presentations(portfolio),
+            )
+        ),
+        dashboard_builder=lambda _value, _presentations: (_ for _ in ()).throw(
+            DashboardSnapshotProjectionError()
+        ),
     )
 
     with pytest.raises(PortfolioSnapshotUnavailableError):

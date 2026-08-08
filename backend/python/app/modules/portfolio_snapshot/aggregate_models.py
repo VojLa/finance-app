@@ -36,7 +36,7 @@ class MultiAccountPortfolioSummary:
 
 @dataclass(frozen=True, slots=True)
 class MultiAccountPortfolioAccountView:
-    """One unchanged account-scoped presentation contribution."""
+    """One unchanged primary account-scoped aggregate contribution."""
 
     snapshot_id: str
     account: PortfolioAccountView
@@ -55,3 +55,16 @@ class MultiAccountPortfolioView:
     calculation_version: int
     summary: MultiAccountPortfolioSummary
     accounts: tuple[MultiAccountPortfolioAccountView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountPortfolioPresentationView:
+    """Exact account-currency view linked to its primary manifest snapshot."""
+
+    primary_snapshot_id: str
+    presentation_snapshot_id: str
+    currency: str
+    account: PortfolioAccountView
+    source: SnapshotSource
+    summary: PortfolioSummaryView
+    positions: tuple[PortfolioPositionView, ...]

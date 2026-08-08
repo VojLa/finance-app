@@ -1153,3 +1153,25 @@ evidence causes the complete primary/companion write to fail closed.
 This remediation changes no public portfolio, dashboard, or history contract.
 Those readers continue to consume the primary user-base snapshot until
 R10-B2 performs the explicit account-currency presentation cutover.
+
+## Account presentation and primary lineage
+
+R10-B2 introduces no new financial persistence. It reads the R10-B1 pair as
+two explicit authorities: the primary snapshot remains the account's
+contribution to user-base aggregation, while the exact companion becomes the
+account presentation. Both are selected at the same account, timestamp,
+granularity, source, and calculation version in one repeatable-read
+transaction.
+
+For a public portfolio account, `snapshotId` identifies the snapshot that owns
+the returned summary and positions, and `primarySnapshotId` identifies the
+manifest-selected primary snapshot. Account-level `currency` is the persisted
+`Account.currency`; every returned position value, cost basis, and unrealized
+P/L uses that currency. Native fields and cash/deposit breakdowns retain their
+original-currency evidence semantics.
+
+Top-level portfolio summary and explicit aggregate positions remain in
+`User.baseCurrency`. Dashboard global summary, allocation, and top positions
+also remain primary-currency evidence, while dashboard account cards use the
+companion. Missing or inconsistent companion evidence invalidates the exact
+read; it is never synthesized from the primary row or reconstructed with FX.

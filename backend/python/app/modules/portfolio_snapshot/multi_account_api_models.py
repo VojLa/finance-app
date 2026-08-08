@@ -83,10 +83,23 @@ class MultiAccountPortfolioAccountResponse(BaseModel):
     model_config = _MODEL_CONFIG
 
     snapshot_id: str = Field(serialization_alias="snapshotId")
+    primary_snapshot_id: str = Field(serialization_alias="primarySnapshotId")
+    currency: str
     account: PortfolioSnapshotAccountResponse
     source: SnapshotSource
     summary: PortfolioSnapshotSummaryResponse
     positions: tuple[PortfolioSnapshotPositionResponse, ...]
+
+
+class MultiAccountPortfolioAggregatePositionResponse(BaseModel):
+    """One primary-currency position with its account presentation context."""
+
+    model_config = _MODEL_CONFIG
+
+    account_id: str = Field(serialization_alias="accountId")
+    account_name: str = Field(serialization_alias="accountName")
+    account_currency: str = Field(serialization_alias="accountCurrency")
+    position: PortfolioSnapshotPositionResponse
 
 
 class MultiAccountPortfolioResponse(BaseModel):
@@ -98,6 +111,9 @@ class MultiAccountPortfolioResponse(BaseModel):
     calculation_version: int = Field(serialization_alias="calculationVersion")
     summary: MultiAccountPortfolioSummaryResponse
     accounts: tuple[MultiAccountPortfolioAccountResponse, ...]
+    aggregate_positions: tuple[MultiAccountPortfolioAggregatePositionResponse, ...] = Field(
+        serialization_alias="aggregatePositions"
+    )
 
     @field_serializer("timestamp")
     def serialize_timestamp(self, value: datetime) -> str:

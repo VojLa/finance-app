@@ -59,6 +59,7 @@ class DashboardAccountCardResponse(BaseModel):
 
     account_id: str = Field(serialization_alias="accountId")
     snapshot_id: str = Field(serialization_alias="snapshotId")
+    primary_snapshot_id: str = Field(serialization_alias="primarySnapshotId")
     name: str
     account_type: AccountType = Field(serialization_alias="accountType")
     account_currency: str = Field(serialization_alias="accountCurrency")

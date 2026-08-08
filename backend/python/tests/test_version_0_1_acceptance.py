@@ -131,7 +131,9 @@ def test_release_roadmap_records_r10a_and_remaining_release_work() -> None:
         "independent\n  scope review"
     ) in roadmap
     assert "0.1-R10-A — multi-file import post-processing closure: implemented" in roadmap
-    assert "0.1-R10-B — account-currency presentation: completed — NOT READY" in roadmap
+    assert "0.1-R10-B — account-currency presentation: implemented" in roadmap
     assert "0.1-R10-B1 — persisted account-currency valuation evidence: implemented" in roadmap
-    assert "0.1-R10-B2 — account-currency read/API/frontend presentation: planned" in roadmap
+    assert "0.1-R10-B2 — account-currency read/API/frontend presentation: implemented" in roadmap
+    assert "0.1-R10-C — dashboard deposited presentation: planned" in roadmap
+    assert "0.1-R10-D — current-value snapshot invariant decision: planned" in roadmap
     assert "Version 0.1 is not complete" in roadmap

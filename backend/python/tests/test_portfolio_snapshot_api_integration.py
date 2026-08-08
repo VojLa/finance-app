@@ -186,7 +186,7 @@ async def _seed(
                 id=account_id,
                 name=f"{prefix} account",
                 type=account_type,
-                currency="CZK",
+                currency="EUR",
                 color=None,
                 notes=None,
                 is_archived=archived,

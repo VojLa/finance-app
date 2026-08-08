@@ -32,6 +32,7 @@ from app.modules.dashboard_snapshot.models import (
 )
 from app.modules.dashboard_snapshot.projection import build_dashboard_snapshot_view
 from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
     MultiAccountPortfolioAccountView,
     MultiAccountPortfolioSummary,
     MultiAccountPortfolioView,
@@ -59,10 +60,14 @@ from app.modules.portfolio_snapshot.models import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.portfolio_snapshot.multi_account_api import (
+    build_multi_account_portfolio_response,
+)
 from app.modules.portfolio_snapshot.multi_account_api_models import (
     ExactAccountSnapshotRequest,
     ExactPortfolioSnapshotSetRequest,
     MultiAccountPortfolioAccountResponse,
+    MultiAccountPortfolioAggregatePositionResponse,
     MultiAccountPortfolioResponse,
     MultiAccountPortfolioSummaryResponse,
 )
@@ -339,9 +344,23 @@ def _serialized_views() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
         views[0],
         from_attributes=True,
     ).model_dump(mode="json", by_alias=True)
-    multi_payload = MultiAccountPortfolioResponse.model_validate(
-        multi,
-        from_attributes=True,
+    presentations = tuple(
+        AccountPortfolioPresentationView(
+            primary_snapshot_id=account.snapshot_id,
+            presentation_snapshot_id=account.snapshot_id,
+            currency=account.account.currency,
+            account=account.account,
+            source=account.source,
+            summary=account.summary,
+            positions=account.positions,
+        )
+        for account in multi.accounts
+    )
+    multi_payload = build_multi_account_portfolio_response(
+        ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+            portfolio=multi,
+            account_presentations=presentations,
+        )
     ).model_dump(mode="json", by_alias=True)
     dashboard_payload = DashboardSnapshotResponse.model_validate(
         dashboard,
@@ -788,6 +807,7 @@ def test_public_response_models_have_exact_field_sets() -> None:
         "calculation_version",
         "summary",
         "accounts",
+        "aggregate_positions",
     }
     assert set(DashboardSnapshotResponse.model_fields) == {
         "timestamp",
@@ -903,10 +923,18 @@ def test_public_nested_response_shapes_are_exact() -> None:
     }
     assert set(MultiAccountPortfolioAccountResponse.model_fields) == {
         "snapshot_id",
+        "primary_snapshot_id",
+        "currency",
         "account",
         "source",
         "summary",
         "positions",
+    }
+    assert set(MultiAccountPortfolioAggregatePositionResponse.model_fields) == {
+        "account_id",
+        "account_name",
+        "account_currency",
+        "position",
     }
     assert set(MultiAccountPortfolioSummaryResponse.model_fields) == {
         "cash_value",

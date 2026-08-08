@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
-from app.modules.portfolio_snapshot.aggregate_models import MultiAccountPortfolioView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import (
     MultiAccountPortfolioProjectionError,
     build_multi_account_portfolio_view,
@@ -57,6 +60,76 @@ class ReadAuthorizedMultiAccountPortfolioSnapshotResult:
     """Public-safe exact multi-account portfolio result."""
 
     portfolio: MultiAccountPortfolioView
+    account_presentations: tuple[AccountPortfolioPresentationView, ...]
+
+
+def _presentation_account(
+    primary: PortfolioSnapshotView,
+    presentation: PortfolioSnapshotView,
+) -> AccountPortfolioPresentationView:
+    """Validate one companion and retain the primary manifest identity."""
+
+    if (
+        presentation.account != primary.account
+        or presentation.timestamp != primary.timestamp
+        or presentation.granularity is not primary.granularity
+        or presentation.source is not primary.source
+        or presentation.calculation_version != primary.calculation_version
+        or presentation.currency != primary.account.currency
+        or presentation.summary.cash_by_currency != primary.summary.cash_by_currency
+        or presentation.summary.net_deposits_by_currency != primary.summary.net_deposits_by_currency
+        or len(presentation.positions) != len(primary.positions)
+        or (
+            presentation.currency == primary.currency
+            and presentation.snapshot_id != primary.snapshot_id
+        )
+        or (
+            presentation.currency != primary.currency
+            and presentation.snapshot_id == primary.snapshot_id
+        )
+    ):
+        raise portfolio_snapshot_unavailable()
+    primary_lineage = tuple(
+        (
+            position.listing_id,
+            position.asset_id,
+            position.quantity,
+            position.price_per_unit,
+            position.price_currency,
+            position.price_timestamp,
+            position.native_value,
+            position.native_value_currency,
+            position.native_cost_basis,
+            position.native_cost_currency,
+        )
+        for position in primary.positions
+    )
+    presentation_lineage = tuple(
+        (
+            position.listing_id,
+            position.asset_id,
+            position.quantity,
+            position.price_per_unit,
+            position.price_currency,
+            position.price_timestamp,
+            position.native_value,
+            position.native_value_currency,
+            position.native_cost_basis,
+            position.native_cost_currency,
+        )
+        for position in presentation.positions
+    )
+    if presentation_lineage != primary_lineage:
+        raise portfolio_snapshot_unavailable()
+    return AccountPortfolioPresentationView(
+        primary_snapshot_id=primary.snapshot_id,
+        presentation_snapshot_id=presentation.snapshot_id,
+        currency=presentation.currency,
+        account=presentation.account,
+        source=presentation.source,
+        summary=presentation.summary,
+        positions=presentation.positions,
+    )
 
 
 class _AuthorizedReader(Protocol):
@@ -186,6 +259,7 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
                 await self.session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
                 authorized_reader = self.authorized_reader_factory(self.session)
                 views: list[PortfolioSnapshotView] = []
+                presentations: list[AccountPortfolioPresentationView] = []
                 for selector in canonical.accounts:
                     result = await authorized_reader.read(
                         ReadAuthorizedPortfolioSnapshotCommand(
@@ -200,9 +274,35 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
                     )
                     if type(result) is not ReadAuthorizedPortfolioSnapshotResult:
                         raise portfolio_snapshot_unavailable()
-                    views.append(result.view)
+                    primary = result.view
+                    if primary.currency != canonical.currency:
+                        raise portfolio_snapshot_unavailable()
+                    views.append(primary)
+                    presentation = primary
+                    if primary.account.currency != canonical.currency:
+                        companion_result = await authorized_reader.read(
+                            ReadAuthorizedPortfolioSnapshotCommand(
+                                principal=canonical.principal,
+                                account_id=selector.account_id,
+                                timestamp=canonical.timestamp,
+                                granularity=canonical.granularity,
+                                currency=primary.account.currency,
+                                calculation_version=canonical.calculation_version,
+                                required_snapshot_id=None,
+                            )
+                        )
+                        if type(companion_result) is not ReadAuthorizedPortfolioSnapshotResult:
+                            raise portfolio_snapshot_unavailable()
+                        presentation = companion_result.view
+                    presentations.append(_presentation_account(primary, presentation))
                 portfolio = self.aggregate_builder(tuple(views))
                 if type(portfolio) is not MultiAccountPortfolioView:
+                    raise portfolio_snapshot_unavailable()
+                if tuple(account.snapshot_id for account in portfolio.accounts) != tuple(
+                    view.snapshot_id for view in views
+                ) or tuple(account.account.account_id for account in portfolio.accounts) != tuple(
+                    account.account.account_id for account in presentations
+                ):
                     raise portfolio_snapshot_unavailable()
         except (AccountNotFoundError, AccountAccessDeniedError):
             raise
@@ -221,7 +321,10 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
                 "Authorized multi-account snapshot read left an active database transaction."
             )
 
-        return ReadAuthorizedMultiAccountPortfolioSnapshotResult(portfolio=portfolio)
+        return ReadAuthorizedMultiAccountPortfolioSnapshotResult(
+            portfolio=portfolio,
+            account_presentations=tuple(presentations),
+        )
 
     async def _require_idle(self, message: str) -> None:
         if self.session.in_transaction():

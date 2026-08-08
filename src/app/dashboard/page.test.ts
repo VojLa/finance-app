@@ -76,7 +76,7 @@ describe("dashboard snapshot cutover clients", () => {
       data: dashboardSnapshotFixture,
     })
     if (result.status === "ready") {
-      expect(result.data.summary.totalValue).toBe("98765432109876543210.123456")
+      expect(result.data.summary.totalValue).toBe("999999999999.123456")
       expect(result.data.topPositions.map(({ symbol }) => symbol)).toEqual(["ZZZ", "AAA"])
     }
   })
