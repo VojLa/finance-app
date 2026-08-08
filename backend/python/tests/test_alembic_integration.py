@@ -16,7 +16,7 @@ from scripts.alembic_baseline import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
     HEAD_REVISION,
-    PREVIOUS_HEAD_REVISION,
+    LIABILITY_REVISION,
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -97,7 +97,7 @@ async def test_first_alembic_schema_migration_lifecycle() -> None:
             "-c",
             str(ALEMBIC_CONFIG),
             "upgrade",
-            PREVIOUS_HEAD_REVISION,
+            LIABILITY_REVISION,
         )
 
         async with engine.begin() as connection:
@@ -109,7 +109,7 @@ async def test_first_alembic_schema_migration_lifecycle() -> None:
                 text('SELECT "version_num" FROM public.alembic_version')
             )
             assert notes is None
-            assert version == PREVIOUS_HEAD_REVISION
+            assert version == LIABILITY_REVISION
             await connection.execute(
                 text('UPDATE "public"."Account" SET "notes" = :notes WHERE "id" = :id'),
                 {"notes": "Preserve this note", "id": TEST_ACCOUNT_ID},

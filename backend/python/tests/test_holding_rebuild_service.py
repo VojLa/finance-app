@@ -356,7 +356,17 @@ async def test_empty_exact_rebuild_is_replay_and_service_owns_no_transaction() -
     repository = SimpleNamespace(
         lock_rebuild_scope=AsyncMock(),
         lock_canonical_history_scopes=AsyncMock(),
+        lock_canonical_state=AsyncMock(
+            return_value=SimpleNamespace(
+                account_id="account",
+                last_revision=0,
+                last_investment_revision=0,
+                holding_revision=None,
+                updated_at=NOW,
+            )
+        ),
         load_active_events_for_update=AsyncMock(return_value=[]),
+        load_investment_changes_for_update=AsyncMock(return_value=[]),
         load_active_account_movements_for_update=AsyncMock(return_value=[]),
         lock_account_holdings=AsyncMock(return_value=[]),
         load_listings_for_update=AsyncMock(return_value=[]),
@@ -368,7 +378,9 @@ async def test_empty_exact_rebuild_is_replay_and_service_owns_no_transaction() -
     result = await service.rebuild(account_id="account", rebuilt_at=NOW)
     assert result.replayed is True
     assert result.rebuilt_at is None
-    repository.flush.assert_not_awaited()
+    repository.flush.assert_awaited_once()
+    state = await repository.lock_canonical_state("account")
+    assert state.holding_revision == 0
     commit.assert_not_called()
     rollback.assert_not_called()
     begin.assert_not_called()

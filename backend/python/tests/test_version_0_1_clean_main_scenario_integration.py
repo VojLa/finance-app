@@ -450,7 +450,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     database, version, migration = _run(_database_name_version_and_head())
     assert database == EXPECTED_DATABASE
     assert version.startswith("16.")
-    assert migration == "3h0001twdata"
+    assert migration == "3i0001d1base"
     assert _run(_counts()) == {
         "users": 0,
         "accounts": 0,

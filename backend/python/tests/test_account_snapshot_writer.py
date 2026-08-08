@@ -8,6 +8,11 @@ from typing import Any, cast
 import pytest
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+)
 from app.db.models.enums import (
     AccountType,
     LiabilityBalanceSource,
@@ -15,6 +20,7 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.modules.snapshots.evidence_service import (
     BuildAccountSnapshotEvidenceCommand,
@@ -103,6 +109,42 @@ class _Repository:
         self.flush_error: Exception | None = None
         self.snapshot_lock_values: dict[str, object] | None = None
         self.existing_values: dict[str, object] | None = None
+        self.canonical_state = AccountCanonicalStateModel(
+            account_id="account-1",
+            last_revision=0,
+            last_investment_revision=0,
+            holding_revision=0,
+            updated_at=CREATED_AT,
+        )
+        self.boundaries: dict[str, AccountSnapshotCanonicalBoundaryModel] = {}
+        self.liability: LiabilityBalanceModel | None = None
+        self.liability_change: AccountCanonicalChangeModel | None = None
+        liability_id = projection.audit.selected_liability_balance_id
+        if liability_id is not None:
+            effective_at = projection.audit.selected_liability_effective_at
+            assert effective_at is not None
+            self.canonical_state.last_revision = 1
+            self.liability = LiabilityBalanceModel(
+                id=liability_id,
+                account_id="account-1",
+                effective_at=effective_at,
+                currency="CZK",
+                outstanding_principal=Decimal("100.000000"),
+                accrued_interest=Decimal("10.000000"),
+                fees_outstanding=Decimal("5.000000"),
+                total_outstanding=Decimal("115.000000"),
+                source=LiabilityBalanceSource.statement,
+                external_id="statement-1",
+                created_at=CREATED_AT,
+            )
+            self.liability_change = AccountCanonicalChangeModel(
+                account_id="account-1",
+                revision=1,
+                kind="liability_balance",
+                entity_id=liability_id,
+                financial_timestamp=effective_at,
+                created_at=CREATED_AT,
+            )
 
     async def load_account_for_share(self, account_id: str) -> AccountModel | None:
         self.calls.append("account")
@@ -114,6 +156,20 @@ class _Repository:
 
     async def lock_canonical_evidence(self, account_id: str) -> None:
         self.calls.append("canonical_locks")
+
+    async def lock_canonical_state(self, account_id: str) -> AccountCanonicalStateModel:
+        self.calls.append("canonical_state")
+        return self.canonical_state
+
+    async def load_canonical_change(
+        self, *, kind: str, entity_id: str
+    ) -> AccountCanonicalChangeModel | None:
+        self.calls.append("canonical_change")
+        return self.liability_change
+
+    async def load_liability_balance(self, balance_id: str) -> LiabilityBalanceModel | None:
+        self.calls.append("liability_balance")
+        return self.liability
 
     async def lock_market_evidence_tables(self) -> None:
         self.calls.append("market_locks")
@@ -134,6 +190,34 @@ class _Repository:
         self.calls.append("existing_items")
         return self.existing_items
 
+    async def load_boundary(self, snapshot_id: str) -> AccountSnapshotCanonicalBoundaryModel | None:
+        self.calls.append("existing_boundary")
+        boundary = self.boundaries.get(snapshot_id)
+        if boundary is not None:
+            return boundary
+        if self.existing is None or self.existing.id != snapshot_id:
+            return None
+        investment = (
+            0
+            if self.account.type
+            in {AccountType.broker, AccountType.exchange, AccountType.crypto_wallet}
+            else None
+        )
+        return AccountSnapshotCanonicalBoundaryModel(
+            snapshot_id=snapshot_id,
+            account_id="account-1",
+            canonical_revision=self.canonical_state.last_revision,
+            investment_revision=investment,
+            holding_revision=investment,
+            selected_liability_balance_id=(
+                self.projection.audit.selected_liability_balance_id
+                if self.account.type
+                in {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
+                else None
+            ),
+            created_at=CREATED_AT,
+        )
+
     def add_snapshot(self, snapshot: AccountSnapshotModel) -> None:
         self.calls.append("add_snapshot")
         self.inserted_snapshot = snapshot
@@ -141,6 +225,10 @@ class _Repository:
     def add_items(self, items: tuple[AccountSnapshotItemModel, ...]) -> None:
         self.calls.append("add_items")
         self.inserted_items = items
+
+    def add_boundary(self, boundary: AccountSnapshotCanonicalBoundaryModel) -> None:
+        self.calls.append("add_boundary")
+        self.boundaries[boundary.snapshot_id] = boundary
 
     async def flush(self) -> None:
         self.calls.append("flush")
@@ -158,6 +246,12 @@ class _Repository:
     async def reload_snapshot_items(self, snapshot_id: str) -> tuple[AccountSnapshotItemModel, ...]:
         self.calls.append("reload_items")
         return self.inserted_items
+
+    async def reload_boundary(
+        self, snapshot_id: str
+    ) -> AccountSnapshotCanonicalBoundaryModel | None:
+        self.calls.append("reload_boundary")
+        return self.boundaries.get(snapshot_id)
 
 
 def _account() -> AccountModel:
@@ -411,13 +505,15 @@ async def test_created_composes_evidence_projection_and_persistence_once() -> No
     assert metadata.calculated_at == CALCULATED_AT
     assert metadata.created_at == CREATED_AT
     assert metadata.is_recalculated is True
-    assert repository.calls[:4] == [
+    assert repository.calls[:5] == [
         "account",
         "snapshot_lock",
         "canonical_locks",
+        "canonical_state",
         "market_locks",
     ]
-    assert repository.flush_count == 2
+    assert repository.flush_count == 3
+    assert tuple(repository.boundaries) == ("snapshot-1",)
     assert session.begin_count == 1
     assert session.commit_count == 1
     assert session.rollback_count == 0
@@ -450,7 +546,12 @@ async def test_liability_zero_item_create_and_replay_skip_investment_locks() -> 
     assert created.item_count == 0
     assert repository.inserted_items == ()
     assert repository.calls[:2] == ["account", "snapshot_lock"]
-    assert repository.calls[:3] == ["account", "snapshot_lock", "liability_lock"]
+    assert repository.calls[:4] == [
+        "account",
+        "snapshot_lock",
+        "canonical_state",
+        "liability_lock",
+    ]
     assert "canonical_locks" not in repository.calls
     assert "market_locks" not in repository.calls
     assert session.commit_count == 1
@@ -665,10 +766,11 @@ async def test_mixed_currency_liability_lock_order_and_replay_identity() -> None
 
     await writer.write(_command(output_currency="EUR"))
 
-    assert repository.calls[:5] == [
+    assert repository.calls[:6] == [
         "account",
         "snapshot_lock",
         "snapshot_lock",
+        "canonical_state",
         "liability_lock",
         "market_locks",
     ]

@@ -12,6 +12,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+)
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import AccountType, SnapshotGranularity, SnapshotSource
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
@@ -42,6 +46,11 @@ _LIABILITY_ACCOUNT_TYPES = {
     AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
+}
+_INVESTMENT_ACCOUNT_TYPES = {
+    AccountType.broker,
+    AccountType.exchange,
+    AccountType.crypto_wallet,
 }
 
 
@@ -82,6 +91,28 @@ class AccountSnapshotWriteResult:
     timestamp: datetime
     granularity: SnapshotGranularity
     currency: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedCanonicalBoundary:
+    snapshot_id: str
+    account_id: str
+    canonical_revision: int
+    investment_revision: int | None
+    holding_revision: int | None
+    selected_liability_balance_id: str | None
+    created_at: datetime
+
+    def model_values(self) -> dict[str, object]:
+        return {
+            "snapshot_id": self.snapshot_id,
+            "account_id": self.account_id,
+            "canonical_revision": self.canonical_revision,
+            "investment_revision": self.investment_revision,
+            "holding_revision": self.holding_revision,
+            "selected_liability_balance_id": self.selected_liability_balance_id,
+            "created_at": self.created_at,
+        }
 
 
 class _EvidenceBuilder(Protocol):
@@ -231,6 +262,52 @@ def _matches_items(
     return True
 
 
+def _matches_boundary(
+    persisted: object,
+    expected: _ExpectedCanonicalBoundary,
+) -> bool:
+    if not isinstance(persisted, AccountSnapshotCanonicalBoundaryModel):
+        return False
+    values = expected.model_values()
+    return all(getattr(persisted, name) == value for name, value in values.items())
+
+
+def _boundary_base(
+    state: object,
+    *,
+    account_id: str,
+    account_type: AccountType,
+) -> tuple[int, int | None, int | None]:
+    if (
+        not isinstance(state, AccountCanonicalStateModel)
+        or state.account_id != account_id
+        or not isinstance(state.last_revision, int)
+        or isinstance(state.last_revision, bool)
+        or state.last_revision < 0
+        or not isinstance(state.last_investment_revision, int)
+        or isinstance(state.last_investment_revision, bool)
+        or not 0 <= state.last_investment_revision <= state.last_revision
+        or (
+            state.holding_revision is not None
+            and (
+                not isinstance(state.holding_revision, int)
+                or isinstance(state.holding_revision, bool)
+                or not 0 <= state.holding_revision <= state.last_investment_revision
+            )
+        )
+    ):
+        raise _fail()
+    if account_type in _INVESTMENT_ACCOUNT_TYPES:
+        if state.holding_revision != state.last_investment_revision:
+            raise _fail()
+        return (
+            state.last_revision,
+            state.last_investment_revision,
+            state.holding_revision,
+        )
+    return state.last_revision, None, None
+
+
 def _result(
     projection: ExpectedAccountSnapshotPersistence,
     disposition: AccountSnapshotWriteDisposition,
@@ -323,13 +400,32 @@ class AccountSnapshotWriter:
                 currency=currency,
                 granularity=command.granularity,
             )
+        if (
+            command.granularity is SnapshotGranularity.day
+            and account_type in _LIABILITY_ACCOUNT_TYPES
+        ):
+            canonical_state = await self.repository.lock_canonical_state(command.account_id)
+        else:
+            canonical_state = None
         if account_type in _LIABILITY_ACCOUNT_TYPES:
             await self.repository.lock_liability_evidence_table()
             if len(currencies) > 1:
                 await self.repository.lock_market_evidence_tables()
         else:
             await self.repository.lock_canonical_evidence(command.account_id)
+            if command.granularity is SnapshotGranularity.day:
+                canonical_state = await self.repository.lock_canonical_state(command.account_id)
             await self.repository.lock_market_evidence_tables()
+
+        boundary_revisions = (
+            _boundary_base(
+                canonical_state,
+                account_id=command.account_id,
+                account_type=account_type,
+            )
+            if command.granularity is SnapshotGranularity.day
+            else None
+        )
 
         projections: dict[str, ExpectedAccountSnapshotPersistence] = {}
         for currency in currencies:
@@ -358,6 +454,48 @@ class AccountSnapshotWriter:
             )
             projections[currency] = projection
 
+        boundaries: dict[str, _ExpectedCanonicalBoundary] = {}
+        if boundary_revisions is not None:
+            canonical_revision, investment_revision, holding_revision = boundary_revisions
+            selected_liability_ids = {
+                projection.audit.selected_liability_balance_id
+                for projection in projections.values()
+            }
+            if len(selected_liability_ids) != 1:
+                raise _fail()
+            selected_liability_id = selected_liability_ids.pop()
+            if (account_type in _LIABILITY_ACCOUNT_TYPES) is (selected_liability_id is None):
+                raise _fail()
+            if selected_liability_id is not None:
+                liability = await self.repository.load_liability_balance(selected_liability_id)
+                change = await self.repository.load_canonical_change(
+                    kind="liability_balance",
+                    entity_id=selected_liability_id,
+                )
+                if (
+                    liability is None
+                    or change is None
+                    or liability.id != selected_liability_id
+                    or liability.account_id != command.account_id
+                    or change.account_id != command.account_id
+                    or change.revision > canonical_revision
+                    or change.financial_timestamp != liability.effective_at
+                    or change.created_at != liability.created_at
+                ):
+                    raise _fail()
+            boundaries = {
+                currency: _ExpectedCanonicalBoundary(
+                    snapshot_id=projection.snapshot.id,
+                    account_id=command.account_id,
+                    canonical_revision=canonical_revision,
+                    investment_revision=investment_revision,
+                    holding_revision=holding_revision,
+                    selected_liability_balance_id=selected_liability_id,
+                    created_at=command.created_at,
+                )
+                for currency, projection in projections.items()
+            }
+
         dispositions: dict[str, AccountSnapshotWriteDisposition] = {}
         for currency in currencies:
             projection = projections[currency]
@@ -369,8 +507,18 @@ class AccountSnapshotWriter:
             )
             if existing is not None:
                 items = await self.repository.load_snapshot_items(existing.id)
-                if not _matches_snapshot(existing, projection.snapshot) or not _matches_items(
-                    items, projection.items
+                boundary = (
+                    await self.repository.load_boundary(existing.id)
+                    if command.granularity is SnapshotGranularity.day
+                    else None
+                )
+                if (
+                    not _matches_snapshot(existing, projection.snapshot)
+                    or not _matches_items(items, projection.items)
+                    or (
+                        command.granularity is SnapshotGranularity.day
+                        and not _matches_boundary(boundary, boundaries[currency])
+                    )
                 ):
                     raise AccountSnapshotWriteConflictError()
                 dispositions[currency] = AccountSnapshotWriteDisposition.replayed
@@ -389,12 +537,29 @@ class AccountSnapshotWriter:
                 tuple(AccountSnapshotItemModel(**item.model_values()) for item in projection.items)
             )
             await self.repository.flush()
+            if command.granularity is SnapshotGranularity.day:
+                self.repository.add_boundary(
+                    AccountSnapshotCanonicalBoundaryModel(**boundaries[currency].model_values())
+                )
+                await self.repository.flush()
             persisted = await self.repository.reload_snapshot(projection.snapshot.id)
             persisted_items = await self.repository.reload_snapshot_items(projection.snapshot.id)
+            persisted_boundary = (
+                await self.repository.reload_boundary(projection.snapshot.id)
+                if command.granularity is SnapshotGranularity.day
+                else None
+            )
             if (
                 persisted is None
                 or not _matches_snapshot(persisted, projection.snapshot)
                 or not _matches_items(persisted_items, projection.items)
+                or (
+                    command.granularity is SnapshotGranularity.day
+                    and not _matches_boundary(
+                        persisted_boundary,
+                        boundaries[currency],
+                    )
+                )
             ):
                 raise _fail()
             dispositions[currency] = AccountSnapshotWriteDisposition.created

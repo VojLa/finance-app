@@ -24,6 +24,7 @@ from app.db.models.enums import (
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.holdings.projection import HoldingProjectionStateError
 from app.modules.holdings.rebuild_service import (
     HoldingRebuildService,
@@ -219,6 +220,14 @@ async def _add_trade(
                 ),
             ]
         )
+        await CanonicalStateService(session).record(
+            account_id=canonical_account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=event_id,
+            financial_timestamp=date,
+            created_at=NOW,
+            replay=False,
+        )
         await session.commit()
     await engine.dispose()
     return event_id
@@ -268,6 +277,14 @@ async def _add_cash_event(prefix: str, *, account_id: str | None = None) -> None
                 created_at=NOW,
                 updated_at=NOW,
             )
+        )
+        await CanonicalStateService(session).record(
+            account_id=canonical_account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=event_id,
+            financial_timestamp=NOW,
+            created_at=NOW,
+            replay=False,
         )
         await session.commit()
     await engine.dispose()
@@ -323,6 +340,14 @@ async def _add_incoming_transfer(
                 created_at=NOW,
                 updated_at=NOW,
             )
+        )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=event_id,
+            financial_timestamp=datetime(2026, 7, 30),
+            created_at=NOW,
+            replay=False,
         )
         await session.commit()
     await engine.dispose()

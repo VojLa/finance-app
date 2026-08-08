@@ -28,6 +28,18 @@ from app.modules.imports.transaction_posting import (
 )
 
 
+class _CanonicalState:
+    async def record(self, **_: object) -> None:
+        return None
+
+
+def _writer(session: AsyncSession) -> ImportTransactionPostingWriter:
+    return ImportTransactionPostingWriter(
+        session,
+        canonical_state=cast(Any, _CanonicalState()),
+    )
+
+
 def _batch(
     source: ImportSource = ImportSource.manual,
     *,
@@ -313,7 +325,7 @@ async def test_writer_creates_exact_model_and_preserves_row_and_batch_data() -> 
         batch.completed_at,
     )
 
-    transaction = await ImportTransactionPostingWriter(session).post_row(
+    transaction = await _writer(session).post_row(
         account_id="account",
         batch=batch,
         row=row,
@@ -409,7 +421,7 @@ async def test_unrepresentable_plan_fails_before_any_mutation(
     )
 
     with pytest.raises(ImportPostStateError) as exc_info:
-        await ImportTransactionPostingWriter(session).post_row(
+        await _writer(session).post_row(
             account_id="account",
             batch=batch,
             row=row,
@@ -454,7 +466,7 @@ async def test_exact_replay_accepts_money_and_timestamp_boundary_values() -> Non
     session = _session()
     session.get.return_value = existing
 
-    returned = await ImportTransactionPostingWriter(session).post_row(
+    returned = await _writer(session).post_row(
         account_id="account",
         batch=batch,
         row=row,
@@ -600,7 +612,7 @@ async def test_writer_rejects_invalid_boundary_without_mutation(case: str) -> No
     normalized = deepcopy(row.normalized_data)
 
     with pytest.raises(ImportPostStateError) as exc_info:
-        await ImportTransactionPostingWriter(session).post_row(
+        await _writer(session).post_row(
             account_id=account_id,
             batch=batch,
             row=row,
@@ -626,7 +638,7 @@ async def test_exact_imported_replay_returns_existing_without_add_or_mutation() 
     normalized_object = row.normalized_data
     normalized_snapshot = deepcopy(row.normalized_data)
 
-    returned = await ImportTransactionPostingWriter(session).post_row(
+    returned = await _writer(session).post_row(
         account_id="account",
         batch=batch,
         row=row,
@@ -651,7 +663,7 @@ async def test_imported_replay_rejects_missing_transaction() -> None:
     session.get.return_value = None
 
     with pytest.raises(ImportPostStateError):
-        await ImportTransactionPostingWriter(session).post_row(
+        await _writer(session).post_row(
             account_id="account",
             batch=_batch(),
             row=row,
@@ -720,7 +732,7 @@ async def test_imported_replay_rejects_every_canonical_field_mismatch(field: str
     session.get.return_value = existing
 
     with pytest.raises(ImportPostStateError):
-        await ImportTransactionPostingWriter(session).post_row(
+        await _writer(session).post_row(
             account_id="account",
             batch=batch,
             row=row,

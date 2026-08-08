@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -341,6 +345,22 @@ def test_manual_pipeline_persists_exact_transaction_and_row_linkage() -> None:
         assert transaction.classification is TransactionClassification.real_income
         assert transaction.description == "Salary"
         assert transaction.external_id == "manual-1"
+        assert DATABASE_URL is not None
+        engine = create_async_engine(normalize_database_url(DATABASE_URL))
+        async with AsyncSession(engine) as session:
+            state = await session.get(AccountCanonicalStateModel, transaction.account_id)
+            change = await session.scalar(
+                select(AccountCanonicalChangeModel).where(
+                    AccountCanonicalChangeModel.kind == "transaction",
+                    AccountCanonicalChangeModel.entity_id == transaction.id,
+                )
+            )
+            assert state is not None and change is not None
+            assert (state.last_revision, state.last_investment_revision) == (1, 0)
+            assert change.revision == 1
+            assert change.financial_timestamp == transaction.date
+            assert change.created_at == transaction.created_at
+        await engine.dispose()
         assert row.status is ImportRowStatus.imported
         assert row.created_transaction_id == transaction.id
         assert row.created_investment_event_id is None

@@ -15,6 +15,11 @@ from app.db.models.common import TIMESTAMP
 from app.db.models.enums import ImportRowStatus
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.modules.canonical_state import (
+    CanonicalChangeKind,
+    CanonicalStateError,
+    CanonicalStateService,
+)
 from app.modules.imports.investment_asset_resolution import (
     ImportInvestmentAssetResolver,
     ResolvedInvestmentAsset,
@@ -131,8 +136,14 @@ def _planned_signature(
 class ImportInvestmentPostingWriter:
     """Persist one B1 investment plan inside a transaction owned by the caller."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        canonical_state: CanonicalStateService | None = None,
+    ) -> None:
         self.session = session
+        self.canonical_state = canonical_state or CanonicalStateService(session)
 
     async def _locked_row(
         self,
@@ -205,6 +216,17 @@ class ImportInvestmentPostingWriter:
         )
         if Counter(_movement_signature(movement) for movement in movements) != expected:
             raise ImportPostStateError()
+        try:
+            await self.canonical_state.record(
+                account_id=plan.account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event.id,
+                financial_timestamp=event.date,
+                created_at=event.created_at,
+                replay=True,
+            )
+        except CanonicalStateError as exc:
+            raise ImportPostStateError() from exc
         return PostedInvestmentEvent(
             event=event,
             movements=movements,
@@ -278,8 +300,20 @@ class ImportInvestmentPostingWriter:
         asset = None if resolved is None else resolved.asset
         listing = None if resolved is None else resolved.listing
         updated_at = _current_updated_at()
+        event_id = str(uuid4())
+        try:
+            await self.canonical_state.record(
+                account_id=plan.account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=plan.date,
+                created_at=updated_at,
+                replay=False,
+            )
+        except CanonicalStateError as exc:
+            raise ImportPostStateError() from exc
         event = InvestmentEventModel(
-            id=str(uuid4()),
+            id=event_id,
             account_id=plan.account_id,
             type=plan.event_type,
             date=plan.date,
@@ -292,6 +326,7 @@ class ImportInvestmentPostingWriter:
             import_batch_id=plan.import_batch_id,
             archived_at=None,
             deleted_at=None,
+            created_at=updated_at,
             updated_at=updated_at,
         )
         self.session.add(event)
@@ -318,6 +353,7 @@ class ImportInvestmentPostingWriter:
                 source_symbol=movement_plan.source_symbol,
                 source_asset_type=movement_plan.source_asset_type,
                 note=movement_plan.note,
+                created_at=updated_at,
                 updated_at=updated_at,
             )
             self.session.add(movement)

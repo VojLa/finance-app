@@ -11,6 +11,13 @@ from app.db.models.budgets import (
     BudgetItemModel,
     BudgetModel,
 )
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+)
 from app.db.models.categories import CategoryModel, CategoryRuleModel
 from app.db.models.counterparties import CounterpartyAliasModel, CounterpartyModel
 from app.db.models.enums import (
@@ -61,12 +68,15 @@ from app.db.models.transactions import (
 from app.db.models.users import UserModel
 
 __all__ = [
+    "AccountCanonicalChangeModel",
+    "AccountCanonicalStateModel",
     "AccountInviteModel",
     "AccountInviteStatus",
     "AccountMemberModel",
     "AccountMemberRole",
     "AccountModel",
     "AccountRelationType",
+    "AccountSnapshotCanonicalBoundaryModel",
     "AccountSnapshotItemModel",
     "AccountSnapshotModel",
     "AccountType",
@@ -89,6 +99,8 @@ __all__ = [
     "CounterpartyAliasModel",
     "CounterpartyModel",
     "CounterpartyType",
+    "DailySnapshotBaselineAccountModel",
+    "DailySnapshotBaselineModel",
     "ExchangeRateModel",
     "ExchangeRateSource",
     "HoldingModel",

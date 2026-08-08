@@ -19,6 +19,11 @@ from app.db.models.enums import (
 )
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.transactions import TransactionModel
+from app.modules.canonical_state import (
+    CanonicalChangeKind,
+    CanonicalStateError,
+    CanonicalStateService,
+)
 from app.modules.imports.classification import (
     PostingIntentTarget,
     TransactionPostingIntent,
@@ -142,8 +147,14 @@ def _transaction_matches(
 
 
 class ImportTransactionPostingWriter:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        canonical_state: CanonicalStateService | None = None,
+    ) -> None:
         self.session = session
+        self.canonical_state = canonical_state or CanonicalStateService(session)
 
     async def post_row(
         self,
@@ -162,10 +173,41 @@ class ImportTransactionPostingWriter:
                 plan=plan,
             ):
                 raise ImportPostStateError()
+            try:
+                await self.canonical_state.record(
+                    account_id=plan.account_id,
+                    kind=CanonicalChangeKind.transaction,
+                    entity_id=existing.id,
+                    financial_timestamp=existing.date,
+                    created_at=existing.created_at,
+                    replay=True,
+                )
+            except CanonicalStateError as exc:
+                raise ImportPostStateError() from exc
             return existing
 
+        updated_at = datetime.now(UTC).replace(tzinfo=None)
+        precision = TIMESTAMP.precision
+        if precision is None or not 0 <= precision <= 6:
+            raise ImportPostStateError()
+        unit = 10 ** (6 - precision)
+        updated_at = updated_at.replace(
+            microsecond=updated_at.microsecond - (updated_at.microsecond % unit)
+        )
+        transaction_id = str(uuid4())
+        try:
+            await self.canonical_state.record(
+                account_id=plan.account_id,
+                kind=CanonicalChangeKind.transaction,
+                entity_id=transaction_id,
+                financial_timestamp=plan.date,
+                created_at=updated_at,
+                replay=False,
+            )
+        except CanonicalStateError as exc:
+            raise ImportPostStateError() from exc
         transaction = TransactionModel(
-            id=str(uuid4()),
+            id=transaction_id,
             account_id=plan.account_id,
             import_batch_id=plan.import_batch_id,
             date=plan.date,
@@ -183,7 +225,8 @@ class ImportTransactionPostingWriter:
             category_id=None,
             archived_at=None,
             deleted_at=None,
-            updated_at=datetime.now(UTC).replace(tzinfo=None),
+            created_at=updated_at,
+            updated_at=updated_at,
         )
         self.session.add(transaction)
         row.status = ImportRowStatus.imported

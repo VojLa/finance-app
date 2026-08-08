@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -489,6 +493,19 @@ def test_trading212_buy_persists_event_movements_and_exact_replay() -> None:
             assert batch.status is ImportStatus.processing and batch.rows_imported == 0
             event = await session.get(InvestmentEventModel, first.event.id)
             assert event is not None and event.updated_at == original_event_timestamp
+            state = await session.get(AccountCanonicalStateModel, first.event.account_id)
+            change = await session.scalar(
+                select(AccountCanonicalChangeModel).where(
+                    AccountCanonicalChangeModel.kind == "investment_event",
+                    AccountCanonicalChangeModel.entity_id == first.event.id,
+                )
+            )
+            assert state is not None and change is not None
+            assert (state.last_revision, state.last_investment_revision) == (1, 1)
+            assert state.holding_revision is None
+            assert change.revision == 1
+            assert change.financial_timestamp == first.event.date
+            assert change.created_at == first.event.updated_at
         await engine.dispose()
         assert first.created is True and second.created is False
         assert first.event.id == second.event.id

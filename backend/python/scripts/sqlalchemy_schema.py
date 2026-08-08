@@ -169,7 +169,7 @@ def reflected_table_snapshot(inspector: Inspector, table_name: str) -> dict[str,
     unique_constraints.extend(
         _sorted_columns(index.get("column_names"))
         for index in reflected_indexes
-        if index.get("unique")
+        if index.get("unique") and not index.get("duplicates_constraint")
     )
 
     indexes = [

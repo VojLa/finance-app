@@ -33,6 +33,7 @@ from app.db.models.snapshots import (
 )
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import (
     NetWorthSnapshotWriter,
@@ -227,6 +228,14 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                     external_id=f"{prefix}-external-{spec.suffix}",
                     created_at=EVIDENCE_AT,
                 )
+            )
+            await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.liability_balance,
+                entity_id=f"{prefix}-balance-{spec.suffix}",
+                financial_timestamp=EVIDENCE_AT,
+                created_at=EVIDENCE_AT,
+                replay=False,
             )
             if spec.currency != "EUR" and spec.with_rate:
                 needs_eur_pivot = True

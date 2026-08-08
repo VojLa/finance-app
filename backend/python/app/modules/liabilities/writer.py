@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.accounts import AccountModel
 from app.db.models.enums import AccountType, LiabilityBalanceSource
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.modules.canonical_state import (
+    CanonicalChangeKind,
+    CanonicalStateError,
+    CanonicalStateService,
+)
 from app.modules.liabilities.validation import (
     LIABILITY_ACCOUNT_TYPES,
     LiabilityBalanceValidationError,
@@ -285,9 +290,11 @@ class LiabilityBalanceWriter:
         session: AsyncSession,
         *,
         repository: _Repository | None = None,
+        canonical_state: CanonicalStateService | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or LiabilityBalanceWriterRepository(session)
+        self.canonical_state = canonical_state or CanonicalStateService(session)
 
     async def write(
         self,
@@ -342,11 +349,33 @@ class LiabilityBalanceWriter:
         if existing is not None:
             if not _matches(existing, expected):
                 raise LiabilityBalanceWriteConflictError()
+            try:
+                await self.canonical_state.record(
+                    account_id=expected.account_id,
+                    kind=CanonicalChangeKind.liability_balance,
+                    entity_id=expected.id,
+                    financial_timestamp=expected.effective_at,
+                    created_at=expected.created_at,
+                    replay=True,
+                )
+            except CanonicalStateError as exc:
+                raise _fail() from exc
             return _result(expected, LiabilityBalanceWriteDisposition.replayed)
 
         id_conflict = await self.repository.load_by_id(expected.id)
         if id_conflict is not None:
             raise LiabilityBalanceWriteConflictError()
+        try:
+            await self.canonical_state.record(
+                account_id=expected.account_id,
+                kind=CanonicalChangeKind.liability_balance,
+                entity_id=expected.id,
+                financial_timestamp=expected.effective_at,
+                created_at=expected.created_at,
+                replay=False,
+            )
+        except CanonicalStateError as exc:
+            raise _fail() from exc
         self.repository.add(LiabilityBalanceModel(**expected.model_values()))
         await self.repository.flush()
         persisted = await self.repository.reload(expected.id)

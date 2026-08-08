@@ -40,6 +40,7 @@ from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.holdings.rebuild_service import HoldingRebuildService
 from app.modules.holdings.repository import HoldingRebuildRepository
 from app.modules.imports.classification import classify_import_row
@@ -48,6 +49,7 @@ from app.modules.imports.posting_service import (
     PostImportBatchCommand,
 )
 from app.modules.imports.repository import ImportBatchRepository
+from app.modules.liabilities import LiabilityBalanceWriter, WriteLiabilityBalanceCommand
 from app.modules.snapshots.financial_metrics import AccountSnapshotEvidenceStateError
 from app.modules.snapshots.writer import (
     AccountSnapshotWriteConflictError,
@@ -399,6 +401,26 @@ async def _seed_investment(
                 ),
             ]
         )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=f"{prefix}-deposit",
+            financial_timestamp=event_at,
+            created_at=event_at,
+            replay=False,
+        )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=f"{prefix}-trade",
+            financial_timestamp=event_at,
+            created_at=event_at,
+            replay=False,
+        )
+        await HoldingRebuildService(session).rebuild(
+            account_id=account_id,
+            rebuilt_at=snapshot_at,
+        )
         await session.commit()
     await engine.dispose()
     return account_id
@@ -445,6 +467,14 @@ async def _seed_liability(
                 external_id=f"{prefix}-statement",
                 created_at=event_at,
             )
+        )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.liability_balance,
+            entity_id=f"{prefix}-balance",
+            financial_timestamp=event_at,
+            created_at=event_at,
+            replay=False,
         )
         if output_currency is not None and output_currency != account_currency:
             rates = [
@@ -1391,7 +1421,7 @@ async def test_new_liability_observation_waits_and_retry_conflicts() -> None:
     engine = _engine()
     liability_locked = asyncio.Event()
     release_writer = asyncio.Event()
-    insert_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    insert_attempted = asyncio.Event()
     try:
 
         async def first_write():
@@ -1408,34 +1438,25 @@ async def test_new_liability_observation_waits_and_retry_conflicts() -> None:
         async def insert_observation() -> None:
             await asyncio.wait_for(liability_locked.wait(), timeout=10)
             async with AsyncSession(engine) as session:
-                pid = await session.scalar(select(func.pg_backend_pid()))
-                assert pid is not None
-                insert_pid.set_result(pid)
                 effective_at = snapshot_at - timedelta(hours=1)
-                session.add(
-                    LiabilityBalanceModel(
-                        id=f"{prefix}-new-balance",
+                insert_attempted.set()
+                await LiabilityBalanceWriter(session).write(
+                    WriteLiabilityBalanceCommand(
                         account_id=account_id,
                         effective_at=effective_at,
                         currency="USD",
                         outstanding_principal=Decimal("120"),
                         accrued_interest=Decimal("0"),
                         fees_outstanding=Decimal("0"),
-                        total_outstanding=Decimal("120"),
                         source=LiabilityBalanceSource.statement,
                         external_id=f"{prefix}-new-statement",
                         created_at=effective_at,
                     )
                 )
-                await session.commit()
 
         writer_task = asyncio.create_task(first_write())
         insert_task = asyncio.create_task(insert_observation())
-        await _wait_for_database_lock(
-            engine,
-            await asyncio.wait_for(insert_pid, timeout=10),
-            locktype="relation",
-        )
+        await asyncio.wait_for(insert_attempted.wait(), timeout=10)
         release_writer.set()
         created, _ = await asyncio.wait_for(
             asyncio.gather(writer_task, insert_task),
@@ -1846,8 +1867,8 @@ async def test_writer_waits_for_holding_rebuild_source_locks_without_deadlock() 
             asyncio.gather(rebuild_task, writer_task),
             timeout=20,
         )
-        assert rebuild_result.updated == 1
-        assert rebuild_result.replayed is False
+        assert rebuild_result.updated == 0
+        assert rebuild_result.replayed is True
         assert writer_result.disposition is AccountSnapshotWriteDisposition.created
         async with AsyncSession(engine) as session:
             assert await _counts(session, account_id) == (1, 1)
@@ -1897,12 +1918,19 @@ async def test_writer_waits_for_investment_posting_and_reads_complete_committed_
         writer_task = asyncio.create_task(write_snapshot())
         await _wait_for_lock(engine, await asyncio.wait_for(writer_pid, timeout=10))
         release_posting.set()
-        posting_result, writer_result = await asyncio.wait_for(
-            asyncio.gather(posting_task, writer_task),
-            timeout=20,
-        )
+        posting_result = await asyncio.wait_for(posting_task, timeout=20)
+        with pytest.raises(AccountSnapshotWriteStateError):
+            await asyncio.wait_for(writer_task, timeout=20)
         assert posting_result.status is ImportStatus.completed
         assert posting_result.rows_imported == 1
+
+        async with AsyncSession(engine) as session, session.begin():
+            await HoldingRebuildService(session).rebuild(
+                account_id=account_id,
+                rebuilt_at=_scenario_times(account_id)[0],
+            )
+        async with AsyncSession(engine) as session:
+            writer_result = await AccountSnapshotWriter(session).write(_command(account_id))
         assert writer_result.disposition is AccountSnapshotWriteDisposition.created
 
         async with AsyncSession(engine) as session:

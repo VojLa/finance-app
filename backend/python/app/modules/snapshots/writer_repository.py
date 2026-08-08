@@ -9,7 +9,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+)
 from app.db.models.enums import SnapshotGranularity
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.modules.holdings.repository import HoldingRebuildRepository
 
@@ -99,6 +105,36 @@ class AccountSnapshotWriterRepository:
         await self.holdings.load_listings_for_update(listing_ids)
         await self.holdings.load_assets_for_update(asset_ids)
 
+    async def lock_canonical_state(self, account_id: str) -> AccountCanonicalStateModel | None:
+        return await self.holdings.lock_canonical_state(account_id)
+
+    async def load_canonical_change(
+        self,
+        *,
+        kind: str,
+        entity_id: str,
+    ) -> AccountCanonicalChangeModel | None:
+        return await self.session.scalar(
+            select(AccountCanonicalChangeModel)
+            .where(
+                AccountCanonicalChangeModel.kind == kind,
+                AccountCanonicalChangeModel.entity_id == entity_id,
+            )
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+
+    async def load_liability_balance(
+        self,
+        balance_id: str,
+    ) -> LiabilityBalanceModel | None:
+        return await self.session.scalar(
+            select(LiabilityBalanceModel)
+            .where(LiabilityBalanceModel.id == balance_id)
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+
     async def lock_market_evidence_tables(self) -> None:
         # READ COMMITTED is required so a waiter can observe a just-committed exact
         # snapshot replay. Compatible SHARE locks give the separate price and FX
@@ -152,11 +188,22 @@ class AccountSnapshotWriterRepository:
         )
         return tuple(result.all())
 
+    async def load_boundary(self, snapshot_id: str) -> AccountSnapshotCanonicalBoundaryModel | None:
+        return await self.session.scalar(
+            select(AccountSnapshotCanonicalBoundaryModel)
+            .where(AccountSnapshotCanonicalBoundaryModel.snapshot_id == snapshot_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     def add_snapshot(self, snapshot: AccountSnapshotModel) -> None:
         self.session.add(snapshot)
 
     def add_items(self, items: tuple[AccountSnapshotItemModel, ...]) -> None:
         self.session.add_all(items)
+
+    def add_boundary(self, boundary: AccountSnapshotCanonicalBoundaryModel) -> None:
+        self.session.add(boundary)
 
     async def flush(self) -> None:
         await self.session.flush()
@@ -179,3 +226,12 @@ class AccountSnapshotWriterRepository:
             .execution_options(populate_existing=True)
         )
         return tuple(result.all())
+
+    async def reload_boundary(
+        self, snapshot_id: str
+    ) -> AccountSnapshotCanonicalBoundaryModel | None:
+        return await self.session.scalar(
+            select(AccountSnapshotCanonicalBoundaryModel)
+            .where(AccountSnapshotCanonicalBoundaryModel.snapshot_id == snapshot_id)
+            .execution_options(populate_existing=True)
+        )

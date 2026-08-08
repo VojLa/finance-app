@@ -9,8 +9,11 @@ EXPECTED_TABLES = {
     "Account",
     "AccountInvite",
     "AccountMember",
+    "AccountCanonicalChange",
+    "AccountCanonicalState",
     "AccountSnapshot",
     "AccountSnapshotItem",
+    "AccountSnapshotCanonicalBoundary",
     "Asset",
     "AssetAlias",
     "AssetListing",
@@ -23,6 +26,8 @@ EXPECTED_TABLES = {
     "CategoryRule",
     "Counterparty",
     "CounterpartyAlias",
+    "DailySnapshotBaseline",
+    "DailySnapshotBaselineAccount",
     "ExchangeRate",
     "Holding",
     "ImportBatch",
@@ -195,11 +200,18 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 31
+    assert len(tables) == 36
     assert all(table.schema == "public" for table in tables.values())
-    assert all(
-        [column.name for column in table.primary_key.columns] == ["id"] for table in tables.values()
-    )
+    expected_nonstandard_primary_keys = {
+        "AccountCanonicalState": ["accountId"],
+        "AccountCanonicalChange": ["accountId", "revision"],
+        "AccountSnapshotCanonicalBoundary": ["snapshotId"],
+        "DailySnapshotBaselineAccount": ["baselineId", "accountId"],
+    }
+    for name, table in tables.items():
+        assert [column.name for column in table.primary_key.columns] == (
+            expected_nonstandard_primary_keys.get(name, ["id"])
+        )
 
 
 def test_account_notes_column_is_nullable_text() -> None:
