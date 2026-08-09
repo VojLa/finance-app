@@ -450,6 +450,42 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/categories": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Categories */
+    get: operations["list_categories_api_v1_categories_get"]
+    put?: never
+    /** Create Category */
+    post: operations["create_category_api_v1_categories_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/categories/{category_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /** Delete Category */
+    delete: operations["delete_category_api_v1_categories__category_id__delete"]
+    options?: never
+    head?: never
+    /** Update Category */
+    patch: operations["update_category_api_v1_categories__category_id__patch"]
+    trace?: never
+  }
   "/api/v1/dashboard/current": {
     parameters: {
       query?: never
@@ -635,6 +671,42 @@ export interface paths {
     options?: never
     head?: never
     patch?: never
+    trace?: never
+  }
+  "/api/v1/transactions": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Transactions */
+    get: operations["list_transactions_api_v1_transactions_get"]
+    put?: never
+    /** Create Transaction */
+    post: operations["create_transaction_api_v1_transactions_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/transactions/{transaction_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /** Delete Transaction */
+    delete: operations["delete_transaction_api_v1_transactions__transaction_id__delete"]
+    options?: never
+    head?: never
+    /** Update Transaction */
+    patch: operations["update_transaction_api_v1_transactions__transaction_id__patch"]
     trace?: never
   }
 }
@@ -889,6 +961,78 @@ export interface components {
       id: string
       /** Name */
       name?: string | null
+    }
+    /** CategoryChildResponse */
+    CategoryChildResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isdefault */
+      isDefault: boolean
+      /** Name */
+      name: string
+      type: components["schemas"]["CategoryType"]
+      /** Userid */
+      userId: string | null
+    }
+    /** CategoryCreateRequest */
+    CategoryCreateRequest: {
+      /** Color */
+      color?: string | null
+      /** Icon */
+      icon?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Name */
+      name: string
+      /** Parentid */
+      parentId?: string | null
+      type: components["schemas"]["CategoryType"]
+    }
+    /** CategoryDeleteResponse */
+    CategoryDeleteResponse: {
+      /** Ok */
+      ok: boolean
+    }
+    /** CategoryResponse */
+    CategoryResponse: {
+      /** Children */
+      children: components["schemas"]["CategoryChildResponse"][]
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isdefault */
+      isDefault: boolean
+      /** Name */
+      name: string
+      /** Parentid */
+      parentId: string | null
+      type: components["schemas"]["CategoryType"]
+      /** Userid */
+      userId: string | null
+    }
+    /**
+     * CategoryType
+     * @enum {string}
+     */
+    CategoryType: "expense" | "income" | "both"
+    /** CategoryUpdateRequest */
+    CategoryUpdateRequest: {
+      /** Color */
+      color?: string | null
+      /** Icon */
+      icon?: string | null
+      /** Name */
+      name?: string | null
+      /** Parentid */
+      parentId?: string | null
+      type?: components["schemas"]["CategoryType"] | null
     }
     /** CredentialVerificationRequest */
     CredentialVerificationRequest: {
@@ -1691,6 +1835,120 @@ export interface components {
       | "holdings_recalculation"
       | "scheduled"
       | "manual_recalculation"
+    /** TransactionAccountResponse */
+    TransactionAccountResponse: {
+      /** Currency */
+      currency: string
+      /** Name */
+      name: string
+    }
+    /** TransactionCategoryResponse */
+    TransactionCategoryResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Name */
+      name: string
+      type: components["schemas"]["CategoryType"]
+    }
+    /** TransactionCreateRequest */
+    TransactionCreateRequest: {
+      /** Accountid */
+      accountId: string
+      /** Amount */
+      amount: number | string
+      /** Categoryid */
+      categoryId?: string | null
+      /** Counterparty */
+      counterparty?: string | null
+      /** Currency */
+      currency: string
+      /** Date */
+      date: string
+      /** Description */
+      description?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Note */
+      note?: string | null
+      type: components["schemas"]["TransactionType"]
+    }
+    /** TransactionDeleteRequest */
+    TransactionDeleteRequest: {
+      /** Idempotencykey */
+      idempotencyKey: string
+    }
+    /** TransactionDeleteResponse */
+    TransactionDeleteResponse: {
+      /** Ok */
+      ok: boolean
+    }
+    /** TransactionPageResponse */
+    TransactionPageResponse: {
+      /** Page */
+      page: number
+      /** Pages */
+      pages: number
+      /** Total */
+      total: number
+      /** Transactions */
+      transactions: components["schemas"]["TransactionResponse"][]
+    }
+    /** TransactionResponse */
+    TransactionResponse: {
+      account: components["schemas"]["TransactionAccountResponse"]
+      /** Accountid */
+      accountId: string
+      /** Amount */
+      amount: string
+      category: components["schemas"]["TransactionCategoryResponse"] | null
+      /** Categoryid */
+      categoryId: string | null
+      /** Counterparty */
+      counterparty: string | null
+      /** Currency */
+      currency: string
+      /**
+       * Date
+       * Format: date-time
+       */
+      date: string
+      /** Description */
+      description: string | null
+      /** Id */
+      id: string
+      /** Note */
+      note: string | null
+      type: components["schemas"]["TransactionType"]
+    }
+    /**
+     * TransactionType
+     * @enum {string}
+     */
+    TransactionType: "income" | "expense" | "transfer"
+    /** TransactionUpdateRequest */
+    TransactionUpdateRequest: {
+      /** Amount */
+      amount?: number | string | null
+      /** Categoryid */
+      categoryId?: string | null
+      /** Counterparty */
+      counterparty?: string | null
+      /** Currency */
+      currency?: string | null
+      /** Date */
+      date?: string | null
+      /** Description */
+      description?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Note */
+      note?: string | null
+      type?: components["schemas"]["TransactionType"] | null
+    }
     /** UserRegistrationRequest */
     UserRegistrationRequest: {
       /** Email */
@@ -2830,6 +3088,134 @@ export interface operations {
       }
     }
   }
+  list_categories_api_v1_categories_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"][]
+        }
+      }
+    }
+  }
+  create_category_api_v1_categories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CategoryCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  delete_category_api_v1_categories__category_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryDeleteResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  update_category_api_v1_categories__category_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CategoryUpdateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   read_current_dashboard_api_v1_dashboard_current_post: {
     parameters: {
       query?: never
@@ -3120,6 +3506,153 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["UserSnapshotRefreshRecalculateResponse"]
+        }
+      }
+    }
+  }
+  list_transactions_api_v1_transactions_get: {
+    parameters: {
+      query?: {
+        page?: number
+        type?: components["schemas"]["TransactionType"] | null
+        categoryId?: string | null
+        accountId?: string | null
+        q?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionPageResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  create_transaction_api_v1_transactions_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  delete_transaction_api_v1_transactions__transaction_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        transaction_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionDeleteRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionDeleteResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  update_transaction_api_v1_transactions__transaction_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        transaction_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionUpdateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
         }
       }
     }

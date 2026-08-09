@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma"
 import type { ImportSource, TransactionClassification } from "@prisma/client"
 import type { ParsedInvestmentEvent } from "@/types"
-import { autoCategorize } from "@/modules/wallet/transactions/categorize"
 import { createInvestmentEvents } from "@/modules/portfolio/ledger/service"
 import { recalculateHoldings } from "@/modules/portfolio/positions/calculations"
 import { createDailyAccountSnapshotsFromImport, createNetWorthSnapshot } from "@/modules/snapshots"
@@ -86,7 +85,6 @@ function investmentDefinition(
     },
     postProcess: async (accountId) => {
       const result = await recalculateHoldings(accountId)
-      if (source === "trading212") await autoCategorize(accountId)
       return result
     },
     afterCompleted: async ({ userId, accountId, importBatchId, importStartDate }) => {
@@ -122,7 +120,6 @@ export const importDefinitions = {
         })),
       })
     },
-    postProcess: (accountId: string) => autoCategorize(accountId),
     afterCompleted: ({ userId }) => createNetWorthSnapshot({ userId }),
   } satisfies ImportDefinition<RaiffeisenRow>,
   manual: null,

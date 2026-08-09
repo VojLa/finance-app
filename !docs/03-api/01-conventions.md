@@ -150,6 +150,29 @@ from snapshot-backed Python contracts. Sharing write UX remains outside the
 current UI, while Python continues to own membership administration and invite
 APIs for a future thin adapter.
 
+## Transactions and categories
+
+The transaction and category pages use generated OpenAPI aliases through typed
+same-origin browser clients. Their Next routes authenticate the NextAuth session,
+exact-allowlist request fields, mint an internal token, and delegate to FastAPI;
+they contain no Prisma query, financial authorization, or canonical write.
+
+`GET /api/v1/transactions` provides deterministic 50-row pagination plus account,
+type, category, and text filters over the principal's accessible active accounts.
+Manual create/update/delete requires editor-or-higher account access. Amount input
+is a positive exact Decimal; Python stores expenses with a negative sign and income
+with a positive sign. The public amount remains an exact JSON string. Create,
+replacement-update, and tombstone-delete commands use caller idempotency keys,
+deterministic identities, advisory serialization, and one append-only canonical
+revision per successful new command. Pair/split transactions fail closed until a
+dedicated compound edit operation exists.
+
+`/api/v1/categories` exposes default categories plus only the principal's custom
+categories. Defaults are immutable. Custom hierarchy updates reject inaccessible
+parents and cycles; deleting a custom category relies on the schema-owned cascade
+for rules and `SET NULL` for transaction/category references. Category creation is
+idempotent. The removed TypeScript category-rule helper is not a runtime authority.
+
 ## Next.js import route
 
 The import page calls one browser endpoint:

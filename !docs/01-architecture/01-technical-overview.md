@@ -13,11 +13,12 @@ Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
 ## Runtime responsibilities
 
 - **Next.js / TypeScript** provides the UI, NextAuth session, and thin adapters
-  that mint a short-lived internal token. Active account, import, portfolio,
-  dashboard, and history finance flows delegate to Python. Registered legacy
+  that mint a short-lived internal token. Active account, transaction, category,
+  import, portfolio, dashboard, and history finance flows delegate to Python. Registered legacy
   routes remain compatibility surfaces; dashboard operational widgets are
   isolated from snapshot/current finance.
-- **Python / FastAPI** owns accounts, imports, canonical ledger and revision
+- **Python / FastAPI** owns identity credentials, accounts, transactions, categories,
+  imports, canonical ledger and revision
   lineage, Holdings, market evidence, persisted snapshots, D1 daily baselines,
   the D2 current-value engine, portfolio, dashboard, and history.
 - **PostgreSQL 16** is the central persistence store.
