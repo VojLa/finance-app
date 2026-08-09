@@ -423,6 +423,15 @@ async def test_persisted_cash_output_currency_conversion_is_exact_and_read_only(
                         source=ExchangeRateSource.cnb,
                         created_at=SNAPSHOT_AT,
                     ),
+                    ExchangeRateModel(
+                        id=f"{prefix}-eur-czk-yahoo",
+                        from_currency="EUR",
+                        to_currency="CZK",
+                        rate=Decimal("99.00000000"),
+                        date=SNAPSHOT_AT,
+                        source=ExchangeRateSource.yahoo_finance,
+                        created_at=SNAPSHOT_AT,
+                    ),
                 ]
             )
             await session.commit()

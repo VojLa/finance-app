@@ -633,6 +633,7 @@ def _historical_rates(
                 candidates,
                 base_currency=base,
                 quote_currency=quote,
+                source=ExchangeRateSource.cnb,
                 through=metric.timestamp,
                 policy=policy,
             )
@@ -704,18 +705,21 @@ async def _project_account(
     candidates = await repository.load_exchange_rate_candidates(
         tuple(sorted(required_bases)),
         _FX_PIVOT,
+        source=ExchangeRateSource.cnb,
         through=as_of,
     )
     validated = validate_exchange_rate_candidates(
         candidates,
         base_currencies=tuple(sorted(required_bases)),
         quote_currency=_FX_PIVOT,
+        source=ExchangeRateSource.cnb,
         through=as_of,
     )
     snapshot_rates = select_snapshot_exchange_rates(
         validated,
         source_currencies=source_currencies,
         output_currency=output_currency,
+        source=ExchangeRateSource.cnb,
         through=as_of,
         policy=policy,
     )

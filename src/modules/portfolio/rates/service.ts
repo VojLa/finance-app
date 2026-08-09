@@ -1,5 +1,5 @@
 import { prisma, toNum } from "@/lib/prisma"
-import type { AssetAliasProvider, AssetType, ExchangeRateSource, PriceSource } from "@prisma/client"
+import type { AssetAliasProvider, AssetType, PriceSource } from "@prisma/client"
 
 const COINGECKO_IDS: Record<string, string> = {
   BTC: "bitcoin",
@@ -56,7 +56,7 @@ type PriceLookupInput = {
 
 const PRICE_TTL = 15 * 60 * 1000
 const FX_TTL = 4 * 60 * 60 * 1000
-const YAHOO_EXCHANGE_RATE_SOURCE: ExchangeRateSource = "yahoo_finance"
+const APPROVED_EXCHANGE_RATE_SOURCE = "cnb" as const
 const DEFAULT_FX_CURRENCIES = [
   "EUR",
   "USD",
@@ -808,10 +808,11 @@ async function loadStoredExchangeRates({
   const rows = await prisma.exchangeRate.findMany({
     where: {
       toCurrency: normalizedToCurrency,
+      source: APPROVED_EXCHANGE_RATE_SOURCE,
       ...(normalizedCurrencies.length > 0 ? { fromCurrency: { in: normalizedCurrencies } } : {}),
       ...(whereDate ? { date: { lte: whereDate } } : {}),
     },
-    orderBy: [{ date: "desc" }, { source: "desc" }],
+    orderBy: [{ date: "desc" }, { id: "desc" }],
   })
 
   if (rows.length === 0 && normalizedCurrencies.length > 0) return null
@@ -826,85 +827,23 @@ async function loadStoredExchangeRates({
   return rates
 }
 
-async function fetchYahooHistoricalExchangeRates(
-  currencies: string[],
-  toCurrency: string,
-  start: Date,
-  end: Date
-): Promise<CzkRates> {
-  const normalizedToCurrency = toCurrency.toUpperCase()
-  const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
-  const period1 = Math.floor(todayStart(start).getTime() / 1000)
-  const period2 = Math.floor(addDays(todayStart(end), 1).getTime() / 1000)
-  const latestRates: CzkRates = { [normalizedToCurrency]: 1 }
-
-  await Promise.all(
-    normalizedCurrencies.map(async (fromCurrency) => {
-      const pair = `${fromCurrency}${normalizedToCurrency}=X`
-      try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
-          pair
-        )}?period1=${period1}&period2=${period2}&interval=1d`
-        const res = await fetch(url, { headers: { Accept: "application/json" } })
-        if (!res.ok) return
-
-        const data = await res.json()
-        const result = data.chart?.result?.[0]
-        const timestamps: number[] = result?.timestamp ?? []
-        const closes: Array<number | null> = result?.indicators?.quote?.[0]?.close ?? []
-        const writes: Array<Promise<unknown>> = []
-
-        timestamps.forEach((timestamp, index) => {
-          const rate = closes[index]
-          if (!Number.isFinite(rate) || rate === null || rate <= 0) return
-
-          const date = todayStart(new Date(timestamp * 1000))
-          latestRates[fromCurrency] = rate
-
-          writes.push(
-            prisma.exchangeRate.upsert({
-              where: {
-                fromCurrency_toCurrency_date_source: {
-                  fromCurrency,
-                  toCurrency: normalizedToCurrency,
-                  date,
-                  source: YAHOO_EXCHANGE_RATE_SOURCE,
-                },
-              },
-              update: { rate },
-              create: {
-                fromCurrency,
-                toCurrency: normalizedToCurrency,
-                date,
-                source: YAHOO_EXCHANGE_RATE_SOURCE,
-                rate,
-              },
-            })
-          )
-        })
-
-        await Promise.all(writes)
-      } catch {
-        return
-      }
-    })
-  )
-
-  return latestRates
-}
-
-async function fetchYahooLatestExchangeRates(
+function requireStoredExchangeRates(
+  stored: CzkRates | null,
   currencies: string[],
   toCurrency: string
-): Promise<CzkRates> {
-  const today = todayStart()
-  return fetchYahooHistoricalExchangeRates(currencies, toCurrency, addDays(today, -10), today)
+): CzkRates {
+  const missing = currencies.filter((currency) => stored?.[currency] == null)
+  if (!stored || missing.length > 0) {
+    throw new Error(
+      `Approved exchange-rate evidence is unavailable for ${missing.join(",")} -> ${toCurrency}.`
+    )
+  }
+  return stored
 }
 
 export async function ensureExchangeRatesForPeriod({
   currencies,
   toCurrency = "CZK",
-  start,
   end,
 }: {
   currencies: string[]
@@ -916,11 +855,14 @@ export async function ensureExchangeRatesForPeriod({
   const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
   if (normalizedCurrencies.length === 0) return
 
-  await fetchYahooHistoricalExchangeRates(
+  requireStoredExchangeRates(
+    await loadStoredExchangeRates({
+      date: todayStart(end),
+      toCurrency: normalizedToCurrency,
+      currencies: normalizedCurrencies,
+    }),
     normalizedCurrencies,
-    normalizedToCurrency,
-    todayStart(start),
-    todayStart(end)
+    normalizedToCurrency
   )
 }
 
@@ -944,27 +886,17 @@ export async function getExchangeRates({
   if (cacheKey === "czk" && czkRatesFetch) return czkRatesFetch
 
   const fetchRates = (async () => {
-    if (!refresh) {
-      const stored = await loadStoredExchangeRates({
+    const stored = requireStoredExchangeRates(
+      await loadStoredExchangeRates({
         toCurrency: normalizedToCurrency,
         currencies: normalizedCurrencies,
-      })
-      const hasRequiredRates = normalizedCurrencies.every((currency) => stored?.[currency])
-      if (stored && hasRequiredRates) {
-        if (cacheKey === "czk") czkRatesCache = { rates: stored, ts: Date.now() }
-        return stored
-      }
-    }
+      }),
+      normalizedCurrencies,
+      normalizedToCurrency
+    )
 
-    const fetched = await fetchYahooLatestExchangeRates(normalizedCurrencies, normalizedToCurrency)
-    const stored = await loadStoredExchangeRates({
-      toCurrency: normalizedToCurrency,
-      currencies: normalizedCurrencies,
-    })
-    const fallback = stored ?? fetched
-
-    if (cacheKey === "czk") czkRatesCache = { rates: fallback, ts: Date.now() }
-    return fallback
+    if (cacheKey === "czk") czkRatesCache = { rates: stored, ts: Date.now() }
+    return stored
   })()
 
   if (cacheKey === "czk") {
@@ -993,23 +925,15 @@ export async function getHistoricalExchangeRates({
   const normalizedToCurrency = toCurrency.toUpperCase()
   const normalizedCurrencies = normalizeCurrencyList(currencies, normalizedToCurrency)
   const day = todayStart(date)
-  let stored = await loadStoredExchangeRates({
-    date: day,
-    toCurrency: normalizedToCurrency,
-    currencies: normalizedCurrencies,
-  })
-  const missing = normalizedCurrencies.filter((currency) => !stored?.[currency])
-
-  if (missing.length > 0) {
-    await fetchYahooHistoricalExchangeRates(missing, normalizedToCurrency, addDays(day, -14), day)
-    stored = await loadStoredExchangeRates({
+  return requireStoredExchangeRates(
+    await loadStoredExchangeRates({
       date: day,
       toCurrency: normalizedToCurrency,
       currencies: normalizedCurrencies,
-    })
-  }
-
-  return stored ?? (await getExchangeRates({ toCurrency: normalizedToCurrency, currencies }))
+    }),
+    normalizedCurrencies,
+    normalizedToCurrency
+  )
 }
 
 export async function getHistoricalCzkRates(
@@ -1032,7 +956,9 @@ export function toDisplayCurrency(
   if (currency === displayCurrency) return amount
 
   const rate = rates[currency]
-  if (!rate) return amount
+  if (!rate) {
+    throw new Error(`Approved exchange-rate evidence is unavailable for ${currency}.`)
+  }
 
   return amount * rate
 }

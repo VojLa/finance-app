@@ -306,6 +306,7 @@ async def test_empty_mixed_currency_account_uses_requested_output_without_fx(
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         (),
         "CZK",
+        source=ExchangeRateSource.cnb,
         through=NOW,
     )
 
@@ -318,6 +319,7 @@ async def test_empty_rate_repository_request_issues_no_sql() -> None:
     result = await repository.load_exchange_rate_candidates(
         (),
         "EUR",
+        source=ExchangeRateSource.cnb,
         through=NOW,
     )
 
@@ -636,6 +638,7 @@ async def test_mixed_currency_investment_selects_only_direct_czk_pivot_legs() ->
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         ("CHF", "EUR", "GBP", "USD"),
         "CZK",
+        source=ExchangeRateSource.cnb,
         through=NOW,
     )
 
@@ -663,6 +666,30 @@ async def test_account_currency_pivot_rejects_non_cnb_observation() -> None:
             MagicMock(),
             repository=repository,
         ).build(_command(output_currency="EUR"))
+
+
+@pytest.mark.asyncio
+async def test_czk_output_rejects_non_cnb_observation() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.bank, currency="EUR"),
+        load_active_transactions=(
+            _transaction("transaction-eur", "10", TransactionType.income, currency="EUR"),
+        ),
+        load_exchange_rate_candidates=(
+            _rate(
+                "yahoo-eur-czk",
+                "25",
+                NOW,
+                source=ExchangeRateSource.yahoo_finance,
+            ),
+        ),
+    )
+
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command(output_currency="CZK"))
 
 
 @pytest.mark.asyncio

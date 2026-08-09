@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.enums import ExchangeRateSource
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
@@ -209,10 +210,12 @@ class CurrentValueRepository:
         base_currencies: tuple[str, ...],
         quote_currency: str,
         *,
+        source: ExchangeRateSource,
         through: datetime,
     ) -> tuple[ExchangeRateModel, ...]:
         return await self.snapshot_evidence.load_exchange_rate_candidates(
             base_currencies,
             quote_currency,
+            source=source,
             through=through,
         )

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.enums import ExchangeRateSource
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
@@ -74,6 +75,7 @@ class AccountSnapshotEvidenceRepository:
         base_currencies: tuple[str, ...],
         quote_currency: str,
         *,
+        source: ExchangeRateSource,
         through,
     ) -> tuple[ExchangeRateModel, ...]:
         if not base_currencies:
@@ -83,6 +85,7 @@ class AccountSnapshotEvidenceRepository:
             .where(
                 ExchangeRateModel.from_currency.in_(base_currencies),
                 ExchangeRateModel.to_currency == quote_currency,
+                ExchangeRateModel.source == source,
                 ExchangeRateModel.date <= through,
             )
             .order_by(

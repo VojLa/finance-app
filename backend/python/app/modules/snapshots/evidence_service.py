@@ -81,6 +81,7 @@ _LIABILITY_ACCOUNT_TYPES = {
     AccountType.loan,
     AccountType.mortgage,
 }
+_FX_EVIDENCE_SOURCE = ExchangeRateSource.cnb
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +215,7 @@ def _select_latest_rate(
     *,
     base_currency: str,
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> ExchangeRateModel:
@@ -222,6 +224,7 @@ def _select_latest_rate(
         for candidate in candidates
         if candidate.from_currency == base_currency
         and candidate.to_currency == quote_currency
+        and candidate.source is source
         and candidate.date <= through
     ]
     if not matching:
@@ -236,7 +239,7 @@ def _select_latest_rate(
         or _nonblank(selected.id) == ""
         or canonical_currency(selected.from_currency) != base_currency
         or canonical_currency(selected.to_currency) != quote_currency
-        or not isinstance(selected.source, ExchangeRateSource)
+        or selected.source is not source
         or canonical_timestamp(selected.date) > through
         or through - canonical_timestamp(selected.date) > policy.maximum_fx_age
     ):
@@ -250,6 +253,7 @@ def _validate_rate_candidates(
     *,
     base_currencies: tuple[str, ...],
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
 ) -> tuple[ExchangeRateModel, ...]:
     if not isinstance(candidates, tuple):
@@ -264,8 +268,8 @@ def _validate_rate_candidates(
             rate_id in ids
             or canonical_currency(candidate.from_currency) not in allowed_bases
             or canonical_currency(candidate.to_currency) != quote_currency
+            or candidate.source is not source
             or canonical_timestamp(candidate.date) > through
-            or not isinstance(candidate.source, ExchangeRateSource)
         ):
             raise _fail()
         ids.add(rate_id)
@@ -278,6 +282,7 @@ def _selected_snapshot_rate(
     *,
     base_currency: str,
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> SelectedExchangeRateEvidence:
@@ -285,6 +290,7 @@ def _selected_snapshot_rate(
         candidates,
         base_currency=base_currency,
         quote_currency=quote_currency,
+        source=source,
         through=through,
         policy=policy,
     )
@@ -325,6 +331,7 @@ def _selected_snapshot_rates(
     *,
     source_currencies: set[str],
     output_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> tuple[SelectedExchangeRateEvidence, ...]:
@@ -338,14 +345,13 @@ def _selected_snapshot_rates(
             candidates,
             base_currency=base_currency,
             quote_currency=quote_currency,
+            source=source,
             through=through,
             policy=policy,
         )
         for base_currency, quote_currency in sorted(pairs)
     )
-    if output_currency != FX_PIVOT_CURRENCY and any(
-        rate.source is not ExchangeRateSource.cnb for rate in selected
-    ):
+    if any(rate.source is not source for rate in selected):
         raise _fail()
     return selected
 
@@ -781,18 +787,21 @@ class AccountSnapshotEvidenceService:
                     loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                         liability_bases,
                         FX_PIVOT_CURRENCY,
+                        source=_FX_EVIDENCE_SOURCE,
                         through=snapshot_timestamp,
                     )
                     rate_candidates = _validate_rate_candidates(
                         loaded_rate_candidates,
                         base_currencies=liability_bases,
                         quote_currency=FX_PIVOT_CURRENCY,
+                        source=_FX_EVIDENCE_SOURCE,
                         through=snapshot_timestamp,
                     )
                     liability_snapshot_rates = _selected_snapshot_rates(
                         rate_candidates,
                         source_currencies={account_currency},
                         output_currency=output_currency,
+                        source=_FX_EVIDENCE_SOURCE,
                         through=snapshot_timestamp,
                         policy=self.policy,
                     )
@@ -867,18 +876,21 @@ class AccountSnapshotEvidenceService:
             loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                 required_currencies,
                 FX_PIVOT_CURRENCY,
+                source=_FX_EVIDENCE_SOURCE,
                 through=snapshot_timestamp,
             )
             rate_candidates = _validate_rate_candidates(
                 loaded_rate_candidates,
                 base_currencies=required_currencies,
                 quote_currency=FX_PIVOT_CURRENCY,
+                source=_FX_EVIDENCE_SOURCE,
                 through=snapshot_timestamp,
             )
             snapshot_rates = _selected_snapshot_rates(
                 rate_candidates,
                 source_currencies=snapshot_currencies,
                 output_currency=output_currency,
+                source=_FX_EVIDENCE_SOURCE,
                 through=snapshot_timestamp,
                 policy=self.policy,
             )
@@ -892,13 +904,11 @@ class AccountSnapshotEvidenceService:
                         rate_candidates,
                         base_currency=base_currency,
                         quote_currency=quote_currency,
+                        source=_FX_EVIDENCE_SOURCE,
                         through=evidence.timestamp,
                         policy=self.policy,
                     )
-                    if (
-                        output_currency != FX_PIVOT_CURRENCY
-                        and selected.source is not ExchangeRateSource.cnb
-                    ):
+                    if selected.source is not _FX_EVIDENCE_SOURCE:
                         raise _fail()
                     historical_rates.append(
                         SelectedHistoricalRate(

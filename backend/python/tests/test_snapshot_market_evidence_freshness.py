@@ -114,7 +114,7 @@ def _rate(timestamp: datetime, rate_id: str) -> ExchangeRateModel:
         to_currency="CZK",
         rate=Decimal("25"),
         date=timestamp,
-        source=ExchangeRateSource.ecb,
+        source=ExchangeRateSource.cnb,
     )
 
 
