@@ -51,6 +51,8 @@ def test_python_api_inventory_contains_the_current_public_boundaries() -> None:
         ("POST", "/api/v1/snapshot-refresh/recalculate"),
         ("POST", "/api/v1/portfolio/snapshot"),
         ("POST", "/api/v1/dashboard/snapshot"),
+        ("POST", "/api/v1/portfolio/current"),
+        ("POST", "/api/v1/dashboard/current"),
         ("GET", "/api/v1/portfolio/history"),
     }.issubset(operations)
 
