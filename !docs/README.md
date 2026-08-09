@@ -6,13 +6,19 @@ architecture. Product intent and the planned milestones remain in
 
 ## Current implementation snapshot
 
-The application is in the internal `0.1` architecture milestone. The Python
-FastAPI service has working authentication, account, invitation, import-batch,
-and portfolio read endpoints. PostgreSQL schema ownership has moved to
-SQLAlchemy and Alembic. The Next.js application still calls its legacy
-TypeScript route handlers for its main UI workflows, and the Python import
-pipeline currently stops after duplicate detection; it does not yet post
-transactions or investment events or rebuild holdings and snapshots.
+The application is in the internal `0.1` architecture milestone. Next.js owns
+the UI, NextAuth session, and thin authenticated transport adapters. Python
+owns the active account, import, canonical ledger, Holdings, market evidence,
+snapshot, daily-baseline, current-value, portfolio, dashboard, and history
+workflows. PostgreSQL is the finance persistence authority and Alembic owns its
+schema migrations.
+
+The strict current-value engine is implemented as a D1 daily baseline plus
+forward canonical changes and current persisted market evidence. The R10 final
+audit nevertheless keeps Version 0.1 incomplete: the real authenticated
+portfolio and dashboard current endpoints currently return a safe unavailable
+response because principal lookup and the D1 selector share an incompatible
+SQLAlchemy session transaction boundary. R10-E1 owns that release blocker.
 
 ## Reading guide
 

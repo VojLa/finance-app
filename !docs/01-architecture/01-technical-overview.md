@@ -5,23 +5,21 @@ FastAPI service, PostgreSQL, and a small Rust workspace reserved for future
 calculation engines.
 
 ```text
-Browser -> Next.js UI and legacy route handlers
-             \-> authenticated server adapter -> FastAPI /api/v1 -> PostgreSQL
-                                                    |
-                                              local raw-import storage
+Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
+                                                       |          |
+                                                PostgreSQL   raw-import storage
 ```
 
 ## Runtime responsibilities
 
-- **Next.js / TypeScript** provides the current UI, NextAuth session, and legacy
-  routes. It now also owns bodyless portfolio/dashboard snapshot workflow
-  routes that bridge a verified session to FastAPI with a short-lived internal
-  token. The portfolio and dashboard pages consume their respective snapshot
-  workflow routes for current financial views. The dashboard also temporarily
-  reads operational widgets from its legacy route.
-- **Python / FastAPI** owns the new HTTP transport, request infrastructure,
-  account and invitation services, import-batch processing, and the temporary
-  portfolio read endpoint.
+- **Next.js / TypeScript** provides the UI, NextAuth session, and thin adapters
+  that mint a short-lived internal token. Active account, import, portfolio,
+  dashboard, and history finance flows delegate to Python. Registered legacy
+  routes remain compatibility surfaces; dashboard operational widgets are
+  isolated from snapshot/current finance.
+- **Python / FastAPI** owns accounts, imports, canonical ledger and revision
+  lineage, Holdings, market evidence, persisted snapshots, D1 daily baselines,
+  the D2 current-value engine, portfolio, dashboard, and history.
 - **PostgreSQL 16** is the central persistence store.
 - **SQLAlchemy** provides the async runtime mappings for all application tables.
 - **Alembic** is the sole owner of schema migrations. Prisma Client remains a
@@ -101,5 +99,8 @@ deduplicator, classifier, canonical writer, holdings, and snapshot authority.
 Legacy preview and provider-specific routes remain compatibility surfaces but
 are not used by the page.
 
-Version 0.1 remains incomplete; the next remediation is 0.1-R5, production
-Python price and FX evidence ownership.
+Version 0.1 remains incomplete after the R10 final scope re-audit. D1/D2 finance
+is present, but the authenticated current endpoints share the session used by
+principal lookup; its already-open read transaction violates the D1 selector's
+idle-session precondition and produces a safe 409. The next remediation is
+0.1-R10-E1, current-value authenticated session/transaction composition.
