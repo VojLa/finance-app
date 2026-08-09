@@ -4,13 +4,16 @@ import hmac
 import json
 import time
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_principal
-from app.auth.models import AuthenticatedPrincipal
+from app.auth.errors import AuthenticationTransactionStateError
+from app.auth.models import AuthenticatedPrincipal, InternalTokenClaims
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.main import create_app
@@ -103,6 +106,7 @@ def test_unknown_token_subject_is_rejected(test_settings: Settings) -> None:
     app = create_app(test_settings)
     session = AsyncMock(spec=AsyncSession)
     session.scalar.return_value = None
+    session.in_transaction.return_value = False
 
     async def missing_user_session() -> AsyncIterator[AsyncSession]:
         yield session
@@ -119,6 +123,63 @@ def test_unknown_token_subject_is_rejected(test_settings: Settings) -> None:
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "invalid_session_token"
     session.scalar.assert_awaited_once()
+    session.rollback.assert_awaited_once_with()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_persisted_principal_closes_its_read_transaction_and_returns_value_data() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.in_transaction.return_value = False
+    session.scalar.return_value = SimpleNamespace(
+        id="user-1",
+        email="user@example.com",
+        name="Test User",
+    )
+    claims = InternalTokenClaims(
+        sub="user-1",
+        email="claim@example.com",
+        iss="finance-app-next",
+        aud="finance-app-python",
+        iat=1,
+        exp=2,
+        jti="session-1",
+    )
+
+    principal = await get_current_principal(claims, session)
+
+    assert principal == AuthenticatedPrincipal(
+        user_id="user-1",
+        email="user@example.com",
+        name="Test User",
+        session_id="session-1",
+    )
+    session.scalar.assert_awaited_once()
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
+    assert session.in_transaction() is False
+
+
+@pytest.mark.asyncio
+async def test_principal_resolution_does_not_destroy_a_caller_owned_transaction() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.in_transaction.return_value = True
+    claims = InternalTokenClaims(
+        sub="user-1",
+        email=None,
+        iss="finance-app-next",
+        aud="finance-app-python",
+        iat=1,
+        exp=2,
+        jti=None,
+    )
+
+    with pytest.raises(AuthenticationTransactionStateError):
+        await get_current_principal(claims, session)
+
+    session.scalar.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_not_awaited()
 
 
 def test_missing_auth_configuration_returns_controlled_error() -> None:

@@ -14,11 +14,12 @@ workflows. PostgreSQL is the finance persistence authority and Alembic owns its
 schema migrations.
 
 The strict current-value engine is implemented as a D1 daily baseline plus
-forward canonical changes and current persisted market evidence. The R10 final
-audit nevertheless keeps Version 0.1 incomplete: the real authenticated
-portfolio and dashboard current endpoints currently return a safe unavailable
-response because principal lookup and the D1 selector share an incompatible
-SQLAlchemy session transaction boundary. R10-E1 owns that release blocker.
+forward canonical changes and current persisted market evidence. R10-E1 closes
+the authentication lookup transaction before D1/D2 takes ownership, so the real
+authenticated portfolio and dashboard endpoints now return current finance.
+Version 0.1 remains incomplete because composed mixed-currency MONEY currently
+serializes with its internal Decimal exponent instead of the public canonical
+six-decimal representation. R10-E2 owns that release blocker.
 
 ## Reading guide
 

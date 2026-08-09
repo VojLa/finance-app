@@ -23,3 +23,12 @@ class AuthenticationConfigurationError(ApplicationError):
             message="Authentication is not configured.",
             status_code=503,
         )
+
+
+class AuthenticationTransactionStateError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="authentication_unavailable",
+            message="Authentication is temporarily unavailable.",
+            status_code=503,
+        )
