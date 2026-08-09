@@ -101,9 +101,11 @@ are not used by the page.
 
 R10-E1 closes the persisted-principal read transaction before the same
 request-scoped session enters D1/D2 planning, market, and final read phases. The
-real authenticated current endpoints now return 200 without weakening D1's
-idle-session precondition or creating a second session. Version 0.1 remains
-incomplete because mixed-currency composed MONEY retains its internal Decimal
-scale in public serialization and violates the browser's canonical six-decimal
-contract. The next remediation is 0.1-R10-E2, canonical current MONEY
-serialization.
+real authenticated current endpoints return 200 without weakening D1's
+idle-session precondition or creating a second session. R10-E2 canonicalizes
+public financial numerics at the response boundary: MONEY has six fractional
+digits, QUANTITY ten, RATE eight, and PERCENTAGE four. Values that would require
+rounding, overflow their physical Numeric contract, or are non-finite fail
+closed. Internal Decimal precision and D2 arithmetic remain unchanged.
+
+Version 0.1 is COMPLETE / Architecture Locked as an internal architecture MVP.

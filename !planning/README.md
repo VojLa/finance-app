@@ -1,7 +1,7 @@
 # Planning
 
 Status: `0.0 - Planning` completed on 2026-07-16
-Current phase: `0.1 - Architecture Locked`
+Current phase: `0.1 - Architecture Locked` complete; `0.2` not started
 
 Tato slozka obsahuje kompletni navrh produktu, architektury, bezpecnosti a vyvojovych pravidel projektu.
 

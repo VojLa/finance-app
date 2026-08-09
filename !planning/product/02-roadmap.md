@@ -102,6 +102,9 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
+Status: COMPLETE — internal architecture MVP. This is not public-production
+readiness, and 0.2 work has not started in this milestone.
+
 Detailni scope: [`../scope/0.1 - Architecture Locked.md`](../scope/0.1%20-%20Architecture%20Locked.md)
 
 Ucel:

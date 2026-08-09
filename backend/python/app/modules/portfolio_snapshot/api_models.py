@@ -11,6 +11,11 @@ from app.modules.portfolio_snapshot.models import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.shared.numeric_serialization import (
+    serialize_money,
+    serialize_percentage,
+    serialize_quantity,
+)
 
 _MODEL_CONFIG = ConfigDict(
     extra="forbid",
@@ -36,7 +41,7 @@ class PortfolioCurrencyAmountResponse(BaseModel):
 
     @field_serializer("amount")
     def serialize_amount(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class PortfolioSnapshotSummaryResponse(BaseModel):
@@ -73,7 +78,7 @@ class PortfolioSnapshotSummaryResponse(BaseModel):
         "taxes_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class PortfolioSnapshotPositionResponse(BaseModel):
@@ -102,15 +107,21 @@ class PortfolioSnapshotPositionResponse(BaseModel):
     @field_serializer(
         "quantity",
         "price_per_unit",
-        "value",
         "cost_basis",
         "unrealized_pnl",
-        "allocation_pct",
         "native_value",
         "native_cost_basis",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+    def serialize_quantity(self, value: Decimal) -> str:
+        return serialize_quantity(value)
+
+    @field_serializer("value")
+    def serialize_money(self, value: Decimal) -> str:
+        return serialize_money(value)
+
+    @field_serializer("allocation_pct")
+    def serialize_percentage(self, value: Decimal) -> str:
+        return serialize_percentage(value)
 
     @field_serializer("price_timestamp")
     def serialize_timestamp(self, value: datetime) -> str:

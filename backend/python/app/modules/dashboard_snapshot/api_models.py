@@ -10,6 +10,11 @@ from app.modules.portfolio_snapshot.models import (
     AssetType,
     SnapshotGranularity,
 )
+from app.shared.numeric_serialization import (
+    serialize_money,
+    serialize_percentage,
+    serialize_quantity,
+)
 
 _MODEL_CONFIG = ConfigDict(
     extra="forbid",
@@ -51,7 +56,7 @@ class DashboardSnapshotSummaryResponse(BaseModel):
         "taxes_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class DashboardAccountCardResponse(BaseModel):
@@ -81,7 +86,7 @@ class DashboardAccountCardResponse(BaseModel):
         "unrealized_pnl_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class DashboardAssetTypeAllocationResponse(BaseModel):
@@ -93,9 +98,13 @@ class DashboardAssetTypeAllocationResponse(BaseModel):
     position_count: int = Field(serialization_alias="positionCount")
     account_count: int = Field(serialization_alias="accountCount")
 
-    @field_serializer("value", "allocation_pct")
-    def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+    @field_serializer("value")
+    def serialize_money(self, value: Decimal) -> str:
+        return serialize_money(value)
+
+    @field_serializer("allocation_pct")
+    def serialize_percentage(self, value: Decimal) -> str:
+        return serialize_percentage(value)
 
 
 class DashboardTopPositionResponse(BaseModel):
@@ -112,9 +121,17 @@ class DashboardTopPositionResponse(BaseModel):
     unrealized_pnl: Decimal = Field(serialization_alias="unrealizedPnl")
     allocation_pct: Decimal = Field(serialization_alias="allocationPct")
 
-    @field_serializer("value", "unrealized_pnl", "allocation_pct")
-    def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+    @field_serializer("value")
+    def serialize_money(self, value: Decimal) -> str:
+        return serialize_money(value)
+
+    @field_serializer("unrealized_pnl")
+    def serialize_quantity(self, value: Decimal) -> str:
+        return serialize_quantity(value)
+
+    @field_serializer("allocation_pct")
+    def serialize_percentage(self, value: Decimal) -> str:
+        return serialize_percentage(value)
 
 
 class DashboardSnapshotResponse(BaseModel):
