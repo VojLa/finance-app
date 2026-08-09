@@ -294,7 +294,9 @@ def test_new_asset_listing_mapping_does_not_merge_by_symbol() -> None:
     assert isinstance(session.added[0], AssetModel)
     assert isinstance(session.added[1], AssetListingModel)
     assert result.asset.symbol == "VWCE" and result.listing.provider_symbol == "VWCE"
-    assert session.flush.await_count == 1
+    # The schema mirror has no ORM relationship ordering, so the parent Asset
+    # and child AssetListing are flushed explicitly in foreign-key order.
+    assert session.flush.await_count == 2
 
 
 def test_conflicting_provider_and_market_identities_fail_closed() -> None:

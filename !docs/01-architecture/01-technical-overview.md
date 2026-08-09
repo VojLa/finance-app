@@ -14,12 +14,13 @@ Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
 
 - **Next.js / TypeScript** provides the UI, NextAuth session, and thin adapters
   that mint a short-lived internal token. Active account, transaction, category,
-  budget, operational dashboard, import, portfolio, dashboard-snapshot, and
-  history flows delegate to Python. Registered legacy routes remain
+  budget, operational dashboard, import, manual investment, symbol-detail,
+  portfolio, dashboard-snapshot, and history flows delegate to Python. Registered legacy routes remain
   compatibility surfaces.
 - **Python / FastAPI** owns identity credentials, accounts, transactions, categories,
-  budgets, operational dashboard projections, imports, canonical ledger and revision
-  lineage, Holdings, market evidence, persisted snapshots, D1 daily baselines,
+  budgets, operational dashboard projections, imports, manual investment commands,
+  symbol-detail reads, canonical ledger and revision lineage, Holdings, market
+  evidence, persisted snapshots, D1 daily baselines,
   the D2 current-value engine, portfolio, dashboard, and history.
 - **PostgreSQL 16** is the central persistence store.
 - **SQLAlchemy** provides the async runtime mappings for all application tables.
@@ -91,6 +92,16 @@ account page replaces destructive delete with archive and no longer reads or
 presents the legacy account-cash/FX model. Sharing write UX is outside R1. The
 legacy cash and share route files remain registered compatibility surfaces but
 are not called by the main account page.
+
+R11-G moves the active manual investment command and symbol-detail read behind
+generated Python contracts. A new command serializes by idempotency key, writes
+one event plus its complete movement set, advances canonical revision, and
+rebuilds Holdings in one database transaction. Snapshot readiness is coordinated
+only after that transaction commits; a retry of the same key cannot duplicate
+ledger rows and can retry readiness. The symbol read returns only authorized
+positions and canonical event history and performs no provider or finance write.
+The Next.js route now owns session transport and request allowlisting only.
+
 The 0.1-R2 and R3 remediations establish source-specific Raiffeisenbank
 processing and fixture-backed Trading212/Anycoin upload-to-read-model evidence.
 R4 cuts the production import page over to those existing Python staged APIs.

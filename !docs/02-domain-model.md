@@ -13,10 +13,32 @@ application service yet.
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | accessible category hierarchy                                | Python category hierarchy/default/user ownership implemented                        |
 | Budgets                | `Budget` and related item/account/alert tables                         | exact monthly plan, rollover, progress, and alerts            | Python read/write workflow implemented in R11-F                                     |
 | Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence plus R5-B4 server-operator exact alias onboarding               |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | —                                                            | Schema only                                                                         |
-| Portfolio              | —                                                                      | `Holding`                                                    | Read by portfolio; deterministic rebuild and authorized manual endpoint implemented |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | authorized symbol event history                              | Python import and idempotent manual command writers implemented                     |
+| Portfolio              | —                                                                      | `Holding` and authorized symbol positions                    | Deterministic Python rebuild and read models implemented                             |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
 | Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                           |
+
+## Manual investment command and symbol detail
+
+R11-G defines one Python-owned manual command for buy, sell, dividend,
+interest, staking reward, deposit, withdrawal, fee, currency conversion, and
+airdrop. The command validates a complete economic shape, creates no empty
+event, and requires both direct legs of a currency conversion. Public money and
+quantity values remain exact fixed-scale strings.
+
+The idempotency key is serialized with an advisory lock. A first execution
+creates deterministic event/movement identities, increments the account's
+canonical revision, and rebuilds Holdings from active canonical history in the
+same transaction. An exact replay returns the existing result; a changed
+payload conflicts. Database failure rolls back event, movements, revision, and
+Holding changes together. Snapshot/current readiness runs only after commit and
+its explicit unavailable/conflict state does not make the canonical command
+ambiguous; retrying the same command can safely retry readiness.
+
+The symbol-detail read returns positions and active event history only from
+accounts accessible to the principal. It performs no provider request, market
+evidence write, snapshot selection, valuation fallback, or TypeScript
+calculation.
 
 ## Exact market evidence
 

@@ -20,6 +20,7 @@ from app.modules.imports.posting_common import ImportPostStateError, bounded_opt
 _PROVIDER_EXCHANGES: Final = {
     PriceSource.broker: "trading212",
     PriceSource.exchange: "anycoin",
+    PriceSource.manual: "manual",
 }
 
 
@@ -333,6 +334,9 @@ class ImportInvestmentAssetResolver:
             updated_at=now,
         )
         self.session.add(asset)
+        # SQLAlchemy mirrors the physical schema without ORM relationships, so
+        # make the parent visible before the explicit AssetListing foreign key.
+        await self.session.flush()
         return await self._create_listing(
             plan=canonical_plan,
             asset=asset,

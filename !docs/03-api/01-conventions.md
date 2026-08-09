@@ -35,6 +35,8 @@ secret returns `503` for protected calls.
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/deduplicate` | Mark repeated normalized rows as duplicates  |
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/classify`    | Create deterministic posting intent          |
 | `POST`                   | `/api/v1/accounts/{account_id}/imports/{batch_id}/post`        | Post canonical rows and run post-processing  |
+| `POST`                   | `/api/v1/investments/manual`                                   | Idempotent manual investment command         |
+| `GET`                    | `/api/v1/investments/symbols/{symbol}`                         | Authorized position and event detail         |
 | `GET`                    | `/api/v1/portfolio?account_id=…`                               | Basic holdings cost summary                  |
 
 The legacy aliases `/health` and `/portfolio` remain without the version prefix
@@ -172,6 +174,24 @@ categories. Defaults are immutable. Custom hierarchy updates reject inaccessible
 parents and cycles; deleting a custom category relies on the schema-owned cascade
 for rules and `SET NULL` for transaction/category references. Category creation is
 idempotent. The removed TypeScript category-rule helper is not a runtime authority.
+
+## Manual investments and symbol detail
+
+`POST /api/v1/investments/manual` requires editor-or-higher access and an
+idempotency key. It accepts an exact action-specific payload, writes one
+`InvestmentEvent` and a complete `InvestmentMovement` set, advances canonical
+revision, and rebuilds Holdings atomically. Currency conversion requires both
+direct legs and no action may create an empty event. Exact replay is successful;
+payload reuse conflicts. Snapshot/current readiness is coordinated after commit
+and returned as an explicit status, so retrying the same key cannot duplicate
+canonical finance and can retry readiness.
+
+`GET /api/v1/investments/symbols/{symbol}` is a read-only projection of
+positions and active event history across the principal's accessible accounts.
+It performs no market-provider call or write. The browser uses generated
+contracts through `POST /api/portfolio/transactions` and the typed symbol-detail
+client; the Next.js layer performs only session transport and request
+allowlisting and contains no ledger or Holding calculation.
 
 ## Next.js import route
 

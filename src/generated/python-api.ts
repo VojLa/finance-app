@@ -572,6 +572,40 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/investments/manual": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Create Manual Investment */
+    post: operations["create_manual_investment_api_v1_investments_manual_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/investments/symbols/{symbol}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read Symbol Detail */
+    get: operations["read_symbol_detail_api_v1_investments_symbols__symbol__get"]
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/net-worth/snapshots/recalculate": {
     parameters: {
       query?: never
@@ -984,10 +1018,9 @@ export interface components {
     }
     /**
      * AssetType
-     * @description Asset classification copied into the portfolio presentation contract.
      * @enum {string}
      */
-    AssetType: "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
+    "AssetType-Input": "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
     /** AuthenticatedUserResponse */
     AuthenticatedUserResponse: {
       /** Email */
@@ -1320,7 +1353,7 @@ export interface components {
       accountCount: number
       /** Allocationpct */
       allocationPct: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Positioncount */
       positionCount: number
       /** Value */
@@ -1384,7 +1417,7 @@ export interface components {
       allocationPct: string
       /** Assetid */
       assetId: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Listingid */
       listingId: string
       /** Name */
@@ -1691,6 +1724,92 @@ export interface components {
        */
       status: "ok"
     }
+    /**
+     * ManualInvestmentAction
+     * @enum {string}
+     */
+    ManualInvestmentAction:
+      | "buy"
+      | "sell"
+      | "dividend"
+      | "interest"
+      | "staking_reward"
+      | "deposit"
+      | "withdrawal"
+      | "fee"
+      | "currency_conversion"
+      | "airdrop"
+    /** ManualInvestmentCreateRequest */
+    ManualInvestmentCreateRequest: {
+      /** Accountid */
+      accountId: string
+      assetType?: components["schemas"]["AssetType-Input"] | null
+      /** Conversionfromamount */
+      conversionFromAmount?: number | string | null
+      /** Conversionfromcurrency */
+      conversionFromCurrency?: string | null
+      /** Conversiontoamount */
+      conversionToAmount?: number | string | null
+      /** Conversiontocurrency */
+      conversionToCurrency?: string | null
+      /** Date */
+      date: string
+      /** Fee */
+      fee?: number | string | null
+      /** Feecurrency */
+      feeCurrency?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Name */
+      name?: string | null
+      /** Pricecurrency */
+      priceCurrency?: string | null
+      /** Priceperunit */
+      pricePerUnit?: number | string | null
+      /** Quantity */
+      quantity?: number | string | null
+      /** Symbol */
+      symbol?: string | null
+      /** Totalamount */
+      totalAmount?: number | string | null
+      /** Totalcurrency */
+      totalCurrency?: string | null
+      type: components["schemas"]["ManualInvestmentAction"]
+    }
+    /** ManualInvestmentCreateResponse */
+    ManualInvestmentCreateResponse: {
+      /** Eventid */
+      eventId: string
+      holdings: components["schemas"]["ManualInvestmentHoldingResult"]
+      /** Replayed */
+      replayed: boolean
+      snapshot: components["schemas"]["ManualInvestmentSnapshotResult"]
+    }
+    /** ManualInvestmentHoldingResult */
+    ManualInvestmentHoldingResult: {
+      /** Created */
+      created: number
+      /** Deleted */
+      deleted: number
+      /** Replayed */
+      replayed: boolean
+      /** Total */
+      total: number
+      /** Updated */
+      updated: number
+    }
+    /** ManualInvestmentSnapshotResult */
+    ManualInvestmentSnapshotResult: {
+      /** Networthsnapshotid */
+      netWorthSnapshotId?: string | null
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "ready" | "unavailable" | "conflict"
+      /** Timestamp */
+      timestamp?: string | null
+    }
     /** MultiAccountPortfolioAccountResponse */
     MultiAccountPortfolioAccountResponse: {
       account: components["schemas"]["PortfolioSnapshotAccountResponse"]
@@ -1961,7 +2080,7 @@ export interface components {
       allocationPct: string
       /** Assetid */
       assetId: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Costbasis */
       costBasis: string
       /** Costcurrency */
@@ -2104,6 +2223,82 @@ export interface components {
       | "holdings_recalculation"
       | "scheduled"
       | "manual_recalculation"
+    /** SymbolDetailResponse */
+    SymbolDetailResponse: {
+      /** Events */
+      events: components["schemas"]["SymbolEventResponse"][]
+      /** Positions */
+      positions: components["schemas"]["SymbolPositionResponse"][]
+      /** Symbol */
+      symbol: string
+    }
+    /** SymbolEventResponse */
+    SymbolEventResponse: {
+      /** Accountid */
+      accountId: string
+      /** Accountname */
+      accountName: string
+      /** Date */
+      date: string
+      /** Description */
+      description: string | null
+      /** Fee */
+      fee: string | null
+      /** Feecurrency */
+      feeCurrency: string | null
+      /** Id */
+      id: string
+      /** Pricecurrency */
+      priceCurrency: string | null
+      /** Priceperunit */
+      pricePerUnit: string | null
+      /** Quantity */
+      quantity: string | null
+      /** Realizedpnl */
+      realizedPnl: string | null
+      /** Realizedpnlcurrency */
+      realizedPnlCurrency: string | null
+      /** Totalamount */
+      totalAmount: string | null
+      /** Totalcurrency */
+      totalCurrency: string | null
+      /** Type */
+      type: components["schemas"]["ManualInvestmentAction"] | "transfer"
+    }
+    /** SymbolPositionResponse */
+    SymbolPositionResponse: {
+      /** Accountid */
+      accountId: string
+      /** Accountname */
+      accountName: string
+      /** Assetid */
+      assetId: string | null
+      assetType: components["schemas"]["app__db__models__enums__AssetType"]
+      /** Avgbuyprice */
+      avgBuyPrice: string
+      /** Calculatedat */
+      calculatedAt: string
+      /** Currency */
+      currency: string
+      /** Currentprice */
+      currentPrice: string | null
+      /** Currentvalue */
+      currentValue: string | null
+      /** Id */
+      id: string
+      /** Listingid */
+      listingId: string
+      /** Name */
+      name: string | null
+      /** Quantity */
+      quantity: string
+      /** Realizedpnl */
+      realizedPnl: string | null
+      /** Symbol */
+      symbol: string
+      /** Unrealizedpnl */
+      unrealizedPnl: string | null
+    }
     /** TransactionAccountResponse */
     TransactionAccountResponse: {
       /** Currency */
@@ -2286,6 +2481,18 @@ export interface components {
       | "loan"
       | "mortgage"
     /**
+     * AssetType
+     * @enum {string}
+     */
+    app__db__models__enums__AssetType:
+      | "stock"
+      | "etf"
+      | "crypto"
+      | "commodity"
+      | "cash"
+      | "bond"
+      | "other"
+    /**
      * SnapshotGranularity
      * @enum {string}
      */
@@ -2305,6 +2512,19 @@ export interface components {
       | "credit_card"
       | "loan"
       | "mortgage"
+    /**
+     * AssetType
+     * @description Asset classification copied into the portfolio presentation contract.
+     * @enum {string}
+     */
+    app__modules__portfolio_snapshot__models__AssetType:
+      | "stock"
+      | "etf"
+      | "crypto"
+      | "commodity"
+      | "cash"
+      | "bond"
+      | "other"
     /**
      * SnapshotGranularity
      * @description Persisted AccountSnapshot bucket alignment.
@@ -3657,6 +3877,88 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["ReadinessResponse"]
+        }
+      }
+    }
+  }
+  create_manual_investment_api_v1_investments_manual_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ManualInvestmentCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ManualInvestmentCreateResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  read_symbol_detail_api_v1_investments_symbols__symbol__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        symbol: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["SymbolDetailResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
         }
       }
     }

@@ -14,12 +14,13 @@ thin and shared database infrastructure lives outside modules.
 | `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding            | R5-B4 implemented; remediation re-audit passed                              |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, canonical-post, and finalize logical multi-file CSV histories               | R10-A request-level post-processing implemented                             |
+| `investments`         | Idempotent manual event commands, atomic Holding rebuild, and symbol-detail reads      | R11-G implemented                                                           |
 | `portfolio`           | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`  | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
 | `portfolio_history`   | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API and R7-B browser/chart cutover implemented                  |
 | `dashboard_snapshot`  | Pure dashboard projection and authorized exact API adapter                            | 5L complete; final cross-boundary audit passed                              |
 | transactions          | Exact cash transaction list and manual lifecycle with canonical revisions             | R11-E implemented                                                           |
-| ledger                | Investment events and movements                                                       | Database schema only                                                        |
+| ledger                | Investment events and movements written by imports and manual investment commands     | Canonical Python writers implemented                                        |
 | holdings              | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
 | net_worth             | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                       |
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API      | R5-B3A coordinator used by R5-B3B manual and R5-B3C import paths            |

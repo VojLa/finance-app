@@ -8,10 +8,10 @@ architecture. Product intent and the planned milestones remain in
 
 The application is in the internal `0.1` architecture milestone. Python owns
 the identity, account, transaction, category, budget, operational dashboard,
-import, canonical ledger, Holdings,
+import, manual investment command, symbol-detail, canonical ledger, Holdings,
 market evidence, snapshot, daily-baseline, current-value, portfolio,
-dashboard-snapshot, and history workflows. However, active Next.js/TypeScript
-business paths still exist for manual investment operations. Some legacy
+dashboard-snapshot, and history workflows. Active manual investment and symbol
+detail browser paths are thin adapters over Python. Some remaining legacy
 compatibility paths still access PostgreSQL through Prisma. PostgreSQL is the
 finance persistence authority and Alembic owns its schema migrations.
 
