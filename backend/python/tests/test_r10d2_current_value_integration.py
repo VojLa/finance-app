@@ -19,6 +19,7 @@ from app.db.models.enums import (
     AccountType,
     AssetAliasProvider,
     AssetType,
+    ExchangeRateSource,
     ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
@@ -32,7 +33,7 @@ from app.db.models.enums import (
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
-from app.db.models.prices import PriceSnapshotModel
+from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
@@ -71,6 +72,9 @@ async def _cleanup(prefix: str) -> None:
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
     async with AsyncSession(engine) as session:
+        await session.execute(
+            delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(prefix))
+        )
         await session.execute(delete(HoldingModel).where(HoldingModel.account_id == account_id))
         await session.execute(
             delete(InvestmentMovementModel).where(InvestmentMovementModel.account_id == account_id)
@@ -107,7 +111,13 @@ async def _cleanup(prefix: str) -> None:
     await engine.dispose()
 
 
-async def _seed(prefix: str) -> tuple[str, str]:
+async def _seed(
+    prefix: str,
+    *,
+    base_currency: str = "EUR",
+    account_currency: str = "EUR",
+    account_type: AccountType = AccountType.loan,
+) -> tuple[str, str]:
     await _cleanup(prefix)
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
@@ -119,7 +129,7 @@ async def _seed(prefix: str) -> tuple[str, str]:
                 email=f"{prefix}@example.test",
                 name="D2 integration",
                 password_hash=None,
-                base_currency="EUR",
+                base_currency=base_currency,
                 created_at=BASELINE_AT - timedelta(days=2),
                 updated_at=BASELINE_AT - timedelta(days=2),
             )
@@ -128,8 +138,8 @@ async def _seed(prefix: str) -> tuple[str, str]:
             AccountModel(
                 id=account_id,
                 name="Loan",
-                type=AccountType.loan,
-                currency="EUR",
+                type=account_type,
+                currency=account_currency,
                 color=None,
                 is_archived=False,
                 archived_at=None,
@@ -158,15 +168,7 @@ async def _seed(prefix: str) -> tuple[str, str]:
 
 
 async def _seed_cash(prefix: str) -> tuple[str, str]:
-    user_id, account_id = await _seed(prefix)
-    engine = _engine()
-    async with AsyncSession(engine) as session:
-        account = await session.get(AccountModel, account_id)
-        assert account is not None
-        account.type = AccountType.bank
-        await session.commit()
-    await engine.dispose()
-    return user_id, account_id
+    return await _seed(prefix, account_type=AccountType.bank)
 
 
 async def _transaction(
@@ -308,6 +310,32 @@ async def _seed_investment(
     return user_id, account_id, listing_id
 
 
+async def _rate(
+    prefix: str,
+    *,
+    currency: str,
+    at: datetime,
+    value: str,
+) -> str:
+    rate_id = f"{prefix}-{currency.lower()}-{at:%Y%m%d%H%M}-rate"
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        session.add(
+            ExchangeRateModel(
+                id=rate_id,
+                from_currency=currency,
+                to_currency="CZK",
+                rate=Decimal(value),
+                date=at,
+                source=ExchangeRateSource.cnb,
+                created_at=at,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+    return rate_id
+
+
 async def _investment_buy(
     prefix: str,
     *,
@@ -396,6 +424,68 @@ async def _investment_buy(
     await engine.dispose()
 
 
+async def _investment_cash_deposit(
+    prefix: str,
+    *,
+    account_id: str,
+    at: datetime,
+    amount: str,
+    currency: str,
+) -> None:
+    event_id = f"{prefix}-deposit"
+    engine = _engine()
+    async with AsyncSession(engine) as session, session.begin():
+        session.add(
+            InvestmentEventModel(
+                id=event_id,
+                account_id=account_id,
+                type=InvestmentEventType.cash_deposit,
+                date=at,
+                source=ImportSource.trading212,
+                external_id=event_id,
+                order_id=None,
+                description="Forward deposit",
+                realized_pnl=None,
+                realized_pnl_currency=None,
+                import_batch_id=None,
+                archived_at=None,
+                deleted_at=None,
+                created_at=at,
+                updated_at=at,
+            )
+        )
+        session.add(
+            InvestmentMovementModel(
+                id=f"{event_id}-cash",
+                event_id=event_id,
+                account_id=account_id,
+                asset_id=None,
+                listing_id=None,
+                kind=InvestmentMovementKind.cash,
+                direction=MovementDirection.incoming,
+                quantity=Decimal(amount),
+                currency=currency,
+                price_per_unit=None,
+                value_amount=Decimal(amount),
+                value_currency=currency,
+                source_symbol=None,
+                source_asset_type=None,
+                note=None,
+                created_at=at,
+                updated_at=at,
+            )
+        )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.investment_event,
+            entity_id=event_id,
+            financial_timestamp=at,
+            created_at=at,
+            replay=False,
+        )
+    await engine.dispose()
+
+
 async def _rebuild(account_id: str, *, at: datetime) -> None:
     engine = _engine()
     async with AsyncSession(engine) as session, session.begin():
@@ -448,9 +538,17 @@ async def _daily_baseline(user_id: str) -> None:
 
 
 class _ReplayMarketService:
-    def __init__(self, user_id: str, price_ids: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        output_currency: str,
+        price_ids: tuple[str, ...],
+        exchange_rate_ids: tuple[str, ...],
+    ) -> None:
         self.user_id = user_id
+        self.output_currency = output_currency
         self.price_ids = price_ids
+        self.exchange_rate_ids = exchange_rate_ids
 
     async def refresh(
         self,
@@ -459,19 +557,25 @@ class _ReplayMarketService:
         return MarketEvidenceRefreshResult(
             user_id=self.user_id,
             snapshot_timestamp=command.snapshot_timestamp,
-            output_currency="EUR",
+            output_currency=self.output_currency,
             required_price_count=len(self.price_ids),
-            required_fx_count=0,
+            required_fx_count=len(self.exchange_rate_ids),
             price_ids=self.price_ids,
-            exchange_rate_ids=(),
+            exchange_rate_ids=self.exchange_rate_ids,
             prices_created=0,
             prices_replayed=len(self.price_ids),
             rates_created=0,
-            rates_replayed=0,
+            rates_replayed=len(self.exchange_rate_ids),
         )
 
 
-async def _current(user_id: str, *, replay_price_ids: tuple[str, ...] = ()):
+async def _current(
+    user_id: str,
+    *,
+    output_currency: str = "EUR",
+    replay_price_ids: tuple[str, ...] = (),
+    replay_exchange_rate_ids: tuple[str, ...] = (),
+):
     engine = _engine()
     async with AsyncSession(engine) as session:
         settings = Settings(environment="test", _env_file=None)
@@ -481,10 +585,13 @@ async def _current(user_id: str, *, replay_price_ids: tuple[str, ...] = ()):
                 settings,
                 clock=lambda: CURRENT_AT,
                 market_service_factory=lambda _session, _settings, _planner: _ReplayMarketService(
-                    user_id, replay_price_ids
+                    user_id,
+                    output_currency,
+                    replay_price_ids,
+                    replay_exchange_rate_ids,
                 ),
             )
-            if replay_price_ids
+            if replay_price_ids or replay_exchange_rate_ids
             else CurrentValueService(session, settings, clock=lambda: CURRENT_AT)
         )
         result = await service.read_portfolio(
@@ -605,6 +712,107 @@ def test_current_cash_applies_only_forward_canonical_delta_without_snapshot_writ
         await engine.dispose()
         assert after == before
 
+        await _cleanup(prefix)
+
+    asyncio.run(scenario())
+
+
+def test_mixed_currency_liability_projects_primary_and_presentation_from_one_forward_state() -> (
+    None
+):
+    prefix = "r10d2-mixed-liability"
+
+    async def scenario() -> None:
+        user_id, account_id = await _seed(
+            prefix,
+            base_currency="CZK",
+            account_currency="EUR",
+        )
+        await _liability(
+            account_id,
+            effective_at=BASELINE_AT - timedelta(days=1),
+            external_id="baseline",
+            amount="100.000000",
+        )
+        await _rate(
+            prefix,
+            currency="EUR",
+            at=BASELINE_AT,
+            value="25.00000000",
+        )
+        await _daily_baseline(user_id)
+        await _liability(
+            account_id,
+            effective_at=BASELINE_AT + timedelta(hours=2),
+            external_id="forward",
+            amount="75.000000",
+        )
+        current_rate_id = await _rate(
+            prefix,
+            currency="EUR",
+            at=CURRENT_AT,
+            value="24.00000000",
+        )
+
+        result = await _current(
+            user_id,
+            output_currency="CZK",
+            replay_exchange_rate_ids=(current_rate_id,),
+        )
+        assert result.portfolio.currency == "CZK"
+        assert result.portfolio.summary.liabilities_value == Decimal("1800.000000")
+        assert result.portfolio.summary.total_value == Decimal("-1800.000000")
+        assert len(result.account_presentations) == 1
+        presentation = result.account_presentations[0]
+        assert presentation.currency == "EUR"
+        assert presentation.summary.liabilities_value == Decimal("75.000000")
+        assert presentation.summary.total_value == Decimal("-75.000000")
+        await _cleanup(prefix)
+
+    asyncio.run(scenario())
+
+
+def test_forward_historical_metric_uses_event_date_fx_separately_from_current_cash_fx() -> None:
+    prefix = "r10d2-historical-fx"
+    event_at = BASELINE_AT + timedelta(hours=2)
+
+    async def scenario() -> None:
+        user_id, account_id = await _seed(
+            prefix,
+            base_currency="CZK",
+            account_currency="EUR",
+            account_type=AccountType.broker,
+        )
+        await _rebuild(account_id, at=BASELINE_AT - timedelta(hours=1))
+        await _daily_baseline(user_id)
+        await _investment_cash_deposit(
+            prefix,
+            account_id=account_id,
+            at=event_at,
+            amount="100.0000000000",
+            currency="USD",
+        )
+        rate_ids = (
+            await _rate(prefix, currency="USD", at=event_at, value="21.00000000"),
+            await _rate(prefix, currency="EUR", at=event_at, value="24.00000000"),
+            await _rate(prefix, currency="USD", at=CURRENT_AT, value="20.00000000"),
+            await _rate(prefix, currency="EUR", at=CURRENT_AT, value="25.00000000"),
+        )
+
+        result = await _current(
+            user_id,
+            output_currency="CZK",
+            replay_exchange_rate_ids=rate_ids,
+        )
+        primary = result.portfolio.accounts[0]
+        presentation = result.account_presentations[0]
+        assert primary.summary.cash_value == Decimal("2000.000000")
+        assert primary.summary.net_deposits_value == Decimal("2100.000000")
+        assert presentation.currency == "EUR"
+        assert presentation.summary.cash_value == Decimal("80.000000")
+        assert presentation.summary.net_deposits_value == Decimal("87.500000")
+        assert primary.summary.cash_by_currency[0].amount == Decimal("100.000000")
+        assert primary.summary.net_deposits_by_currency[0].amount == Decimal("100.000000")
         await _cleanup(prefix)
 
     asyncio.run(scenario())
