@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.modules.portfolio_history.models import PortfolioHistoryRange
+from app.shared.numeric_serialization import serialize_money
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
 
@@ -30,7 +31,7 @@ class PortfolioHistoryPointResponse(BaseModel):
         "net_worth_value",
     )
     def serialize_money(self, value: Decimal) -> str:
-        return f"{value:.6f}"
+        return serialize_money(value)
 
 
 class PortfolioHistoryResponse(BaseModel):

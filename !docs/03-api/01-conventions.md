@@ -42,6 +42,14 @@ and are intentionally excluded from OpenAPI. New clients must use `/api/v1`.
 
 ## Responses, errors, and writes
 
+Public financial decimals are fixed-scale strings owned by the Python response
+boundary. `MONEY NUMERIC(18,6)` emits exactly six fractional digits,
+`QUANTITY NUMERIC(28,10)` emits ten, `RATE NUMERIC(18,8)` emits eight, and
+`PERCENTAGE NUMERIC(8,4)` emits four. The serializer accepts extra internal
+trailing zero precision only when the numeric value is exactly representable;
+it never rounds overprecision. Non-finite values, overflow, and values requiring
+rounding fail closed. Canonical zero has no negative sign.
+
 FastAPI/Pydantic response models are the HTTP source of truth. Do not manually
 duplicate them in TypeScript. `npm run api:python:generate` exports OpenAPI
 directly from `create_app(...)` without database or lifespan work and generates

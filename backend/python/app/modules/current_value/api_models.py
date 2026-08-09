@@ -20,6 +20,7 @@ from app.modules.portfolio_snapshot.multi_account_api_models import (
     MultiAccountPortfolioAggregatePositionResponse,
     MultiAccountPortfolioSummaryResponse,
 )
+from app.shared.numeric_serialization import serialize_money
 
 _CONFIG = ConfigDict(extra="forbid", populate_by_name=True, from_attributes=True)
 
@@ -81,7 +82,7 @@ class CurrentDashboardAccountResponse(BaseModel):
         "unrealized_pnl_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class CurrentDashboardResponse(BaseModel):

@@ -12,6 +12,7 @@ from app.modules.portfolio_snapshot.api_models import (
     PortfolioSnapshotSummaryResponse,
 )
 from app.modules.portfolio_snapshot.models import SnapshotGranularity, SnapshotSource
+from app.shared.numeric_serialization import serialize_money
 
 _MODEL_CONFIG = ConfigDict(
     extra="forbid",
@@ -76,7 +77,7 @@ class MultiAccountPortfolioSummaryResponse(BaseModel):
         "taxes_value",
     )
     def serialize_decimal(self, value: Decimal) -> str:
-        return format(value, "f")
+        return serialize_money(value)
 
 
 class MultiAccountPortfolioAccountResponse(BaseModel):

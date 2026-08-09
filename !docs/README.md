@@ -15,11 +15,13 @@ schema migrations.
 
 The strict current-value engine is implemented as a D1 daily baseline plus
 forward canonical changes and current persisted market evidence. R10-E1 closes
-the authentication lookup transaction before D1/D2 takes ownership, so the real
-authenticated portfolio and dashboard endpoints now return current finance.
-Version 0.1 remains incomplete because composed mixed-currency MONEY currently
-serializes with its internal Decimal exponent instead of the public canonical
-six-decimal representation. R10-E2 owns that release blocker.
+the authentication lookup transaction before D1/D2 takes ownership. R10-E2
+canonicalizes every public MONEY value to the exact six-decimal wire contract
+without changing financial arithmetic. Real authenticated mixed-currency
+portfolio and dashboard responses now pass the strict browser validator.
+
+Version 0.1 is complete as an internal Architecture Locked MVP. This status is
+not a declaration of public-production readiness.
 
 ## Reading guide
 

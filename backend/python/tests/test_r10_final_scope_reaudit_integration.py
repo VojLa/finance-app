@@ -224,12 +224,9 @@ def test_authenticated_mixed_currency_endpoints_keep_primary_and_presentation_au
         portfolio_json = portfolio.json()
         dashboard_json = dashboard.json()
         assert portfolio_json["currency"] == dashboard_json["currency"] == "CZK"
-        # The authenticated composition is fixed and the finance is exact, but
-        # this exposes the next release blocker: composed current MONEY keeps
-        # its Decimal exponent instead of the public six-decimal representation.
-        assert portfolio_json["summary"]["liabilitiesValue"] == "1800.00000000000000"
-        assert portfolio_json["summary"]["totalValue"] == "-1800.00000000000000"
-        assert PUBLIC_MONEY.fullmatch(portfolio_json["summary"]["liabilitiesValue"]) is None
+        assert portfolio_json["summary"]["liabilitiesValue"] == "1800.000000"
+        assert portfolio_json["summary"]["totalValue"] == "-1800.000000"
+        assert PUBLIC_MONEY.fullmatch(portfolio_json["summary"]["liabilitiesValue"]) is not None
         account = portfolio_json["accounts"][0]
         assert account["currency"] == "EUR"
         assert account["summary"]["liabilitiesValue"] == "75.000000"
@@ -237,7 +234,8 @@ def test_authenticated_mixed_currency_endpoints_keep_primary_and_presentation_au
         card = dashboard_json["accounts"][0]
         assert card["accountCurrency"] == card["outputCurrency"] == "EUR"
         assert card["liabilitiesValue"] == "75.000000"
-        assert dashboard_json["summary"]["liabilitiesValue"] == "1800.00000000000000"
+        assert dashboard_json["summary"]["liabilitiesValue"] == "1800.000000"
+        assert dashboard_json["summary"]["totalValue"] == "-1800.000000"
         assert asyncio.run(_finance_counts()) == before
     finally:
         asyncio.run(d2._cleanup(prefix))
