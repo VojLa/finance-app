@@ -44,8 +44,10 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check .
 
-      - name: Ruff format
-        run: uv run ruff format --check .
+      - name: Ruff format diagnostic
+        run: |
+          uv run ruff format --diff tests/test_version_0_1_acceptance.py
+          exit 1
 
       - name: Mypy
         run: uv run mypy app scripts tests
