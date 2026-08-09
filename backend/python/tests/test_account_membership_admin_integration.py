@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
-from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import AccountMemberRole, AccountRelationType, AccountType
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
@@ -80,6 +80,12 @@ async def _seed() -> None:
     async with AsyncSession(engine) as session:
         await session.execute(delete(AccountMemberModel).where(AccountMemberModel.id.in_(MEMBERS)))
         await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNTS)))
+        await session.execute(
+            delete(AccountInviteModel).where(
+                (AccountInviteModel.inviter_id.in_(USERS))
+                | (AccountInviteModel.accepted_by_id.in_(USERS))
+            )
+        )
         await session.execute(delete(UserModel).where(UserModel.id.in_(USERS)))
         for user_id in USERS:
             session.add(

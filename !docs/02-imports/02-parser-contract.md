@@ -139,5 +139,5 @@ reported if a later file fails.
 No browser or Next.js parser, preview, classifier, posting plan, deduplication
 key, holdings calculation, or financial fallback participates in this path.
 The checksum is calculated over the exact uploaded bytes, including a UTF-8 BOM
-when present. The legacy preview route remains a registered compatibility
-surface but is not called by a production page.
+when present. R11-D removed the unconsumed legacy preview route; preview is no
+longer a registered TypeScript/Prisma compatibility surface.

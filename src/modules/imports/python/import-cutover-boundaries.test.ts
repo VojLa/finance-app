@@ -29,15 +29,13 @@ describe("R4 import call-graph boundaries", () => {
     expect(routes).toEqual([
       "src/app/api/import/anycoin/route.ts",
       "src/app/api/import/finalize/route.ts",
-      "src/app/api/import/raiffeisenbank/preview/route.ts",
       "src/app/api/import/raiffeisenbank/route.ts",
       "src/app/api/import/route.ts",
       "src/app/api/import/status/route.ts",
       "src/app/api/import/trading212/route.ts",
     ])
 
-    const usedRoutes = routes.filter((route) => !route.includes("/preview/"))
-    for (const route of usedRoutes) {
+    for (const route of routes) {
       const content = await source(route)
       expect(content).not.toMatch(
         /importCsvFilesAsync|DuplicateImportError|@\/modules\/imports["']|@\/imports\/utils\/api|@\/lib\/prisma|file\.text\(|prisma\.|userId/
@@ -46,7 +44,7 @@ describe("R4 import call-graph boundaries", () => {
     }
   })
 
-  it("proves the legacy preview route is not reachable from any production page", async () => {
+  it("proves the deleted legacy preview route is not referenced by production pages", async () => {
     const pages = (await filesBelow("src/app")).filter(
       (file) => /\/page\.tsx$/.test(file) && !file.includes("/api/")
     )

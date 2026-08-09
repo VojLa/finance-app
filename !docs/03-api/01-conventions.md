@@ -143,10 +143,12 @@ raw collection fetch. Settings uses the Python membership fields `role` and
 owner/admin may edit and archive, editor may edit, and viewer is read-only.
 Backend authorization remains final.
 
-The main account page does not call the legacy cash or share routes. Those route
-files remain registered, unchanged compatibility surfaces. Account cash/FX
-presentation is deferred to the snapshot-backed R6 contract, and sharing write
-UX is outside R1.
+The main account page does not call legacy cash or share routes. R11-D proved
+that no production browser flow consumed them and removed all three registered
+TypeScript/Prisma compatibility surfaces. Account cash/FX presentation comes
+from snapshot-backed Python contracts. Sharing write UX remains outside the
+current UI, while Python continues to own membership administration and invite
+APIs for a future thin adapter.
 
 ## Next.js import route
 
