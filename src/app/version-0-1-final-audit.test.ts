@@ -55,21 +55,35 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(currentAcceptance).not.toMatch(/\b[0-9a-f]{40}\b/)
   })
 
-  it("records R10-A while leaving version 0.1 remediation open", async () => {
+  it("records the complete R10 remediation closure in the current status block", async () => {
     const roadmap = await source("ChatGPT/steps/0.1-remediation.md")
+    const status = roadmap.split("## 0.1-R1 account cutover", 1)[0]
 
-    expect(roadmap).toContain("0.1-R8 — clean main scenario and frontend CI: implemented")
-    expect(roadmap).toContain(
+    expect(status).toContain("0.1-R8 — clean main scenario and frontend CI: implemented")
+    expect(status).toContain(
       "0.1-R9 — repeat final acceptance audit: completed — NOT READY after independent"
     )
-    expect(roadmap).toContain("0.1-R10-A — multi-file import post-processing closure: implemented")
-    expect(roadmap).toContain("0.1-R10-B — account-currency presentation: implemented")
-    expect(roadmap).toContain(
+    expect(status).toContain("0.1-R10-A — multi-file import post-processing closure: implemented")
+    expect(status).toContain("0.1-R10-B — account-currency presentation: implemented")
+    expect(status).toContain(
       "0.1-R10-B1 — persisted account-currency valuation evidence: implemented"
     )
-    expect(roadmap).toContain(
+    expect(status).toContain(
       "0.1-R10-B2 — account-currency read/API/frontend presentation: implemented"
     )
-    expect(roadmap).toContain("Version 0.1 is not complete")
+    expect(status).toContain("0.1-R10-C — dashboard deposited presentation: implemented")
+    expect(status).toContain(
+      "0.1-R10-D1 — persisted daily baseline manifest and canonical cutoff: implemented"
+    )
+    expect(status).toContain(
+      "0.1-R10-D2 — strict daily-baseline current-value engine: implemented"
+    )
+    expect(status).toContain("0.1-R10 final scope re-audit: PASS after E2 remediation")
+    expect(status).toContain(
+      "0.1-R10-E1 — current-value authenticated session/transaction composition: implemented"
+    )
+    expect(status).toContain("0.1-R10-E2 — canonical current MONEY serialization: implemented")
+    expect(status).toContain("Version 0.1 — COMPLETE / Architecture Locked")
+    expect(status).not.toContain("Version 0.1 is not complete")
   })
 })
