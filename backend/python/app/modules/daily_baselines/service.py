@@ -635,13 +635,59 @@ class DailySnapshotBaselineService:
                 )
                 if root is None:
                     raise DailyBaselineUnavailableError()
-                return await self._validate_selected(root)
+                return await self._validate_selected(root, through=canonical_through)
         except DailyBaselineUnavailableError:
             raise
         except (DailyBaselineError, SQLAlchemyError) as exc:
             raise DailyBaselineUnavailableError() from exc
 
-    async def _validate_selected(self, root: DailySnapshotBaselineModel) -> DailySnapshotBaseline:
+    async def validate_exact_in_transaction(
+        self,
+        *,
+        baseline_id: str,
+        user_id: str,
+        through: datetime,
+    ) -> DailySnapshotBaseline:
+        """Revalidate the newest exact baseline inside a caller-owned stable read."""
+
+        if not self.session.in_transaction():
+            raise DailyBaselineUnavailableError()
+        canonical_baseline_id = _text(baseline_id)
+        canonical_user = _text(user_id)
+        canonical_through = _timestamp(through)
+        isolation = await self.session.scalar(text("SHOW transaction_isolation"))
+        read_only = await self.session.scalar(text("SHOW transaction_read_only"))
+        if (
+            not isinstance(isolation, str)
+            or isolation.replace("_", " ").lower() not in {"repeatable read", "serializable"}
+            or read_only != "on"
+        ):
+            raise DailyBaselineUnavailableError()
+        newest = await self.session.scalar(
+            select(DailySnapshotBaselineModel)
+            .where(
+                DailySnapshotBaselineModel.user_id == canonical_user,
+                DailySnapshotBaselineModel.timestamp <= canonical_through,
+            )
+            .order_by(
+                DailySnapshotBaselineModel.timestamp.desc(),
+                DailySnapshotBaselineModel.id.desc(),
+            )
+            .limit(1)
+        )
+        if newest is None or newest.id != canonical_baseline_id:
+            raise DailyBaselineUnavailableError()
+        try:
+            return await self._validate_selected(newest, through=canonical_through)
+        except DailyBaselineError as exc:
+            raise DailyBaselineUnavailableError() from exc
+
+    async def _validate_selected(
+        self,
+        root: DailySnapshotBaselineModel,
+        *,
+        through: datetime,
+    ) -> DailySnapshotBaseline:
         user = await self.session.get(UserModel, root.user_id)
         net_worth = await self.session.get(NetWorthSnapshotModel, root.net_worth_snapshot_id)
         # Imported lazily to keep the lineage module independent from the
@@ -798,15 +844,16 @@ class DailySnapshotBaselineService:
             for change in account_changes:
                 if change.financial_timestamp <= root.timestamp:
                     raise _fail()
-                changes.append(
-                    DailyBaselineChange(
-                        account_id=account.id,
-                        revision=_revision(change.revision, positive=True),
-                        kind=_text(change.kind),
-                        entity_id=_text(change.entity_id),
-                        financial_timestamp=_timestamp(change.financial_timestamp),
+                if change.financial_timestamp <= through:
+                    changes.append(
+                        DailyBaselineChange(
+                            account_id=account.id,
+                            revision=_revision(change.revision, positive=True),
+                            kind=_text(change.kind),
+                            entity_id=_text(change.entity_id),
+                            financial_timestamp=_timestamp(change.financial_timestamp),
+                        )
                     )
-                )
             accounts.append(expected)
         return DailySnapshotBaseline(
             baseline_id=_text(root.id),

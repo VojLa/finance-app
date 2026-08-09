@@ -1,6 +1,6 @@
 """Production composition for exact market-evidence refresh."""
 
-from __future__ import annotations
+from typing import Protocol
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,16 +11,25 @@ from app.modules.fx.providers import (
     CnbFxTransport,
     create_production_exchange_rate_registry,
 )
+from app.modules.market_data.models import MarketEvidenceRefreshPlan
 from app.modules.market_data.policy import (
     DEFAULT_MARKET_EVIDENCE_POLICY,
     MarketEvidencePolicy,
 )
+from app.modules.market_data.requirements import BuildMarketEvidenceRefreshPlanCommand
 from app.modules.market_data.service import MarketEvidenceRefreshService
 from app.modules.prices.providers import (
     CoinGeckoPriceTransport,
     TwelveDataPriceTransport,
     create_production_price_registry,
 )
+
+
+class MarketEvidencePlanBuilder(Protocol):
+    async def build(
+        self,
+        command: BuildMarketEvidenceRefreshPlanCommand,
+    ) -> MarketEvidenceRefreshPlan: ...
 
 
 def create_production_market_evidence_service(
@@ -34,6 +43,7 @@ def create_production_market_evidence_service(
     coingecko_http_transport: httpx.AsyncBaseTransport | None = None,
     twelve_data_transport: TwelveDataPriceTransport | None = None,
     twelve_data_http_transport: httpx.AsyncBaseTransport | None = None,
+    planner: MarketEvidencePlanBuilder | None = None,
 ) -> MarketEvidenceRefreshService:
     return MarketEvidenceRefreshService(
         session,
@@ -53,6 +63,7 @@ def create_production_market_evidence_service(
         ),
         fx_source=ExchangeRateSource.cnb,
         policy=policy,
+        planner=planner,
     )
 
 

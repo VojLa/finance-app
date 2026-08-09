@@ -12,19 +12,12 @@ import {
 } from "@/modules/dashboard/operational-dashboard-client"
 import { dashboardSnapshotFixture } from "@/test/dashboard-snapshot-fixture"
 
-const refresh = {
-  netWorthSnapshotId: "net-worth-snapshot-1",
-  netWorthStatus: "created" as const,
-  timestamp: dashboardSnapshotFixture.timestamp,
-  granularity: dashboardSnapshotFixture.granularity,
+const current = {
+  asOf: dashboardSnapshotFixture.asOf,
+  baselineTimestamp: dashboardSnapshotFixture.baselineTimestamp,
+  historyAnchorSnapshotId: dashboardSnapshotFixture.historyAnchorSnapshotId,
   currency: dashboardSnapshotFixture.currency,
   calculationVersion: dashboardSnapshotFixture.calculationVersion,
-  refreshAccountCount: 2,
-  reuseOnlyAccountCount: 0,
-  createdAccountSnapshotCount: 2,
-  replayedAccountSnapshotCount: 0,
-  reusedAccountSnapshotCount: 0,
-  selectedAccountSnapshotCount: 2,
 }
 
 const operationalPayload = {
@@ -56,7 +49,7 @@ describe("dashboard snapshot cutover clients", () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         status: "ready",
-        refresh,
+        current,
         data: dashboardSnapshotFixture,
       })
     )
@@ -72,7 +65,7 @@ describe("dashboard snapshot cutover clients", () => {
     expect(fetchMock.mock.calls[0]?.[1]).not.toHaveProperty("body")
     expect(result).toEqual({
       status: "ready",
-      refresh,
+      current,
       data: dashboardSnapshotFixture,
     })
     if (result.status === "ready") {
@@ -81,20 +74,20 @@ describe("dashboard snapshot cutover clients", () => {
     }
   })
 
-  it("represents empty without data or a legacy financial fallback", async () => {
-    const emptyRefresh = {
-      ...refresh,
-      refreshAccountCount: 0,
-      createdAccountSnapshotCount: 0,
-      selectedAccountSnapshotCount: 0,
-    }
+  it("represents no-baseline as safe unavailable without a legacy fallback", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse({ status: "empty", refresh: emptyRefresh }))
+      .mockResolvedValue(
+        jsonResponse({ error: { code: "current_value_unavailable", message: "Unavailable." } }, 409)
+      )
 
     const result = await requestDashboardFinancialState(fetchMock)
 
-    expect(result).toEqual({ status: "empty", refresh: emptyRefresh })
+    expect(result).toEqual({
+      status: "error",
+      code: "current_value_unavailable",
+      message: "Unavailable.",
+    })
     expect(result).not.toHaveProperty("data")
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -146,7 +139,7 @@ describe("dashboard snapshot cutover clients", () => {
     const fetchMock = vi.fn<typeof fetch>((input) => {
       if (input === DASHBOARD_WORKFLOW_PATH) {
         return Promise.resolve(
-          jsonResponse({ status: "ready", refresh, data: dashboardSnapshotFixture })
+          jsonResponse({ status: "ready", current, data: dashboardSnapshotFixture })
         )
       }
       if (input === OPERATIONAL_DASHBOARD_PATH) {
@@ -177,7 +170,7 @@ describe("dashboard snapshot cutover clients", () => {
   it("keeps operational failure independent from ready snapshot financial data", async () => {
     const snapshotFetch = vi
       .fn<typeof fetch>()
-      .mockResolvedValue(jsonResponse({ status: "ready", refresh, data: dashboardSnapshotFixture }))
+      .mockResolvedValue(jsonResponse({ status: "ready", current, data: dashboardSnapshotFixture }))
     const operationalFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"))
 
     const [financial, operational] = await Promise.all([
@@ -200,9 +193,7 @@ describe("dashboard snapshot cutover clients", () => {
     expect(page).toContain("financialState")
     expect(page).toContain("operationalState")
     expect(page).toContain("initialLoadStarted")
-    expect(page).toContain('status === "empty"')
     expect(page).toContain('status === "ready"')
-    expect(page).toContain("Zatím nemáte žádný účet")
     expect(page).toContain("<SnapshotSummaryCards")
     expect(page).toContain("<SnapshotAccountCards")
     expect(page).toContain("<SnapshotAssetAllocationChart")

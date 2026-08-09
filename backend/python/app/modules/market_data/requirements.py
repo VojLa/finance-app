@@ -127,34 +127,49 @@ def _alias_price_source(provider: AssetAliasProvider) -> PriceSource:
         raise _fail() from exc
 
 
-def _price_identity(
-    persisted: PersistedMarketHolding,
+def build_price_requirement(
     *,
+    account_id: str,
+    listing: AssetListingModel,
+    asset: AssetModel,
+    aliases: tuple[AssetAliasModel, ...],
     supported_sources: frozenset[PriceSource],
-) -> tuple[PriceSource, str]:
-    listing = persisted.listing
-    asset = persisted.asset
+    through: datetime,
+) -> PriceRequirement:
+    """Resolve one trusted persisted listing identity without consulting Holdings."""
+
     if not isinstance(listing, AssetListingModel) or not isinstance(asset, AssetModel):
+        raise _fail()
+    if listing.asset_id != asset.id:
         raise _fail()
     if listing.provider in supported_sources:
         if listing.provider is None:
             raise _fail()
-        return listing.provider, _nonblank(listing.provider_symbol)
-
-    aliases: list[tuple[PriceSource, str]] = []
-    for alias in persisted.aliases:
-        if (
-            not isinstance(alias, AssetAliasModel)
-            or alias.asset_id != asset.id
-            or not isinstance(alias.provider, AssetAliasProvider)
-        ):
+        provider, symbol = listing.provider, _nonblank(listing.provider_symbol)
+    else:
+        identities: list[tuple[PriceSource, str]] = []
+        for alias in aliases:
+            if (
+                not isinstance(alias, AssetAliasModel)
+                or alias.asset_id != asset.id
+                or not isinstance(alias.provider, AssetAliasProvider)
+            ):
+                raise _fail()
+            source = _alias_price_source(alias.provider)
+            if source in supported_sources:
+                identities.append((source, _nonblank(alias.external_id)))
+        if len(identities) != 1:
             raise _fail()
-        source = _alias_price_source(alias.provider)
-        if source in supported_sources:
-            aliases.append((source, _nonblank(alias.external_id)))
-    if len(aliases) != 1:
-        raise _fail()
-    return aliases[0]
+        provider, symbol = identities[0]
+    return PriceRequirement(
+        account_id=_nonblank(account_id),
+        asset_id=_nonblank(asset.id),
+        listing_id=_nonblank(listing.id),
+        listing_currency=_currency(listing.currency),
+        provider=provider,
+        provider_symbol=symbol,
+        through=_timestamp(through),
+    )
 
 
 def _price_requirements(
@@ -190,17 +205,12 @@ def _price_requirements(
             or listing.asset_id != asset.id
         ):
             raise _fail()
-        provider, symbol = _price_identity(
-            persisted,
-            supported_sources=supported_sources,
-        )
-        requirement = PriceRequirement(
+        requirement = build_price_requirement(
             account_id=holding.account_id,
-            asset_id=_nonblank(asset.id),
-            listing_id=_nonblank(listing.id),
-            listing_currency=_currency(listing.currency),
-            provider=provider,
-            provider_symbol=symbol,
+            listing=listing,
+            asset=asset,
+            aliases=persisted.aliases,
+            supported_sources=supported_sources,
             through=through,
         )
         key = (requirement.listing_id, requirement.provider, requirement.through)

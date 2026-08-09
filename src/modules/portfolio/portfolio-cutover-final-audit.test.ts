@@ -45,33 +45,6 @@ const previousEnvironment = Object.fromEntries(
   ENVIRONMENT_KEYS.map((key) => [key, process.env[key]])
 )
 
-const REFRESH = {
-  netWorthSnapshotId: "net-worth-portfolio-audit",
-  netWorthStatus: "created",
-  timestamp: "2032-08-02T00:00:00.000",
-  granularity: "day",
-  currency: "EUR",
-  calculationVersion: 7,
-  accounts: [
-    { accountId: "account-a", snapshotId: "snapshot-a" },
-    { accountId: "account-b", snapshotId: "snapshot-b" },
-  ],
-  refreshAccountCount: 2,
-  reuseOnlyAccountCount: 0,
-  createdAccountSnapshotCount: 2,
-  replayedAccountSnapshotCount: 0,
-  reusedAccountSnapshotCount: 0,
-  selectedAccountSnapshotCount: 2,
-}
-
-const MANIFEST = {
-  timestamp: REFRESH.timestamp,
-  granularity: REFRESH.granularity,
-  currency: REFRESH.currency,
-  calculationVersion: REFRESH.calculationVersion,
-  accounts: REFRESH.accounts,
-}
-
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -137,15 +110,9 @@ describe("in-process portfolio browser flow", () => {
       tokenIds.push(String(payload.jti))
       expect(request.headers.has("Cookie")).toBe(false)
 
-      if (request.url === `${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`) {
+      if (request.url === `${BACKEND_URL}/api/v1/portfolio/current`) {
         expect(request.method).toBe("POST")
         expect(await request.text()).toBe("")
-        return jsonResponse(REFRESH)
-      }
-      if (request.url === `${BACKEND_URL}/api/v1/portfolio/snapshot`) {
-        const body = await request.text()
-        fastApiBodies.push(body)
-        expect(body).toBe(JSON.stringify(MANIFEST))
         return jsonResponse(portfolio)
       }
       throw new Error("Unexpected FastAPI request.")
@@ -157,19 +124,16 @@ describe("in-process portfolio browser flow", () => {
 
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(getSession).toHaveBeenCalledTimes(1)
-    expect(serverFetch).toHaveBeenCalledTimes(2)
-    expect(requestUrls).toEqual([
-      `${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`,
-      `${BACKEND_URL}/api/v1/portfolio/snapshot`,
-    ])
-    expect(tokens).toHaveLength(2)
-    expect(new Set(tokens).size).toBe(2)
-    expect(new Set(tokenIds).size).toBe(2)
-    expect(fastApiBodies).toEqual([JSON.stringify(MANIFEST)])
+    expect(serverFetch).toHaveBeenCalledTimes(1)
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/current`])
+    expect(tokens).toHaveLength(1)
+    expect(new Set(tokens).size).toBe(1)
+    expect(new Set(tokenIds).size).toBe(1)
+    expect(fastApiBodies).toEqual([])
     expect(state.status).toBe("ready")
     if (state.status !== "ready") throw new Error("Expected ready state.")
     expect(state.data).toEqual(portfolio)
-    expect(state.refresh).not.toHaveProperty("accounts")
+    expect(state.current).not.toHaveProperty("accounts")
     expect(JSON.stringify(state)).not.toContain(SECRET)
     for (const token of tokens) expect(JSON.stringify(state)).not.toContain(token)
 
@@ -188,28 +152,24 @@ describe("in-process portfolio browser flow", () => {
       state.data.accounts[1]?.summary.netDepositsByCurrency
     )
     expect(browserFetch).toHaveBeenCalledTimes(1)
-    expect(serverFetch).toHaveBeenCalledTimes(2)
+    expect(serverFetch).toHaveBeenCalledTimes(1)
   })
 
-  it("returns empty after one FastAPI request and never performs a 5L or legacy read", async () => {
-    const emptyRefresh = {
-      ...REFRESH,
-      accounts: [],
-      refreshAccountCount: 0,
-      createdAccountSnapshotCount: 0,
-      selectedAccountSnapshotCount: 0,
-    }
+  it("fails closed without a daily baseline and never performs a legacy read", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      expect(request.url).toBe(`${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`)
-      return jsonResponse(emptyRefresh)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/portfolio/current`)
+      return jsonResponse(
+        { error: { code: "current_value_unavailable", message: "Unavailable." } },
+        409
+      )
     })
     vi.stubGlobal("fetch", serverFetch)
     const browserFetch = browserFetchAdapter()
 
     const state = await requestPortfolioPageState(browserFetch)
 
-    expect(state.status).toBe("empty")
+    expect(state.status).toBe("error")
     expect(state).not.toHaveProperty("data")
     expect(state).not.toHaveProperty("manifest")
     expect(state).not.toHaveProperty("selector")

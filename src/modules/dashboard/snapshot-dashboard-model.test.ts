@@ -10,8 +10,8 @@ describe("snapshot dashboard model", () => {
     const model = buildSnapshotDashboardModel(dashboardSnapshotFixture)
 
     expect(model).toMatchObject({
-      timestamp: dashboardSnapshotFixture.timestamp,
-      granularity: dashboardSnapshotFixture.granularity,
+      timestamp: dashboardSnapshotFixture.asOf,
+      granularity: "current",
       currency: dashboardSnapshotFixture.currency,
       calculationVersion: dashboardSnapshotFixture.calculationVersion,
     })
@@ -24,8 +24,8 @@ describe("snapshot dashboard model", () => {
     expect(model.summary.realizedPnlValue).toBe("-0.000001")
     expect(model.summary.netDepositsValue).toBe("123456.789012")
     expect(model.accounts.map(({ accountId }) => accountId)).toEqual(["account-z", "account-a"])
-    expect(model.accounts[0]?.primarySnapshotId).toBe("snapshot-z")
-    expect(model.accounts[0]?.snapshotId).toBe("snapshot-z-usd")
+    expect(model.accounts[0]?.primaryBaselineSnapshotId).toBe("snapshot-z")
+    expect(model.accounts[0]?.baselineSnapshotId).toBe("snapshot-z-usd")
     expect(model.accounts[0]?.accountCurrency).toBe("USD")
     expect(model.accounts[0]?.outputCurrency).toBe("USD")
     expect(model.accounts[0]?.netDepositsValue).toBe("1250.000000")

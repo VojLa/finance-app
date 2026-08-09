@@ -14,19 +14,12 @@ import {
 } from "@/modules/portfolio/snapshot-page-model"
 import { portfolioSnapshotFixture } from "@/test/portfolio-snapshot-fixture"
 
-const REFRESH = {
-  netWorthSnapshotId: "net-worth-snapshot",
-  netWorthStatus: "created" as const,
-  timestamp: "2032-08-02T00:00:00.000",
-  granularity: "day",
-  currency: "EUR",
-  calculationVersion: 7,
-  refreshAccountCount: 2,
-  reuseOnlyAccountCount: 0,
-  createdAccountSnapshotCount: 2,
-  replayedAccountSnapshotCount: 0,
-  reusedAccountSnapshotCount: 0,
-  selectedAccountSnapshotCount: 2,
+const CURRENT = {
+  asOf: portfolioSnapshotFixture().asOf,
+  baselineTimestamp: portfolioSnapshotFixture().baselineTimestamp,
+  historyAnchorSnapshotId: portfolioSnapshotFixture().historyAnchorSnapshotId,
+  currency: portfolioSnapshotFixture().currency,
+  calculationVersion: portfolioSnapshotFixture().calculationVersion,
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -41,7 +34,7 @@ describe("portfolio page snapshot workflow", () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       jsonResponse({
         status: "ready",
-        refresh: REFRESH,
+        current: CURRENT,
         data: portfolioSnapshotFixture(),
       })
     )
@@ -73,23 +66,18 @@ describe("portfolio page snapshot workflow", () => {
     }
   })
 
-  it("returns the explicit empty state and makes no follow-up request", async () => {
-    const emptyRefresh = {
-      ...REFRESH,
-      refreshAccountCount: 0,
-      createdAccountSnapshotCount: 0,
-      selectedAccountSnapshotCount: 0,
-    }
+  it("returns safe unavailable when no daily baseline exists", async () => {
     const fetchMock = vi.fn(async () =>
-      jsonResponse({
-        status: "empty",
-        refresh: emptyRefresh,
-      })
+      jsonResponse(
+        { error: { code: "current_value_unavailable", message: "Current value unavailable." } },
+        409
+      )
     )
 
     await expect(requestPortfolioPageState(fetchMock)).resolves.toEqual({
-      status: "empty",
-      refresh: emptyRefresh,
+      status: "error",
+      code: "current_value_unavailable",
+      message: "Current value unavailable.",
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -161,7 +149,7 @@ describe("portfolio page snapshot workflow", () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       jsonResponse({
         status: "ready",
-        refresh: REFRESH,
+        current: CURRENT,
         data: portfolioSnapshotFixture(),
       })
     )
@@ -237,7 +225,7 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain("void loadPortfolio()")
     expect(page).toContain("requestPortfolioPageState()")
     expect(page).toContain('state.status === "ready" ? state.data.currency : null')
-    expect(page).toContain('state.status === "ready" ? state.refresh.netWorthSnapshotId : null')
+    expect(page).toContain("state.current.historyAnchorSnapshotId")
     expect(page).toContain("startPortfolioHistoryRequest(historyRange, historyCurrency")
     expect(page).toContain("[historyCurrency, historyRange, historySnapshotId]")
     expect(page).toContain('historyState.status === "loading"')
@@ -256,7 +244,6 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain("Hotovost podle měny")
     expect(page).toContain("Čisté vklady podle měny")
     expect(page).toContain("<SnapshotHoldingsTable")
-    expect(page).toContain('state.status === "empty"')
     expect(page).toContain('state.status === "error"')
     expect(page).toContain("{state.message}")
     expect(page).not.toMatch(/\b(?:snapshotId|manifest|request_id|traceback|raw body)\b/i)

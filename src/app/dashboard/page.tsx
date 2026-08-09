@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { OperationalDashboardSections } from "@/modules/dashboard/OperationalDashboardSections"
 import { SnapshotAccountCards } from "@/modules/dashboard/SnapshotAccountCards"
@@ -46,35 +45,6 @@ function FinancialError({
         Finanční přehled není dostupný
       </h2>
       <p className="mt-1 text-sm text-red-700">{state.message}</p>
-    </section>
-  )
-}
-
-function EmptyFinancialState({
-  state,
-}: {
-  state: Extract<DashboardFinancialState, { status: "empty" }>
-}) {
-  return (
-    <section
-      aria-labelledby="financial-overview-heading"
-      className="rounded-lg border border-gray-200 bg-white p-6"
-    >
-      <h2 id="financial-overview-heading" className="text-lg font-medium">
-        Finanční přehled
-      </h2>
-      <p className="mt-2 text-sm text-gray-600">
-        Zatím nemáte žádný účet, pro který by bylo možné vytvořit finanční snapshot.
-      </p>
-      <p className="mt-2 text-xs text-gray-400">
-        Obnoveno {formatSnapshotTimestamp(state.refresh.timestamp)} · {state.refresh.currency}
-      </p>
-      <Link
-        href="/accounts"
-        className="mt-4 inline-flex rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-      >
-        Přidat účet
-      </Link>
     </section>
   )
 }
@@ -140,7 +110,6 @@ export default function DashboardPage() {
         <SectionSkeleton label="Načítání finančního přehledu" />
       )}
       {financialState.status === "error" && <FinancialError state={financialState} />}
-      {financialState.status === "empty" && <EmptyFinancialState state={financialState} />}
       {financialState.status === "ready" && financialModel && (
         <section aria-labelledby="financial-overview-heading" className="space-y-6">
           <div>

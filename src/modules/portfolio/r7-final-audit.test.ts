@@ -153,7 +153,9 @@ describe("R7 checkout-portable production inventory", () => {
     expect(client).toContain('status: "error"')
 
     expect(page).toContain('state.status === "ready" ? state.data.currency : null')
-    expect(page).toContain('state.status === "ready" ? state.refresh.netWorthSnapshotId : null')
+    expect(page).toContain(
+      'state.status === "ready" ? state.current.historyAnchorSnapshotId : null'
+    )
     expect(page).toContain("[historyCurrency, historyRange, historySnapshotId]")
     expect(page).not.toMatch(
       /\[historyCurrency,\s*historyRange,\s*historySnapshotId,\s*(?:selectedAccount|historyValueMode)/

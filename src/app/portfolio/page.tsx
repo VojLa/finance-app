@@ -71,7 +71,7 @@ export default function PortfolioPage() {
   }, [pageModel, selectedAccount, selectedAccountId])
 
   const historyCurrency = state.status === "ready" ? state.data.currency : null
-  const historySnapshotId = state.status === "ready" ? state.refresh.netWorthSnapshotId : null
+  const historySnapshotId = state.status === "ready" ? state.current.historyAnchorSnapshotId : null
 
   useEffect(() => {
     if (historyCurrency === null) {
@@ -124,25 +124,6 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {state.status === "empty" && (
-        <>
-          <RefreshMetadata refresh={state.refresh} />
-          <div className="rounded-xl border border-gray-200 bg-white p-8 text-center">
-            <h2 className="text-lg font-medium text-gray-900">Zatím nemáte žádný účet</h2>
-            <p className="mx-auto mt-2 max-w-lg text-sm text-gray-500">
-              Snapshot workflow proběhl úspěšně, ale nemá žádný účet, ze kterého by mohl sestavit
-              portfolio.
-            </p>
-            <Link
-              href="/accounts"
-              className="mt-5 inline-flex rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              Přidat nebo spravovat účet
-            </Link>
-          </div>
-        </>
-      )}
-
       {state.status === "ready" && pageModel && (
         <ReadyPortfolio
           state={state}
@@ -161,16 +142,16 @@ export default function PortfolioPage() {
   )
 }
 
-type RefreshMetadataProps = {
-  refresh: Extract<PortfolioPageState, { status: "empty" | "ready" }>["refresh"]
+type CurrentMetadataProps = {
+  current: Extract<PortfolioPageState, { status: "ready" }>["current"]
 }
 
-function RefreshMetadata({ refresh }: RefreshMetadataProps) {
+function CurrentMetadata({ current }: CurrentMetadataProps) {
   return (
     <div className="flex flex-wrap gap-x-5 gap-y-1 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
-      <span>Aktualizováno: {formatSnapshotTimestamp(refresh.timestamp)}</span>
-      <span>Měna: {refresh.currency}</span>
-      <span>Stav: {refresh.netWorthStatus === "created" ? "vytvořeno" : "zopakováno"}</span>
+      <span>Aktuální k: {formatSnapshotTimestamp(current.asOf)}</span>
+      <span>Denní baseline: {formatSnapshotTimestamp(current.baselineTimestamp)}</span>
+      <span>Měna: {current.currency}</span>
     </div>
   )
 }
@@ -214,7 +195,7 @@ function ReadyPortfolio({
 
   return (
     <>
-      <RefreshMetadata refresh={state.refresh} />
+      <CurrentMetadata current={state.current} />
 
       {model.accounts.length > 1 && (
         <div className="flex flex-wrap gap-2" aria-label="Výběr účtu">

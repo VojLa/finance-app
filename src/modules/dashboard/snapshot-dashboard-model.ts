@@ -13,8 +13,8 @@ export type SnapshotDashboardModel = Readonly<{
 
 export function buildSnapshotDashboardModel(data: DashboardSnapshotData): SnapshotDashboardModel {
   return {
-    timestamp: data.timestamp,
-    granularity: data.granularity,
+    timestamp: data.asOf,
+    granularity: "current",
     calculationVersion: data.calculationVersion,
     currency: data.currency,
     summary: data.summary,

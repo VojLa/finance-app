@@ -65,8 +65,8 @@ function accountView(account: PortfolioAccountSnapshot): PortfolioPageAccountVie
 export function buildPortfolioPageModel(data: PortfolioSnapshotData): PortfolioPageModel {
   const accounts = data.accounts.map(accountView)
   return {
-    timestamp: data.timestamp,
-    granularity: data.granularity,
+    timestamp: data.asOf,
+    granularity: "current",
     calculationVersion: data.calculationVersion,
     currency: data.currency,
     aggregate: {

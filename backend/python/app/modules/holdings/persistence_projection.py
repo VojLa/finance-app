@@ -388,3 +388,85 @@ def build_holding_persistence_projection(
     if len(holdings) != len(positions):
         raise _fail()
     return HoldingPersistenceProjection(account_id=account_id, holdings=holdings)
+
+
+def build_holding_delta_projection(
+    *,
+    account_id: str,
+    baseline_holdings: tuple[ExpectedPersistedHoldingPlan, ...],
+    events: tuple[HoldingPersistenceEvent, ...],
+) -> HoldingPersistenceProjection:
+    """Advance exact baseline positions using only later canonical events."""
+
+    if not isinstance(account_id, str) or not account_id or account_id != account_id.strip():
+        raise _fail()
+    positions: dict[str, _CostPosition] = {}
+    for holding in baseline_holdings:
+        if (
+            not isinstance(holding, ExpectedPersistedHoldingPlan)
+            or holding.account_id != account_id
+            or not holding.asset_id
+            or not holding.listing_id
+            or not holding.symbol
+            or holding.listing_id in positions
+            or not isinstance(holding.asset_type, AssetType)
+        ):
+            raise _fail()
+        quantity = _exact(holding.quantity, positive=True)
+        average = _exact(holding.avg_buy_price, positive=True)
+        currency = _currency(holding.currency)
+        positions[holding.listing_id] = _CostPosition(
+            asset_id=holding.asset_id,
+            symbol=holding.symbol,
+            asset_type=holding.asset_type,
+            quantity=quantity,
+            average=average,
+            currency=currency,
+        )
+
+    event_ids: set[str] = set()
+    ordered = sorted(events, key=lambda event: (event.event_date, event.event_id))
+    for event in ordered:
+        if (
+            not isinstance(event, HoldingPersistenceEvent)
+            or event.account_id != account_id
+            or not event.event_id
+            or event.event_id in event_ids
+            or not isinstance(event.event_type, InvestmentEventType)
+            or not event.movements
+        ):
+            raise _fail()
+        event_ids.add(event.event_id)
+        for movement in event.movements:
+            _base_movement(event, movement)
+        asset = _validate_event_shape(event)
+        if asset is None:
+            continue
+        if event.event_type in {
+            InvestmentEventType.trade,
+            InvestmentEventType.asset_transfer,
+        }:
+            if asset.direction is MovementDirection.incoming:
+                _acquire(positions, asset)
+            else:
+                _dispose(positions, asset)
+
+    holdings = tuple(
+        ExpectedPersistedHoldingPlan(
+            account_id=account_id,
+            asset_id=position.asset_id,
+            listing_id=listing_id,
+            symbol=position.symbol,
+            name=None,
+            asset_type=position.asset_type,
+            quantity=position.quantity,
+            avg_buy_price=position.average,
+            currency=position.currency,
+            current_price=None,
+            current_value=None,
+            unrealized_pnl=None,
+            realized_pnl=None,
+        )
+        for listing_id, position in sorted(positions.items())
+    )
+    return HoldingPersistenceProjection(account_id=account_id, holdings=holdings)

@@ -4,6 +4,7 @@ from app.api.routes.health import router as health_router
 from app.auth.api import router as auth_router
 from app.modules.accounts.api import router as accounts_router
 from app.modules.accounts.invitations import router as account_invitation_router
+from app.modules.current_value.api import router as current_value_router
 from app.modules.dashboard_snapshot.api import router as dashboard_snapshot_router
 from app.modules.holdings.api import router as holdings_router
 from app.modules.imports.api import router as imports_router
@@ -22,6 +23,7 @@ api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(accounts_router)
 api_router.include_router(account_invitation_router)
+api_router.include_router(current_value_router)
 api_router.include_router(holdings_router)
 api_router.include_router(imports_router)
 api_router.include_router(net_worth_router)
