@@ -99,8 +99,11 @@ deduplicator, classifier, canonical writer, holdings, and snapshot authority.
 Legacy preview and provider-specific routes remain compatibility surfaces but
 are not used by the page.
 
-Version 0.1 remains incomplete after the R10 final scope re-audit. D1/D2 finance
-is present, but the authenticated current endpoints share the session used by
-principal lookup; its already-open read transaction violates the D1 selector's
-idle-session precondition and produces a safe 409. The next remediation is
-0.1-R10-E1, current-value authenticated session/transaction composition.
+R10-E1 closes the persisted-principal read transaction before the same
+request-scoped session enters D1/D2 planning, market, and final read phases. The
+real authenticated current endpoints now return 200 without weakening D1's
+idle-session precondition or creating a second session. Version 0.1 remains
+incomplete because mixed-currency composed MONEY retains its internal Decimal
+scale in public serialization and violates the browser's canonical six-decimal
+contract. The next remediation is 0.1-R10-E2, canonical current MONEY
+serialization.

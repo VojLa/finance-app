@@ -27,13 +27,13 @@ currency breakdowns are retained.
 ## Not yet delivered end to end
 
 The production finance path is Python-owned and the active browser portfolio
-and dashboard adapters call the strict current endpoints. Version 0.1 is not
-yet complete, however: at the R10 final audit base, authenticated principal
-resolution leaves the shared database session in a transaction before the D1
-selector requires an idle session. Both current endpoints therefore fail
-closed with `current_value_unavailable`. The D1/D2 engine itself succeeds when
-invoked with a correctly composed idle session; R10-E1 must close the real HTTP
-composition gap before the architecture milestone can pass.
+and dashboard adapters call the strict current endpoints. R10-E1 makes the
+persisted-principal lookup an explicit read phase that leaves the shared session
+idle before D1/D2 begins; both real authenticated endpoints therefore reach the
+current-value engine. Version 0.1 is not yet complete: mixed-currency composed
+MONEY can retain more than the public contract's canonical six decimal places
+during serialization, so the browser correctly rejects that otherwise exact
+response. R10-E2 must close this response-contract gap.
 
 See [`!planning`](../!planning/README.md) for the intended product scope and
 milestone acceptance criteria.

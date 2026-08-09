@@ -3,11 +3,13 @@ from typing import Annotated
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.errors import (
     AuthenticationConfigurationError,
     AuthenticationRequiredError,
+    AuthenticationTransactionStateError,
     InvalidSessionTokenError,
 )
 from app.auth.models import AuthenticatedPrincipal, InternalTokenClaims
@@ -50,18 +52,50 @@ async def get_current_principal(
     claims: Annotated[InternalTokenClaims, Depends(get_verified_token_claims)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> AuthenticatedPrincipal:
-    """Resolve a verified token subject against PostgreSQL."""
+    """Resolve a verified subject and leave the request session idle.
 
-    user = await session.scalar(select(UserModel).where(UserModel.id == claims.sub))
+    Token verification runs before the database dependency. The persisted-user
+    lookup then owns one implicit read transaction, copies all ORM values into
+    an application principal, and commits that read before downstream services
+    establish their own transaction boundaries.
+    """
+
+    if session.in_transaction():
+        raise AuthenticationTransactionStateError()
+
+    try:
+        user = await session.scalar(select(UserModel).where(UserModel.id == claims.sub))
+    except SQLAlchemyError as exc:
+        if session.in_transaction():
+            await session.rollback()
+        raise AuthenticationTransactionStateError() from exc
+
     if user is None:
+        try:
+            await session.rollback()
+        except SQLAlchemyError as exc:
+            raise AuthenticationTransactionStateError() from exc
+        if session.in_transaction():
+            raise AuthenticationTransactionStateError()
         raise InvalidSessionTokenError("The session token subject does not exist.")
 
-    return AuthenticatedPrincipal(
+    principal = AuthenticatedPrincipal(
         user_id=user.id,
         email=user.email,
         name=user.name,
         session_id=claims.jti,
     )
+
+    try:
+        await session.commit()
+    except SQLAlchemyError as exc:
+        if session.in_transaction():
+            await session.rollback()
+        raise AuthenticationTransactionStateError() from exc
+    if session.in_transaction():
+        raise AuthenticationTransactionStateError()
+
+    return principal
 
 
 CurrentPrincipal = Annotated[AuthenticatedPrincipal, Depends(get_current_principal)]
