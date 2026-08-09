@@ -18,6 +18,8 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.users import UserModel
 
+INTERNAL_AUTH_SERVICE_SUBJECT = "finance-app-next-auth-service"
+
 bearer_scheme = HTTPBearer(
     auto_error=False,
     scheme_name="InternalSessionToken",
@@ -99,3 +101,16 @@ async def get_current_principal(
 
 
 CurrentPrincipal = Annotated[AuthenticatedPrincipal, Depends(get_current_principal)]
+
+
+def require_auth_service(
+    claims: Annotated[InternalTokenClaims, Depends(get_verified_token_claims)],
+) -> InternalTokenClaims:
+    """Authorize the trusted Next.js adapter without pretending it is an end user."""
+
+    if claims.sub != INTERNAL_AUTH_SERVICE_SUBJECT:
+        raise InvalidSessionTokenError("The session token is not authorized for this operation.")
+    return claims
+
+
+AuthServiceClaims = Annotated[InternalTokenClaims, Depends(require_auth_service)]

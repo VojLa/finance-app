@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from secrets import token_urlsafe
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.auth.models import AuthenticatedPrincipal
+from app.auth.validation import normalize_email
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import (
@@ -31,8 +31,6 @@ INVITABLE_ROLES = {
     AccountMemberRole.editor,
     AccountMemberRole.viewer,
 }
-EMAIL_LOCAL_PATTERN = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", re.ASCII)
-EMAIL_DOMAIN_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
 
 
 def _now() -> datetime:
@@ -53,22 +51,7 @@ class AccountInviteCreateRequest(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        local, separator, domain = normalized.partition("@")
-        domain_labels = domain.split(".")
-        if (
-            not separator
-            or len(local) > 64
-            or EMAIL_LOCAL_PATTERN.fullmatch(local) is None
-            or local.startswith(".")
-            or local.endswith(".")
-            or ".." in local
-            or len(domain) > 253
-            or len(domain_labels) < 2
-            or any(EMAIL_DOMAIN_LABEL_PATTERN.fullmatch(label) is None for label in domain_labels)
-        ):
-            raise ValueError("A valid email address is required.")
-        return normalized
+        return normalize_email(value)
 
     @model_validator(mode="after")
     def forbid_owner_role(self) -> AccountInviteCreateRequest:

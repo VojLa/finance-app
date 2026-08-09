@@ -379,6 +379,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/auth/credentials/verify": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Verify Credentials */
+    post: operations["verify_credentials_api_v1_auth_credentials_verify_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/auth/me": {
     parameters: {
       query?: never
@@ -393,6 +410,40 @@ export interface paths {
     get: operations["get_current_user_api_v1_auth_me_get"]
     put?: never
     post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/auth/password": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /** Change Password */
+    put: operations["change_password_api_v1_auth_password_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/auth/register": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Register User */
+    post: operations["register_user_api_v1_auth_register_post"]
     delete?: never
     options?: never
     head?: never
@@ -830,6 +881,22 @@ export interface components {
      * @enum {string}
      */
     AssetType: "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
+    /** AuthenticatedUserResponse */
+    AuthenticatedUserResponse: {
+      /** Email */
+      email: string
+      /** Id */
+      id: string
+      /** Name */
+      name?: string | null
+    }
+    /** CredentialVerificationRequest */
+    CredentialVerificationRequest: {
+      /** Email */
+      email: string
+      /** Password */
+      password: string
+    }
     /** CurrentDashboardAccountResponse */
     CurrentDashboardAccountResponse: {
       /** Accountcurrency */
@@ -1419,6 +1486,18 @@ export interface components {
       /** Timestamp */
       timestamp: string
     }
+    /** PasswordChangeRequest */
+    PasswordChangeRequest: {
+      /** Current Password */
+      current_password: string
+      /** New Password */
+      new_password: string
+    }
+    /** PasswordChangeResponse */
+    PasswordChangeResponse: {
+      /** Ok */
+      ok: boolean
+    }
     /** PortfolioCurrencyAmountResponse */
     PortfolioCurrencyAmountResponse: {
       /** Amount */
@@ -1612,6 +1691,15 @@ export interface components {
       | "holdings_recalculation"
       | "scheduled"
       | "manual_recalculation"
+    /** UserRegistrationRequest */
+    UserRegistrationRequest: {
+      /** Email */
+      email: string
+      /** Name */
+      name?: string | null
+      /** Password */
+      password: string
+    }
     /** UserSnapshotRefreshRecalculateResponse */
     UserSnapshotRefreshRecalculateResponse: {
       /** Accounts */
@@ -2533,6 +2621,57 @@ export interface operations {
       }
     }
   }
+  verify_credentials_api_v1_auth_credentials_verify_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CredentialVerificationRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["AuthenticatedUserResponse"]
+        }
+      }
+      /** @description Invalid credentials or service token. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
   get_current_user_api_v1_auth_me_get: {
     parameters: {
       query?: never
@@ -2561,6 +2700,126 @@ export interface operations {
         }
       }
       /** @description Authentication is not configured. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  change_password_api_v1_auth_password_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PasswordChangeRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["PasswordChangeResponse"]
+        }
+      }
+      /** @description Authentication is required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Current password is invalid. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  register_user_api_v1_auth_register_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UserRegistrationRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["AuthenticatedUserResponse"]
+        }
+      }
+      /** @description Invalid service token. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Email is already registered. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
       503: {
         headers: {
           [name: string]: unknown

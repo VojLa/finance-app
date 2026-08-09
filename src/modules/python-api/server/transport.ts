@@ -62,7 +62,7 @@ export function createAuthenticatedPythonTransport(
       const requestedContentType = request.headers.get("Content-Type")?.toLowerCase()
       if (requestedContentType === "application/octet-stream") {
         headers.set("Content-Type", "application/octet-stream")
-      } else if (["POST", "PATCH"].includes(request.method.toUpperCase())) {
+      } else if (["POST", "PUT", "PATCH"].includes(request.method.toUpperCase())) {
         headers.set("Content-Type", "application/json")
       }
       const response = await fetchImplementation(input, {

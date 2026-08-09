@@ -137,7 +137,8 @@ soucasti TypeScript vrstvy.
 - jeden FX provider a tarif pokryvajici pozadovane prime pary, historii a prava uziti;
 - zda dashboard dostane jeden agregovany Python kontrakt, nebo dve nezavisle Python
   query bez sdilenych vypoctu;
-- presny credential kontrakt mezi NextAuth a Pythonem a politika rate limitu;
+- produkcni implementace sdileneho ingress/distributed rate limitu pred verejnym
+  nasazenim; credential kontrakt a release-blocker politika jsou uzavreny ADR 0007;
 - jak dlouho budou tenke compatibility route zachovavat stary browser response shape;
 - zda historicke Yahoo FX radky zustanou jako oznacena auditni evidence, nebo se po
   prokazatelnem rebuild procesu archivují mimo aktivni tabulku.
