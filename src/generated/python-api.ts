@@ -399,6 +399,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/dashboard/current": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Current Dashboard */
+    post: operations["read_current_dashboard_api_v1_dashboard_current_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/dashboard/snapshot": {
     parameters: {
       query?: never
@@ -495,6 +512,23 @@ export interface paths {
     get: operations["read_portfolio_snapshot_api_v1_portfolio_accounts__account_id__snapshot_get"]
     put?: never
     post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/portfolio/current": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Current Portfolio */
+    post: operations["read_current_portfolio_api_v1_portfolio_current_post"]
     delete?: never
     options?: never
     head?: never
@@ -796,6 +830,87 @@ export interface components {
      * @enum {string}
      */
     AssetType: "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
+    /** CurrentDashboardAccountResponse */
+    CurrentDashboardAccountResponse: {
+      /** Accountcurrency */
+      accountCurrency: string
+      /** Accountid */
+      accountId: string
+      accountType: components["schemas"]["app__modules__portfolio_snapshot__models__AccountType"]
+      /** Baselinesnapshotid */
+      baselineSnapshotId: string
+      /** Cashvalue */
+      cashValue: string
+      /** Investmentvalue */
+      investmentValue: string
+      /** Liabilitiesvalue */
+      liabilitiesValue: string
+      /** Name */
+      name: string
+      /** Netdepositsvalue */
+      netDepositsValue: string
+      /** Outputcurrency */
+      outputCurrency: string
+      /** Positioncount */
+      positionCount: number
+      /** Primarybaselinesnapshotid */
+      primaryBaselineSnapshotId: string
+      /** Totalvalue */
+      totalValue: string
+      /** Unrealizedpnlvalue */
+      unrealizedPnlValue: string
+    }
+    /** CurrentDashboardResponse */
+    CurrentDashboardResponse: {
+      /** Accounts */
+      accounts: components["schemas"]["CurrentDashboardAccountResponse"][]
+      /** Asof */
+      asOf: string
+      /** Assettypeallocations */
+      assetTypeAllocations: components["schemas"]["DashboardAssetTypeAllocationResponse"][]
+      /** Baselinetimestamp */
+      baselineTimestamp: string
+      /** Calculationversion */
+      calculationVersion: number
+      /** Currency */
+      currency: string
+      /** Historyanchorsnapshotid */
+      historyAnchorSnapshotId: string
+      summary: components["schemas"]["DashboardSnapshotSummaryResponse"]
+      /** Toppositions */
+      topPositions: components["schemas"]["DashboardTopPositionResponse"][]
+    }
+    /** CurrentPortfolioAccountResponse */
+    CurrentPortfolioAccountResponse: {
+      account: components["schemas"]["PortfolioSnapshotAccountResponse"]
+      /** Baselinesnapshotid */
+      baselineSnapshotId: string
+      /** Currency */
+      currency: string
+      /** Positions */
+      positions: components["schemas"]["PortfolioSnapshotPositionResponse"][]
+      /** Primarybaselinesnapshotid */
+      primaryBaselineSnapshotId: string
+      summary: components["schemas"]["PortfolioSnapshotSummaryResponse"]
+    }
+    /** CurrentPortfolioResponse */
+    CurrentPortfolioResponse: {
+      /** Accounts */
+      accounts: components["schemas"]["CurrentPortfolioAccountResponse"][]
+      /** Aggregatepositions */
+      aggregatePositions: components["schemas"]["MultiAccountPortfolioAggregatePositionResponse"][]
+      /** Asof */
+      asOf: string
+      /** Baselinetimestamp */
+      baselineTimestamp: string
+      /** Calculationversion */
+      calculationVersion: number
+      /** Currency */
+      currency: string
+      /** Historyanchorsnapshotid */
+      historyAnchorSnapshotId: string
+      summary: components["schemas"]["MultiAccountPortfolioSummaryResponse"]
+    }
     /** CurrentUserResponse */
     CurrentUserResponse: {
       /** Email */
@@ -2456,6 +2571,26 @@ export interface operations {
       }
     }
   }
+  read_current_dashboard_api_v1_dashboard_current_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentDashboardResponse"]
+        }
+      }
+    }
+  }
   read_dashboard_snapshot_api_v1_dashboard_snapshot_post: {
     parameters: {
       query?: never
@@ -2622,6 +2757,26 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  read_current_portfolio_api_v1_portfolio_current_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentPortfolioResponse"]
         }
       }
     }

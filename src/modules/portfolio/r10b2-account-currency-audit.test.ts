@@ -41,8 +41,8 @@ describe("R10-B2 account-currency presentation audit", () => {
     expect(model.topPositions).toBe(dashboardSnapshotFixture.topPositions)
     expect(foreign?.accountCurrency).toBe("USD")
     expect(foreign?.outputCurrency).toBe("USD")
-    expect(foreign?.primarySnapshotId).toBe("snapshot-z")
-    expect(foreign?.snapshotId).toBe("snapshot-z-usd")
+    expect(foreign?.primaryBaselineSnapshotId).toBe("snapshot-z")
+    expect(foreign?.baselineSnapshotId).toBe("snapshot-z-usd")
   })
 
   it("contains no client-side finance conversion, FX lookup, or account-switch request", async () => {
@@ -67,7 +67,7 @@ describe("R10-B2 account-currency presentation audit", () => {
   it("pins primary manifest lineage separately from presentation lineage", async () => {
     const workflow = await source("src/modules/python-api/server/snapshot-workflow.ts")
 
-    expect(workflow).toContain("account.primarySnapshotId !== selector.snapshotId")
-    expect(workflow).not.toContain("account.snapshotId !== selector.snapshotId")
+    expect(workflow).toContain("account.primaryBaselineSnapshotId")
+    expect(workflow).toContain("account.baselineSnapshotId")
   })
 })

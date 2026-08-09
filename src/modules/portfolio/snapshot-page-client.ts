@@ -1,14 +1,13 @@
 import type {
+  CurrentValueSummary,
   PortfolioSnapshotData,
-  SnapshotRefreshSummary,
 } from "@/modules/python-api/snapshot-workflow-contract"
 
 export const PORTFOLIO_WORKFLOW_PATH = "/api/snapshot-workflow/portfolio"
 
 export type PortfolioPageState =
   | { status: "loading" }
-  | { status: "empty"; refresh: SnapshotRefreshSummary }
-  | { status: "ready"; refresh: SnapshotRefreshSummary; data: PortfolioSnapshotData }
+  | { status: "ready"; current: CurrentValueSummary; data: PortfolioSnapshotData }
   | { status: "error"; code: string; message: string }
 
 type FetchImplementation = typeof fetch
@@ -29,29 +28,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function isRefreshSummary(value: unknown): value is SnapshotRefreshSummary {
+function isCurrentSummary(value: unknown): value is CurrentValueSummary {
   if (!isRecord(value)) return false
   return (
-    typeof value.netWorthSnapshotId === "string" &&
-    (value.netWorthStatus === "created" || value.netWorthStatus === "replayed") &&
-    typeof value.timestamp === "string" &&
-    typeof value.granularity === "string" &&
+    typeof value.asOf === "string" &&
+    typeof value.baselineTimestamp === "string" &&
+    typeof value.historyAnchorSnapshotId === "string" &&
     typeof value.currency === "string" &&
     typeof value.calculationVersion === "number" &&
-    typeof value.refreshAccountCount === "number" &&
-    typeof value.reuseOnlyAccountCount === "number" &&
-    typeof value.createdAccountSnapshotCount === "number" &&
-    typeof value.replayedAccountSnapshotCount === "number" &&
-    typeof value.reusedAccountSnapshotCount === "number" &&
-    typeof value.selectedAccountSnapshotCount === "number"
+    value.calculationVersion > 0
   )
 }
 
 function isPortfolioData(value: unknown): value is PortfolioSnapshotData {
   return (
     isRecord(value) &&
-    typeof value.timestamp === "string" &&
-    typeof value.granularity === "string" &&
+    typeof value.asOf === "string" &&
     typeof value.currency === "string" &&
     typeof value.calculationVersion === "number" &&
     isRecord(value.summary) &&
@@ -83,14 +75,11 @@ export async function requestPortfolioPageState(
     const payload: unknown = await response.json()
 
     if (!response.ok) return safeErrorState(payload)
-    if (!isRecord(payload) || !isRefreshSummary(payload.refresh)) return CONTRACT_STATE
-    if (payload.status === "empty" && !("data" in payload)) {
-      return { status: "empty", refresh: payload.refresh }
-    }
+    if (!isRecord(payload) || !isCurrentSummary(payload.current)) return CONTRACT_STATE
     if (payload.status === "ready" && isPortfolioData(payload.data)) {
       return {
         status: "ready",
-        refresh: payload.refresh,
+        current: payload.current,
         data: payload.data,
       }
     }

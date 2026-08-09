@@ -2,8 +2,9 @@ import type { PortfolioSnapshotData } from "@/modules/python-api/snapshot-workfl
 
 export function portfolioSnapshotFixture(): PortfolioSnapshotData {
   return {
-    timestamp: "2032-08-02T00:00:00.000",
-    granularity: "day",
+    asOf: "2032-08-02T12:30:00.000",
+    baselineTimestamp: "2032-08-02T00:00:00.000",
+    historyAnchorSnapshotId: "net-worth-baseline",
     currency: "EUR",
     calculationVersion: 7,
     summary: {
@@ -31,10 +32,9 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
     },
     accounts: [
       {
-        snapshotId: "snapshot-a-czk",
-        primarySnapshotId: "snapshot-a",
+        baselineSnapshotId: "snapshot-a-czk",
+        primaryBaselineSnapshotId: "snapshot-a",
         currency: "CZK",
-        source: "manual_recalculation",
         account: {
           accountId: "account-a",
           accountType: "broker",
@@ -87,10 +87,9 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
         ],
       },
       {
-        snapshotId: "snapshot-b-usd",
-        primarySnapshotId: "snapshot-b",
+        baselineSnapshotId: "snapshot-b-usd",
+        primaryBaselineSnapshotId: "snapshot-b",
         currency: "USD",
-        source: "price_refresh",
         account: {
           accountId: "account-b",
           accountType: "crypto_wallet",

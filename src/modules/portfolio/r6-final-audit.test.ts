@@ -49,25 +49,6 @@ const previousEnvironment = Object.fromEntries(
   ENVIRONMENT_KEYS.map((key) => [key, process.env[key]])
 )
 
-const REFRESH = {
-  netWorthSnapshotId: "net-worth-r6-audit",
-  netWorthStatus: "created",
-  timestamp: "2032-08-02T00:00:00.000",
-  granularity: "day",
-  currency: "EUR",
-  calculationVersion: 7,
-  accounts: [
-    { accountId: "account-a", snapshotId: "snapshot-a" },
-    { accountId: "account-b", snapshotId: "snapshot-b" },
-  ],
-  refreshAccountCount: 2,
-  reuseOnlyAccountCount: 0,
-  createdAccountSnapshotCount: 2,
-  replayedAccountSnapshotCount: 0,
-  reusedAccountSnapshotCount: 0,
-  selectedAccountSnapshotCount: 2,
-}
-
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
     status: 200,
@@ -99,7 +80,7 @@ afterEach(() => {
 })
 
 describe("R6 browser-to-presentation acceptance", () => {
-  it("preserves aggregate and account breakdowns through one browser and two FastAPI requests", async () => {
+  it("preserves aggregate and account breakdowns through one browser and one current request", async () => {
     const portfolio = portfolioSnapshotFixture()
     const requestUrls: string[] = []
     const tokens: string[] = []
@@ -118,17 +99,8 @@ describe("R6 browser-to-presentation acceptance", () => {
       })
       expect(payload.sub).toBe("r6-audit-user")
 
-      if (request.url.endsWith("/api/v1/snapshot-refresh/recalculate")) {
-        return jsonResponse(REFRESH)
-      }
-      if (request.url.endsWith("/api/v1/portfolio/snapshot")) {
-        expect(await request.json()).toEqual({
-          timestamp: REFRESH.timestamp,
-          granularity: REFRESH.granularity,
-          currency: REFRESH.currency,
-          calculationVersion: REFRESH.calculationVersion,
-          accounts: REFRESH.accounts,
-        })
+      if (request.url.endsWith("/api/v1/portfolio/current")) {
+        expect(request.method).toBe("POST")
         return jsonResponse(portfolio)
       }
       throw new Error("Unexpected FastAPI request.")
@@ -143,11 +115,8 @@ describe("R6 browser-to-presentation acceptance", () => {
     const state = await requestPortfolioPageState(browserFetch)
 
     expect(browserFetch).toHaveBeenCalledTimes(1)
-    expect(serverFetch).toHaveBeenCalledTimes(2)
-    expect(requestUrls).toEqual([
-      `${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`,
-      `${BACKEND_URL}/api/v1/portfolio/snapshot`,
-    ])
+    expect(serverFetch).toHaveBeenCalledTimes(1)
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/current`])
     expect(state.status).toBe("ready")
     if (state.status !== "ready") throw new Error("Expected ready portfolio state.")
     expect(state.data).toEqual(portfolio)
@@ -174,7 +143,7 @@ describe("R6 browser-to-presentation acceptance", () => {
       state.data.accounts[1]?.summary.netDepositsByCurrency
     )
     expect(browserFetch).toHaveBeenCalledTimes(1)
-    expect(serverFetch).toHaveBeenCalledTimes(2)
+    expect(serverFetch).toHaveBeenCalledTimes(1)
   })
 
   it("renders exact negative, zero, long, and empty evidence semantically", () => {

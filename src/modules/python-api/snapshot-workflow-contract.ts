@@ -4,8 +4,10 @@ export type PythonSnapshotRefreshResponse =
   components["schemas"]["UserSnapshotRefreshRecalculateResponse"]
 export type ExactPortfolioSnapshotManifest =
   components["schemas"]["ExactPortfolioSnapshotSetRequest"]
-export type PortfolioSnapshotData = components["schemas"]["MultiAccountPortfolioResponse"]
-export type DashboardSnapshotData = components["schemas"]["DashboardSnapshotResponse"]
+export type LegacyPortfolioSnapshotData = components["schemas"]["MultiAccountPortfolioResponse"]
+export type LegacyDashboardSnapshotData = components["schemas"]["DashboardSnapshotResponse"]
+export type PortfolioSnapshotData = components["schemas"]["CurrentPortfolioResponse"]
+export type DashboardSnapshotData = components["schemas"]["CurrentDashboardResponse"]
 
 export type SnapshotRefreshSummary = {
   netWorthSnapshotId: string
@@ -22,18 +24,21 @@ export type SnapshotRefreshSummary = {
   selectedAccountSnapshotCount: number
 }
 
-export type EmptySnapshotWorkflowResult = {
-  status: "empty"
-  refresh: SnapshotRefreshSummary
+export type CurrentValueSummary = {
+  asOf: string
+  baselineTimestamp: string
+  historyAnchorSnapshotId: string
+  currency: string
+  calculationVersion: number
 }
 
 export type ReadySnapshotWorkflowResult<T> = {
   status: "ready"
-  refresh: SnapshotRefreshSummary
+  current: CurrentValueSummary
   data: T
 }
 
-export type SnapshotWorkflowResult<T> = EmptySnapshotWorkflowResult | ReadySnapshotWorkflowResult<T>
+export type SnapshotWorkflowResult<T> = ReadySnapshotWorkflowResult<T>
 
 export type SnapshotWorkflowErrorResponse = {
   error: {

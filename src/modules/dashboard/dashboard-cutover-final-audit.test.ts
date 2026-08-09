@@ -42,33 +42,6 @@ const previousEnvironment = Object.fromEntries(
   ENVIRONMENT_KEYS.map((key) => [key, process.env[key]])
 )
 
-const REFRESH = {
-  netWorthSnapshotId: "net-worth-dashboard-audit",
-  netWorthStatus: "created",
-  timestamp: dashboardSnapshotFixture.timestamp,
-  granularity: dashboardSnapshotFixture.granularity,
-  currency: dashboardSnapshotFixture.currency,
-  calculationVersion: dashboardSnapshotFixture.calculationVersion,
-  accounts: [
-    { accountId: "account-a", snapshotId: "snapshot-a" },
-    { accountId: "account-z", snapshotId: "snapshot-z" },
-  ],
-  refreshAccountCount: 2,
-  reuseOnlyAccountCount: 0,
-  createdAccountSnapshotCount: 2,
-  replayedAccountSnapshotCount: 0,
-  reusedAccountSnapshotCount: 0,
-  selectedAccountSnapshotCount: 2,
-}
-
-const MANIFEST = {
-  timestamp: REFRESH.timestamp,
-  granularity: REFRESH.granularity,
-  currency: REFRESH.currency,
-  calculationVersion: REFRESH.calculationVersion,
-  accounts: REFRESH.accounts,
-}
-
 const OPERATIONAL_PAYLOAD = {
   summary: {
     cashValueCzk: 999_999,
@@ -151,14 +124,8 @@ describe("in-process dashboard browser flow", () => {
       tokenIds.push(String(payload.jti))
       expect(request.headers.has("Cookie")).toBe(false)
 
-      if (request.url === `${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`) {
+      if (request.url === `${BACKEND_URL}/api/v1/dashboard/current`) {
         expect(await request.text()).toBe("")
-        return jsonResponse(REFRESH)
-      }
-      if (request.url === `${BACKEND_URL}/api/v1/dashboard/snapshot`) {
-        const body = await request.text()
-        fastApiBodies.push(body)
-        expect(body).toBe(JSON.stringify(MANIFEST))
         return jsonResponse(dashboard)
       }
       throw new Error("Unexpected FastAPI request.")
@@ -170,18 +137,15 @@ describe("in-process dashboard browser flow", () => {
 
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(getSession).toHaveBeenCalledTimes(1)
-    expect(serverFetch).toHaveBeenCalledTimes(2)
-    expect(requestUrls).toEqual([
-      `${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`,
-      `${BACKEND_URL}/api/v1/dashboard/snapshot`,
-    ])
-    expect(tokens).toHaveLength(2)
-    expect(new Set(tokens).size).toBe(2)
-    expect(new Set(tokenIds).size).toBe(2)
-    expect(fastApiBodies).toEqual([JSON.stringify(MANIFEST)])
+    expect(serverFetch).toHaveBeenCalledTimes(1)
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/dashboard/current`])
+    expect(tokens).toHaveLength(1)
+    expect(new Set(tokens).size).toBe(1)
+    expect(new Set(tokenIds).size).toBe(1)
+    expect(fastApiBodies).toEqual([])
     expect(state.status).toBe("ready")
     if (state.status !== "ready") throw new Error("Expected ready state.")
-    expect(state.refresh).not.toHaveProperty("accounts")
+    expect(state.current).not.toHaveProperty("accounts")
     expect(JSON.stringify(state)).not.toContain(SECRET)
     for (const token of tokens) expect(JSON.stringify(state)).not.toContain(token)
 
@@ -195,18 +159,14 @@ describe("in-process dashboard browser flow", () => {
     expect(model.topPositions.map(({ symbol }) => symbol)).toEqual(["ZZZ", "AAA"])
   })
 
-  it("returns empty after one FastAPI request while operational data remains independent", async () => {
-    const emptyRefresh = {
-      ...REFRESH,
-      accounts: [],
-      refreshAccountCount: 0,
-      createdAccountSnapshotCount: 0,
-      selectedAccountSnapshotCount: 0,
-    }
+  it("fails closed without a baseline while operational data remains independent", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      expect(request.url).toBe(`${BACKEND_URL}/api/v1/snapshot-refresh/recalculate`)
-      return jsonResponse(emptyRefresh)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/dashboard/current`)
+      return jsonResponse(
+        { error: { code: "current_value_unavailable", message: "Unavailable." } },
+        409
+      )
     })
     vi.stubGlobal("fetch", serverFetch)
     const browserFetch = browserFetchAdapter()
@@ -219,7 +179,7 @@ describe("in-process dashboard browser flow", () => {
       requestOperationalDashboardState(operationalFetch),
     ])
 
-    expect(financial.status).toBe("empty")
+    expect(financial.status).toBe("error")
     expect(financial).not.toHaveProperty("data")
     expect(financial).not.toHaveProperty("manifest")
     expect(financial).not.toHaveProperty("selector")
@@ -267,8 +227,7 @@ describe("in-process dashboard browser flow", () => {
   it("refreshes financial data without adding an operational request", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      if (request.url.endsWith("/snapshot-refresh/recalculate")) return jsonResponse(REFRESH)
-      if (request.url.endsWith("/dashboard/snapshot")) {
+      if (request.url.endsWith("/dashboard/current")) {
         return jsonResponse(dashboardSnapshotFixture)
       }
       throw new Error("Unexpected FastAPI request.")
@@ -286,7 +245,7 @@ describe("in-process dashboard browser flow", () => {
     await requestDashboardFinancialState(browserFetch)
 
     expect(browserFetch).toHaveBeenCalledTimes(2)
-    expect(serverFetch).toHaveBeenCalledTimes(4)
+    expect(serverFetch).toHaveBeenCalledTimes(2)
     expect(operationalFetch).toHaveBeenCalledTimes(1)
   })
 })

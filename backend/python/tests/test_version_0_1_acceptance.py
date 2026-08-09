@@ -136,6 +136,9 @@ def test_release_roadmap_records_r10a_and_remaining_release_work() -> None:
     assert "0.1-R10-B2 — account-currency read/API/frontend presentation: implemented" in roadmap
     assert "0.1-R10-C — dashboard deposited presentation: implemented" in roadmap
     assert "0.1-R10-D audit — current-value snapshot invariant: completed — NOT READY" in roadmap
-    assert "0.1-R10-D1 — persisted daily baseline manifest and canonical cutoff: planned" in roadmap
-    assert "0.1-R10-D2 — strict daily-baseline current-value engine: planned" in roadmap
+    assert (
+        "0.1-R10-D1 — persisted daily baseline manifest and canonical cutoff: implemented"
+        in roadmap
+    )
+    assert "0.1-R10-D2 — strict daily-baseline current-value engine: implemented" in roadmap
     assert "Version 0.1 is not complete" in roadmap

@@ -58,9 +58,9 @@ describe("version 0.1 clean main browser call graph", () => {
 
     expect(portfolioRoute).toContain("runPortfolioSnapshotWorkflow")
     expect(dashboardRoute).toContain("runDashboardSnapshotWorkflow")
-    expect(workflow).toContain("recalculateSnapshotRefresh")
-    expect(workflow).toContain("readPortfolioSnapshot")
-    expect(workflow).toContain("readDashboardSnapshot")
+    expect(workflow).toContain("readCurrentPortfolio")
+    expect(workflow).toContain("readCurrentDashboard")
+    expect(workflow).not.toContain("recalculateSnapshotRefresh")
     expect(historyRoute).toContain("readSnapshotBackedPortfolioHistory")
     expect(historyAdapter).toContain('client.GET("/api/v1/portfolio/history"')
     expect(active).not.toMatch(

@@ -1283,3 +1283,31 @@ created. Only higher revisions with strictly later financial timestamps are
 classified as forward lineage. D1 performs no finance, market, FX, position,
 or liability delta calculation and is not connected to current reads; the
 current minute workflow remains active pending R10-D2.
+
+## Ephemeral strict current value
+
+R10-D2 consumes, but does not mutate, a complete D1 daily baseline. A current
+account state is the baseline native state plus journal roots whose revision is
+above the account cutoff and whose financial timestamp is strictly after the
+baseline and no later than the server-owned `asOf`. D1 backfills remain fatal;
+future-dated roots remain excluded.
+
+For bank, cash, and savings accounts the delta is signed Transaction evidence.
+For broker, exchange, and crypto-wallet accounts the baseline quantity and
+native cost state are advanced by the canonical movement rules. For credit
+cards, loans, and mortgages the newest unambiguous eligible LiabilityBalance is
+a replacement point, never an additive delta.
+
+Historical net deposits, realized P/L, fees, and taxes preserve their persisted
+baseline values and add only forward evidence converted at each event date.
+Unrealized P/L is recalculated from reconstructed quantity/native cost and exact
+current price/FX evidence. Current cash, investment value, and liability value
+use current-as-of FX. Foreign-to-foreign presentation retains the existing exact
+CZK-pivot composition and never creates a synthetic provider observation.
+
+One reconstructed canonical state owns both a primary projection in
+User.baseCurrency and a presentation projection in Account.currency. Only
+primaries contribute to aggregate portfolio, dashboard, and ephemeral current
+NetWorth. Current reads persist no AccountSnapshot or NetWorthSnapshot; their
+displayed value may therefore be newer than the last persisted history point.
+History remains the immutable NetWorthSnapshot series.

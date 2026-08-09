@@ -1,8 +1,9 @@
 import type { DashboardSnapshotData } from "@/modules/python-api/snapshot-workflow-contract"
 
 export const dashboardSnapshotFixture = {
-  timestamp: "2026-07-31T10:15:30Z",
-  granularity: "day",
+  asOf: "2026-07-31T10:15:00.000",
+  baselineTimestamp: "2026-07-31T00:00:00.000",
+  historyAnchorSnapshotId: "net-worth-baseline",
   currency: "CZK",
   calculationVersion: 7,
   summary: {
@@ -25,8 +26,8 @@ export const dashboardSnapshotFixture = {
   accounts: [
     {
       accountId: "account-z",
-      snapshotId: "snapshot-z-usd",
-      primarySnapshotId: "snapshot-z",
+      baselineSnapshotId: "snapshot-z-usd",
+      primaryBaselineSnapshotId: "snapshot-z",
       name: "Zeta Broker",
       accountType: "broker",
       accountCurrency: "USD",
@@ -41,8 +42,8 @@ export const dashboardSnapshotFixture = {
     },
     {
       accountId: "account-a",
-      snapshotId: "snapshot-a",
-      primarySnapshotId: "snapshot-a",
+      baselineSnapshotId: "snapshot-a",
+      primaryBaselineSnapshotId: "snapshot-a",
       name: "Alpha Loan",
       accountType: "loan",
       accountCurrency: "CZK",

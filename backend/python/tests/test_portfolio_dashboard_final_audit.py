@@ -399,7 +399,7 @@ def test_exact_production_route_inventory(test_settings: Settings) -> None:
         (method.upper(), path)
         for path, operations in paths.items()
         for method in operations
-        if path == LEGACY_PATH or "portfolio" in path or "dashboard/snapshot" in path
+        if path == LEGACY_PATH or "portfolio" in path or "dashboard" in path
         if method in {"get", "post", "put", "patch", "delete"}
     }
     assert relevant == {
@@ -408,6 +408,8 @@ def test_exact_production_route_inventory(test_settings: Settings) -> None:
         ("GET", SINGLE_PATH),
         ("POST", PORTFOLIO_PATH),
         ("POST", DASHBOARD_PATH),
+        ("POST", "/api/v1/portfolio/current"),
+        ("POST", "/api/v1/dashboard/current"),
     }
 
 

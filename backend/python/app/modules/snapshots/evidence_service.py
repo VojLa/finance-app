@@ -469,6 +469,16 @@ def _cash_from_transactions(
     )
 
 
+# Shared server-side selection boundary used by persisted snapshots and the
+# ephemeral current-value engine. These aliases intentionally retain one exact
+# market-evidence policy rather than creating a second selector.
+select_latest_price_evidence = _select_latest_price
+select_latest_exchange_rate = _select_latest_rate
+validate_exchange_rate_candidates = _validate_rate_candidates
+required_conversion_pairs = _conversion_pairs
+select_snapshot_exchange_rates = _selected_snapshot_rates
+
+
 def _investment_history(
     events: tuple[InvestmentEventModel, ...],
     movements: tuple[InvestmentMovementModel, ...],
