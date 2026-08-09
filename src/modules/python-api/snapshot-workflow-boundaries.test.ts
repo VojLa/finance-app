@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -20,12 +19,6 @@ async function filesBelow(relativeDirectory: string): Promise<string[]> {
     })
   )
   return nested.flat()
-}
-
-async function sha256(relativePath: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(path.join(ROOT, relativePath)))
-    .digest("hex")
 }
 
 describe("snapshot workflow static boundaries", () => {
@@ -52,10 +45,7 @@ describe("snapshot workflow static boundaries", () => {
     }
   })
 
-  it("keeps portfolio legacy fixed and dashboard operational route thin", async () => {
-    await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
-      "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
-    )
+  it("keeps dashboard operational route thin", async () => {
     const dashboard = await source("src/app/api/dashboard/route.ts")
     expect(dashboard).toContain("createPythonOperationalDashboardApi")
     expect(dashboard).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)

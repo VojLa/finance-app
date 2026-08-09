@@ -32,7 +32,6 @@
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "seed": "tsx prisma/seed.ts",
-    "prices:backfill": "tsx scripts/backfill-prices.ts",
     "api:compare:portfolio": "tsx scripts/compare-portfolio-api.ts"
   },
   "dependencies": {

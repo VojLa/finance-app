@@ -26,6 +26,7 @@ from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
+from app.modules.canonical_state.service import CanonicalChangeKind, CanonicalStateService
 from app.modules.snapshot_refresh.executor import (
     ExecuteUserSnapshotRefreshCommand,
     UserSnapshotRefreshExecutor,
@@ -311,6 +312,14 @@ def test_liability_current_value_uses_a_later_point_not_a_persisted_delta() -> N
                         update(LiabilityBalanceModel)
                         .where(LiabilityBalanceModel.account_id == account_id)
                         .values(effective_at=INITIAL, created_at=INITIAL)
+                    )
+                    await CanonicalStateService(session).record(
+                        account_id=account_id,
+                        kind=CanonicalChangeKind.liability_balance,
+                        entity_id=f"{prefix}-balance-loan",
+                        financial_timestamp=INITIAL,
+                        created_at=INITIAL,
+                        replay=False,
                     )
                     await session.commit()
             finally:

@@ -87,10 +87,7 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps unrelated routes byte-identical and the approved OpenAPI contracts", async () => {
-    await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
-      "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
-    )
+  it("keeps the approved workflow routes and OpenAPI contracts", async () => {
     await expect(sha256("src/app/api/snapshot-workflow/portfolio/route.ts")).resolves.toBe(
       "add630f02a576ea7cfb826810b050f15a0480614fe9990b5a7b9367f2c06365c"
     )

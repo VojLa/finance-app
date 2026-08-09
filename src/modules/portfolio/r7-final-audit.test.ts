@@ -102,8 +102,6 @@ describe("R7 checkout-portable production inventory", () => {
     const page = await source("src/app/portfolio/page.tsx")
     const chart = await source("src/components/charts/PortfolioLineChart.tsx")
     const chartProjection = await source("src/components/charts/portfolio-history-chart.ts")
-    const barrel = await source("src/modules/snapshots/index.ts")
-    const legacy = await source("src/modules/snapshots/service.ts")
     const active = `${route}\n${transport}\n${contract}\n${client}\n${page}\n${chart}\n${chartProjection}`
 
     expect(route).toContain("readSnapshotBackedPortfolioHistory")
@@ -118,9 +116,6 @@ describe("R7 checkout-portable production inventory", () => {
     expect(active).not.toMatch(
       /@\/lib\/prisma|@\/lib\/accountAccess|@\/modules\/snapshots|@\/modules\/portfolio\/rates|getPortfolioSnapshotHistory|historical prices?|historical FX|\/api\/rates/
     )
-    expect(barrel).not.toContain("getPortfolioSnapshotHistory")
-    expect(legacy).toContain("export async function getPortfolioSnapshotHistory")
-
     const productionFiles = (await filesUnder("src"))
       .filter((file) => /\.(?:ts|tsx)$/.test(file))
       .filter((file) => !/\.test\.(?:ts|tsx)$/.test(file))
@@ -130,7 +125,7 @@ describe("R7 checkout-portable production inventory", () => {
         occurrences.push(file)
       }
     }
-    expect(occurrences).toEqual(["src/modules/snapshots/service.ts"])
+    expect(occurrences).toEqual([])
   })
 
   it("proves exact browser validation, state isolation, and one chart conversion", async () => {

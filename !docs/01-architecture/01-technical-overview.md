@@ -46,9 +46,8 @@ authority for current portfolio cards and positions. The account selector is a
 local projection over exact aggregate and account-scoped server views and
 issues no request. Decimal strings remain unchanged; the page performs no
 totals, P/L, return, allocation, FX, pricing, or fallback calculation. The
-legacy history endpoint remains chart-only and cannot override current
-snapshot values. The legacy current portfolio route remains registered but is
-no longer called by the page.
+history endpoint is chart-only and cannot override current snapshot values.
+R11-H removes the unused live-Holding current portfolio route.
 
 The 5M-D dashboard cutover likewise makes the snapshot workflow the sole
 authority for the financial summary, financial account cards, server-calculated
@@ -63,10 +62,12 @@ changes. It proves the authenticated browser-to-Next-to-FastAPI path, exact
 manifest transport, cross-runtime token compatibility, token-per-request
 behavior, explicit empty handling, Decimal-string preservation, and the
 absence of legacy financial fallback. Portfolio current finance and dashboard
-finance are snapshot-backed. Portfolio history remains legacy chart-only. The
+finance are snapshot-backed. Portfolio history is a Python-backed chart-only
+read. The
 operational dashboard and budgets are now Python-owned and exposed through thin
-Next.js adapters. The legacy current portfolio route remains a compatibility
-surface.
+Next.js adapters. R11-H removes the unused Next.js portfolio, net-worth,
+snapshot-recalculation, and rates routes plus the TypeScript snapshot, ledger,
+Holding, pricing, and FX services.
 Frontend-only GitHub Actions coverage remains a separate process risk. The
 subsequent 0.1 final acceptance audit identified remaining release blockers and
 left version 0.1 incomplete.
@@ -90,8 +91,7 @@ Python `role` and `relation_type`; import, portfolio manual-add, and
 transactions distinguish account-load errors from empty account sets. The main
 account page replaces destructive delete with archive and no longer reads or
 presents the legacy account-cash/FX model. Sharing write UX is outside R1. The
-legacy cash and share route files remain registered compatibility surfaces but
-are not called by the main account page.
+legacy cash and share route files were removed in R11-D.
 
 R11-G moves the active manual investment command and symbol-detail read behind
 generated Python contracts. A new command serializes by idempotency key, writes

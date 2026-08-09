@@ -223,7 +223,8 @@ The portfolio page uses `POST /api/snapshot-workflow/portfolio` exactly once on
 initial load and once per explicit refresh action. The request has no body,
 selector, query parameter, manifest, account ID, snapshot ID, timestamp,
 currency, or calculation version. The page no longer calls the legacy current
-`GET /api/portfolio`, rates refresh, or legacy snapshot recalculation routes.
+`GET /api/portfolio`, rates refresh, or legacy snapshot recalculation routes;
+R11-H removes those registered routes and their TypeScript finance services.
 
 `status: "empty"` is rendered as a successful no-account state and makes no
 follow-up request. `status: "ready"` supplies current cards and positions
@@ -239,11 +240,10 @@ those aggregate presentation elements rather than deriving them. Decimal
 strings remain unchanged in page state; only the account-local allocation
 chart converts its server percentage at the Recharts leaf.
 
-`GET /api/portfolio/history` remains temporarily available for the historical
-line and range selector. History never supplies current cards, positions,
+`GET /api/portfolio/history` is the thin Python-backed historical line and
+range-selector adapter. History never supplies current cards, positions,
 allocation, account options, or currency and its latest point does not override
-the current snapshot response. The legacy route implementation remains
-registered.
+the current snapshot response.
 
 ## Dashboard page integration
 
@@ -287,6 +287,6 @@ read.
 
 The browser receives neither the internal token nor the refresh manifest.
 Portfolio current finance and dashboard financial data are snapshot-backed;
-legacy portfolio history is chart-only, and the Python-backed dashboard adapter
+Python portfolio history is chart-only, and the Python-backed dashboard adapter
 supplies operational widgets only. These surfaces are not financial fallbacks.
 The next step is the overall 0.1 release/final audit.
