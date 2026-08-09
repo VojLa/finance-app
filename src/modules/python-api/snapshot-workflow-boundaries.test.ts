@@ -52,13 +52,13 @@ describe("snapshot workflow static boundaries", () => {
     }
   })
 
-  it("keeps the legacy routes byte-identical after page cutovers", async () => {
+  it("keeps portfolio legacy fixed and dashboard operational route thin", async () => {
     await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
       "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
     )
-    await expect(sha256("src/app/api/dashboard/route.ts")).resolves.toBe(
-      "018dfe28e81da5b780df309805ae81ff7c83fb35b9ce8b1ba8e33dda264ce9ee"
-    )
+    const dashboard = await source("src/app/api/dashboard/route.ts")
+    expect(dashboard).toContain("createPythonOperationalDashboardApi")
+    expect(dashboard).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)
   })
 
   it("registers exactly the two bodyless POST-only workflow route modules", async () => {

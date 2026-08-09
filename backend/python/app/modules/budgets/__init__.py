@@ -1,0 +1,1 @@
+"""Monthly budget application boundary."""

@@ -450,6 +450,24 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/budgets/monthly": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Monthly Budget */
+    get: operations["get_monthly_budget_api_v1_budgets_monthly_get"]
+    /** Save Monthly Budget */
+    put: operations["save_monthly_budget_api_v1_budgets_monthly_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/categories": {
     parameters: {
       query?: never
@@ -565,6 +583,23 @@ export interface paths {
     put?: never
     /** Recalculate Net Worth Snapshot */
     post: operations["recalculate_net_worth_snapshot_api_v1_net_worth_snapshots_recalculate_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/operational-dashboard": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Operational Dashboard */
+    get: operations["get_operational_dashboard_api_v1_operational_dashboard_get"]
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -961,6 +996,124 @@ export interface components {
       id: string
       /** Name */
       name?: string | null
+    }
+    /** BudgetAlertResponse */
+    BudgetAlertResponse: {
+      /** Acknowledgedat */
+      acknowledgedAt?: string | null
+      /** Categoryid */
+      categoryId: string
+      /** Categoryname */
+      categoryName: string
+      /** Id */
+      id: string
+      /** Threshold */
+      threshold: string
+      /**
+       * Triggeredat
+       * Format: date-time
+       */
+      triggeredAt: string
+      /** Type */
+      type: string
+    }
+    /** BudgetCategoryResponse */
+    BudgetCategoryResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Name */
+      name: string
+    }
+    /** BudgetProgressItemResponse */
+    BudgetProgressItemResponse: {
+      /** Amount */
+      amount: string
+      category: components["schemas"]["BudgetCategoryResponse"]
+      /** Categoryid */
+      categoryId: string
+      /** Currency */
+      currency: string
+      /** Effectiveamount */
+      effectiveAmount: string
+      /** Id */
+      id: string
+      /** Isapproaching */
+      isApproaching: boolean
+      /** Isover */
+      isOver: boolean
+      /** Progresspct */
+      progressPct: string
+      /** Remaining */
+      remaining: string
+      /** Rolloveramount */
+      rolloverAmount: string
+      /** Spent */
+      spent: string
+    }
+    /** BudgetProgressResponse */
+    BudgetProgressResponse: {
+      /** Accountids */
+      accountIds: string[]
+      /** Alerts */
+      alerts: components["schemas"]["BudgetAlertResponse"][]
+      /** Currency */
+      currency: string
+      /** Id */
+      id: string
+      /** Isover */
+      isOver: boolean
+      /** Items */
+      items: components["schemas"]["BudgetProgressItemResponse"][]
+      /** Month */
+      month: number
+      /** Periodtype */
+      periodType: string
+      /** Progresspct */
+      progressPct: string
+      /** Rollover */
+      rollover: boolean
+      /** Totalbaselimit */
+      totalBaseLimit: string
+      /** Totallimit */
+      totalLimit: string
+      /** Totalremaining */
+      totalRemaining: string
+      /** Totalrollover */
+      totalRollover: string
+      /** Totalspent */
+      totalSpent: string
+      /** Year */
+      year: number
+    }
+    /** BudgetSaveItemRequest */
+    BudgetSaveItemRequest: {
+      /** Amount */
+      amount: number | string
+      /** Categoryid */
+      categoryId: string
+      /**
+       * Currency
+       * @default CZK
+       */
+      currency: string
+    }
+    /** BudgetSaveRequest */
+    BudgetSaveRequest: {
+      /** Items */
+      items?: components["schemas"]["BudgetSaveItemRequest"][]
+      /** Month */
+      month: number
+      /**
+       * Rollover
+       * @default false
+       */
+      rollover: boolean
+      /** Year */
+      year: number
     }
     /** CategoryChildResponse */
     CategoryChildResponse: {
@@ -1629,6 +1782,122 @@ export interface components {
       status: "created" | "replayed"
       /** Timestamp */
       timestamp: string
+    }
+    /** OperationalBudgetItemResponse */
+    OperationalBudgetItemResponse: {
+      /** Categoryid */
+      categoryId: string
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isover */
+      isOver: boolean
+      /** Limitczk */
+      limitCzk: string
+      /** Name */
+      name: string
+      /** Progresspct */
+      progressPct: string
+      /** Remainingczk */
+      remainingCzk: string
+      /** Spentczk */
+      spentCzk: string
+    }
+    /** OperationalBudgetResponse */
+    OperationalBudgetResponse: {
+      /** Id */
+      id: string
+      /** Items */
+      items: components["schemas"]["OperationalBudgetItemResponse"][]
+      /** Limitczk */
+      limitCzk: string
+      /** Month */
+      month: number
+      /** Progresspct */
+      progressPct: string
+      /** Remainingczk */
+      remainingCzk: string
+      /** Spentczk */
+      spentCzk: string
+      /** Year */
+      year: number
+    }
+    /** OperationalDashboardResponse */
+    OperationalDashboardResponse: {
+      budget: components["schemas"]["OperationalBudgetResponse"] | null
+      /** Expensebycategory */
+      expenseByCategory: components["schemas"]["OperationalExpenseCategoryResponse"][]
+      /** Monthlytrends */
+      monthlyTrends: components["schemas"]["OperationalMonthlyTrendResponse"][]
+      /** Recenttransactions */
+      recentTransactions: components["schemas"]["OperationalRecentTransactionResponse"][]
+      summary: components["schemas"]["OperationalSummaryResponse"]
+    }
+    /** OperationalExpenseCategoryResponse */
+    OperationalExpenseCategoryResponse: {
+      /** Amountczk */
+      amountCzk: string
+      /** Categoryid */
+      categoryId: string | null
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Name */
+      name: string
+    }
+    /** OperationalMonthlyTrendResponse */
+    OperationalMonthlyTrendResponse: {
+      /** Expenseczk */
+      expenseCzk: string
+      /** Incomeczk */
+      incomeCzk: string
+      /** Label */
+      label: string
+      /** Month */
+      month: string
+      /** Netczk */
+      netCzk: string
+    }
+    /** OperationalRecentTransactionResponse */
+    OperationalRecentTransactionResponse: {
+      /** Accountname */
+      accountName: string
+      /** Amount */
+      amount: string
+      /** Amountczk */
+      amountCzk: string
+      /** Categoryicon */
+      categoryIcon: string | null
+      /** Categoryname */
+      categoryName: string | null
+      /** Counterparty */
+      counterparty: string | null
+      /** Currency */
+      currency: string
+      /**
+       * Date
+       * Format: date-time
+       */
+      date: string
+      /** Description */
+      description: string | null
+      /** Id */
+      id: string
+      /** Type */
+      type: string
+    }
+    /** OperationalSummaryResponse */
+    OperationalSummaryResponse: {
+      /** Currentmonthexpenseczk */
+      currentMonthExpenseCzk: string
+      /** Currentmonthincomeczk */
+      currentMonthIncomeCzk: string
+      /** Currentmonthnetczk */
+      currentMonthNetCzk: string
     }
     /** PasswordChangeRequest */
     PasswordChangeRequest: {
@@ -3088,6 +3357,80 @@ export interface operations {
       }
     }
   }
+  get_monthly_budget_api_v1_budgets_monthly_get: {
+    parameters: {
+      query: {
+        month: number
+        year: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BudgetProgressResponse"] | null
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  save_monthly_budget_api_v1_budgets_monthly_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BudgetSaveRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BudgetProgressResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
   list_categories_api_v1_categories_get: {
     parameters: {
       query?: never
@@ -3334,6 +3677,35 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["NetWorthSnapshotRecalculateResponse"]
+        }
+      }
+    }
+  }
+  get_operational_dashboard_api_v1_operational_dashboard_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["OperationalDashboardResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
         }
       }
     }

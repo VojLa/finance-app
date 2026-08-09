@@ -100,21 +100,21 @@ describe("dashboard snapshot cutover boundaries", () => {
     expect(allocation).toContain("model.assetTypeAllocations.map")
   })
 
-  it("keeps dashboard targets byte-identical and pins the approved R7-B portfolio page", async () => {
+  it("keeps dashboard presentation fixed and uses the Python operational route", async () => {
     await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
       "ab3c1b81ac14f8a59fe2a3036d1ffed09f0a7218797d69fc4669c61d55c89d0b"
     )
-    await expect(sha256("src/app/api/dashboard/route.ts")).resolves.toBe(
-      "018dfe28e81da5b780df309805ae81ff7c83fb35b9ce8b1ba8e33dda264ce9ee"
-    )
+    const route = await source("src/app/api/dashboard/route.ts")
+    expect(route).toContain("createPythonOperationalDashboardApi")
+    expect(route).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)
     await expect(sha256("src/app/api/snapshot-workflow/portfolio/route.ts")).resolves.toBe(
       "add630f02a576ea7cfb826810b050f15a0480614fe9990b5a7b9367f2c06365c"
     )
     await expect(sha256("src/app/api/snapshot-workflow/dashboard/route.ts")).resolves.toBe(
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
-    await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "b3271eccec6b53a826f3f3b52a66df3dbe42592f13b72a82d3ae51b355b85e77"
-    )
+    const generated = await source("src/generated/python-api.ts")
+    expect(generated).toContain("OperationalDashboardResponse")
+    expect(generated).toContain("DashboardSnapshotResponse")
   })
 })

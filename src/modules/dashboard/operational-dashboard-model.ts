@@ -5,6 +5,7 @@ import type {
   OperationalExpenseCategory,
   OperationalMonthlyTrend,
   OperationalRecentTransaction,
+  OperationalDashboardResponse,
 } from "./operational-dashboard-contract"
 
 export class OperationalDashboardContractError extends Error {
@@ -38,6 +39,18 @@ function nullableText(value: unknown): string | null {
   return text(value)
 }
 
+function exactNumber(value: unknown, scale: number): number {
+  if (
+    typeof value !== "string" ||
+    !new RegExp(`^-?(?:0|[1-9][0-9]{0,11})\\.[0-9]{${scale}}$`).test(value)
+  ) {
+    return fail()
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fail()
+  return parsed
+}
+
 function number(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fail()
   return value
@@ -62,10 +75,10 @@ function budgetItem(value: unknown): OperationalBudgetItem {
     name: text(item.name),
     icon: nullableText(item.icon),
     color: nullableText(item.color),
-    limitCzk: number(item.limitCzk),
-    spentCzk: number(item.spentCzk),
-    remainingCzk: number(item.remainingCzk),
-    progressPct: number(item.progressPct),
+    limitCzk: exactNumber(item.limitCzk, 6),
+    spentCzk: exactNumber(item.spentCzk, 6),
+    remainingCzk: exactNumber(item.remainingCzk, 6),
+    progressPct: exactNumber(item.progressPct, 4),
     isOver: boolean(item.isOver),
   }
 }
@@ -77,10 +90,10 @@ function budget(value: unknown): OperationalBudget | null {
     id: text(source.id),
     month: integer(source.month),
     year: integer(source.year),
-    limitCzk: number(source.limitCzk),
-    spentCzk: number(source.spentCzk),
-    remainingCzk: number(source.remainingCzk),
-    progressPct: number(source.progressPct),
+    limitCzk: exactNumber(source.limitCzk, 6),
+    spentCzk: exactNumber(source.spentCzk, 6),
+    remainingCzk: exactNumber(source.remainingCzk, 6),
+    progressPct: exactNumber(source.progressPct, 4),
     items: array(source.items).map(budgetItem),
   }
 }
@@ -92,7 +105,7 @@ function expenseCategory(value: unknown): OperationalExpenseCategory {
     name: text(source.name),
     icon: nullableText(source.icon),
     color: nullableText(source.color),
-    amountCzk: number(source.amountCzk),
+    amountCzk: exactNumber(source.amountCzk, 6),
   }
 }
 
@@ -101,9 +114,9 @@ function monthlyTrend(value: unknown): OperationalMonthlyTrend {
   return {
     month: text(source.month),
     label: text(source.label),
-    incomeCzk: number(source.incomeCzk),
-    expenseCzk: number(source.expenseCzk),
-    netCzk: number(source.netCzk),
+    incomeCzk: exactNumber(source.incomeCzk, 6),
+    expenseCzk: exactNumber(source.expenseCzk, 6),
+    netCzk: exactNumber(source.netCzk, 6),
   }
 }
 
@@ -112,8 +125,8 @@ function recentTransaction(value: unknown): OperationalRecentTransaction {
   return {
     id: text(source.id),
     date: text(source.date),
-    amount: number(source.amount),
-    amountCzk: number(source.amountCzk),
+    amount: exactNumber(source.amount, 6),
+    amountCzk: exactNumber(source.amountCzk, 6),
     currency: text(source.currency),
     type: text(source.type),
     description: nullableText(source.description),
@@ -124,14 +137,16 @@ function recentTransaction(value: unknown): OperationalRecentTransaction {
   }
 }
 
-export function buildOperationalDashboardData(value: unknown): OperationalDashboardData {
+export function buildOperationalDashboardData(
+  value: OperationalDashboardResponse
+): OperationalDashboardData {
   const source = record(value)
   const summary = record(source.summary)
   return {
     currentMonth: {
-      income: number(summary.currentMonthIncomeCzk),
-      expenses: number(summary.currentMonthExpenseCzk),
-      net: number(summary.currentMonthNetCzk),
+      income: exactNumber(summary.currentMonthIncomeCzk, 6),
+      expenses: exactNumber(summary.currentMonthExpenseCzk, 6),
+      net: exactNumber(summary.currentMonthNetCzk, 6),
     },
     budget: budget(source.budget),
     expenseByCategory: array(source.expenseByCategory).map(expenseCategory),

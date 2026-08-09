@@ -232,11 +232,18 @@ position counts, financial account cards, asset-type allocation, and top
 positions. Decimal strings remain unchanged; allocation is server-calculated
 and top positions retain server ranking.
 
-In parallel, `GET /api/dashboard` temporarily supplies only operational
-current-month income, expenses and net cash flow, budget, expense categories,
-monthly trends, and recent transactions. The page adapter discards the legacy
-financial summary and account balances. This response is never a financial
-fallback and cannot change snapshot data.
+In parallel, `GET /api/dashboard` is a thin authenticated adapter over Python
+`GET /api/v1/operational-dashboard`. It supplies only operational current-month
+income, expenses and net cash flow, budget, expense categories, monthly trends,
+and recent transactions. It reads persisted transaction CZK reporting amounts
+and budget state, performs no provider calls or finance writes, and is never a
+financial fallback.
+
+`GET` and `PUT /api/budget` adapt to Python `GET` and
+`PUT /api/v1/budgets/monthly`. The API uses exact decimal strings, validates
+accessible categories and accounts, serializes writes by principal and month,
+and replaces the selected month's child plan atomically. Optional rollover reads
+only the preceding persisted plan.
 
 Snapshot and operational states and errors are separate. A snapshot `empty`
 result renders an explicit no-account financial state while operational widgets
@@ -244,8 +251,8 @@ may remain available. Snapshot failure does not reveal legacy financial data,
 and operational failure does not remove a successful snapshot section. The
 financial refresh calls only the snapshot workflow and does not retry.
 
-The portfolio page remains snapshot-backed. The unchanged legacy dashboard
-route remains registered only for these temporary operational widgets.
+The portfolio page remains snapshot-backed. The operational dashboard and
+budget routes contain no Prisma or TypeScript business calculation.
 
 ## Snapshot application cutover audit
 
@@ -258,6 +265,6 @@ read.
 
 The browser receives neither the internal token nor the refresh manifest.
 Portfolio current finance and dashboard financial data are snapshot-backed;
-legacy portfolio history is chart-only, and the narrowed legacy dashboard
-adapter supplies operational widgets only. These legacy surfaces are not
-financial fallbacks. The next step is the overall 0.1 release/final audit.
+legacy portfolio history is chart-only, and the Python-backed dashboard adapter
+supplies operational widgets only. These surfaces are not financial fallbacks.
+The next step is the overall 0.1 release/final audit.

@@ -87,7 +87,7 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps unrelated routes byte-identical and pins the approved OpenAPI", async () => {
+  it("keeps unrelated routes byte-identical and the approved OpenAPI contracts", async () => {
     await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
       "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
     )
@@ -97,8 +97,8 @@ describe("portfolio snapshot page cutover boundaries", () => {
     await expect(sha256("src/app/api/snapshot-workflow/dashboard/route.ts")).resolves.toBe(
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
-    await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "b3271eccec6b53a826f3f3b52a66df3dbe42592f13b72a82d3ae51b355b85e77"
-    )
+    const generated = await source("src/generated/python-api.ts")
+    expect(generated).toContain("MultiAccountPortfolioResponse")
+    expect(generated).toContain("OperationalDashboardResponse")
   })
 })

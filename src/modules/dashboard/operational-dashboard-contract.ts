@@ -1,3 +1,7 @@
+import type { components } from "@/generated/python-api"
+
+export type OperationalDashboardResponse = components["schemas"]["OperationalDashboardResponse"]
+
 export type OperationalBudgetItem = Readonly<{
   id: string
   categoryId: string

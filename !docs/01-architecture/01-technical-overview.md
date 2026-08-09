@@ -14,11 +14,11 @@ Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
 
 - **Next.js / TypeScript** provides the UI, NextAuth session, and thin adapters
   that mint a short-lived internal token. Active account, transaction, category,
-  import, portfolio, dashboard, and history finance flows delegate to Python. Registered legacy
-  routes remain compatibility surfaces; dashboard operational widgets are
-  isolated from snapshot/current finance.
+  budget, operational dashboard, import, portfolio, dashboard-snapshot, and
+  history flows delegate to Python. Registered legacy routes remain
+  compatibility surfaces.
 - **Python / FastAPI** owns identity credentials, accounts, transactions, categories,
-  imports, canonical ledger and revision
+  budgets, operational dashboard projections, imports, canonical ledger and revision
   lineage, Holdings, market evidence, persisted snapshots, D1 daily baselines,
   the D2 current-value engine, portfolio, dashboard, and history.
 - **PostgreSQL 16** is the central persistence store.
@@ -52,19 +52,20 @@ no longer called by the page.
 The 5M-D dashboard cutover likewise makes the snapshot workflow the sole
 authority for the financial summary, financial account cards, server-calculated
 asset allocation, and server-ranked top positions. The page no longer consumes
-legacy financial summary or balance fields. A separate temporary legacy request
-is narrowed to operational current-month cash flow, budget, categories, trends,
-and recent transactions; it cannot act as a financial fallback. Snapshot and
-operational states and errors remain independent.
+legacy financial summary or balance fields. A separate Python-backed request
+supplies operational current-month cash flow, budget, categories, trends, and
+recent transactions from persisted evidence only; it cannot act as a financial
+fallback. Snapshot and operational states and errors remain independent.
 
 The 5M final audit closes the snapshot application cutover without production
 changes. It proves the authenticated browser-to-Next-to-FastAPI path, exact
 manifest transport, cross-runtime token compatibility, token-per-request
 behavior, explicit empty handling, Decimal-string preservation, and the
 absence of legacy financial fallback. Portfolio current finance and dashboard
-finance are snapshot-backed. Portfolio history remains legacy chart-only;
-dashboard operational widgets remain legacy and narrowly adapted. The legacy
-current portfolio and dashboard routes remain compatibility surfaces.
+finance are snapshot-backed. Portfolio history remains legacy chart-only. The
+operational dashboard and budgets are now Python-owned and exposed through thin
+Next.js adapters. The legacy current portfolio route remains a compatibility
+surface.
 Frontend-only GitHub Actions coverage remains a separate process risk. The
 subsequent 0.1 final acceptance audit identified remaining release blockers and
 left version 0.1 incomplete.

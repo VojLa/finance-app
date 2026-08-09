@@ -1,60 +1,93 @@
+import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
-import { getServerSession } from "next-auth"
+
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
-import { getBudgetProgress, saveMonthlyBudget } from "@/modules/budgets"
+import { createPythonBudgetApi } from "@/modules/budgets/server/budget-api"
+import { normalizeAdapterError } from "@/modules/python-api/server/errors"
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
+
+function identity(session: { user: { id: string; email?: string | null } }) {
+  return { userId: session.user.id, email: session.user.email || undefined }
+}
+
+function unauthorized() {
+  return NextResponse.json(
+    { error: "Přihlášení je vyžadováno" },
+    { status: 401, headers: NO_STORE_HEADERS }
+  )
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new SyntaxError("Invalid JSON object")
+  }
+  return value as Record<string, unknown>
+}
+
+function errorResponse(error: unknown) {
+  if (error instanceof SyntaxError) {
+    return NextResponse.json(
+      { error: "Neplatná data rozpočtu" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    )
+  }
+  const mapped = normalizeAdapterError(error)
+  const message =
+    mapped.code === "budget_unavailable"
+      ? "Rozpočet nelze sestavit z dostupných údajů"
+      : mapped.code === "budget_category_invalid"
+        ? "Kategorie rozpočtu není dostupná"
+        : mapped.status === 422
+          ? "Zkontrolujte údaje rozpočtu"
+          : "Rozpočet je dočasně nedostupný"
+  return NextResponse.json({ error: message }, { status: mapped.status, headers: NO_STORE_HEADERS })
+}
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
+  if (!session?.user?.id) return unauthorized()
   const now = new Date()
-  const month = parseInt(req.nextUrl.searchParams.get("month") ?? String(now.getMonth() + 1))
-  const year = parseInt(req.nextUrl.searchParams.get("year") ?? String(now.getFullYear()))
-  const sharedUserId = req.nextUrl.searchParams.get("sharedUserId")
-
-  if (sharedUserId) {
-    const hasAccess = await prisma.accountMember.findFirst({
-      where: {
-        userId: session.user.id,
-        role: { in: ["editor", "admin", "owner"] },
-        account: { members: { some: { userId: sharedUserId, role: "owner" } } },
-      },
-    })
-    if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
-    return NextResponse.json(await getBudgetProgress({ userId: sharedUserId, month, year }))
+  const month = Number.parseInt(
+    req.nextUrl.searchParams.get("month") ?? String(now.getMonth() + 1),
+    10
+  )
+  const year = Number.parseInt(
+    req.nextUrl.searchParams.get("year") ?? String(now.getFullYear()),
+    10
+  )
+  try {
+    const result = await createPythonBudgetApi(identity(session)).get(month, year)
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  return NextResponse.json(await getBudgetProgress({ userId: session.user.id, month, year }))
 }
 
-export async function POST(req: NextRequest) {
+export async function PUT(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { month, year, rollover = false, items = [], sharedUserId } = await req.json()
-
-  let targetUserId = session.user.id
-  if (sharedUserId) {
-    const hasAccess = await prisma.accountMember.findFirst({
-      where: {
-        userId: session.user.id,
-        role: { in: ["editor", "admin", "owner"] },
-        account: { members: { some: { userId: sharedUserId, role: "owner" } } },
-      },
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const input = record(await req.json())
+    const rawItems = Array.isArray(input.items) ? input.items : []
+    const items = rawItems.map((value) => {
+      const item = record(value)
+      return {
+        categoryId: typeof item.categoryId === "string" ? item.categoryId : "",
+        amount:
+          typeof item.amount === "string" || typeof item.amount === "number" ? item.amount : "",
+        currency: typeof item.currency === "string" ? item.currency : "CZK",
+      }
     })
-    if (!hasAccess) return NextResponse.json({ error: "Přístup odepřen" }, { status: 403 })
-    targetUserId = sharedUserId
+    const result = await createPythonBudgetApi(identity(session)).save({
+      month: typeof input.month === "number" ? input.month : 0,
+      year: typeof input.year === "number" ? input.year : 0,
+      rollover: input.rollover === true,
+      items,
+    })
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  const budget = await saveMonthlyBudget({
-    userId: targetUserId,
-    month,
-    year,
-    rollover,
-    items,
-  })
-
-  return NextResponse.json(budget)
 }

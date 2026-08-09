@@ -9,6 +9,8 @@ thin and shared database infrastructure lives outside modules.
 | `auth`                | Verify a trusted HS256 session-bridge token and resolve its user                      | Implemented                                                                 |
 | `accounts`            | Account lifecycle, memberships, and invitations                                       | Implemented                                                                 |
 | `categories`          | Default/user category hierarchy and ownership                                         | R11-E implemented                                                           |
+| `budgets`             | Exact monthly plans, rollover, account scope, progress, and alerts                    | R11-F implemented                                                           |
+| `operational_dashboard` | Read-only persisted cash-flow, category, trend, and recent-transaction projection   | R11-F implemented                                                           |
 | `asset_aliases`       | Server-operator exact provider identity inventory and immutable onboarding            | R5-B4 implemented; remediation re-audit passed                              |
 | `liabilities`         | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
 | `imports`             | Register, canonical-post, and finalize logical multi-file CSV histories               | R10-A request-level post-processing implemented                             |
