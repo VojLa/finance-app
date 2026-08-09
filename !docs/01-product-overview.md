@@ -15,19 +15,25 @@ currency breakdowns are retained.
 - Bearer-token authentication for the Python API through a trusted Next.js
   session bridge.
 - Account creation, editing, archival, membership management, and invitations.
-- Import-batch registration, verified raw-file upload, CSV parsing, generic row
-  normalization, and account/source-scoped duplicate detection.
-- A basic portfolio read endpoint over accessible accounts, holdings, and the
-  latest stored FX rates.
+- Source-specific Raiffeisenbank, Trading212, and Anycoin import processing,
+  canonical posting, canonical revision lineage, multi-file finalization, and
+  Holdings rebuilding.
+- Persisted market evidence, AccountSnapshot/NetWorthSnapshot graphs, exact
+  daily-baseline lineage, and a strict baseline-plus-delta current-value engine.
+- Exact portfolio, dashboard, and persisted NetWorth history projections with
+  User.baseCurrency aggregates and Account.currency presentation values.
 - PostgreSQL persistence through async SQLAlchemy and Alembic-owned migrations.
 
 ## Not yet delivered end to end
 
-The target `import -> ledger -> holdings -> snapshots -> dashboard` workflow is
-not complete. In particular, normalized import rows are not posted to
-transactions or investment events, and there are no Python endpoints for
-transactions, ledger replay, snapshot refresh, or dashboard reads. The current
-Next.js UI still relies on legacy TypeScript API routes for its primary flows.
+The production finance path is Python-owned and the active browser portfolio
+and dashboard adapters call the strict current endpoints. Version 0.1 is not
+yet complete, however: at the R10 final audit base, authenticated principal
+resolution leaves the shared database session in a transaction before the D1
+selector requires an idle session. Both current endpoints therefore fail
+closed with `current_value_unavailable`. The D1/D2 engine itself succeeds when
+invoked with a correctly composed idle session; R10-E1 must close the real HTTP
+composition gap before the architecture milestone can pass.
 
 See [`!planning`](../!planning/README.md) for the intended product scope and
 milestone acceptance criteria.

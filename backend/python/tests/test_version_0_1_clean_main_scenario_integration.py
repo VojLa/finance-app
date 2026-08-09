@@ -762,7 +762,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     latest_snapshots = {
         row.account_id: row
         for row in after_reimport["snapshots"]
-        if row.timestamp == base_bucket + timedelta(minutes=5)
+        if row.timestamp == base_bucket + timedelta(minutes=5) and row.currency == "CZK"
     }
     assert set(latest_snapshots) == set(account_ids.values())
     assert {item["snapshotId"] for item in refresh["accounts"]} == {
@@ -828,6 +828,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         "calculationVersion",
         "summary",
         "accounts",
+        "aggregatePositions",
     }
     assert portfolio["currency"] == dashboard["currency"] == history["currency"] == "CZK"
     assert {row["account"]["accountId"] for row in portfolio["accounts"]} == set(
