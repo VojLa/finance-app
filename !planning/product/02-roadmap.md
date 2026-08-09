@@ -102,8 +102,11 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
-Status: COMPLETE — internal architecture MVP. This is not public-production
-readiness, and 0.2 work has not started in this milestone.
+Status: BOUNDARY REMEDIATION OPEN. Python core internal architecture MVP je
+implementovane, ale aktivni TypeScript/Prisma business cesty jeste porusuji prisnou
+exit podminku teto faze. Plan dokonceni je v
+[`../architecture/12-python-backend-completion.md`](../architecture/12-python-backend-completion.md).
+Toto neni public-production readiness a prace `0.2` v tomto milniku nezacala.
 
 Detailni scope: [`../scope/0.1 - Architecture Locked.md`](../scope/0.1%20-%20Architecture%20Locked.md)
 

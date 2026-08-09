@@ -6,12 +6,14 @@ architecture. Product intent and the planned milestones remain in
 
 ## Current implementation snapshot
 
-The application is in the internal `0.1` architecture milestone. Next.js owns
-the UI, NextAuth session, and thin authenticated transport adapters. Python
-owns the active account, import, canonical ledger, Holdings, market evidence,
-snapshot, daily-baseline, current-value, portfolio, dashboard, and history
-workflows. PostgreSQL is the finance persistence authority and Alembic owns its
-schema migrations.
+The application is in the internal `0.1` architecture milestone. Python owns
+the main account, import, canonical ledger, Holdings, market evidence, snapshot,
+daily-baseline, current-value, portfolio, dashboard-snapshot, and history
+workflows. However, active Next.js/TypeScript business paths still exist for
+operational dashboard data, transactions, categories, budgets, manual
+investment operations, parts of account sharing, and credential verification.
+Some of those paths still access PostgreSQL through Prisma. PostgreSQL is the
+finance persistence authority and Alembic owns its schema migrations.
 
 The strict current-value engine is implemented as a D1 daily baseline plus
 forward canonical changes and current persisted market evidence. R10-E1 closes
@@ -20,8 +22,10 @@ canonicalizes every public MONEY value to the exact six-decimal wire contract
 without changing financial arithmetic. Real authenticated mixed-currency
 portfolio and dashboard responses now pass the strict browser validator.
 
-Version 0.1 is complete as an internal Architecture Locked MVP. This status is
-not a declaration of public-production readiness.
+The Python core of version 0.1 is implemented, but the strict Architecture
+Locked boundary is under remediation until the remaining TypeScript/Prisma
+business runtime is cut over and removed. This status is not a declaration of
+public-production readiness.
 
 ## Reading guide
 

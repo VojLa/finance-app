@@ -1,7 +1,8 @@
 # Planning
 
 Status: `0.0 - Planning` completed on 2026-07-16
-Current phase: `0.1 - Architecture Locked` complete; `0.2` not started
+Current phase: jadro `0.1 - Architecture Locked` je implementovane, ale boundary
+remediation pro uplne odstraneni TS/Prisma business runtime je otevrena; `0.2` nezacala
 
 Tato slozka obsahuje kompletni navrh produktu, architektury, bezpecnosti a vyvojovych pravidel projektu.
 
@@ -29,6 +30,7 @@ Neni to jen jednorazovy plan. Je to ziva dokumentace, podle ktere se rozhoduje o
 6. `architecture/09-coding-standards.md`
 7. `architecture/10-security-strategy.md`
 8. `architecture/11-development-workflow.md`
+9. `architecture/12-python-backend-completion.md`
 
 ### Decisions
 
