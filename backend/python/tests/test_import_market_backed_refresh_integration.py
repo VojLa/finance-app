@@ -374,7 +374,10 @@ def _assert_read_parity(
     account_id: str,
     state: dict[str, Any],
 ) -> None:
-    snapshot = state["snapshots"][0]
+    net_worth = state["net_worth"][0]
+    snapshot = next(
+        snapshot for snapshot in state["snapshots"] if snapshot.currency == net_worth.currency
+    )
     manifest = {
         "timestamp": snapshot.timestamp.isoformat(),
         "granularity": snapshot.granularity.value,
@@ -397,7 +400,7 @@ def _assert_read_parity(
     expected_total = str(snapshot.total_value.quantize(Decimal("0.000001")))
     assert portfolio.json()["summary"]["totalValue"] == expected_total
     assert dashboard.json()["summary"]["totalValue"] == expected_total
-    assert state["net_worth"][0].total_net_worth == snapshot.total_value
+    assert net_worth.total_net_worth == snapshot.total_value
 
 
 def test_raiffeisenbank_import_uses_empty_market_plan_and_replays(
@@ -524,7 +527,13 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         assert first["snapshot_refresh_status"] == "created"
         assert second["snapshot_refresh_status"] == "replayed"
         assert len(state["holdings"]) == len(state["prices"]) == 1
-        assert len(state["snapshots"]) == len(state["net_worth"]) == 1
+        expected_snapshot_currencies = (
+            {"EUR", "CZK"} if source is ImportSource.trading212 else {"EUR"}
+        )
+        assert {
+            snapshot.currency for snapshot in state["snapshots"]
+        } == expected_snapshot_currencies
+        assert len(state["net_worth"]) == 1
         assert state["prices"][0].timestamp == observed_at
         assert state["prices"][0].price == (
             Decimal("225.3200000000")

@@ -33,7 +33,8 @@ partial snapshot.
 
 The browser now uses one typed same-origin import transport for
 `raiffeisenbank`, `trading212`, and `anycoin`. The Next.js bridge preserves the
-exact file bytes and delegates every staged operation to Python; provider
-routes are thin compatibility wrappers and own no parser or finance semantics.
+exact file bytes and delegates every staged operation to Python. The unused
+provider-specific and status routes, TypeScript parsers, registry, service, and
+compatibility exports were removed in R11-I.
 Adding a new source still requires a schema enum decision, registry entry,
 deterministic fixtures, and explicit normalization and posting semantics.

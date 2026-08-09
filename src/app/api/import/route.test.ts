@@ -11,12 +11,8 @@ import {
   type PythonImportFinalizeResponse,
 } from "@/modules/imports/python/import-contract"
 import { forwardedPythonError } from "@/modules/python-api/server/errors"
-import * as anycoinRoute from "./anycoin/route"
 import * as finalizeRoute from "./finalize/route"
 import * as collectionRoute from "./route"
-import * as raiffeisenbankRoute from "./raiffeisenbank/route"
-import * as statusRoute from "./status/route"
-import * as trading212Route from "./trading212/route"
 
 vi.mock("next-auth", () => ({
   getServerSession: vi.fn(),
@@ -581,86 +577,5 @@ describe("POST /api/import/finalize", () => {
       },
     })
     expect(JSON.stringify(body)).not.toMatch(/foreign-user|owner|token/)
-  })
-})
-
-describe("provider compatibility wrappers", () => {
-  it.each([
-    ["raiffeisenbank", raiffeisenbankRoute.POST],
-    ["trading212", trading212Route.POST],
-    ["anycoin", anycoinRoute.POST],
-  ] as const)("%s supplies only its fixed source to the shared workflow", async (source, post) => {
-    const response = await post(
-      request(
-        [
-          ["accountId", "account-r4"],
-          ["file", new File(["x"], `${source}.csv`)],
-        ],
-        `http://next.test/api/import/${source}`
-      )
-    )
-
-    expect(response.status).toBe(200)
-    expect(runWorkflow).toHaveBeenCalledTimes(1)
-    expect(runWorkflow.mock.calls[0][1].source).toBe(source)
-    expect(finalizeBatches).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe("GET /api/import/status", () => {
-  it("reads every batch in the caller supplied account scope through Python", async () => {
-    const getImportBatch = vi.fn(async (_accountId: string, batchId: string) => ({
-      id: batchId,
-      account_id: "account-r4",
-      source: "trading212" as const,
-      filename: `${batchId}.csv`,
-      file_size: 1,
-      file_encoding: null,
-      checksum: "a".repeat(64),
-      status: "completed" as const,
-      rows_total: 1,
-      rows_imported: 1,
-      rows_skipped: 0,
-      created_at: "2036-01-01T00:00:00Z",
-      completed_at: "2036-01-01T00:01:00Z",
-    }))
-    createApi.mockReturnValue({ getImportBatch } as unknown as ReturnType<
-      typeof createPythonImportApi
-    >)
-
-    const response = await statusRoute.GET(
-      new NextRequest("http://next.test/api/import/status?accountId=account-r4&ids=batch-1,batch-2")
-    )
-
-    expect(response.status).toBe(200)
-    expect(getSession).toHaveBeenCalledTimes(1)
-    expect(getImportBatch.mock.calls).toEqual([
-      ["account-r4", "batch-1"],
-      ["account-r4", "batch-2"],
-    ])
-    expect(await response.json()).toEqual({
-      batches: [
-        {
-          id: "batch-1",
-          accountId: "account-r4",
-          source: "trading212",
-          filename: "batch-1.csv",
-          status: "completed",
-          rowsTotal: 1,
-          rowsImported: 1,
-          rowsSkipped: 0,
-        },
-        {
-          id: "batch-2",
-          accountId: "account-r4",
-          source: "trading212",
-          filename: "batch-2.csv",
-          status: "completed",
-          rowsTotal: 1,
-          rowsImported: 1,
-          rowsSkipped: 0,
-        },
-      ],
-    })
   })
 })

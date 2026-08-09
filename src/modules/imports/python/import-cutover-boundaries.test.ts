@@ -27,12 +27,8 @@ describe("R4 import call-graph boundaries", () => {
       .filter((file) => file.endsWith("/route.ts") || file.endsWith("import/route.ts"))
       .sort()
     expect(routes).toEqual([
-      "src/app/api/import/anycoin/route.ts",
       "src/app/api/import/finalize/route.ts",
-      "src/app/api/import/raiffeisenbank/route.ts",
       "src/app/api/import/route.ts",
-      "src/app/api/import/status/route.ts",
-      "src/app/api/import/trading212/route.ts",
     ])
 
     for (const route of routes) {
@@ -40,7 +36,7 @@ describe("R4 import call-graph boundaries", () => {
       expect(content).not.toMatch(
         /importCsvFilesAsync|DuplicateImportError|@\/modules\/imports["']|@\/imports\/utils\/api|@\/lib\/prisma|file\.text\(|prisma\.|userId/
       )
-      expect(content).toMatch(/handleImportPost|handleImportFinalize|handleImportStatus/)
+      expect(content).toMatch(/handleImportPost|handleImportFinalize/)
     }
   })
 
@@ -134,5 +130,24 @@ describe("R4 import call-graph boundaries", () => {
     )
     expect(client).toContain('export const IMPORT_PATH = "/api/import"')
     expect(page).toContain("requestImport")
+  })
+
+  it("contains no legacy registry, parser, compatibility barrel, or provider route", async () => {
+    const productionFiles = (await filesBelow("src")).filter(
+      (file) => !file.endsWith(".test.ts") && !file.endsWith(".test.tsx")
+    )
+    const forbidden = productionFiles.filter((file) =>
+      /src\/(?:imports|parsers)\/|src\/modules\/imports\/(?:parsers|import-registry|import-service|run-import|index)\b/.test(
+        file
+      )
+    )
+    expect(forbidden).toEqual([])
+    expect(productionFiles).not.toContain("src/app/api/import/status/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/anycoin/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/trading212/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/raiffeisenbank/route.ts")
+
+    const packageJson = await source("package.json")
+    expect(packageJson).not.toContain("papaparse")
   })
 })

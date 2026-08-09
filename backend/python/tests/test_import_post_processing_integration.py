@@ -269,16 +269,22 @@ async def _add_rate(prefix: str, *, from_currency: str = "USD") -> None:
     engine = posting_support._engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     async with AsyncSession(engine) as session:
-        session.add(
-            ExchangeRateModel(
-                id=f"{prefix}-rate-{from_currency.lower()}-eur",
-                from_currency=from_currency,
-                to_currency="EUR",
-                rate=Decimal("0.90000000"),
-                date=now - timedelta(hours=1),
-                source=ExchangeRateSource.ecb,
-                created_at=now,
-            )
+        session.add_all(
+            [
+                ExchangeRateModel(
+                    id=f"{prefix}-rate-{currency.lower()}-czk",
+                    from_currency=currency,
+                    to_currency="CZK",
+                    rate=rate,
+                    date=now - timedelta(hours=1),
+                    source=ExchangeRateSource.cnb,
+                    created_at=now,
+                )
+                for currency, rate in (
+                    (from_currency, Decimal("22.50000000")),
+                    ("EUR", Decimal("25.00000000")),
+                )
+            ]
         )
         await session.commit()
     await engine.dispose()

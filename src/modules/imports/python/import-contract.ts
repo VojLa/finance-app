@@ -124,19 +124,6 @@ export type ImportApiErrorResponse = {
   partial?: ImportSummary
 }
 
-export type ImportStatusResult = {
-  batches: Array<{
-    id: string
-    accountId: string
-    source: PythonImportSource
-    filename: string
-    status: PythonImportStatus
-    rowsTotal: number
-    rowsImported: number
-    rowsSkipped: number
-  }>
-}
-
 export function isPythonImportSource(value: unknown): value is PythonImportSource {
   return typeof value === "string" && IMPORT_SOURCES.includes(value as PythonImportSource)
 }

@@ -211,9 +211,11 @@ new internal bearer token through the shared no-store, timeout-bound transport.
 The browser receives a safe completed/duplicate/failed result with aggregate
 stage counters. A later failure retains safe earlier completion evidence.
 There is no polling, preview call, retry, browser-side parser, caller-supplied
-posting plan, or FastAPI credential forwarding. The provider-specific routes
-remain registered only as thin wrappers over this shared handler, and the
-account-scoped status route reads Python batch status rather than Prisma.
+posting plan, or FastAPI credential forwarding. R11-I removes the unused
+provider-specific and status routes plus the complete TypeScript parser,
+registry, deduplication, canonical-posting, Holding, and snapshot pipeline.
+`POST /api/import` and `POST /api/import/finalize` are the only registered
+browser import routes.
 
 ## Portfolio page integration
 

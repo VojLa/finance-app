@@ -18,7 +18,6 @@ import {
   type ImportApiErrorResponse,
   type ImportFinalizationRequest,
   type ImportFinalizationResult,
-  type ImportStatusResult,
   type PythonImportSource,
 } from "./import-contract"
 import { createPythonImportApi, runImportCanonicalWorkflow } from "./import-api"
@@ -250,74 +249,6 @@ export async function handleImportFinalize(request: NextRequest) {
       } satisfies ImportFinalizationResult,
       { headers: NO_STORE_HEADERS }
     )
-  } catch (error) {
-    return safeAdapterResponse(error)
-  }
-}
-
-function parseStatusQuery(request: NextRequest): { accountId: string; ids: string[] } {
-  const allowed = new Set(["accountId", "ids"])
-  if ([...request.nextUrl.searchParams.keys()].some((key) => !allowed.has(key))) {
-    throw validationError()
-  }
-  const accountId = request.nextUrl.searchParams.get("accountId")
-  const rawIds = request.nextUrl.searchParams.get("ids")
-  if (
-    !accountId ||
-    accountId !== accountId.trim() ||
-    !rawIds ||
-    request.nextUrl.searchParams.getAll("accountId").length !== 1 ||
-    request.nextUrl.searchParams.getAll("ids").length !== 1
-  ) {
-    throw validationError()
-  }
-  const ids = rawIds.split(",")
-  if (
-    ids.length === 0 ||
-    ids.length > MAX_FILES ||
-    ids.some((id) => id.length === 0 || id !== id.trim()) ||
-    new Set(ids).size !== ids.length
-  ) {
-    throw validationError()
-  }
-  return { accountId, ids }
-}
-
-export async function handleImportStatus(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
-    return authenticationRequired()
-  }
-  try {
-    const { accountId, ids } = parseStatusQuery(request)
-    const api = createPythonImportApi({
-      userId: session.user.id,
-      email: session.user.email || undefined,
-    })
-    const batches: ImportStatusResult["batches"] = []
-    for (const id of ids) {
-      const batch = await api.getImportBatch(accountId, id)
-      if (
-        batch.id !== id ||
-        batch.account_id !== accountId ||
-        !isPythonImportSource(batch.source)
-      ) {
-        throw contractError()
-      }
-      batches.push({
-        id: batch.id,
-        accountId: batch.account_id,
-        source: batch.source,
-        filename: batch.filename,
-        status: batch.status,
-        rowsTotal: batch.rows_total ?? 0,
-        rowsImported: batch.rows_imported ?? 0,
-        rowsSkipped: batch.rows_skipped ?? 0,
-      })
-    }
-    return NextResponse.json({ batches } satisfies ImportStatusResult, {
-      headers: NO_STORE_HEADERS,
-    })
   } catch (error) {
     return safeAdapterResponse(error)
   }

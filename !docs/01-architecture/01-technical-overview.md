@@ -109,8 +109,10 @@ The browser makes one same-origin request; Next.js verifies the session,
 preserves exact file bytes, and orchestrates the eight public Python stages
 with a fresh token per request. Python remains the only parser, normalizer,
 deduplicator, classifier, canonical writer, holdings, and snapshot authority.
-Legacy preview and provider-specific routes remain compatibility surfaces but
-are not used by the page.
+R11-I removes the unused TypeScript registry, service, parsers, posting and
+snapshot hooks, compatibility barrels, provider-specific routes, status route,
+and CSV parser dependency. Only the generic import and finalization adapters
+remain registered.
 
 R10-E1 closes the persisted-principal read transaction before the same
 request-scoped session enters D1/D2 planning, market, and final read phases. The
