@@ -122,23 +122,31 @@ def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> No
         assert command in frontend
 
 
-def test_release_roadmap_records_r10a_and_remaining_release_work() -> None:
+def test_release_roadmap_records_complete_version_0_1_closure() -> None:
     roadmap = _source("ChatGPT/steps/0.1-remediation.md")
+    status = roadmap.split("## 0.1-R1 account cutover", maxsplit=1)[0]
 
-    assert "0.1-R8 — clean main scenario and frontend CI: implemented" in roadmap
+    assert "0.1-R8 — clean main scenario and frontend CI: implemented" in status
     assert (
         "0.1-R9 — repeat final acceptance audit: completed — NOT READY after "
         "independent\n  scope review"
-    ) in roadmap
-    assert "0.1-R10-A — multi-file import post-processing closure: implemented" in roadmap
-    assert "0.1-R10-B — account-currency presentation: implemented" in roadmap
-    assert "0.1-R10-B1 — persisted account-currency valuation evidence: implemented" in roadmap
-    assert "0.1-R10-B2 — account-currency read/API/frontend presentation: implemented" in roadmap
-    assert "0.1-R10-C — dashboard deposited presentation: implemented" in roadmap
-    assert "0.1-R10-D audit — current-value snapshot invariant: completed — NOT READY" in roadmap
+    ) in status
+    assert "0.1-R10-A — multi-file import post-processing closure: implemented" in status
+    assert "0.1-R10-B — account-currency presentation: implemented" in status
+    assert "0.1-R10-B1 — persisted account-currency valuation evidence: implemented" in status
+    assert "0.1-R10-B2 — account-currency read/API/frontend presentation: implemented" in status
+    assert "0.1-R10-C — dashboard deposited presentation: implemented" in status
+    assert "0.1-R10-D audit — current-value snapshot invariant: completed — NOT READY" in status
     assert (
         "0.1-R10-D1 — persisted daily baseline manifest and canonical cutoff: implemented"
-        in roadmap
+        in status
     )
-    assert "0.1-R10-D2 — strict daily-baseline current-value engine: implemented" in roadmap
-    assert "Version 0.1 is not complete" in roadmap
+    assert "0.1-R10-D2 — strict daily-baseline current-value engine: implemented" in status
+    assert "0.1-R10 final scope re-audit: PASS after E2 remediation" in status
+    assert (
+        "0.1-R10-E1 — current-value authenticated session/transaction composition: implemented"
+        in status
+    )
+    assert "0.1-R10-E2 — canonical current MONEY serialization: implemented" in status
+    assert "Version 0.1 — COMPLETE / Architecture Locked" in status
+    assert "Version 0.1 is not complete" not in status
