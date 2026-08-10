@@ -32,6 +32,7 @@ EXPECTED_TABLES = {
     "ExchangeRate",
     "Holding",
     "ImportBatch",
+    "ImportJobPublicationTarget",
     "ImportLog",
     "ImportRow",
     "InvestmentEvent",
@@ -204,13 +205,14 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 37
+    assert len(tables) == 38
     assert all(table.schema == "public" for table in tables.values())
     expected_nonstandard_primary_keys = {
         "AccountCanonicalState": ["accountId"],
         "AccountCanonicalChange": ["accountId", "revision"],
         "AccountSnapshotCanonicalBoundary": ["snapshotId"],
         "DailySnapshotBaselineAccount": ["baselineId", "accountId"],
+        "ImportJobPublicationTarget": ["jobId", "userId"],
     }
     for name, table in tables.items():
         assert [column.name for column in table.primary_key.columns] == (

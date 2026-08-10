@@ -403,10 +403,11 @@ class AccountSnapshotWriter:
                 currency=currency,
                 granularity=command.granularity,
             )
-        if (
-            command.granularity is SnapshotGranularity.day
-            and account_type in _LIABILITY_ACCOUNT_TYPES
-        ):
+        requires_boundary = command.granularity is SnapshotGranularity.day or (
+            command.granularity is SnapshotGranularity.minute
+            and command.source is SnapshotSource.import_event
+        )
+        if requires_boundary and account_type in _LIABILITY_ACCOUNT_TYPES:
             canonical_state = await self.repository.lock_canonical_state(command.account_id)
         else:
             canonical_state = None
@@ -416,7 +417,7 @@ class AccountSnapshotWriter:
                 await self.repository.lock_market_evidence_tables()
         else:
             await self.repository.lock_canonical_evidence(command.account_id)
-            if command.granularity is SnapshotGranularity.day:
+            if requires_boundary:
                 canonical_state = await self.repository.lock_canonical_state(command.account_id)
             await self.repository.lock_market_evidence_tables()
 
@@ -426,7 +427,7 @@ class AccountSnapshotWriter:
                 account_id=command.account_id,
                 account_type=account_type,
             )
-            if command.granularity is SnapshotGranularity.day
+            if requires_boundary
             else None
         )
 
@@ -511,17 +512,12 @@ class AccountSnapshotWriter:
             if existing is not None:
                 items = await self.repository.load_snapshot_items(existing.id)
                 boundary = (
-                    await self.repository.load_boundary(existing.id)
-                    if command.granularity is SnapshotGranularity.day
-                    else None
+                    await self.repository.load_boundary(existing.id) if requires_boundary else None
                 )
                 if (
                     not _matches_snapshot(existing, projection.snapshot)
                     or not _matches_items(items, projection.items)
-                    or (
-                        command.granularity is SnapshotGranularity.day
-                        and not _matches_boundary(boundary, boundaries[currency])
-                    )
+                    or (requires_boundary and not _matches_boundary(boundary, boundaries[currency]))
                 ):
                     raise AccountSnapshotWriteConflictError()
                 dispositions[currency] = AccountSnapshotWriteDisposition.replayed
@@ -540,7 +536,7 @@ class AccountSnapshotWriter:
                 tuple(AccountSnapshotItemModel(**item.model_values()) for item in projection.items)
             )
             await self.repository.flush()
-            if command.granularity is SnapshotGranularity.day:
+            if requires_boundary:
                 self.repository.add_boundary(
                     AccountSnapshotCanonicalBoundaryModel(**boundaries[currency].model_values())
                 )
@@ -549,7 +545,7 @@ class AccountSnapshotWriter:
             persisted_items = await self.repository.reload_snapshot_items(projection.snapshot.id)
             persisted_boundary = (
                 await self.repository.reload_boundary(projection.snapshot.id)
-                if command.granularity is SnapshotGranularity.day
+                if requires_boundary
                 else None
             )
             if (
@@ -557,7 +553,7 @@ class AccountSnapshotWriter:
                 or not _matches_snapshot(persisted, projection.snapshot)
                 or not _matches_items(persisted_items, projection.items)
                 or (
-                    command.granularity is SnapshotGranularity.day
+                    requires_boundary
                     and not _matches_boundary(
                         persisted_boundary,
                         boundaries[currency],

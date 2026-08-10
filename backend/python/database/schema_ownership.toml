@@ -1,4 +1,4 @@
-schema_version = 13
+schema_version = 14
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -24,7 +24,7 @@ prices_fx = ["PriceSnapshot", "ExchangeRate"]
 ledger = ["InvestmentEvent", "InvestmentMovement"]
 holdings = ["Holding"]
 imports = ["ImportBatch", "ImportRow", "ImportLog"]
-jobs = ["BackgroundJob"]
+jobs = ["BackgroundJob", "ImportJobPublicationTarget"]
 snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
 canonical_lineage = ["AccountCanonicalState", "AccountCanonicalChange", "AccountSnapshotCanonicalBoundary", "DailySnapshotBaseline", "DailySnapshotBaselineAccount"]
 
@@ -75,6 +75,7 @@ tables = [
   "ImportRow",
   "ImportLog",
   "BackgroundJob",
+  "ImportJobPublicationTarget",
   "NetWorthSnapshot",
   "AccountSnapshot",
   "AccountSnapshotItem",
@@ -130,9 +131,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 9
+revision_count = 10
 head_count = 1
-head_revision = "3l0001bgjob"
+head_revision = "3m0001importanchor"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -152,14 +153,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3l0001bgjob"
-revision_count = 9
+head_revision = "3m0001importanchor"
+revision_count = 10
 head_count = 1
 
 [current_schema]
-revision = "3l0001bgjob"
-schema_source = "database/revisions/3l0001bgjob/schema.sql"
-checksum_source = "database/revisions/3l0001bgjob/schema.sha256"
+revision = "3m0001importanchor"
+schema_source = "database/revisions/3m0001importanchor/schema.sql"
+checksum_source = "database/revisions/3m0001importanchor/schema.sha256"
 
 [cutover]
 phase = "completed"

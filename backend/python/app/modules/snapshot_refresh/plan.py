@@ -82,6 +82,7 @@ class SnapshotRefreshPlanInput:
     created_at: datetime
     is_recalculated: bool
     accounts: tuple[SnapshotRefreshAccountEvidence, ...]
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +219,7 @@ def _validate_account(
     calculated_at: datetime,
     created_at: datetime,
     is_recalculated: bool,
+    publication_account_ids: frozenset[str],
 ) -> tuple[str, str, ExpectedAccountSnapshotRefreshTarget] | None:
     if not isinstance(value, SnapshotRefreshAccountEvidence):
         raise _fail()
@@ -238,7 +240,11 @@ def _validate_account(
         raise _fail()
 
     membership_id = _nonblank(value.membership_id)
-    mode = _refresh_mode(value.membership_role)
+    mode = (
+        AccountSnapshotRefreshMode.refresh
+        if account_id in publication_account_ids
+        else _refresh_mode(value.membership_role)
+    )
     if not isinstance(value.relation_type, AccountRelationType):
         raise _fail()
     _timestamp(value.accepted_at)
@@ -289,9 +295,16 @@ def build_user_snapshot_refresh_plan(
         not isinstance(value.is_recalculated, bool)
         or value.is_recalculated is not (value.source is SnapshotSource.manual_recalculation)
         or not isinstance(value.accounts, tuple)
+        or not isinstance(value.publication_account_ids, tuple)
     ):
         raise _fail()
 
+    publication_account_ids = tuple(_nonblank(item) for item in value.publication_account_ids)
+    if publication_account_ids != tuple(sorted(publication_account_ids)) or len(
+        set(publication_account_ids)
+    ) != len(publication_account_ids):
+        raise _fail()
+    publication_accounts = frozenset(publication_account_ids)
     validated: list[tuple[str, str, ExpectedAccountSnapshotRefreshTarget]] = []
     account_ids: set[str] = set()
     membership_ids: set[str] = set()
@@ -306,6 +319,7 @@ def build_user_snapshot_refresh_plan(
             calculated_at=calculated_at,
             created_at=created_at,
             is_recalculated=value.is_recalculated,
+            publication_account_ids=publication_accounts,
         )
         if result is None:
             continue
@@ -319,6 +333,8 @@ def build_user_snapshot_refresh_plan(
     account_targets = tuple(
         item[2] for item in sorted(validated, key=lambda item: (item[0], item[1]))
     )
+    if not publication_accounts.issubset({target.account_id for target in account_targets}):
+        raise _fail()
     required_account_ids = tuple(target.account_id for target in account_targets)
     net_worth_target = ExpectedNetWorthRefreshTarget(
         user_id=user_id,

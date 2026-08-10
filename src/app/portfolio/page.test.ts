@@ -36,10 +36,7 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain(
       'window.addEventListener("finance:import-completed", refreshOnImportCompleted)'
     )
-    expect(page).toContain(
-      'next.status === "error" ? next.message : "Snapshot se ještě připravuje."'
-    )
-    expect(page).toContain("setState(lastReadyState.current)")
+    expect(page).toContain("resolveSnapshotPublication")
   })
 
   it("uses one bodyless no-store POST for initial current data", async () => {

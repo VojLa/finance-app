@@ -141,6 +141,13 @@ def _validate_command(
         or not isinstance(value.source, SnapshotSource)
         or not isinstance(value.is_recalculated, bool)
         or value.is_recalculated is not (value.source is SnapshotSource.manual_recalculation)
+        or (
+            value.publication_job_id is not None
+            and not (
+                value.granularity is SnapshotGranularity.minute
+                and value.source is SnapshotSource.import_event
+            )
+        )
     ):
         raise _unavailable()
     _nonblank(value.user_id)
@@ -148,6 +155,17 @@ def _validate_command(
     _calculation_version(value.calculation_version)
     _timestamp(value.calculated_at)
     _timestamp(value.created_at)
+    if value.publication_job_id is not None:
+        _nonblank(value.publication_job_id)
+    if (
+        not isinstance(value.publication_account_ids, tuple)
+        or tuple(_nonblank(account_id) for account_id in value.publication_account_ids)
+        != value.publication_account_ids
+        or value.publication_account_ids != tuple(sorted(value.publication_account_ids))
+        or len(set(value.publication_account_ids)) != len(value.publication_account_ids)
+        or (value.publication_job_id is None) != (not value.publication_account_ids)
+    ):
+        raise _unavailable()
     return value
 
 
@@ -392,6 +410,8 @@ class MarketBackedSnapshotRefreshService:
                     calculated_at=canonical.calculated_at,
                     created_at=canonical.created_at,
                     is_recalculated=canonical.is_recalculated,
+                    publication_job_id=canonical.publication_job_id,
+                    publication_account_ids=canonical.publication_account_ids,
                 )
             )
         except SnapshotRefreshExecutionConflictError as exc:

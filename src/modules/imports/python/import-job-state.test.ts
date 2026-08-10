@@ -8,6 +8,8 @@ import {
   importPollDelayMs,
   loadLatestPersistedImportJob,
   persistImportJob,
+  resolveImportPollFailure,
+  resolveImportPollJob,
 } from "./import-job-state"
 
 describe("import poll single-flight gate", () => {
@@ -20,6 +22,52 @@ describe("import poll single-flight gate", () => {
     expect(finishImportPoll(gate)).toBe(true)
     expect(beginImportPoll(gate)).toBe(true)
     expect(finishImportPoll(gate)).toBe(false)
+  })
+
+  it("classifies every validated lifecycle state without publishing partial progress", () => {
+    expect(resolveImportPollJob(job("account-a", "queued", "2026-01-01T00:00:00Z"))).toEqual({
+      kind: "continue",
+      runAfter: null,
+    })
+    expect(
+      resolveImportPollJob({
+        ...job("account-a", "retry", "2026-01-01T00:00:00Z"),
+        status: "retry_wait",
+        error: { code: "provider_unavailable", message: "Try again later." },
+      })
+    ).toEqual({ kind: "continue", runAfter: "2026-01-01T00:00:00Z" })
+    expect(
+      resolveImportPollJob({
+        ...job("account-a", "failed", "2026-01-01T00:00:00Z"),
+        status: "failed",
+        error: { code: "import_failed", message: "Import failed." },
+        finished_at: "2026-01-01T00:01:00Z",
+      })
+    ).toEqual({ kind: "failed" })
+
+    const completed = job("account-a", "completed", "2026-01-01T00:00:00Z")
+    completed.status = "completed"
+    completed.progress.phase = "completed"
+    completed.progress.completed_units = completed.progress.total_units
+    completed.progress.completed_batches = completed.progress.total_batches
+    completed.result = {
+      schema_version: 1,
+      batch_ids: ["batch-a"],
+      rows_imported: 1,
+      rows_skipped: 0,
+      rows_total: 1,
+      snapshot_refresh_status: "created",
+      completed_at: "2026-01-01T00:01:00Z",
+    }
+    completed.finished_at = "2026-01-01T00:01:00Z"
+    expect(resolveImportPollJob(completed)).toEqual({ kind: "completed" })
+  })
+
+  it("discards only a scoped not-found response and retries auth, server, and network failures", () => {
+    expect(resolveImportPollFailure(404)).toBe("discard")
+    expect(resolveImportPollFailure(401)).toBe("retry")
+    expect(resolveImportPollFailure(502)).toBe("retry")
+    expect(resolveImportPollFailure(null)).toBe("retry")
   })
 })
 

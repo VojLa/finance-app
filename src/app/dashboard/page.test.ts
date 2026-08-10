@@ -51,10 +51,7 @@ describe("dashboard snapshot cutover clients", () => {
     expect(page).toContain(
       'window.addEventListener("finance:import-completed", refreshOnImportCompleted)'
     )
-    expect(page).toContain(
-      'next.status === "error" ? next.message : "Snapshot se ještě připravuje."'
-    )
-    expect(page).toContain("setFinancialState(lastReadyFinancialState.current)")
+    expect(page).toContain("resolveSnapshotPublication")
   })
 
   it("uses one bodyless no-store POST and preserves the ready snapshot response", async () => {

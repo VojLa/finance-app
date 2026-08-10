@@ -17,6 +17,7 @@ from app.modules.jobs.models import (
 )
 from app.modules.jobs.repository import (
     BackgroundJobLeaseLostError,
+    BackgroundJobPublicationStaleError,
     BackgroundJobRepository,
     ClaimedBackgroundJob,
 )
@@ -40,6 +41,14 @@ class RetryableBackgroundJobError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class DeferredBackgroundJobError(RuntimeError):
+    """A durable reservation exists, but its exact publication minute is future."""
+
+    def __init__(self, *, run_after: datetime) -> None:
+        super().__init__("Import publication is reserved for a future minute.")
+        self.run_after = run_after
 
 
 class PermanentBackgroundJobError(RuntimeError):
@@ -126,10 +135,21 @@ class BackgroundJobWorker:
             raise
         except BackgroundJobLeaseLostError:
             logger.warning("background_job_lease_lost", extra={"job_id": claimed.job.id})
+        except BackgroundJobPublicationStaleError:
+            # The canonical account boundary moved after publication evidence
+            # was written. Keep the fence closed and let the durable executor
+            # retire only those unpublished stale anchors on its next run.
+            await self._retry_or_fail(
+                claimed,
+                code="import_publication_stale",
+                message="Portfolio publication changed and will be retried.",
+            )
         except PermanentBackgroundJobError as exc:
             await self._fail(claimed, code=exc.code, message=exc.message)
         except RetryableBackgroundJobError as exc:
             await self._retry_or_fail(claimed, code=exc.code, message=exc.message)
+        except DeferredBackgroundJobError as exc:
+            await self._defer(claimed, run_after=exc.run_after)
         except Exception:
             logger.exception("background_job_execution_failed", extra={"job_id": claimed.job.id})
             await self._retry_or_fail(
@@ -244,10 +264,32 @@ class BackgroundJobWorker:
             )
             await session.commit()
 
-    async def _release(self, claimed: ClaimedBackgroundJob) -> None:
+    async def _release(
+        self,
+        claimed: ClaimedBackgroundJob,
+        *,
+        run_after: datetime | None = None,
+    ) -> None:
         async with self.session_factory() as session:
             try:
-                await BackgroundJobRepository(session).release(lease=claimed.lease, now=_now())
+                now = _now()
+                await BackgroundJobRepository(session).release(
+                    lease=claimed.lease,
+                    now=now,
+                    run_after=run_after or now,
+                )
+                await session.commit()
+            except BackgroundJobLeaseLostError:
+                await session.rollback()
+
+    async def _defer(self, claimed: ClaimedBackgroundJob, *, run_after: datetime) -> None:
+        async with self.session_factory() as session:
+            try:
+                await BackgroundJobRepository(session).defer(
+                    lease=claimed.lease,
+                    run_after=run_after,
+                    now=_now(),
+                )
                 await session.commit()
             except BackgroundJobLeaseLostError:
                 await session.rollback()

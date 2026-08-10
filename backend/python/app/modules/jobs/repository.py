@@ -11,8 +11,20 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.background_jobs import BackgroundJobModel
-from app.db.models.enums import BackgroundJobKind, BackgroundJobStatus
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+)
+from app.db.models.enums import (
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    SnapshotGranularity,
+    SnapshotSource,
+)
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.modules.jobs.lifecycle import MAX_MANUAL_RETRIES, LeaseIdentity
 
 
@@ -36,6 +48,10 @@ class ManualRetryBackgroundJob:
 
 class BackgroundJobLeaseLostError(RuntimeError):
     """A stale worker attempted to mutate a lease it no longer owns."""
+
+
+class BackgroundJobPublicationStaleError(RuntimeError):
+    """Anchors no longer prove a publishable canonical state; retry safely."""
 
 
 class BackgroundJobRepository:
@@ -317,6 +333,95 @@ class BackgroundJobRepository:
     ) -> None:
         if now.tzinfo is not None:
             raise ValueError("The completion timestamp is invalid.")
+        job = await self.session.scalar(
+            select(BackgroundJobModel)
+            .where(BackgroundJobModel.id == lease.job_id)
+            .with_for_update()
+        )
+        if job is None:
+            raise BackgroundJobLeaseLostError("The background job is no longer owned.")
+        targets = tuple(
+            (
+                await self.session.scalars(
+                    select(ImportJobPublicationTargetModel)
+                    .where(ImportJobPublicationTargetModel.job_id == lease.job_id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        # Every BackgroundJob is an import workflow.  A terminal transition is
+        # therefore also the publication boundary: without durable targets, it
+        # would release the current-value fence without an immutable baseline.
+        if not targets:
+            raise BackgroundJobLeaseLostError("The import publication targets are missing.")
+        account = await self.session.scalar(
+            select(AccountModel).where(AccountModel.id == job.account_id).with_for_update()
+        )
+        if account is None:
+            raise BackgroundJobLeaseLostError("The import publication account was removed.")
+        current_members = set(
+            (
+                await self.session.scalars(
+                    select(AccountMemberModel.user_id).where(
+                        AccountMemberModel.account_id == job.account_id
+                    )
+                )
+            ).all()
+        )
+        anchor_pairs = set(
+            (
+                await self.session.execute(
+                    select(
+                        DailySnapshotBaselineModel.user_id,
+                        DailySnapshotBaselineModel.timestamp,
+                    ).where(
+                        DailySnapshotBaselineModel.background_job_id == lease.job_id,
+                        DailySnapshotBaselineModel.granularity == SnapshotGranularity.minute,
+                        DailySnapshotBaselineModel.source == SnapshotSource.import_event,
+                    )
+                )
+            ).all()
+        )
+        expected_anchors = {(target.user_id, target.bucket) for target in targets}
+        if (
+            {target.user_id for target in targets} != current_members
+            or any(target.published_at is not None for target in targets)
+            or anchor_pairs != expected_anchors
+        ):
+            raise BackgroundJobLeaseLostError("The import publication membership changed.")
+        canonical_state = await self.session.scalar(
+            select(AccountCanonicalStateModel)
+            .where(AccountCanonicalStateModel.account_id == job.account_id)
+            .with_for_update()
+        )
+        anchor_revisions = set(
+            (
+                await self.session.execute(
+                    select(
+                        DailySnapshotBaselineModel.user_id,
+                        DailySnapshotBaselineAccountModel.canonical_revision,
+                    )
+                    .join(
+                        DailySnapshotBaselineAccountModel,
+                        DailySnapshotBaselineAccountModel.baseline_id
+                        == DailySnapshotBaselineModel.id,
+                    )
+                    .where(
+                        DailySnapshotBaselineModel.background_job_id == lease.job_id,
+                        DailySnapshotBaselineAccountModel.account_id == job.account_id,
+                    )
+                )
+            ).all()
+        )
+        if canonical_state is None or anchor_revisions != {
+            (target.user_id, canonical_state.last_revision) for target in targets
+        }:
+            raise BackgroundJobPublicationStaleError(
+                "The import publication canonical state changed."
+            )
+        for target in targets:
+            target.published_at = now
+        await self.session.flush()
         await self._fenced_update(
             lease,
             values={
@@ -390,15 +495,45 @@ class BackgroundJobRepository:
         *,
         lease: LeaseIdentity,
         now: datetime,
+        run_after: datetime | None = None,
     ) -> None:
-        if now.tzinfo is not None:
+        effective_run_after = run_after or now
+        if (
+            now.tzinfo is not None
+            or effective_run_after.tzinfo is not None
+            or effective_run_after < now
+        ):
             raise ValueError("The release timestamp is invalid.")
         await self._fenced_update(
             lease,
             values={
                 "status": BackgroundJobStatus.queued,
-                "run_after": now,
+                "run_after": effective_run_after,
                 "attempt_count": BackgroundJobModel.attempt_count - 1,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "lease_heartbeat_at": None,
+                "updated_at": now,
+            },
+        )
+
+    async def defer(
+        self,
+        *,
+        lease: LeaseIdentity,
+        run_after: datetime,
+        now: datetime,
+    ) -> None:
+        if now.tzinfo is not None or run_after.tzinfo is not None or run_after <= now:
+            raise ValueError("The deferred publication timestamp is invalid.")
+        await self._fenced_update(
+            lease,
+            values={
+                "status": BackgroundJobStatus.retry_wait,
+                "run_after": run_after,
+                "attempt_count": BackgroundJobModel.attempt_count - 1,
+                "error_code": None,
+                "error_message": None,
                 "lease_owner": None,
                 "lease_expires_at": None,
                 "lease_heartbeat_at": None,

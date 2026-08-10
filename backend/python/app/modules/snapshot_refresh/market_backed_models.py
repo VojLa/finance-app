@@ -35,6 +35,8 @@ class ExecuteMarketBackedSnapshotRefreshCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    publication_job_id: str | None = None
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

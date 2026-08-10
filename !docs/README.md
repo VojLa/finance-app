@@ -24,10 +24,12 @@ without changing financial arithmetic. Real authenticated mixed-currency
 portfolio and dashboard responses now pass the strict browser validator.
 
 The Python core, runtime cutover, enforceable boundary, and final R10/R11
-regression audit are complete. R12 crash-safe asynchronous import and portfolio
-completion is now in implementation; its executable scope is limited to
-R12-A through R12-F. This status is not a declaration of public-production
-readiness.
+regression audit are complete. R12 adds crash-safe asynchronous import,
+multi-currency cost evidence, a PostgreSQL-backed worker lifecycle, and atomic
+portfolio publication. Import publication uses durable per-current-member
+minute targets and exact member anchors; incomplete work remains hidden at the
+last complete baseline. Its executable scope is limited to R12-A through R12-F.
+This status is not a declaration of public-production readiness.
 
 ## Reading guide
 

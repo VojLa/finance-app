@@ -13,12 +13,21 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
     AssetAliasProvider,
     AssetType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     ExchangeRateSource,
     ImportSource,
     InvestmentEventType,
@@ -34,6 +43,7 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
@@ -45,6 +55,8 @@ from app.modules.current_value.service import (
     ReadCurrentPortfolioCommand,
 )
 from app.modules.holdings.rebuild_service import HoldingRebuildService
+from app.modules.jobs.models import ImportJobPhase, ImportJobProgress, ImportJobResult
+from app.modules.jobs.repository import BackgroundJobRepository
 from app.modules.liabilities.writer import (
     LiabilityBalanceWriter,
     WriteLiabilityBalanceCommand,
@@ -81,6 +93,14 @@ async def _cleanup(prefix: str) -> None:
         )
         await session.execute(
             delete(InvestmentEventModel).where(InvestmentEventModel.account_id == account_id)
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineModel).where(DailySnapshotBaselineModel.user_id == user_id)
+        )
+        await session.execute(
+            delete(ImportJobPublicationTargetModel).where(
+                ImportJobPublicationTargetModel.user_id == user_id
+            )
         )
         await session.execute(
             delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == user_id)
@@ -520,20 +540,218 @@ async def _liability(
     return result.balance_id
 
 
-async def _daily_baseline(user_id: str) -> None:
+async def _daily_baseline_at(user_id: str, *, at: datetime) -> None:
     engine = _engine()
     async with AsyncSession(engine) as session:
         await UserSnapshotRefreshExecutor(session).execute(
             ExecuteUserSnapshotRefreshCommand(
                 user_id=user_id,
-                snapshot_timestamp=BASELINE_AT,
+                snapshot_timestamp=at,
                 granularity=SnapshotGranularity.day,
                 source=SnapshotSource.manual_recalculation,
                 calculation_version=1,
-                calculated_at=BASELINE_AT,
-                created_at=BASELINE_AT,
+                calculated_at=at,
+                created_at=at,
                 is_recalculated=True,
             )
+        )
+    await engine.dispose()
+
+
+async def _daily_baseline(user_id: str) -> None:
+    await _daily_baseline_at(user_id, at=BASELINE_AT)
+
+
+async def _failed_import_job(user_id: str, account_id: str, *, job_id: str) -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session, session.begin():
+        session.add(
+            BackgroundJobModel(
+                id=job_id,
+                user_id=user_id,
+                account_id=account_id,
+                kind=BackgroundJobKind.import_workflow,
+                status=BackgroundJobStatus.failed,
+                idempotency_key=f"{job_id}-key",
+                payload={"schema_version": 1, "batch_ids": [f"{job_id}-batch"]},
+                checkpoint={"schema_version": 1, "phase": "posting"},
+                progress={"schema_version": 1, "completed_units": 1},
+                result=None,
+                error_code="market_evidence_unavailable",
+                error_message="Market evidence could not be acquired.",
+                attempt_count=1,
+                max_attempts=3,
+                manual_retry_count=0,
+                run_after=BASELINE_AT,
+                lease_owner=None,
+                lease_version=1,
+                lease_expires_at=None,
+                lease_heartbeat_at=None,
+                started_at=BASELINE_AT,
+                finished_at=BASELINE_AT,
+                created_at=BASELINE_AT,
+                updated_at=BASELINE_AT,
+            )
+        )
+    await engine.dispose()
+
+
+async def _manual_retry_and_complete_import_job(
+    user_id: str,
+    account_id: str,
+    *,
+    job_id: str,
+    completed_at: datetime,
+) -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session, session.begin():
+        retried = await BackgroundJobRepository(session).retry_failed(
+            user_id=user_id,
+            account_id=account_id,
+            job_id=job_id,
+            now=completed_at - timedelta(minutes=1),
+        )
+        assert retried is not None and retried.retried
+        claimed = await BackgroundJobRepository(session).claim_next(
+            worker_id="publication-freeze-worker",
+            now=completed_at - timedelta(seconds=30),
+            lease_duration=timedelta(minutes=1),
+        )
+        assert claimed is not None and claimed.job.id == job_id
+        state = await session.get(AccountCanonicalStateModel, account_id)
+        account = await session.get(AccountModel, account_id)
+        assert state is not None and account is not None
+        canonical_revision = state.last_revision
+        holding_revision = state.holding_revision
+        investment_revision = (
+            state.last_investment_revision if holding_revision is not None else None
+        )
+        snapshot_id = f"{job_id}-publication-anchor"
+        account_snapshot_id = f"{job_id}-publication-account"
+        baseline_id = f"{job_id}-publication-baseline"
+        session.add(
+            ImportJobPublicationTargetModel(
+                job_id=job_id,
+                user_id=user_id,
+                bucket=completed_at,
+                published_at=None,
+            )
+        )
+        session.add(
+            NetWorthSnapshotModel(
+                id=snapshot_id,
+                user_id=user_id,
+                timestamp=completed_at,
+                granularity=SnapshotGranularity.minute,
+                source=SnapshotSource.import_event,
+                currency="EUR",
+                cash_value=Decimal("0"),
+                portfolio_value=Decimal("0"),
+                liabilities_value=Decimal("0"),
+                total_net_worth=Decimal("0"),
+                is_recalculated=False,
+                calculated_at=completed_at,
+                calculation_version=1,
+                created_at=completed_at,
+                cash_value_by_currency={},
+                portfolio_value_by_currency={},
+                liabilities_value_by_currency={},
+                total_net_worth_by_currency={},
+                exchange_rates={},
+            )
+        )
+        session.add(
+            AccountSnapshotModel(
+                id=account_snapshot_id,
+                account_id=account_id,
+                timestamp=completed_at,
+                granularity=SnapshotGranularity.minute,
+                source=SnapshotSource.import_event,
+                currency=account.currency,
+                cash_value=Decimal("0"),
+                investment_value=Decimal("0"),
+                investment_cost_basis=Decimal("0"),
+                liabilities_value=Decimal("0"),
+                total_value=Decimal("0"),
+                is_recalculated=False,
+                calculated_at=completed_at,
+                calculation_version=1,
+                created_at=completed_at,
+                net_deposits_value=Decimal("0"),
+                realized_pnl_value=Decimal("0"),
+                unrealized_pnl_value=Decimal("0"),
+                fees_value=Decimal("0"),
+                taxes_value=Decimal("0"),
+                cash_value_by_currency={},
+                investment_value_by_currency={},
+                investment_cost_basis_by_currency={},
+                net_deposits_by_currency={},
+                realized_pnl_by_currency={},
+                unrealized_pnl_by_currency={},
+                fees_by_currency={},
+                taxes_by_currency={},
+                exchange_rates={},
+            )
+        )
+        await session.flush()
+        session.add(
+            AccountSnapshotCanonicalBoundaryModel(
+                snapshot_id=account_snapshot_id,
+                account_id=account_id,
+                canonical_revision=canonical_revision,
+                investment_revision=investment_revision,
+                holding_revision=holding_revision,
+                selected_liability_balance_id=None,
+                created_at=completed_at,
+            )
+        )
+        session.add(
+            DailySnapshotBaselineModel(
+                id=baseline_id,
+                user_id=user_id,
+                net_worth_snapshot_id=snapshot_id,
+                timestamp=completed_at,
+                granularity=SnapshotGranularity.minute,
+                currency="EUR",
+                calculation_version=1,
+                source=SnapshotSource.import_event,
+                created_at=completed_at,
+                background_job_id=job_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            DailySnapshotBaselineAccountModel(
+                baseline_id=baseline_id,
+                account_id=account_id,
+                account_type=account.type,
+                account_currency=account.currency,
+                primary_snapshot_id=account_snapshot_id,
+                presentation_snapshot_id=account_snapshot_id,
+                canonical_revision=canonical_revision,
+                investment_revision=investment_revision,
+                holding_revision=holding_revision,
+                selected_liability_balance_id=None,
+            )
+        )
+        await BackgroundJobRepository(session).complete(
+            lease=claimed.lease,
+            result=ImportJobResult(
+                batch_ids=(f"{job_id}-batch",),
+                rows_total=1,
+                rows_imported=1,
+                rows_skipped=0,
+                snapshot_refresh_status="created",
+                completed_at=completed_at,
+            ).model_dump(mode="json"),
+            progress=ImportJobProgress(
+                phase=ImportJobPhase.completed,
+                completed_units=1,
+                total_units=1,
+                completed_batches=1,
+                total_batches=1,
+            ).model_dump(mode="json"),
+            now=completed_at,
         )
     await engine.dispose()
 
@@ -573,6 +791,7 @@ class _ReplayMarketService:
 async def _current(
     user_id: str,
     *,
+    as_of: datetime = CURRENT_AT,
     output_currency: str = "EUR",
     replay_price_ids: tuple[str, ...] = (),
     replay_exchange_rate_ids: tuple[str, ...] = (),
@@ -584,7 +803,7 @@ async def _current(
             CurrentValueService(
                 session,
                 settings,
-                clock=lambda: CURRENT_AT,
+                clock=lambda: as_of,
                 market_service_factory=lambda _session, _settings, _planner: _ReplayMarketService(
                     user_id,
                     output_currency,
@@ -593,7 +812,7 @@ async def _current(
                 ),
             )
             if replay_price_ids or replay_exchange_rate_ids
-            else CurrentValueService(session, settings, clock=lambda: CURRENT_AT)
+            else CurrentValueService(session, settings, clock=lambda: as_of)
         )
         result = await service.read_portfolio(
             ReadCurrentPortfolioCommand(
@@ -713,6 +932,53 @@ def test_current_cash_applies_only_forward_canonical_delta_without_snapshot_writ
         await engine.dispose()
         assert after == before
 
+        await _cleanup(prefix)
+
+    asyncio.run(scenario())
+
+
+def test_failed_import_freezes_backdated_canonical_cash_until_completed_publication() -> None:
+    prefix = "r12f-publication-freeze"
+    next_baseline_at = BASELINE_AT + timedelta(days=1)
+    next_current_at = next_baseline_at + timedelta(hours=12)
+
+    async def scenario() -> None:
+        user_id, account_id = await _seed_cash(prefix)
+        await _transaction(
+            account_id,
+            transaction_id=f"{prefix}-published",
+            date=BASELINE_AT - timedelta(days=1),
+            amount="100.000000",
+        )
+        await _daily_baseline(user_id)
+        await _failed_import_job(user_id, account_id, job_id=f"{prefix}-job")
+
+        # This simulates a canonical row committed by an import before the
+        # provider/snapshot phase failed. Its financial date predates the
+        # published baseline, so an unfenced reader would either leak it or
+        # reject the previous baseline as invalid.
+        await _transaction(
+            account_id,
+            transaction_id=f"{prefix}-backdated-import",
+            date=BASELINE_AT - timedelta(hours=1),
+            amount="25.000000",
+        )
+
+        frozen = await _current(user_id)
+        assert frozen.portfolio.summary.cash_value == Decimal("100.000000")
+        assert frozen.portfolio.summary.total_value == Decimal("100.000000")
+
+        await _manual_retry_and_complete_import_job(
+            user_id,
+            account_id,
+            job_id=f"{prefix}-job",
+            completed_at=next_baseline_at - timedelta(minutes=1),
+        )
+        await _daily_baseline_at(user_id, at=next_baseline_at)
+
+        published = await _current(user_id, as_of=next_current_at)
+        assert published.portfolio.summary.cash_value == Decimal("125.000000")
+        assert published.portfolio.summary.total_value == Decimal("125.000000")
         await _cleanup(prefix)
 
     asyncio.run(scenario())

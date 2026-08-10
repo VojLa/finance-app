@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
-from app.db.models.enums import ImportStatus
+from app.db.models.enums import ImportStatus, SnapshotGranularity, SnapshotSource
 from app.db.models.imports import ImportBatchModel
 from app.db.models.users import UserModel
 from app.modules.imports.job_executor import (
@@ -36,15 +37,23 @@ from app.modules.jobs.models import (
     ImportJobProgress,
     ImportJobResult,
 )
+from app.modules.jobs.publication_service import ImportJobPublicationService
 from app.modules.jobs.repository import ClaimedBackgroundJob
 from app.modules.jobs.worker import (
     CheckpointCallback,
+    DeferredBackgroundJobError,
     PermanentBackgroundJobError,
     RetryableBackgroundJobError,
+)
+from app.modules.snapshot_refresh.market_backed_models import (
+    ExecuteMarketBackedSnapshotRefreshCommand,
+    MarketBackedSnapshotRefreshConflictError,
+    MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
+from app.modules.snapshot_refresh.version import current_coordinated_snapshot_calculation_version
 from app.shared.errors import ApplicationError
 
 _TERMINAL_BATCH_STATUSES = {ImportStatus.completed, ImportStatus.partially_completed}
@@ -77,9 +86,15 @@ class DurableImportJobExecutor:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        *,
+        market_refresh_factory: Callable[
+            [AsyncSession, Settings], MarketBackedSnapshotRefreshService
+        ]
+        | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.settings = settings
+        self.market_refresh_factory = market_refresh_factory or MarketBackedSnapshotRefreshService
         self.executor = StageImportJobExecutor(
             session_factory,
             principal_resolver=self._resolve_principal,
@@ -157,6 +172,30 @@ class DurableImportJobExecutor:
                 ),
             )
 
+        targets: tuple = ()
+
+        async def reserve_publication_bucket() -> datetime:
+            nonlocal targets
+            now = _now().replace(second=0, microsecond=0)
+            async with self.session_factory() as publication_session:
+                targets = await ImportJobPublicationService(publication_session).reserve(
+                    job_id=claimed.job.id,
+                    account_id=claimed.job.account_id,
+                    requested_bucket=now,
+                )
+            own_target = next(
+                (item for item in targets if item.user_id == claimed.job.user_id), None
+            )
+            if own_target is None:
+                raise PermanentBackgroundJobError(
+                    code="import_job_publication_members_invalid",
+                    message="The import publication members are no longer available.",
+                )
+            future_targets = tuple(item.bucket for item in targets if item.bucket > now)
+            if future_targets:
+                raise DeferredBackgroundJobError(run_after=max(future_targets))
+            return own_target.bucket
+
         try:
             execution = await self.executor.execute(
                 claimed.job.id,
@@ -166,6 +205,7 @@ class DurableImportJobExecutor:
                 completed_stage,
                 on_checkpoint,
                 on_progress=on_progress,
+                publication_bucket_resolver=reserve_publication_bucket,
             )
         except ImportJobExecutionRetryableError as exc:
             raise RetryableBackgroundJobError(
@@ -201,6 +241,42 @@ class DurableImportJobExecutor:
                 code="snapshot_refresh_incomplete",
                 message="Portfolio publication is not complete and will be retried.",
             )
+        # Reconcile membership after the initiating-user anchor exists: a
+        # departed unpublished target is retired and a new member receives an
+        # exact internal publication before completion.
+        await reserve_publication_bucket()
+        for target in targets:
+            if target.user_id == claimed.job.user_id:
+                continue
+            try:
+                async with self.session_factory() as publication_session:
+                    await self.market_refresh_factory(
+                        publication_session,
+                        self.settings,
+                    ).execute(
+                        ExecuteMarketBackedSnapshotRefreshCommand(
+                            user_id=target.user_id,
+                            snapshot_timestamp=target.bucket,
+                            granularity=SnapshotGranularity.minute,
+                            source=SnapshotSource.import_event,
+                            calculation_version=current_coordinated_snapshot_calculation_version(),
+                            calculated_at=target.bucket,
+                            created_at=target.bucket,
+                            is_recalculated=False,
+                            publication_job_id=claimed.job.id,
+                            publication_account_ids=(claimed.job.account_id,),
+                        )
+                    )
+            except (
+                ApplicationError,
+                MarketBackedSnapshotRefreshConflictError,
+                MarketBackedSnapshotRefreshUnavailableError,
+                ValueError,
+            ) as exc:
+                raise RetryableBackgroundJobError(
+                    code="import_job_member_publication_unavailable",
+                    message="A shared portfolio publication could not be completed.",
+                ) from exc
         return await self._result(
             user_id=claimed.job.user_id,
             account_id=claimed.job.account_id,

@@ -27,6 +27,8 @@ import {
   buildPortfolioPageModel,
   selectPortfolioAccountView,
 } from "@/modules/portfolio/snapshot-page-model"
+import { resolveSnapshotPublication } from "@/lib/retain-ready-state"
+import { createSerializedRefreshGate, runSerializedRefresh } from "@/lib/serialized-refresh"
 
 export default function PortfolioPage() {
   const [state, setState] = useState<PortfolioPageState>({ status: "loading" })
@@ -38,28 +40,27 @@ export default function PortfolioPage() {
   const [historyRange, setHistoryRange] = useState<SnapshotPortfolioHistoryRange>("1Y")
   const [historyValueMode, setHistoryValueMode] = useState<PortfolioHistoryValueMode>("netWorth")
   const initialLoadStarted = useRef(false)
+  const refreshGate = useRef(createSerializedRefreshGate())
   const lastReadyState = useRef<Extract<PortfolioPageState, { status: "ready" }> | null>(null)
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null)
 
-  const loadPortfolio = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true)
-    try {
-      // Current values have one authority: POST /api/snapshot-workflow/portfolio.
-      const next = await requestPortfolioPageState()
-      if (next.status === "ready") {
-        lastReadyState.current = next
-        setRefreshWarning(null)
-        setState(next)
-      } else if (isRefresh && lastReadyState.current !== null) {
-        setRefreshWarning(next.status === "error" ? next.message : "Snapshot se ještě připravuje.")
-        setState(lastReadyState.current)
-      } else {
-        setState(next)
-      }
-    } finally {
-      if (isRefresh) setRefreshing(false)
-    }
-  }, [])
+  const loadPortfolio = useCallback(
+    (isRefresh = false) =>
+      runSerializedRefresh(refreshGate.current, isRefresh, async (activeRefresh) => {
+        if (activeRefresh) setRefreshing(true)
+        try {
+          // Current values have one authority: POST /api/snapshot-workflow/portfolio.
+          const next = await requestPortfolioPageState()
+          const decision = resolveSnapshotPublication(next, lastReadyState.current, activeRefresh)
+          lastReadyState.current = decision.lastReady
+          setRefreshWarning(decision.warning)
+          setState(decision.state)
+        } finally {
+          if (activeRefresh) setRefreshing(false)
+        }
+      }),
+    []
+  )
 
   useEffect(() => {
     if (initialLoadStarted.current) return

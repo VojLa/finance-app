@@ -4,6 +4,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
@@ -164,6 +165,20 @@ class DailySnapshotBaselineModel(Base):
     __table_args__ = (
         UniqueConstraint("netWorthSnapshotId"),
         UniqueConstraint(
+            "backgroundJobId",
+            "userId",
+            name="DailySnapshotBaseline_backgroundJob_user_key",
+        ),
+        ForeignKeyConstraint(
+            ("backgroundJobId", "userId"),
+            (
+                "public.ImportJobPublicationTarget.jobId",
+                "public.ImportJobPublicationTarget.userId",
+            ),
+            name="DailySnapshotBaseline_backgroundJob_user_fkey",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
             "userId",
             "timestamp",
             "currency",
@@ -171,8 +186,13 @@ class DailySnapshotBaselineModel(Base):
             name="DailyBaseline_user_timestamp_currency_version_key",
         ),
         CheckConstraint(
-            '"granularity" = \'day\'::"SnapshotGranularity"',
-            name="DailySnapshotBaseline_day_only",
+            '("granularity" = \'day\'::"SnapshotGranularity" OR '
+            '("granularity" = \'minute\'::"SnapshotGranularity" '
+            'AND "source" = \'import_event\'::"SnapshotSource" '
+            'AND "backgroundJobId" IS NOT NULL)) '
+            'AND (("granularity" = \'day\'::"SnapshotGranularity") = '
+            '("backgroundJobId" IS NULL))',
+            name="DailySnapshotBaseline_day_or_import_anchor",
         ),
         CheckConstraint(
             '"calculationVersion" > 0',
@@ -199,6 +219,10 @@ class DailySnapshotBaselineModel(Base):
     calculation_version: Mapped[int] = mapped_column("calculationVersion", Integer, nullable=False)
     source: Mapped[SnapshotSource] = mapped_column(SNAPSHOT_SOURCE_DB, nullable=False)
     created_at: Mapped[datetime] = mapped_column("createdAt", TIMESTAMP, nullable=False)
+    background_job_id: Mapped[str | None] = mapped_column(
+        "backgroundJobId",
+        Text,
+    )
 
 
 class DailySnapshotBaselineAccountModel(Base):

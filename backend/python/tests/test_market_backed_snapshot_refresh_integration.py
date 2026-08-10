@@ -281,6 +281,7 @@ async def _seed_mixed_user(
                         account_id=broker_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"USD": "400.0000000000"},
                     ),
                     HoldingModel(
                         id=f"{prefix}-holding-crypto",
@@ -299,6 +300,7 @@ async def _seed_mixed_user(
                         account_id=exchange_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"EUR": "400.0000000000"},
                     ),
                 )
             )

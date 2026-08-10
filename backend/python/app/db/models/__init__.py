@@ -58,6 +58,7 @@ from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowMod
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -111,6 +112,7 @@ __all__ = [
     "ExchangeRateSource",
     "HoldingModel",
     "ImportBatchModel",
+    "ImportJobPublicationTargetModel",
     "ImportLogEvent",
     "ImportLogLevel",
     "ImportLogModel",

@@ -18,6 +18,7 @@ class CurrentValuePlan:
     as_of: datetime
     baseline: DailySnapshotBaseline
     market_plan: MarketEvidenceRefreshPlan
+    frozen_account_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

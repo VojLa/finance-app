@@ -8,6 +8,8 @@ calculation engines.
 Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
                                                        |          |
                                                 PostgreSQL   raw-import storage
+                                                     |
+                                              embedded job worker
 ```
 
 ## Runtime responsibilities
@@ -57,6 +59,25 @@ supplies operational current-month cash flow, budget, categories, trends, and
 recent transactions from persisted evidence only; it cannot act as a financial
 fallback. Snapshot and operational states and errors remain independent.
 
+Durable imports may commit replayable canonical stages before their coordinated
+snapshot is publishable. Immediately before final snapshot acquisition, Python
+reserves one minute bucket for every current account member in a durable
+`ImportJobPublicationTarget`. A target with no job-linked anchor may move
+forward on a later retry, even if an unrelated manual snapshot occupied its old
+minute. An unpublished anchor stays fixed while its canonical boundary remains
+current; a later canonical write retires that stale job-linked evidence and
+forces a fresh target before completion. A same-user bucket collision moves the
+later job to `retry_wait` without consuming an attempt. The current-value service fences
+every affected accessible account at its last published baseline while the job
+is `queued`, `running`, `retry_wait`, or `failed`, and rechecks that fence
+inside stable reads. The finalizer must persist one exact `import_event` minute
+anchor for each current member from the coordinated snapshot graph. It marks all
+targets `publishedAt` and the job `completed` atomically under the account
+membership lock; only that transition releases the fence. Regular baselines
+remain daily. Portfolio and dashboard clients serialize and coalesce refresh
+requests, so an older response cannot overwrite a newer publication; refresh
+failures keep the last ready view.
+
 The 5M final audit closes the snapshot application cutover without production
 changes. It proves the authenticated browser-to-Next-to-FastAPI path, exact
 manifest transport, cross-runtime token compatibility, token-per-request
@@ -104,15 +125,14 @@ The Next.js route now owns session transport and request allowlisting only.
 
 The 0.1-R2 and R3 remediations establish source-specific Raiffeisenbank
 processing and fixture-backed Trading212/Anycoin upload-to-read-model evidence.
-R4 cuts the production import page over to those existing Python staged APIs.
-The browser makes one same-origin request; Next.js verifies the session,
-preserves exact file bytes, and orchestrates the eight public Python stages
-with a fresh token per request. Python remains the only parser, normalizer,
-deduplicator, classifier, canonical writer, holdings, and snapshot authority.
-R11-I removes the unused TypeScript registry, service, parsers, posting and
-snapshot hooks, compatibility barrels, provider-specific routes, status route,
-and CSV parser dependency. Only the generic import and finalization adapters
-remain registered.
+R12 makes the production import durable and asynchronous. The same-origin
+Next.js adapter authenticates once, validates and uploads accepted files, and
+enqueues one account-scoped PostgreSQL job. Python's embedded worker owns parse,
+normalize, deduplicate, classify, canonical posting, Holdings, market evidence,
+and atomic portfolio publication. The browser persists only scoped job identity,
+polls a safe status contract, and can resume after navigation or reload. R11-I
+removes the unused TypeScript parser and finance pipeline; R12 removes the last
+synchronous finalization adapter.
 
 R10-E1 closes the persisted-principal read transaction before the same
 request-scoped session enters D1/D2 planning, market, and final read phases. The

@@ -14,6 +14,7 @@ from scripts.alembic_baseline import (
     DAILY_BASELINE_REVISION,
     DIRECT_FX_REVISION,
     HEAD_REVISION,
+    IMPORT_PUBLICATION_ANCHOR_REVISION,
     MULTI_CURRENCY_COST_BASIS_REVISION,
     PREVIOUS_HEAD_REVISION,
     DatabaseState,
@@ -38,6 +39,12 @@ MULTI_CURRENCY_COST_BASIS_PATH = (
 )
 BACKGROUND_JOB_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3l0001bgjob_add_persisted_background_jobs.py"
+)
+IMPORT_PUBLICATION_ANCHOR_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3m0001importanchor_allow_minute_import_publication_anchor.py"
 )
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
@@ -188,18 +195,51 @@ def test_background_job_revision_metadata_and_data_loss_guard() -> None:
         assert token in source
 
 
+def test_import_publication_anchor_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(IMPORT_PUBLICATION_ANCHOR_PATH, "import_publication_anchor")
+    source = IMPORT_PUBLICATION_ANCHOR_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == IMPORT_PUBLICATION_ANCHOR_REVISION
+    assert revision.down_revision == BACKGROUND_JOB_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "allow_import_current_value_publication_anchor"
+    assert revision.affected_tables == ("DailySnapshotBaseline", "ImportJobPublicationTarget")
+    assert revision.affected_columns == (
+        "DailySnapshotBaseline.granularity",
+        "DailySnapshotBaseline.source",
+        "DailySnapshotBaseline.backgroundJobId",
+        "ImportJobPublicationTarget.jobId",
+        "ImportJobPublicationTarget.userId",
+        "ImportJobPublicationTarget.bucket",
+        "ImportJobPublicationTarget.publishedAt",
+    )
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    for token in (
+        "DailySnapshotBaseline_day_only",
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "\\'minute\\'::\"SnapshotGranularity\"",
+        "\\'import_event\\'::\"SnapshotSource\"",
+        '"backgroundJobId"',
+        "ImportJobPublicationTarget",
+        "DailySnapshotBaseline_backgroundJob_user_fkey",
+        "Cannot remove minute import publication anchors while evidence exists.",
+    ):
+        assert token in source
+
+
 def test_manifest_records_first_alembic_schema_head() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 13
+    assert manifest["schema_version"] == 14
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 9
-    assert baseline["head_revision"] == BACKGROUND_JOB_REVISION
-    assert alembic["head_revision"] == BACKGROUND_JOB_REVISION
-    assert alembic["revision_count"] == 9
+    assert baseline["revision_count"] == 10
+    assert baseline["head_revision"] == HEAD_REVISION
+    assert alembic["head_revision"] == HEAD_REVISION
+    assert alembic["revision_count"] == 10
 
     verify_manifest()
     verify_revision_graph()
@@ -212,13 +252,13 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(30, 27, ("3f0001acctnote",)))
     verify_database_state(DatabaseState(31, 28, (PREVIOUS_HEAD_REVISION,)))
     verify_database_state(DatabaseState(36, 28, (MULTI_CURRENCY_COST_BASIS_REVISION,)))
-    verify_database_state(DatabaseState(37, 30, (HEAD_REVISION,)))
+    verify_database_state(DatabaseState(38, 30, (HEAD_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:
-    with pytest.raises(RuntimeError, match="Expected 37 application tables"):
+    with pytest.raises(RuntimeError, match="Expected 38 application tables"):
         verify_database_state(DatabaseState(31, 30, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="Expected 30 enums"):
-        verify_database_state(DatabaseState(37, 27, (HEAD_REVISION,)))
+        verify_database_state(DatabaseState(38, 27, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="unknown Alembic revisions"):
         verify_database_state(DatabaseState(30, 27, ("unknown",)))

@@ -47,7 +47,6 @@ def test_python_api_inventory_contains_the_current_public_boundaries() -> None:
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/classify"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/post"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post"),
-        ("POST", "/api/v1/accounts/{account_id}/imports/finalize"),
         ("POST", "/api/v1/snapshot-refresh/recalculate"),
         ("POST", "/api/v1/portfolio/snapshot"),
         ("POST", "/api/v1/dashboard/snapshot"),
@@ -94,12 +93,17 @@ def test_active_browser_boundaries_are_thin_python_adapters() -> None:
 
     assert "createAccount" in accounts
     assert "handleImportPost" in imports
-    assert "runImportCanonicalWorkflow" in import_handler
-    assert "finalizeImportBatches" in import_handler
+    assert "startImportJob" in import_handler
     assert "runPortfolioSnapshotWorkflow" in portfolio
     assert "runDashboardSnapshotWorkflow" in dashboard
     assert "readSnapshotBackedPortfolioHistory" in history
-    for forbidden in ("@/lib/prisma", "importCsvFilesAsync", "getPortfolioSnapshotHistory"):
+    for forbidden in (
+        "@/lib/prisma",
+        "importCsvFilesAsync",
+        "getPortfolioSnapshotHistory",
+        "runImportCanonicalWorkflow",
+        "finalizeImportBatches",
+    ):
         assert forbidden not in active
 
 

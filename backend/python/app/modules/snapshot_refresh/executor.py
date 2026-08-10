@@ -8,16 +8,21 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import (
     AccountMemberRole,
     AccountType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.modules.daily_baselines import (
     DailyBaselineDisposition,
     DailyBaselineError,
@@ -125,6 +130,8 @@ class ExecuteUserSnapshotRefreshCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    publication_job_id: str | None = None
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +276,21 @@ def _count(value: object) -> int:
     return value
 
 
+def _publication_account_ids(
+    value: object,
+    *,
+    publication_job_id: str | None,
+) -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise _fail()
+    account_ids = tuple(_nonblank(item) for item in value)
+    if account_ids != tuple(sorted(account_ids)) or len(set(account_ids)) != len(account_ids):
+        raise _fail()
+    if (publication_job_id is None) != (not account_ids):
+        raise _fail()
+    return account_ids
+
+
 def _validate_command(value: object) -> ExecuteUserSnapshotRefreshCommand:
     if not isinstance(value, ExecuteUserSnapshotRefreshCommand):
         raise _fail()
@@ -278,6 +300,13 @@ def _validate_command(value: object) -> ExecuteUserSnapshotRefreshCommand:
         or not isinstance(value.source, SnapshotSource)
         or not isinstance(value.is_recalculated, bool)
         or value.is_recalculated is not (value.source is SnapshotSource.manual_recalculation)
+        or (
+            value.publication_job_id is not None
+            and not (
+                value.granularity is SnapshotGranularity.minute
+                and value.source is SnapshotSource.import_event
+            )
+        )
     ):
         raise _fail()
     return ExecuteUserSnapshotRefreshCommand(
@@ -292,6 +321,13 @@ def _validate_command(value: object) -> ExecuteUserSnapshotRefreshCommand:
         calculated_at=_timestamp(value.calculated_at),
         created_at=_timestamp(value.created_at),
         is_recalculated=value.is_recalculated,
+        publication_job_id=(
+            _nonblank(value.publication_job_id) if value.publication_job_id is not None else None
+        ),
+        publication_account_ids=_publication_account_ids(
+            value.publication_account_ids,
+            publication_job_id=value.publication_job_id,
+        ),
     )
 
 
@@ -357,7 +393,8 @@ def _validated_coverage(
             raise _fail()
         expected_mode = (
             AccountSnapshotRefreshMode.refresh
-            if target.membership_role in _REFRESH_ROLES
+            if account_id in command.publication_account_ids
+            or target.membership_role in _REFRESH_ROLES
             else AccountSnapshotRefreshMode.reuse_only
             if target.membership_role is AccountMemberRole.viewer
             else None
@@ -381,6 +418,10 @@ def _validated_coverage(
         validated_targets.append(target)
 
     plan_targets = tuple(validated_targets)
+    if not set(command.publication_account_ids).issubset(
+        {target.account_id for target in plan_targets}
+    ):
+        raise _fail()
     plan_account_ids = tuple(target.account_id for target in plan_targets)
     expected_refresh = tuple(
         target for target in plan_targets if target.mode is AccountSnapshotRefreshMode.refresh
@@ -547,6 +588,32 @@ class UserSnapshotRefreshExecutor:
         try:
             async with self.session.begin():
                 await self.repository.set_transaction_repeatable_read()
+                if canonical.publication_account_ids:
+                    validated_publication_accounts = set(
+                        (
+                            await self.session.scalars(
+                                select(BackgroundJobModel.account_id)
+                                .join(
+                                    ImportJobPublicationTargetModel,
+                                    ImportJobPublicationTargetModel.job_id == BackgroundJobModel.id,
+                                )
+                                .where(
+                                    BackgroundJobModel.id == canonical.publication_job_id,
+                                    BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                                    BackgroundJobModel.status == BackgroundJobStatus.running,
+                                    ImportJobPublicationTargetModel.user_id == canonical.user_id,
+                                    ImportJobPublicationTargetModel.bucket
+                                    == canonical.snapshot_timestamp,
+                                    ImportJobPublicationTargetModel.published_at.is_(None),
+                                    BackgroundJobModel.account_id.in_(
+                                        canonical.publication_account_ids
+                                    ),
+                                )
+                            )
+                        ).all()
+                    )
+                    if validated_publication_accounts != set(canonical.publication_account_ids):
+                        raise _fail()
                 coverage = await self.coverage_service_factory(self.session).build(
                     BuildSnapshotRefreshCoverageCommand(
                         user_id=canonical.user_id,
@@ -557,6 +624,7 @@ class UserSnapshotRefreshExecutor:
                         calculated_at=canonical.calculated_at,
                         created_at=canonical.created_at,
                         is_recalculated=canonical.is_recalculated,
+                        publication_account_ids=canonical.publication_account_ids,
                     )
                 )
                 coverage = _validated_coverage(coverage, canonical)
@@ -668,7 +736,11 @@ class UserSnapshotRefreshExecutor:
             identities=required_identities,
         )
 
-        if canonical.granularity is SnapshotGranularity.day:
+        if canonical.granularity is SnapshotGranularity.day or (
+            canonical.granularity is SnapshotGranularity.minute
+            and canonical.source is SnapshotSource.import_event
+            and canonical.publication_job_id is not None
+        ):
             await self._dependency_must_leave_idle()
             baseline_writer = self.daily_baseline_writer_factory(self.session)
             await self._dependency_must_leave_idle()
@@ -678,6 +750,8 @@ class UserSnapshotRefreshExecutor:
                         user_id=canonical.user_id,
                         net_worth_snapshot_id=net_worth_result.snapshot_id,
                         timestamp=canonical.snapshot_timestamp,
+                        granularity=canonical.granularity,
+                        publication_job_id=canonical.publication_job_id,
                         currency=coverage.plan.output_currency,
                         calculation_version=canonical.calculation_version,
                         source=canonical.source,

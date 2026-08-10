@@ -44,10 +44,23 @@ retention or encrypted-object-storage design. The schema has retention fields,
 but no purge worker, deletion workflow, or GDPR anonymization implementation
 exists yet.
 
-Upload controls include a binary content-type requirement, a 1 GiB upload cap,
-filename path-separator rejection, declared-size and SHA-256 checks, and a
-64 MiB synchronous parser limit. The application must not log raw financial
+Upload controls include a binary content-type requirement, a 1 GiB backend
+upload cap, filename path-separator rejection, declared-size and SHA-256 checks,
+and a 64 MiB parser/Next.js aggregate boundary. Worker file reads and parsing are
+offloaded from the API event loop. The application must not log raw financial
 payloads.
+
+Import publication is server-owned. The public import and snapshot APIs do not
+accept a publication bucket, publication target, or refresh privilege override.
+Before an import can become visible, the worker reserves one durable minute
+target for every current account member and persists a matching exact baseline
+anchor for each of them. It publishes all targets and completes the job
+atomically while holding the account membership lock. A queued, running,
+retrying, failed, incomplete, corrupt, or membership-raced import remains
+fenced at the last complete baseline. The worker may force-refresh the imported
+shared account for a viewer only when the uncompleted job and that viewer's
+exact target authorize it; this internal operation neither grants HTTP write
+access nor refreshes the viewer's unrelated accounts.
 
 ## Operational controls
 

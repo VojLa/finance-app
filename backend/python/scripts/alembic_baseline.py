@@ -32,8 +32,9 @@ DAILY_BASELINE_REVISION = "3i0001d1base"
 DIRECT_FX_REVISION = "3j0001twfx"
 MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
 BACKGROUND_JOB_REVISION = "3l0001bgjob"
-HEAD_REVISION = BACKGROUND_JOB_REVISION
-EXPECTED_TABLE_COUNT = 37
+IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
+HEAD_REVISION = IMPORT_PUBLICATION_ANCHOR_REVISION
+EXPECTED_TABLE_COUNT = 38
 EXPECTED_ENUM_COUNT = 30
 PREVIOUS_HEAD_TABLE_COUNT = 36
 PREVIOUS_HEAD_ENUM_COUNT = 28
@@ -60,8 +61,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 9:
-        raise RuntimeError(f"Expected exactly nine Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 10:
+        raise RuntimeError(f"Expected exactly ten Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -76,6 +77,7 @@ def verify_revision_graph() -> None:
     daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
     multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
+    background_job = by_revision.get(BACKGROUND_JOB_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
@@ -93,17 +95,21 @@ def verify_revision_graph() -> None:
         raise RuntimeError("The direct FX revision must follow the D1 lineage head.")
     if multi_currency_cost is None or multi_currency_cost.down_revision != DIRECT_FX_REVISION:
         raise RuntimeError("The multi-currency cost basis revision must follow the direct FX head.")
-    if head is None or head.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
+    if background_job is None or background_job.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
         raise RuntimeError(
             "The background-job revision must follow the multi-currency cost basis head."
+        )
+    if head is None or head.down_revision != BACKGROUND_JOB_REVISION:
+        raise RuntimeError(
+            "The import publication-anchor revision must follow the background-job head."
         )
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 13:
+    if manifest.get("schema_version") != 14:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 13 after the background-job change."
+            "Ownership manifest schema_version must be 14 after the import-anchor change."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -133,7 +139,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 9,
+        "revision_count": 10,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,

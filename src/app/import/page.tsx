@@ -25,6 +25,8 @@ import {
   importPollDelayMs,
   loadLatestPersistedImportJob,
   persistImportJob,
+  resolveImportPollFailure,
+  resolveImportPollJob,
   type PersistedImportJob,
 } from "@/modules/imports/python/import-job-state"
 import { IMPORT_SOURCE_OPTIONS } from "@/modules/imports/python/import-sources"
@@ -155,12 +157,13 @@ export default function ImportPage() {
       setPersistedRecord(record)
       setPollFailures(0)
       setActionError(null)
-      if (job.status === "completed") {
+      const decision = resolveImportPollJob(job)
+      if (decision.kind === "completed") {
         if (record !== null) clearPersistedImportJob(localStorage, record)
         setPersistedRecord(null)
         publishImportCompleted(job)
         setState({ status: "completed", job })
-      } else if (job.status === "failed") {
+      } else if (decision.kind === "failed") {
         setState({ status: "failed", job })
       } else {
         setState({ status: "background", job })
@@ -205,12 +208,17 @@ export default function ImportPage() {
         })
         .catch((error: unknown) => {
           if (cancelled || generation !== pollGeneration.current) return
-          if (error instanceof ImportClientError && error.status === 404) {
+          const clientError = error instanceof ImportClientError ? error : null
+          const status = clientError?.status ?? null
+          if (resolveImportPollFailure(status) === "discard") {
             if (persistedRecord !== null) {
               clearPersistedImportJob(localStorage, persistedRecord)
               setPersistedRecord(null)
             }
-            setState({ status: "error", message: error.message })
+            setState({
+              status: "error",
+              message: clientError?.message ?? "Import job už není dostupný.",
+            })
             return
           }
           setActionError(

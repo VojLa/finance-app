@@ -7,8 +7,6 @@ from app.db.connection import get_db_session
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import (
-    FinalizeImportBatchesRequest,
-    FinalizeImportBatchesResponse,
     ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportCanonicalPostResponse,
@@ -17,12 +15,7 @@ from app.modules.imports.models import (
     ImportNormalizeResponse,
     ImportParseResponse,
     ImportPostResponse,
-    ImportSnapshotRefreshStatus,
     ImportUploadResponse,
-)
-from app.modules.imports.multi_file_service import (
-    FinalizeImportBatchesCommand,
-    ImportMultiFileFinalizationService,
 )
 from app.modules.imports.normalization import ImportNormalizationService
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
@@ -50,18 +43,6 @@ def get_import_batch_post_processing_service(
     ),
 ) -> ImportBatchPostProcessingService:
     return ImportBatchPostProcessingService(
-        session,
-        market_backed_service=market_backed_service,
-    )
-
-
-def get_import_multi_file_finalization_service(
-    session: AsyncSession = Depends(get_db_session),
-    market_backed_service: MarketBackedSnapshotRefreshService = Depends(
-        get_import_market_backed_snapshot_refresh_service
-    ),
-) -> ImportMultiFileFinalizationService:
-    return ImportMultiFileFinalizationService(
         session,
         market_backed_service=market_backed_service,
     )
@@ -213,33 +194,6 @@ async def canonical_post_import_batch(
         rows_skipped=result.rows_skipped,
         completed_at=result.completed_at,
         replayed=result.replayed,
-    )
-
-
-@router.post("/finalize", response_model=FinalizeImportBatchesResponse)
-async def finalize_import_batches(
-    account_id: str,
-    payload: FinalizeImportBatchesRequest,
-    principal: CurrentPrincipal,
-    service: ImportMultiFileFinalizationService = Depends(
-        get_import_multi_file_finalization_service
-    ),
-) -> FinalizeImportBatchesResponse:
-    if not payload.batch_ids:
-        return FinalizeImportBatchesResponse(
-            batch_ids=(),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.not_required,
-        )
-    result = await service.finalize(
-        FinalizeImportBatchesCommand(
-            principal=principal,
-            account_id=account_id,
-            batch_ids=tuple(sorted(payload.batch_ids)),
-        )
-    )
-    return FinalizeImportBatchesResponse(
-        batch_ids=result.batch_ids,
-        snapshot_refresh_status=result.snapshot_refresh_status,
     )
 
 

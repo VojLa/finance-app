@@ -44,7 +44,7 @@ def test_unknown_environment_is_rejected() -> None:
 )
 def test_invalid_background_job_timing_is_rejected(overrides: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, **overrides)
+        Settings.model_validate(overrides)
 
 
 def test_production_requires_safe_configuration() -> None:

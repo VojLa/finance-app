@@ -399,16 +399,21 @@ class ImportBatchPostProcessingService:
         principal: AuthenticatedPrincipal,
         account_id: str,
         postings: tuple[PostImportBatchResult, ...],
+        background_job_id: str | None = None,
+        publication_bucket: datetime | None = None,
     ) -> ImportSnapshotRefreshStatus:
         _validate_principal_account(principal, account_id)
         if not postings:
             raise _runtime_error()
         total_rows_imported = sum(posting.rows_imported for posting in postings)
-        if total_rows_imported == 0:
+        # A durable import still needs a publication baseline even when all
+        # rows replay as duplicates; otherwise completion would release the
+        # fence without a matching anchor.
+        if total_rows_imported == 0 and background_job_id is None:
             return ImportSnapshotRefreshStatus.not_required
 
         completed_at = max(posting.completed_at for posting in postings)
-        bucket = canonical_import_snapshot_bucket(completed_at)
+        bucket = publication_bucket or canonical_import_snapshot_bucket(completed_at)
         audits: list[_ExpectedAudit] = []
         investment_postings = tuple(
             posting for posting in postings if posting.investment_event_rows_imported > 0
@@ -498,6 +503,8 @@ class ImportBatchPostProcessingService:
             calculated_at=bucket,
             created_at=bucket,
             is_recalculated=False,
+            publication_job_id=background_job_id,
+            publication_account_ids=(account_id,) if background_job_id is not None else (),
         )
         try:
             combined_result = await self.market_backed_service.execute(market_backed_command)

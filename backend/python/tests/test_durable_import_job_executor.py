@@ -14,9 +14,14 @@ from app.modules.imports.job_executor import (
 )
 from app.modules.imports.models import ImportSnapshotRefreshStatus
 from app.modules.imports.multi_file_service import FinalizeImportBatchesResult
+from app.modules.jobs import import_executor as durable_import_executor_module
 from app.modules.jobs.import_executor import DurableImportJobExecutor
 from app.modules.jobs.lifecycle import LeaseIdentity
 from app.modules.jobs.models import ImportJobResult
+from app.modules.jobs.publication_service import (
+    ImportJobPublicationService,
+    ImportPublicationTarget,
+)
 from app.modules.jobs.repository import ClaimedBackgroundJob
 from app.modules.jobs.worker import RetryableBackgroundJobError
 
@@ -63,6 +68,7 @@ class _StageExecutor:
         on_checkpoint,
         *,
         on_progress,
+        publication_bucket_resolver,
     ):
         assert (job_id, user_id, account_id, checkpoint) == (
             "job-1",
@@ -71,6 +77,7 @@ class _StageExecutor:
             None,
         )
         assert payload.batch_ids == ("batch-a", "batch-b")
+        assert await publication_bucket_resolver() == datetime(2030, 1, 1, 12, 0)
         await on_progress(
             ImportExecutionProgress(
                 job_id="job-1",
@@ -93,8 +100,17 @@ class _StageExecutor:
         )
 
 
+class _SessionContext:
+    async def __aenter__(self) -> object:
+        return object()
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
 @pytest.mark.asyncio
-async def test_adapter_maps_stage_progress_to_fenced_persisted_contract() -> None:
+async def test_adapter_maps_stage_progress_to_fenced_persisted_contract(monkeypatch) -> None:
+    monkeypatch.setattr(durable_import_executor_module, "_now", lambda: datetime(2030, 1, 1, 12, 0))
     adapter = DurableImportJobExecutor(cast(Any, object()), Settings(_env_file=None))
     adapter.executor = cast(Any, _StageExecutor(ImportSnapshotRefreshStatus.created))
     expected = ImportJobResult(
@@ -106,6 +122,16 @@ async def test_adapter_maps_stage_progress_to_fenced_persisted_contract() -> Non
         completed_at=datetime(2030, 1, 1),
     )
     adapter._result = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+    adapter.session_factory = _SessionContext  # type: ignore[assignment]
+    monkeypatch.setattr(
+        ImportJobPublicationService,
+        "reserve",
+        AsyncMock(return_value=(ImportPublicationTarget("user-1", datetime(2030, 1, 1, 12, 0)),)),
+    )
+    monkeypatch.setattr(
+        "app.modules.jobs.import_executor._now",
+        lambda: datetime(2030, 1, 1, 12, 0),
+    )
     checkpoint = AsyncMock()
 
     result = await adapter.execute(_claimed(), checkpoint=checkpoint)
@@ -121,13 +147,51 @@ async def test_adapter_maps_stage_progress_to_fenced_persisted_contract() -> Non
 
 
 @pytest.mark.asyncio
-async def test_adapter_never_marks_incomplete_snapshot_publication_successful() -> None:
+async def test_adapter_never_marks_incomplete_snapshot_publication_successful(monkeypatch) -> None:
+    monkeypatch.setattr(durable_import_executor_module, "_now", lambda: datetime(2030, 1, 1, 12, 0))
     adapter = DurableImportJobExecutor(cast(Any, object()), Settings(_env_file=None))
     adapter.executor = cast(Any, _StageExecutor(ImportSnapshotRefreshStatus.unavailable))
     adapter._result = AsyncMock()  # type: ignore[method-assign]
+    adapter.session_factory = _SessionContext  # type: ignore[assignment]
+    monkeypatch.setattr(
+        ImportJobPublicationService,
+        "reserve",
+        AsyncMock(return_value=(ImportPublicationTarget("user-1", datetime(2030, 1, 1, 12, 0)),)),
+    )
+    monkeypatch.setattr(
+        "app.modules.jobs.import_executor._now",
+        lambda: datetime(2030, 1, 1, 12, 0),
+    )
 
     with pytest.raises(RetryableBackgroundJobError) as captured:
         await adapter.execute(_claimed(), checkpoint=AsyncMock())
 
     assert captured.value.code == "snapshot_refresh_incomplete"
     adapter._result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_only_finalization_keeps_the_exact_publication_target(monkeypatch) -> None:
+    """A no-new-row finalizer may complete only through the publication path."""
+
+    now = datetime(2030, 1, 1, 12, 0)
+    monkeypatch.setattr(durable_import_executor_module, "_now", lambda: now)
+    adapter = DurableImportJobExecutor(cast(Any, object()), Settings(_env_file=None))
+    adapter.executor = cast(Any, _StageExecutor(ImportSnapshotRefreshStatus.not_required))
+    expected = ImportJobResult(
+        batch_ids=("batch-a", "batch-b"),
+        rows_total=2,
+        rows_imported=0,
+        rows_skipped=2,
+        snapshot_refresh_status="not_required",
+        completed_at=now,
+    )
+    adapter._result = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+    adapter.session_factory = _SessionContext  # type: ignore[assignment]
+    reserve = AsyncMock(return_value=(ImportPublicationTarget("user-1", now),))
+    monkeypatch.setattr(ImportJobPublicationService, "reserve", reserve)
+
+    assert await adapter.execute(_claimed(), checkpoint=AsyncMock()) == expected
+    # One reservation supplies the initiating anchor; the second reconciles
+    # the exact member target before completion.
+    assert reserve.await_count == 2

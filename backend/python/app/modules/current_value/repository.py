@@ -7,8 +7,14 @@ from datetime import datetime
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.accounts import AccountMemberModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
-from app.db.models.enums import ExchangeRateSource
+from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.enums import (
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    ExchangeRateSource,
+)
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
@@ -43,12 +49,50 @@ class CurrentValueRepository:
             text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         )
 
+    async def load_active_import_account_ids(
+        self,
+        *,
+        reader_user_id: str,
+        account_ids: tuple[str, ...] | None = None,
+    ) -> tuple[str, ...]:
+        """Return visible accounts whose import result is not yet published."""
+
+        if account_ids == ():
+            return ()
+        statement = (
+            select(BackgroundJobModel.account_id)
+            .join(
+                AccountMemberModel,
+                AccountMemberModel.account_id == BackgroundJobModel.account_id,
+            )
+            .where(
+                AccountMemberModel.user_id == reader_user_id,
+                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                BackgroundJobModel.status.in_(
+                    (
+                        BackgroundJobStatus.queued,
+                        BackgroundJobStatus.running,
+                        BackgroundJobStatus.retry_wait,
+                        BackgroundJobStatus.failed,
+                    )
+                ),
+            )
+            .distinct()
+            .order_by(BackgroundJobModel.account_id)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        if account_ids is not None:
+            statement = statement.where(BackgroundJobModel.account_id.in_(account_ids))
+        rows = await self.session.scalars(statement)
+        return tuple(rows.all())
+
     async def load_baseline_view(
         self,
         *,
         account_id: str,
         snapshot_id: str,
         timestamp: datetime,
+        granularity: SnapshotGranularity,
         currency: str,
         calculation_version: int,
     ) -> PortfolioSnapshotView:
@@ -56,7 +100,7 @@ class CurrentValueRepository:
             ReadExactPortfolioSnapshotCommand(
                 account_id=account_id,
                 timestamp=timestamp,
-                granularity=SnapshotGranularity.day,
+                granularity=granularity,
                 currency=currency,
                 calculation_version=calculation_version,
                 required_snapshot_id=snapshot_id,

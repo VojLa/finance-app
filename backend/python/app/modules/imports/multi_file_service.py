@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +54,8 @@ class FinalizeImportBatchesCommand:
     principal: AuthenticatedPrincipal
     account_id: str
     batch_ids: tuple[str, ...]
+    background_job_id: str | None = None
+    publication_bucket: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +78,18 @@ def _validate_command(value: object) -> FinalizeImportBatchesCommand:
         )
         or len(set(value.batch_ids)) != len(value.batch_ids)
         or value.batch_ids != tuple(sorted(value.batch_ids))
+    ):
+        raise RuntimeError("Import finalization command is invalid.")
+    if value.background_job_id is not None and (
+        not isinstance(value.background_job_id, str)
+        or not value.background_job_id
+        or value.background_job_id != value.background_job_id.strip()
+    ):
+        raise RuntimeError("Import finalization command is invalid.")
+    if value.publication_bucket is not None and (
+        value.publication_bucket.tzinfo is not None
+        or value.publication_bucket.second != 0
+        or value.publication_bucket.microsecond != 0
     ):
         raise RuntimeError("Import finalization command is invalid.")
     return value
@@ -154,6 +169,8 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
             principal=canonical.principal,
             account_id=canonical.account_id,
             postings=tuple(postings),
+            background_job_id=canonical.background_job_id,
+            publication_bucket=canonical.publication_bucket,
         )
         return FinalizeImportBatchesResult(
             batch_ids=canonical.batch_ids,

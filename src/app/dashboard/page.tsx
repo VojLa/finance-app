@@ -16,6 +16,8 @@ import {
 } from "@/modules/dashboard/snapshot-dashboard-client"
 import { buildSnapshotDashboardModel } from "@/modules/dashboard/snapshot-dashboard-model"
 import { formatSnapshotTimestamp } from "@/modules/portfolio/snapshot-page-format"
+import { resolveSnapshotPublication } from "@/lib/retain-ready-state"
+import { createSerializedRefreshGate, runSerializedRefresh } from "@/lib/serialized-refresh"
 
 function SectionSkeleton({ label }: { label: string }) {
   return (
@@ -51,6 +53,7 @@ function FinancialError({
 
 export default function DashboardPage() {
   const initialLoadStarted = useRef(false)
+  const financialRefreshGate = useRef(createSerializedRefreshGate())
   const [financialState, setFinancialState] = useState<DashboardFinancialState>({
     status: "loading",
   })
@@ -64,26 +67,26 @@ export default function DashboardPage() {
   > | null>(null)
   const [financialRefreshWarning, setFinancialRefreshWarning] = useState<string | null>(null)
 
-  const loadFinancialOverview = useCallback(async (isRefresh = false) => {
-    if (isRefresh) setFinancialRefreshInProgress(true)
-    try {
-      const next = await requestDashboardFinancialState()
-      if (next.status === "ready") {
-        lastReadyFinancialState.current = next
-        setFinancialRefreshWarning(null)
-        setFinancialState(next)
-      } else if (isRefresh && lastReadyFinancialState.current !== null) {
-        setFinancialRefreshWarning(
-          next.status === "error" ? next.message : "Snapshot se ještě připravuje."
-        )
-        setFinancialState(lastReadyFinancialState.current)
-      } else {
-        setFinancialState(next)
-      }
-    } finally {
-      if (isRefresh) setFinancialRefreshInProgress(false)
-    }
-  }, [])
+  const loadFinancialOverview = useCallback(
+    (isRefresh = false) =>
+      runSerializedRefresh(financialRefreshGate.current, isRefresh, async (activeRefresh) => {
+        if (activeRefresh) setFinancialRefreshInProgress(true)
+        try {
+          const next = await requestDashboardFinancialState()
+          const decision = resolveSnapshotPublication(
+            next,
+            lastReadyFinancialState.current,
+            activeRefresh
+          )
+          lastReadyFinancialState.current = decision.lastReady
+          setFinancialRefreshWarning(decision.warning)
+          setFinancialState(decision.state)
+        } finally {
+          if (activeRefresh) setFinancialRefreshInProgress(false)
+        }
+      }),
+    []
+  )
 
   useEffect(() => {
     if (initialLoadStarted.current) return

@@ -57,6 +57,7 @@ class BuildSnapshotRefreshCoverageCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +175,15 @@ def _validate_command(
         value.source is SnapshotSource.manual_recalculation
     ):
         raise _fail()
+    if not isinstance(value.publication_account_ids, tuple):
+        raise _fail()
+    publication_account_ids = tuple(
+        _nonblank(account_id) for account_id in value.publication_account_ids
+    )
+    if publication_account_ids != tuple(sorted(publication_account_ids)) or len(
+        set(publication_account_ids)
+    ) != len(publication_account_ids):
+        raise _fail()
     return BuildSnapshotRefreshCoverageCommand(
         user_id=user_id,
         snapshot_timestamp=snapshot_timestamp,
@@ -183,6 +193,7 @@ def _validate_command(
         calculated_at=calculated_at,
         created_at=created_at,
         is_recalculated=value.is_recalculated,
+        publication_account_ids=publication_account_ids,
     )
 
 
@@ -370,6 +381,7 @@ class SnapshotRefreshEvidenceService:
             calculated_at=canonical.calculated_at,
             created_at=canonical.created_at,
             is_recalculated=canonical.is_recalculated,
+            publication_account_ids=canonical.publication_account_ids,
             accounts=account_evidence,
         )
         try:

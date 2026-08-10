@@ -102,7 +102,7 @@ describe("dashboard snapshot cutover boundaries", () => {
 
   it("keeps dashboard presentation fixed and uses the Python operational route", async () => {
     await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
-      "0c91e89d3f2dbca56a0ab55831c2e8a1f6b5e26840287e0969d0bc2822322495"
+      "8778ba79c9ad72dd8e7e956864e6b1b3637537ea9299818b7a10d681a513c7f1"
     )
     const route = await source("src/app/api/dashboard/route.ts")
     expect(route).toContain("createPythonOperationalDashboardApi")

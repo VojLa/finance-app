@@ -10,6 +10,7 @@ from scripts.migration_policy import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
     HEAD_REVISION,
+    IMPORT_PUBLICATION_ANCHOR_REVISION,
     MULTI_CURRENCY_COST_BASIS_REVISION,
     archive_state,
     render_archive_manifest,
@@ -169,8 +170,8 @@ def test_workflow_policy_rejects_removed_prisma_tooling(
     workflows.mkdir()
     workflow = workflows / "database-schema.yml"
     workflow.write_text(
-        "run: python scripts/database_schema.py --check --revision 3l0001bgjob\n"
-        "run: python scripts/database_schema.py --check --revision 3l0001bgjob\n",
+        "run: python scripts/database_schema.py --check --revision 3m0001importanchor\n"
+        "run: python scripts/database_schema.py --check --revision 3m0001importanchor\n",
         encoding="utf-8",
     )
     verify_workflow_policy(workflows)
@@ -184,12 +185,15 @@ def test_database_workflow_verifies_current_head_artifact() -> None:
     workflow = BACKEND_ROOT.parents[1] / ".github" / "workflows" / "database-schema.yml"
     source = workflow.read_text(encoding="utf-8")
 
-    assert source.count("python scripts/database_schema.py --check --revision 3l0001bgjob") >= 2
+    assert (
+        source.count("python scripts/database_schema.py --check --revision 3m0001importanchor") >= 2
+    )
 
 
 def test_policy_revision_boundary_is_stable() -> None:
     assert BASELINE_REVISION == "3d0001base"
     assert CUTOVER_REVISION == "3e0001cutover"
-    assert HEAD_REVISION == "3l0001bgjob"
+    assert HEAD_REVISION == "3m0001importanchor"
     assert MULTI_CURRENCY_COST_BASIS_REVISION == "3k0001mcost"
     assert BACKGROUND_JOB_REVISION == "3l0001bgjob"
+    assert IMPORT_PUBLICATION_ANCHOR_REVISION == "3m0001importanchor"

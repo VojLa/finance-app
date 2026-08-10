@@ -18,6 +18,21 @@ type JobStorage = Pick<Storage, "length" | "key" | "getItem" | "setItem" | "remo
 
 export type ImportPollGate = { inFlight: boolean; pending: boolean }
 
+export type ImportPollJobDecision =
+  | Readonly<{ kind: "completed" }>
+  | Readonly<{ kind: "failed" }>
+  | Readonly<{ kind: "continue"; runAfter: string | null }>
+
+export function resolveImportPollJob(job: PythonImportJob): ImportPollJobDecision {
+  if (job.status === "completed") return { kind: "completed" }
+  if (job.status === "failed") return { kind: "failed" }
+  return { kind: "continue", runAfter: job.status === "retry_wait" ? job.run_after : null }
+}
+
+export function resolveImportPollFailure(status: number | null): "discard" | "retry" {
+  return status === 404 ? "discard" : "retry"
+}
+
 export function beginImportPoll(gate: ImportPollGate): boolean {
   if (gate.inFlight) {
     gate.pending = true

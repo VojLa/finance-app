@@ -154,6 +154,8 @@ class AccountService:
         payload: AccountMemberRoleUpdateRequest,
     ) -> AccountMemberResponse:
         await self._require_owner(principal=principal, account_id=account_id)
+        if await self.repository.get_account_for_update(account_id) is None:
+            raise AccountNotFoundError()
         membership = await self.repository.get_member(account_id=account_id, member_id=member_id)
         if membership is None:
             raise AccountMemberNotFoundError()
@@ -179,6 +181,8 @@ class AccountService:
         member_id: str,
     ) -> None:
         await self._require_owner(principal=principal, account_id=account_id)
+        if await self.repository.get_account_for_update(account_id) is None:
+            raise AccountNotFoundError()
         membership = await self.repository.get_member(account_id=account_id, member_id=member_id)
         if membership is None:
             raise AccountMemberNotFoundError()

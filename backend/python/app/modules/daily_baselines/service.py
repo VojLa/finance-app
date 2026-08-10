@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.canonical_lineage import (
     AccountCanonicalChangeModel,
     AccountCanonicalStateModel,
@@ -19,9 +20,16 @@ from app.db.models.canonical_lineage import (
     DailySnapshotBaselineModel,
 )
 from app.db.models.common import TIMESTAMP
-from app.db.models.enums import AccountType, SnapshotGranularity, SnapshotSource
+from app.db.models.enums import (
+    AccountType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    SnapshotGranularity,
+    SnapshotSource,
+)
 from app.db.models.ledger import InvestmentEventModel
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
@@ -71,6 +79,8 @@ class PersistDailySnapshotBaselineCommand:
     source: SnapshotSource
     created_at: datetime
     primary_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...]
+    granularity: SnapshotGranularity = SnapshotGranularity.day
+    publication_job_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +124,33 @@ class DailySnapshotBaseline:
     source: SnapshotSource
     accounts: tuple[DailyBaselineAccount, ...]
     post_baseline_changes: tuple[DailyBaselineChange, ...]
+    granularity: SnapshotGranularity = SnapshotGranularity.day
+    publication_job_id: str | None = None
+
+
+def freeze_baseline_post_changes(
+    baseline: DailySnapshotBaseline,
+    *,
+    account_ids: tuple[str, ...],
+) -> DailySnapshotBaseline:
+    """Keep the published baseline for accounts with an unpublished import job.
+
+    An import can commit canonical rows before its coordinated snapshot
+    publication succeeds.  Those rows must not become a read-time delta until
+    the durable job has left its active lifecycle.  This helper intentionally
+    keeps the original immutable baseline identity and only removes forward
+    changes for the affected accounts.
+    """
+
+    frozen = frozenset(_text(account_id) for account_id in account_ids)
+    if not frozen:
+        return baseline
+    return replace(
+        baseline,
+        post_baseline_changes=tuple(
+            change for change in baseline.post_baseline_changes if change.account_id not in frozen
+        ),
+    )
 
 
 def _fail() -> DailyBaselineError:
@@ -163,6 +200,74 @@ def _baseline_id(net_worth_snapshot_id: str) -> str:
     return str(uuid5(_BASELINE_NAMESPACE, _text(net_worth_snapshot_id)))
 
 
+def _publication_granularity(
+    granularity: object,
+    source: object,
+) -> SnapshotGranularity:
+    if not isinstance(granularity, SnapshotGranularity) or not isinstance(source, SnapshotSource):
+        raise _fail()
+    if granularity is SnapshotGranularity.day:
+        return granularity
+    if granularity is SnapshotGranularity.minute and source is SnapshotSource.import_event:
+        return granularity
+    raise _fail()
+
+
+def _publication_job_id(
+    value: object,
+    *,
+    granularity: SnapshotGranularity,
+) -> str | None:
+    if granularity is SnapshotGranularity.day:
+        if value is not None:
+            raise _fail()
+        return None
+    if granularity is SnapshotGranularity.minute:
+        return _text(value)
+    raise _fail()
+
+
+def _aligned_publication_timestamp(
+    timestamp: object,
+    granularity: SnapshotGranularity,
+) -> datetime:
+    value = _timestamp(timestamp)
+    if granularity is SnapshotGranularity.day and value.time() == datetime.min.time():
+        return value
+    if granularity is SnapshotGranularity.minute and value.second == 0 and value.microsecond == 0:
+        return value
+    raise _fail()
+
+
+def _published_baseline_query(*, user_id: str, through: datetime):
+    return (
+        select(DailySnapshotBaselineModel)
+        .outerjoin(
+            ImportJobPublicationTargetModel,
+            (DailySnapshotBaselineModel.background_job_id == ImportJobPublicationTargetModel.job_id)
+            & (DailySnapshotBaselineModel.user_id == ImportJobPublicationTargetModel.user_id),
+        )
+        .outerjoin(
+            BackgroundJobModel,
+            DailySnapshotBaselineModel.background_job_id == BackgroundJobModel.id,
+        )
+        .where(
+            DailySnapshotBaselineModel.user_id == user_id,
+            DailySnapshotBaselineModel.timestamp <= through,
+            (DailySnapshotBaselineModel.background_job_id.is_(None))
+            | (
+                (BackgroundJobModel.status == BackgroundJobStatus.completed)
+                & (ImportJobPublicationTargetModel.published_at.is_not(None))
+            ),
+        )
+        .order_by(
+            DailySnapshotBaselineModel.timestamp.desc(),
+            DailySnapshotBaselineModel.id.desc(),
+        )
+        .limit(1)
+    )
+
+
 def _lock_id(scope: str) -> int:
     return int.from_bytes(sha256(scope.encode()).digest()[:8], "big", signed=True)
 
@@ -193,13 +298,14 @@ def _boundary_account(
     presentation: AccountSnapshotModel,
     primary_boundary: AccountSnapshotCanonicalBoundaryModel,
     presentation_boundary: AccountSnapshotCanonicalBoundaryModel,
+    granularity: SnapshotGranularity,
 ) -> DailyBaselineAccount:
     if (
         account.id != primary.account_id
         or account.id != presentation.account_id
         or primary.timestamp != presentation.timestamp
-        or primary.granularity is not SnapshotGranularity.day
-        or presentation.granularity is not SnapshotGranularity.day
+        or primary.granularity is not granularity
+        or presentation.granularity is not granularity
         or primary.source is not presentation.source
         or primary.calculation_version != presentation.calculation_version
         or primary_boundary.snapshot_id != primary.id
@@ -336,15 +442,16 @@ class DailySnapshotBaselineService:
             raise _fail()
         user_id = _text(command.user_id)
         net_worth_id = _text(command.net_worth_snapshot_id)
-        timestamp = _timestamp(command.timestamp)
+        granularity = _publication_granularity(command.granularity, command.source)
+        publication_job_id = _publication_job_id(
+            command.publication_job_id,
+            granularity=granularity,
+        )
+        timestamp = _aligned_publication_timestamp(command.timestamp, granularity)
         created_at = _timestamp(command.created_at)
         currency = _currency(command.currency)
         version = _version(command.calculation_version)
-        if (
-            timestamp.time() != datetime.min.time()
-            or not isinstance(command.source, SnapshotSource)
-            or not isinstance(command.primary_snapshot_identities, tuple)
-        ):
+        if not isinstance(command.primary_snapshot_identities, tuple):
             raise _fail()
         await self.session.execute(
             select(func.pg_advisory_xact_lock(_lock_id(f"daily-baseline:{user_id}:{timestamp!s}")))
@@ -367,7 +474,7 @@ class DailySnapshotBaselineService:
             or net_worth is None
             or net_worth.user_id != user_id
             or net_worth.timestamp != timestamp
-            or net_worth.granularity is not SnapshotGranularity.day
+            or net_worth.granularity is not granularity
             or net_worth.currency != currency
             or net_worth.calculation_version != version
             or net_worth.source is not command.source
@@ -390,6 +497,22 @@ class DailySnapshotBaselineService:
         ).all()
         accounts = tuple(account_rows)
         account_ids = tuple(account.id for account in accounts)
+        if publication_job_id is not None:
+            job = await self.session.get(BackgroundJobModel, publication_job_id)
+            target = await self.session.get(
+                ImportJobPublicationTargetModel,
+                (publication_job_id, user_id),
+            )
+            if (
+                job is None
+                or target is None
+                or target.published_at is not None
+                or target.bucket != timestamp
+                or job.account_id not in account_ids
+                or job.kind is not BackgroundJobKind.import_workflow
+                or job.status is BackgroundJobStatus.completed
+            ):
+                raise _fail()
         identities = command.primary_snapshot_identities
         if (
             len(set(account_ids)) != len(account_ids)
@@ -408,7 +531,7 @@ class DailySnapshotBaselineService:
                 primary is None
                 or primary.account_id != account.id
                 or primary.timestamp != timestamp
-                or primary.granularity is not SnapshotGranularity.day
+                or primary.granularity is not granularity
                 or primary.currency != currency
                 or primary.calculation_version != version
                 or primary.source is not command.source
@@ -421,7 +544,7 @@ class DailySnapshotBaselineService:
                     select(AccountSnapshotModel).where(
                         AccountSnapshotModel.account_id == account.id,
                         AccountSnapshotModel.timestamp == timestamp,
-                        AccountSnapshotModel.granularity == SnapshotGranularity.day,
+                        AccountSnapshotModel.granularity == granularity,
                         AccountSnapshotModel.currency == account_currency,
                     )
                 )
@@ -449,6 +572,7 @@ class DailySnapshotBaselineService:
                 presentation=presentation,
                 primary_boundary=primary_boundary,
                 presentation_boundary=presentation_boundary,
+                granularity=granularity,
             )
             state = await self.session.get(AccountCanonicalStateModel, account.id)
             if (
@@ -505,6 +629,8 @@ class DailySnapshotBaselineService:
                 user_id=user_id,
                 net_worth_id=net_worth_id,
                 timestamp=timestamp,
+                granularity=granularity,
+                publication_job_id=publication_job_id,
                 currency=currency,
                 version=version,
                 source=command.source,
@@ -532,10 +658,11 @@ class DailySnapshotBaselineService:
                 user_id=user_id,
                 net_worth_snapshot_id=net_worth_id,
                 timestamp=timestamp,
-                granularity=SnapshotGranularity.day,
+                granularity=granularity,
                 currency=currency,
                 calculation_version=version,
                 source=command.source,
+                background_job_id=publication_job_id,
                 created_at=created_at,
             )
         )
@@ -573,6 +700,8 @@ class DailySnapshotBaselineService:
         user_id: str,
         net_worth_id: str,
         timestamp: datetime,
+        granularity: SnapshotGranularity,
+        publication_job_id: str | None,
         currency: str,
         version: int,
         source: SnapshotSource,
@@ -583,7 +712,8 @@ class DailySnapshotBaselineService:
             root.user_id != user_id
             or root.net_worth_snapshot_id != net_worth_id
             or root.timestamp != timestamp
-            or root.granularity is not SnapshotGranularity.day
+            or root.granularity is not granularity
+            or root.background_job_id != publication_job_id
             or root.currency != currency
             or root.calculation_version != version
             or root.source is not source
@@ -610,7 +740,11 @@ class DailySnapshotBaselineService:
         return True
 
     async def select_latest_valid(
-        self, *, user_id: str, through: datetime
+        self,
+        *,
+        user_id: str,
+        through: datetime,
+        frozen_account_ids: tuple[str, ...] = (),
     ) -> DailySnapshotBaseline:
         if self.session.in_transaction():
             raise DailyBaselineUnavailableError()
@@ -622,20 +756,18 @@ class DailySnapshotBaselineService:
                     text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 )
                 root = await self.session.scalar(
-                    select(DailySnapshotBaselineModel)
-                    .where(
-                        DailySnapshotBaselineModel.user_id == canonical_user,
-                        DailySnapshotBaselineModel.timestamp <= canonical_through,
+                    _published_baseline_query(
+                        user_id=canonical_user,
+                        through=canonical_through,
                     )
-                    .order_by(
-                        DailySnapshotBaselineModel.timestamp.desc(),
-                        DailySnapshotBaselineModel.id.desc(),
-                    )
-                    .limit(1)
                 )
                 if root is None:
                     raise DailyBaselineUnavailableError()
-                return await self._validate_selected(root, through=canonical_through)
+                return await self._validate_selected(
+                    root,
+                    through=canonical_through,
+                    frozen_account_ids=frozen_account_ids,
+                )
         except DailyBaselineUnavailableError:
             raise
         except (DailyBaselineError, SQLAlchemyError) as exc:
@@ -647,6 +779,7 @@ class DailySnapshotBaselineService:
         baseline_id: str,
         user_id: str,
         through: datetime,
+        frozen_account_ids: tuple[str, ...] = (),
     ) -> DailySnapshotBaseline:
         """Revalidate the newest exact baseline inside a caller-owned stable read."""
 
@@ -664,21 +797,19 @@ class DailySnapshotBaselineService:
         ):
             raise DailyBaselineUnavailableError()
         newest = await self.session.scalar(
-            select(DailySnapshotBaselineModel)
-            .where(
-                DailySnapshotBaselineModel.user_id == canonical_user,
-                DailySnapshotBaselineModel.timestamp <= canonical_through,
+            _published_baseline_query(
+                user_id=canonical_user,
+                through=canonical_through,
             )
-            .order_by(
-                DailySnapshotBaselineModel.timestamp.desc(),
-                DailySnapshotBaselineModel.id.desc(),
-            )
-            .limit(1)
         )
         if newest is None or newest.id != canonical_baseline_id:
             raise DailyBaselineUnavailableError()
         try:
-            return await self._validate_selected(newest, through=canonical_through)
+            return await self._validate_selected(
+                newest,
+                through=canonical_through,
+                frozen_account_ids=frozen_account_ids,
+            )
         except DailyBaselineError as exc:
             raise DailyBaselineUnavailableError() from exc
 
@@ -687,7 +818,9 @@ class DailySnapshotBaselineService:
         root: DailySnapshotBaselineModel,
         *,
         through: datetime,
+        frozen_account_ids: tuple[str, ...] = (),
     ) -> DailySnapshotBaseline:
+        frozen_accounts = frozenset(_text(account_id) for account_id in frozen_account_ids)
         user = await self.session.get(UserModel, root.user_id)
         net_worth = await self.session.get(NetWorthSnapshotModel, root.net_worth_snapshot_id)
         # Imported lazily to keep the lineage module independent from the
@@ -700,8 +833,14 @@ class DailySnapshotBaselineService:
         if (
             user is None
             or net_worth is None
-            or root.granularity is not SnapshotGranularity.day
+            or _publication_granularity(root.granularity, root.source) is not root.granularity
+            or _publication_job_id(
+                root.background_job_id,
+                granularity=root.granularity,
+            )
+            != root.background_job_id
             or root.timestamp != net_worth.timestamp
+            or root.granularity is not net_worth.granularity
             or root.currency != _currency(user.base_currency)
             or root.currency != net_worth.currency
             or root.calculation_version != current_version
@@ -723,6 +862,25 @@ class DailySnapshotBaselineService:
                 )
             ).all()
         )
+        if root.background_job_id is not None:
+            publication_job = await self.session.get(
+                BackgroundJobModel,
+                root.background_job_id,
+            )
+            publication_target = await self.session.get(
+                ImportJobPublicationTargetModel,
+                (root.background_job_id, root.user_id),
+            )
+            if (
+                publication_job is None
+                or publication_target is None
+                or publication_target.published_at is None
+                or publication_target.bucket != root.timestamp
+                or publication_job.kind is not BackgroundJobKind.import_workflow
+                or publication_job.status is not BackgroundJobStatus.completed
+                or publication_job.account_id not in {account.id for account in current_accounts}
+            ):
+                raise _fail()
         children = tuple(
             (
                 await self.session.scalars(
@@ -771,6 +929,8 @@ class DailySnapshotBaselineService:
                 or child.account_currency != _currency(account.currency)
                 or primary.timestamp != root.timestamp
                 or presentation.timestamp != root.timestamp
+                or primary.granularity is not root.granularity
+                or presentation.granularity is not root.granularity
                 or primary.currency != root.currency
                 or presentation.currency != account.currency
                 or primary.calculation_version != root.calculation_version
@@ -785,6 +945,7 @@ class DailySnapshotBaselineService:
                 presentation=presentation,
                 primary_boundary=primary_boundary,
                 presentation_boundary=presentation_boundary,
+                granularity=root.granularity,
             )
             if any(
                 (
@@ -843,7 +1004,9 @@ class DailySnapshotBaselineService:
             )
             for change in account_changes:
                 if change.financial_timestamp <= root.timestamp:
-                    raise _fail()
+                    if account.id not in frozen_accounts:
+                        raise _fail()
+                    continue
                 if change.financial_timestamp <= through:
                     changes.append(
                         DailyBaselineChange(
@@ -855,18 +1018,23 @@ class DailySnapshotBaselineService:
                         )
                     )
             accounts.append(expected)
-        return DailySnapshotBaseline(
-            baseline_id=_text(root.id),
-            user_id=_text(root.user_id),
-            net_worth_snapshot_id=_text(root.net_worth_snapshot_id),
-            timestamp=_timestamp(root.timestamp),
-            currency=_currency(root.currency),
-            calculation_version=_version(root.calculation_version),
-            source=root.source,
-            accounts=tuple(accounts),
-            post_baseline_changes=tuple(
-                sorted(changes, key=lambda item: (item.account_id, item.revision))
+        return freeze_baseline_post_changes(
+            DailySnapshotBaseline(
+                baseline_id=_text(root.id),
+                user_id=_text(root.user_id),
+                net_worth_snapshot_id=_text(root.net_worth_snapshot_id),
+                timestamp=_timestamp(root.timestamp),
+                currency=_currency(root.currency),
+                calculation_version=_version(root.calculation_version),
+                source=root.source,
+                accounts=tuple(accounts),
+                post_baseline_changes=tuple(
+                    sorted(changes, key=lambda item: (item.account_id, item.revision))
+                ),
+                granularity=root.granularity,
+                publication_job_id=root.background_job_id,
             ),
+            account_ids=frozen_account_ids,
         )
 
     async def _validate_change_root(

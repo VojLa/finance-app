@@ -255,6 +255,11 @@ class AccountInvitationService:
         invite = await self.repository.get_active_by_token_hash(_token_hash(payload.token))
         if invite is None:
             raise AccountInviteNotFoundError()
+        account = await self.session.scalar(
+            select(AccountModel).where(AccountModel.id == invite.account_id).with_for_update()
+        )
+        if account is None:
+            raise AccountInviteNotFoundError()
         now = _now()
         if invite.status is not AccountInviteStatus.pending:
             raise AccountInviteConflictError(

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.snapshots import NetWorthSnapshotModel
 from app.db.models.users import UserModel
+from app.modules.jobs.publication_queries import is_history_snapshot_visible
 from app.modules.portfolio_history.models import PersistedPortfolioHistoryPoint
 
 
@@ -45,6 +46,12 @@ class PortfolioHistoryRepository:
         start: datetime | None,
         end: datetime,
     ) -> tuple[PersistedPortfolioHistoryPoint, ...]:
+        visible_history_snapshot = is_history_snapshot_visible(
+            snapshot_id=NetWorthSnapshotModel.id,
+            user_id=NetWorthSnapshotModel.user_id,
+            timestamp=NetWorthSnapshotModel.timestamp,
+            source=NetWorthSnapshotModel.source,
+        )
         statement = select(
             NetWorthSnapshotModel.id,
             NetWorthSnapshotModel.user_id,
@@ -61,6 +68,7 @@ class PortfolioHistoryRepository:
             NetWorthSnapshotModel.user_id == user_id,
             NetWorthSnapshotModel.currency == currency,
             NetWorthSnapshotModel.timestamp <= end,
+            visible_history_snapshot,
         )
         if start is not None:
             statement = statement.where(NetWorthSnapshotModel.timestamp >= start)

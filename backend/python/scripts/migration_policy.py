@@ -38,7 +38,8 @@ DAILY_BASELINE_REVISION = "3i0001d1base"
 DIRECT_FX_REVISION = "3j0001twfx"
 MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
 BACKGROUND_JOB_REVISION = "3l0001bgjob"
-HEAD_REVISION = BACKGROUND_JOB_REVISION
+IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
+HEAD_REVISION = IMPORT_PUBLICATION_ANCHOR_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -60,6 +61,12 @@ MULTI_CURRENCY_COST_BASIS_REVISION_PATH = (
 )
 BACKGROUND_JOB_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3l0001bgjob_add_persisted_background_jobs.py"
+)
+IMPORT_PUBLICATION_ANCHOR_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3m0001importanchor_allow_minute_import_publication_anchor.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -217,7 +224,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 13,
+        "schema_version": 14,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -256,7 +263,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 9,
+        "revision_count": 10,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -264,8 +271,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3l0001bgjob/schema.sql",
-        "checksum_source": "database/revisions/3l0001bgjob/schema.sha256",
+        "schema_source": "database/revisions/3m0001importanchor/schema.sql",
+        "checksum_source": "database/revisions/3m0001importanchor/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -305,8 +312,10 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 9:
-        raise RuntimeError("The background-job schema requires exactly nine Alembic revisions.")
+    if len(revisions) != 10:
+        raise RuntimeError(
+            "The import publication-anchor schema requires exactly ten Alembic revisions."
+        )
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
@@ -317,6 +326,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
     multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
+    background_job = by_revision.get(BACKGROUND_JOB_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
@@ -334,9 +344,13 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError("The Twelve Data FX revision must follow the D1 lineage head.")
     if multi_currency_cost is None or multi_currency_cost.down_revision != DIRECT_FX_REVISION:
         raise RuntimeError("The multi-currency cost basis revision must follow the FX head.")
-    if head is None or head.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
+    if background_job is None or background_job.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
         raise RuntimeError(
             "The background-job revision must follow the multi-currency cost basis head."
+        )
+    if head is None or head.down_revision != BACKGROUND_JOB_REVISION:
+        raise RuntimeError(
+            "The import publication-anchor revision must follow the background-job head."
         )
 
     cutover_module = cutover.module
@@ -499,7 +513,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": False,
     }
     for key, value in expected_background_job_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(background_job.module, key, None) != value:
             raise RuntimeError(f"Background-job revision metadata is invalid for {key}.")
     background_job_source = BACKGROUND_JOB_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -518,6 +532,41 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     ):
         if token not in background_job_source:
             raise RuntimeError(f"Background-job revision is missing required token {token}.")
+
+    expected_anchor_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "allow_import_current_value_publication_anchor",
+        "affected_tables": ("DailySnapshotBaseline", "ImportJobPublicationTarget"),
+        "affected_columns": (
+            "DailySnapshotBaseline.granularity",
+            "DailySnapshotBaseline.source",
+            "DailySnapshotBaseline.backgroundJobId",
+            "ImportJobPublicationTarget.jobId",
+            "ImportJobPublicationTarget.userId",
+            "ImportJobPublicationTarget.bucket",
+            "ImportJobPublicationTarget.publishedAt",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_anchor_metadata.items():
+        if getattr(head.module, key, None) != value:
+            raise RuntimeError(f"Import publication-anchor revision metadata is invalid for {key}.")
+    anchor_source = IMPORT_PUBLICATION_ANCHOR_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "DailySnapshotBaseline_day_only",
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "\\'minute\\'::\"SnapshotGranularity\"",
+        "\\'import_event\\'::\"SnapshotSource\"",
+        '"backgroundJobId"',
+        "ImportJobPublicationTarget",
+        "DailySnapshotBaseline_backgroundJob_user_fkey",
+        "Cannot remove minute import publication anchors while evidence exists.",
+    ):
+        if token not in anchor_source:
+            raise RuntimeError(
+                f"Import publication-anchor revision is missing required token {token}."
+            )
 
 
 def verify_schema_registry(

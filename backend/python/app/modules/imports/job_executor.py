@@ -148,6 +148,7 @@ type ClassifierFactory = Callable[[AsyncSession], _Classifier]
 type PosterFactory = Callable[[AsyncSession], _Poster]
 type FinalizerFactory = Callable[[AsyncSession], _Finalizer]
 type BatchRepositoryFactory = Callable[[AsyncSession], _BatchRepository]
+type PublicationBucketResolver = Callable[[], Awaitable[datetime]]
 type CheckpointHook = Callable[[ImportExecutionCheckpoint], Awaitable[None]]
 type ProgressHook = Callable[[ImportExecutionProgress], Awaitable[None]]
 
@@ -324,6 +325,8 @@ class ImportJobExecutor:
         on_checkpoint: CheckpointHook,
         *,
         on_progress: ProgressHook | None = None,
+        publication_bucket: datetime | None = None,
+        publication_bucket_resolver: PublicationBucketResolver | None = None,
     ) -> ImportExecutionResult:
         canonical_job_id = _nonblank(job_id)
         canonical_user_id = _nonblank(user_id)
@@ -338,10 +341,17 @@ class ImportJobExecutor:
             if completed is not None and _STAGES.index(stage) <= _STAGES.index(completed):
                 continue
             if stage is ImportExecutionStage.finalize:
+                bucket = (
+                    await publication_bucket_resolver()
+                    if publication_bucket_resolver is not None
+                    else publication_bucket
+                )
                 finalization = await self._finalize(
+                    job_id=canonical_job_id,
                     user_id=canonical_user_id,
                     account_id=canonical_account_id,
                     batch_ids=canonical_payload.batch_ids,
+                    publication_bucket=bucket,
                 )
             else:
                 await self._run_batch_stage(
@@ -367,10 +377,17 @@ class ImportJobExecutor:
                 )
             # A worker can crash after persisting its fenced checkpoint but before it marks
             # the job complete. Finalization is itself an exact replay boundary.
+            bucket = (
+                await publication_bucket_resolver()
+                if publication_bucket_resolver is not None
+                else publication_bucket
+            )
             finalization = await self._finalize(
+                job_id=canonical_job_id,
                 user_id=canonical_user_id,
                 account_id=canonical_account_id,
                 batch_ids=canonical_payload.batch_ids,
+                publication_bucket=bucket,
             )
         return ImportExecutionResult(
             job_id=canonical_job_id,
@@ -457,9 +474,11 @@ class ImportJobExecutor:
     async def _finalize(
         self,
         *,
+        job_id: str,
         user_id: str,
         account_id: str,
         batch_ids: tuple[str, ...],
+        publication_bucket: datetime | None,
     ) -> FinalizeImportBatchesResult:
         async with self.session_factory() as authorization_session:
             principal = await self._principal(
@@ -472,6 +491,8 @@ class ImportJobExecutor:
                     principal=principal,
                     account_id=account_id,
                     batch_ids=batch_ids,
+                    background_job_id=_nonblank(job_id),
+                    publication_bucket=publication_bucket,
                 )
             )
         if not isinstance(result, FinalizeImportBatchesResult) or result.batch_ids != batch_ids:

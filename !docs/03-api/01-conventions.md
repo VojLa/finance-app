@@ -193,29 +193,50 @@ contracts through `POST /api/portfolio/transactions` and the typed symbol-detail
 client; the Next.js layer performs only session transport and request
 allowlisting and contains no ledger or Holding calculation.
 
-## Next.js import route
+## Next.js import routes
 
-The import page calls one browser endpoint:
+| Method | Path                             | Purpose                           |
+| ------ | -------------------------------- | --------------------------------- |
+| `POST` | `/api/import`                    | Register/upload files and enqueue |
+| `GET`  | `/api/import/jobs/{jobId}`       | Read scoped durable progress      |
+| `POST` | `/api/import/jobs/{jobId}/retry` | Explicitly retry one failed job   |
 
-| Method | Path          | Purpose                                      |
-| ------ | ------------- | -------------------------------------------- |
-| `POST` | `/api/import` | Run one or more files through the Python API |
+The multipart start request contains only `accountId`, one supported source,
+and CSV files. Next.js reads NextAuth once, validates the bridge allowlist and
+aggregate upload boundary, preserves exact bytes, registers/uploads accepted
+batches, and starts exactly one Python job. It returns HTTP 202 with the safe job
+DTO plus accepted batch IDs and safe per-file rejections. It does not wait for
+parse, posting, market evidence, or snapshots.
 
-The multipart request contains only `accountId`, one supported source value,
-and CSV files. The route reads NextAuth once, validates the bridge-level field
-allowlist, preserves exact binary bytes, and processes files sequentially in
-the submitted order. For each file it calls create, upload, parse, normalize,
-deduplicate, classify, post, and final batch read. Every FastAPI call obtains a
-new internal bearer token through the shared no-store, timeout-bound transport.
+Status and retry adapters are no-store, mint a fresh short-lived internal token,
+and validate exact generated responses including requested account/job identity.
+They never expose durable payload, checkpoint, idempotency key, lease owner,
+lease version, or raw Python errors. Missing and foreign scope converge on the
+same safe 404; retry authorization remains enforced by Python.
 
-The browser receives a safe completed/duplicate/failed result with aggregate
-stage counters. A later failure retains safe earlier completion evidence.
-There is no polling, preview call, retry, browser-side parser, caller-supplied
-posting plan, or FastAPI credential forwarding. R11-I removes the unused
-provider-specific and status routes plus the complete TypeScript parser,
-registry, deduplication, canonical-posting, Holding, and snapshot pipeline.
-`POST /api/import` and `POST /api/import/finalize` are the only registered
-browser import routes.
+The browser persists only versioned user/account/job identity, polls with bounded
+single-flight backoff, resumes after reload/navigation, and keeps retry_wait
+automatic. A five-second message is a UI threshold, not a network timeout.
+Only a validated completed result publishes the completion event. There is no
+browser parser, caller-supplied posting plan, synchronous finalization route, or
+FastAPI credential forwarding.
+
+Portfolio and dashboard never assemble financial state from job progress. The
+public API remains unchanged: clients neither select publication buckets nor
+receive publication targets. Immediately before final snapshot acquisition,
+Python reconciles a minute target for every current member of the imported
+account. A target with no job-linked anchor may move forward on retry without
+deleting unrelated manual snapshot evidence. If a canonical write makes an
+unpublished anchor stale, Python keeps the fence closed and republishes from a
+fresh target; a same-user collision yields a
+safe `retry_wait` job state without consuming an attempt. The current-value
+boundary keeps affected accounts on their last published baseline for `queued`,
+`running`, `retry_wait`, and `failed` jobs. Completion is visible only after an
+exact minute `import_event` anchor exists for every current member and the
+worker atomically sets every target `publishedAt` with `completed` under the
+membership lock. The browser refreshes finance only after that validated
+completed result, serializes overlapping requests into one follow-up, and
+retains the last ready response if the refresh is unavailable.
 
 ## Portfolio page integration
 

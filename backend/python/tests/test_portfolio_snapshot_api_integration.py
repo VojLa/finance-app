@@ -299,6 +299,9 @@ async def _seed(
                         value_currency=native_currency,
                         native_cost_basis=Decimal(cost),
                         native_cost_currency=native_currency,
+                        native_cost_basis_by_currency={native_currency: cost},
+                        average_buy_price=Decimal(cost) / Decimal(2),
+                        average_buy_price_currency=native_currency,
                     )
                 )
         await session.commit()

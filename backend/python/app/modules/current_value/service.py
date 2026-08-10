@@ -122,6 +122,10 @@ class CurrentValueUnavailableError(ApplicationError):
         )
 
 
+class _PublicationStateChangedError(RuntimeError):
+    """The durable import fence changed between stable current-value reads."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReadCurrentPortfolioCommand:
     principal: AuthenticatedPrincipal
@@ -263,12 +267,17 @@ def _principal(command: object) -> str:
     return _text(principal.user_id)
 
 
-def _account_view(lineage: DailyBaselineAccount, baseline: PortfolioSnapshotView) -> None:
+def _account_view(
+    lineage: DailyBaselineAccount,
+    baseline: PortfolioSnapshotView,
+    *,
+    granularity: SnapshotGranularity,
+) -> None:
     if (
         baseline.account.account_id != lineage.account_id
         or baseline.account.currency != lineage.account_currency
         or baseline.timestamp.tzinfo is not None
-        or baseline.granularity is not PortfolioGranularity.day
+        or baseline.granularity.value != granularity.value
     ):
         raise _fail()
 
@@ -316,10 +325,12 @@ async def _prepare_account(
     lineage: DailyBaselineAccount,
     changes: tuple[DailyBaselineChange, ...],
 ) -> _PreparedAccount:
+    portfolio_granularity = PortfolioGranularity(baseline.granularity.value)
     primary = await repository.load_baseline_view(
         account_id=lineage.account_id,
         snapshot_id=lineage.primary_snapshot_id,
         timestamp=baseline.timestamp,
+        granularity=portfolio_granularity,
         currency=baseline.currency,
         calculation_version=baseline.calculation_version,
     )
@@ -327,11 +338,12 @@ async def _prepare_account(
         account_id=lineage.account_id,
         snapshot_id=lineage.presentation_snapshot_id,
         timestamp=baseline.timestamp,
+        granularity=portfolio_granularity,
         currency=lineage.account_currency,
         calculation_version=baseline.calculation_version,
     )
-    _account_view(lineage, primary)
-    _account_view(lineage, presentation)
+    _account_view(lineage, primary, granularity=baseline.granularity)
+    _account_view(lineage, presentation, granularity=baseline.granularity)
     primary_snapshot = await repository.load_snapshot(lineage.primary_snapshot_id)
     presentation_snapshot = await repository.load_snapshot(lineage.presentation_snapshot_id)
     if primary_snapshot is None or presentation_snapshot is None:
@@ -896,22 +908,49 @@ class CurrentValueService:
         as_of = canonical_current_value_as_of(self.clock())
         baseline_service = DailySnapshotBaselineService(self.session)
         try:
-            baseline = await baseline_service.select_latest_valid(user_id=user_id, through=as_of)
-            plan = await self._build_plan(baseline, as_of=as_of)
-            market_service = self.market_service_factory(
-                self.session,
-                self.settings,
-                _StaticPlanner(plan.market_plan),
-            )
-            market_result = await market_service.refresh(
-                RefreshMarketEvidenceCommand(
-                    user_id=user_id,
-                    snapshot_timestamp=as_of,
-                    created_at=as_of,
-                )
-            )
-            _validate_market_result(market_result, plan.market_plan)
-            return await self._project(plan)
+            # A status transition while we build/project a current value must
+            # not publish a mixed canonical/import view. One retry handles a
+            # normal race; sustained churn returns the standard unavailable
+            # response instead of guessing which publication is authoritative.
+            for attempt in range(2):
+                try:
+                    frozen_account_ids = await self._load_active_import_account_ids(user_id)
+                    baseline = await baseline_service.select_latest_valid(
+                        user_id=user_id,
+                        through=as_of,
+                        frozen_account_ids=frozen_account_ids,
+                    )
+                    plan = await self._build_plan(
+                        baseline,
+                        as_of=as_of,
+                        frozen_account_ids=frozen_account_ids,
+                    )
+                    market_service = self.market_service_factory(
+                        self.session,
+                        self.settings,
+                        _StaticPlanner(plan.market_plan),
+                    )
+                    market_result = await market_service.refresh(
+                        RefreshMarketEvidenceCommand(
+                            user_id=user_id,
+                            snapshot_timestamp=as_of,
+                            created_at=as_of,
+                        )
+                    )
+                    _validate_market_result(market_result, plan.market_plan)
+                    return await self._project(plan)
+                except _PublicationStateChangedError:
+                    if attempt == 0:
+                        continue
+                    raise _fail() from None
+                except DailyBaselineUnavailableError:
+                    # A backdated canonical post can arrive after the initial
+                    # fence read. Re-read the fence once before declaring the
+                    # published baseline unavailable.
+                    if attempt == 0:
+                        continue
+                    raise
+            raise _fail()
         except CurrentValueUnavailableError:
             await self._close_transaction()
             raise
@@ -933,16 +972,24 @@ class CurrentValueService:
         baseline: DailySnapshotBaseline,
         *,
         as_of: datetime,
+        frozen_account_ids: tuple[str, ...],
     ) -> CurrentValuePlan:
         if self.session.in_transaction():
             raise _fail()
         async with self.session.begin():
             repository = CurrentValueRepository(self.session)
             await repository.set_repeatable_read_only()
+            active_account_ids = await repository.load_active_import_account_ids(
+                reader_user_id=baseline.user_id,
+                account_ids=tuple(account.account_id for account in baseline.accounts),
+            )
+            if active_account_ids != frozen_account_ids:
+                raise _PublicationStateChangedError()
             exact = await DailySnapshotBaselineService(self.session).validate_exact_in_transaction(
                 baseline_id=baseline.baseline_id,
                 user_id=baseline.user_id,
                 through=as_of,
+                frozen_account_ids=frozen_account_ids,
             )
             if exact != baseline:
                 raise _fail()
@@ -953,7 +1000,12 @@ class CurrentValueService:
                 as_of=as_of,
             )
         await self._require_idle()
-        return CurrentValuePlan(as_of=as_of, baseline=baseline, market_plan=market_plan)
+        return CurrentValuePlan(
+            as_of=as_of,
+            baseline=baseline,
+            market_plan=market_plan,
+            frozen_account_ids=frozen_account_ids,
+        )
 
     async def _project(self, plan: CurrentValuePlan) -> CurrentPortfolioResult:
         if self.session.in_transaction():
@@ -963,12 +1015,19 @@ class CurrentValueService:
         async with self.session.begin():
             repository = CurrentValueRepository(self.session)
             await repository.set_repeatable_read_only()
+            active_account_ids = await repository.load_active_import_account_ids(
+                reader_user_id=plan.baseline.user_id,
+                account_ids=tuple(account.account_id for account in plan.baseline.accounts),
+            )
+            if active_account_ids != plan.frozen_account_ids:
+                raise _PublicationStateChangedError()
             baseline = await DailySnapshotBaselineService(
                 self.session
             ).validate_exact_in_transaction(
                 baseline_id=plan.baseline.baseline_id,
                 user_id=plan.baseline.user_id,
                 through=plan.as_of,
+                frozen_account_ids=plan.frozen_account_ids,
             )
             if baseline != plan.baseline:
                 raise _fail()
@@ -1032,3 +1091,13 @@ class CurrentValueService:
     async def _close_transaction(self) -> None:
         if self.session.in_transaction():
             await self.session.rollback()
+
+    async def _load_active_import_account_ids(self, user_id: str) -> tuple[str, ...]:
+        if self.session.in_transaction():
+            raise _fail()
+        async with self.session.begin():
+            account_ids = await CurrentValueRepository(self.session).load_active_import_account_ids(
+                reader_user_id=user_id
+            )
+        await self._require_idle()
+        return account_ids

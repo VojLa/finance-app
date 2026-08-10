@@ -347,7 +347,7 @@ def _investment_field_review(
     return _review(_issue(field, code, message))
 
 
-def _investment_money(value: object) -> InvestmentMoneyPostingIntent | None | bool:
+def _investment_money(value: object) -> InvestmentMoneyPostingIntent | bool | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):

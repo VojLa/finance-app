@@ -72,9 +72,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             listingId: "listing-a",
             name: "Asset A",
             nativeCostBasis: "2500.0000000000",
-            nativeCostBasisByCurrency: [
-              { currency: "CZK", amount: "2500.0000000000" },
-            ],
+            nativeCostBasisByCurrency: [{ currency: "CZK", amount: "2500.0000000000" }],
             nativeCostCurrency: "CZK",
             nativeValue: "3000.1234560000",
             nativeValueCurrency: "CZK",
@@ -127,9 +125,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             listingId: "listing-b",
             name: "Asset B",
             nativeCostBasis: "35.0000000000",
-            nativeCostBasisByCurrency: [
-              { currency: "USD", amount: "35.0000000000" },
-            ],
+            nativeCostBasisByCurrency: [{ currency: "USD", amount: "35.0000000000" }],
             nativeCostCurrency: "USD",
             nativeValue: "45.0000000000",
             nativeValueCurrency: "USD",
@@ -159,9 +155,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           listingId: "listing-a",
           name: "Asset A",
           nativeCostBasis: "2500.0000000000",
-          nativeCostBasisByCurrency: [
-            { currency: "CZK", amount: "2500.0000000000" },
-          ],
+          nativeCostBasisByCurrency: [{ currency: "CZK", amount: "2500.0000000000" }],
           nativeCostCurrency: "CZK",
           nativeValue: "3000.1234560000",
           nativeValueCurrency: "CZK",
@@ -188,9 +182,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           listingId: "listing-b",
           name: "Asset B",
           nativeCostBasis: "35.0000000000",
-          nativeCostBasisByCurrency: [
-            { currency: "USD", amount: "35.0000000000" },
-          ],
+          nativeCostBasisByCurrency: [{ currency: "USD", amount: "35.0000000000" }],
           nativeCostCurrency: "USD",
           nativeValue: "45.0000000000",
           nativeValueCurrency: "USD",

@@ -15,7 +15,11 @@ from app.modules.jobs.models import (
     ImportJobProgress,
     ImportJobResult,
 )
-from app.modules.jobs.repository import BackgroundJobRepository, ClaimedBackgroundJob
+from app.modules.jobs.repository import (
+    BackgroundJobPublicationStaleError,
+    BackgroundJobRepository,
+    ClaimedBackgroundJob,
+)
 from app.modules.jobs.worker import (
     BackgroundJobWorker,
     RetryableBackgroundJobError,
@@ -142,7 +146,9 @@ async def test_worker_checkpoints_and_completes_with_fenced_updates(monkeypatch)
     assert await worker.run_once() is True
     checkpoint.assert_awaited_once()
     complete.assert_awaited_once()
-    assert complete.await_args.kwargs["progress"]["phase"] == "completed"
+    complete_call = complete.await_args
+    assert complete_call is not None
+    assert complete_call.kwargs["progress"]["phase"] == "completed"
     heartbeat.assert_not_awaited()
 
 
@@ -172,8 +178,46 @@ async def test_retryable_failure_is_rescheduled_without_public_exception_detail(
 
     assert await worker.run_once() is True
     retry.assert_awaited_once()
-    assert retry.await_args.kwargs["error_code"] == "snapshot_temporarily_unavailable"
+    retry_call = retry.await_args
+    assert retry_call is not None
+    assert retry_call.kwargs["error_code"] == "snapshot_temporarily_unavailable"
     fail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_publication_boundary_is_retried_without_waiting_for_lease_expiry(
+    monkeypatch,
+) -> None:
+    factory = _SessionFactory()
+    monkeypatch.setattr(
+        BackgroundJobRepository,
+        "claim_next",
+        AsyncMock(return_value=_claimed(attempt_count=1)),
+    )
+    monkeypatch.setattr(BackgroundJobRepository, "checkpoint", AsyncMock())
+    monkeypatch.setattr(
+        BackgroundJobRepository,
+        "complete",
+        AsyncMock(side_effect=BackgroundJobPublicationStaleError()),
+    )
+    monkeypatch.setattr(BackgroundJobRepository, "heartbeat", AsyncMock())
+    retry = AsyncMock()
+    monkeypatch.setattr(BackgroundJobRepository, "schedule_retry", retry)
+
+    worker = BackgroundJobWorker(
+        cast(Any, factory),
+        _SuccessfulExecutor(),
+        worker_id="worker-1",
+        lease_duration=timedelta(minutes=5),
+        heartbeat_interval=timedelta(minutes=1),
+    )
+
+    assert await worker.run_once() is True
+    retry.assert_awaited_once()
+    call = retry.await_args
+    assert call is not None
+    assert call.kwargs["error_code"] == "import_publication_stale"
+    assert call.kwargs["error_message"] == "Portfolio publication changed and will be retried."
 
 
 @pytest.mark.asyncio
@@ -200,7 +244,9 @@ async def test_exhausted_retry_becomes_safe_terminal_failure(monkeypatch) -> Non
 
     assert await worker.run_once() is True
     fail.assert_awaited_once()
-    assert fail.await_args.kwargs["error_code"] == "background_job_attempts_exhausted"
+    fail_call = fail.await_args
+    assert fail_call is not None
+    assert fail_call.kwargs["error_code"] == "background_job_attempts_exhausted"
     retry.assert_not_awaited()
 
 

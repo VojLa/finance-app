@@ -29,6 +29,7 @@ from app.modules.net_worth.writer import (
     NetWorthSnapshotWriteResult,
     NetWorthSnapshotWriteStateError,
 )
+from app.modules.snapshot_refresh import executor as executor_module
 from app.modules.snapshot_refresh.evidence_service import (
     BuildSnapshotRefreshCoverageCommand,
     CompleteSnapshotRefreshCoverage,
@@ -235,6 +236,37 @@ def _command(**changes: object) -> ExecuteUserSnapshotRefreshCommand:
     }
     values.update(changes)
     return ExecuteUserSnapshotRefreshCommand(**cast(Any, values))
+
+
+@pytest.mark.parametrize(
+    ("publication_job_id", "publication_account_ids", "valid"),
+    (
+        (None, (), True),
+        ("job-1", ("account-a",), True),
+        (None, ("account-a",), False),
+        ("job-1", (), False),
+    ),
+)
+def test_publication_account_override_requires_the_exact_internal_job_pair(
+    publication_job_id: str | None,
+    publication_account_ids: tuple[str, ...],
+    valid: bool,
+) -> None:
+    command = _command(
+        granularity=SnapshotGranularity.minute,
+        source=SnapshotSource.import_event,
+        is_recalculated=False,
+        publication_job_id=publication_job_id,
+        publication_account_ids=publication_account_ids,
+    )
+    if valid:
+        assert (
+            executor_module._validate_command(command).publication_account_ids
+            == publication_account_ids
+        )
+    else:
+        with pytest.raises(SnapshotRefreshExecutionStateError):
+            executor_module._validate_command(command)
 
 
 def _target(

@@ -104,11 +104,11 @@ class _Repository:
     def __init__(
         self,
         *,
-        asset: AssetModel | None | object = ...,
+        asset: AssetModel | object | None = ...,
         aliases: tuple[AssetAliasModel, ...] = (),
         external_alias: AssetAliasModel | None = None,
         id_alias: AssetAliasModel | None = None,
-        reload_override: AssetAliasModel | None | object = ...,
+        reload_override: AssetAliasModel | object | None = ...,
     ) -> None:
         self.asset = _asset() if asset is ... else cast(AssetModel | None, asset)
         self.aliases = aliases

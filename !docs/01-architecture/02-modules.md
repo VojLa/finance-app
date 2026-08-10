@@ -13,7 +13,7 @@ thin and shared database infrastructure lives outside modules.
 | `operational_dashboard` | Read-only persisted cash-flow, category, trend, and recent-transaction projection     | R11-F implemented                                                           |
 | `asset_aliases`         | Server-operator exact provider identity inventory and immutable onboarding            | R5-B4 implemented; remediation re-audit passed                              |
 | `liabilities`           | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
-| `imports`               | Register, canonical-post, and finalize logical multi-file CSV histories               | R10-A request-level post-processing implemented                             |
+| `imports`               | Register/upload files and execute durable logical multi-file CSV histories            | R12 PostgreSQL job and worker lifecycle implemented                         |
 | `investments`           | Idempotent manual event commands, atomic Holding rebuild, and symbol-detail reads     | R11-G implemented                                                           |
 | `portfolio`             | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
 | `portfolio_snapshot`    | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
@@ -768,45 +768,67 @@ four-decimal presentation percentages using largest-remainder distribution.
 This presentation step preserves every financial value and guarantees a
 `100.0000` total for non-empty allocation sets.
 
-## Logical multi-file import finalization
+## Durable logical multi-file import
 
-R10-A separates per-file canonical staging from request-level financial
-post-processing. The active browser request still accepts one account, one
-source, and one to ten files. Each file retains its own `ImportBatch` and runs
-the existing Python create, upload, parse, normalize, deduplicate, classify,
-and `ImportBatchPostingService` canonical-post path. That path does not rebuild
-Holdings or refresh snapshots when called through the multi-file adapter.
+R12 separates request-lifetime upload from durable execution. The active browser
+request accepts one account, one source, and one to ten files with a 64 MiB
+aggregate bridge limit. Each accepted file retains its own `ImportBatch`; after
+registration and byte-exact upload, Next.js enqueues exactly one account-scoped
+`import_workflow` job containing the sorted batch IDs and returns HTTP 202.
 
-After every nonfatal file outcome is known, the browser makes exactly one
-generated Python finalization request containing only the persisted batch IDs.
-Python owns the financial decision. It authorizes the principal, requires all
-batches to belong to the same principal and account, requires one exact
-persisted source and terminal state, and rejects duplicate or noncanonical
-command IDs. The browser cannot supply a Holding selector, affected account
-set, market plan, snapshot timestamp, calculation version, or output currency.
+PostgreSQL is the job lifecycle authority. An embedded Python worker claims jobs
+with a fenced lease and advances parse, normalize, deduplicate, classify,
+canonical-post, and shared finalization checkpoints. Checkpoint and business
+writes are replayable after a crash. Automatic failures use bounded retry_wait;
+an authorized manual retry resumes the same job identity. Concurrent enqueue,
+claim, heartbeat, checkpoint, completion, and retry paths are serialized or
+fenced so they cannot duplicate canonical finance.
 
-The finalizer reuses canonical posting replay as its persisted-state
-validation boundary. It derives the final timestamp as the maximum persisted
-`ImportBatch.completedAt` and floors it to the canonical import minute. If the
-aggregate imported row count is zero, finalization is `not_required`.
-Otherwise, any investment-event evidence causes one account-level Holding
-rebuild, followed by exactly one R5-B3A market-backed refresh and its one
-whole-user snapshot execution.
+The finalizer derives every financial selector from persisted evidence. After
+the replayable batch stages and immediately before snapshot acquisition, it
+reconciles one minute `ImportJobPublicationTarget` for each current account
+member. Same-user bucket collisions reserve the earliest free later minute and
+move the job to `retry_wait` without consuming an attempt. A target with no
+job-linked anchor may move forward on retry even when unrelated manual snapshot
+evidence occupies its former minute. An unpublished anchor stays fixed while its
+canonical boundary is current; a later canonical write produces a safe retry,
+retires only stale job-linked evidence, and requires a fresh target. Departed
+members' unpublished targets and anchors are
+retired under the account lock, while newly added members receive targets before
+completion. It rebuilds Holdings once and
+coordinates direct market/FX evidence plus per-member snapshot publication. A
+job becomes `completed` only for `created`, `replayed`, or `not_required` after
+an exact anchor exists for every current member. A duplicate-only replay still
+runs this publication path instead of bypassing the anchor; unavailable evidence leaves the
+prior complete manifest readable and the job retryable. The browser never
+supplies Holding selectors, market plans, timestamps, calculation versions,
+output currency, publication targets, or refresh overrides.
 
-There is no outer transaction across files or phases. Earlier canonical
-batches remain committed when a later file fails, and no finalization runs for
-that incomplete logical request. A Holding, market, or snapshot failure after
-canonical posting truthfully preserves prior phases. The safe partial or
-nonterminal summary retains only batch IDs that reached canonical posting.
-The import page may pass that exact set to the thin authenticated
-`POST /api/import/finalize` adapter; it performs no upload and delegates to the
-existing Python finalizer. Python revalidates the principal, account, terminal
-batch state, and source before replaying canonical posting and the financial
-phases. Existing deterministic replay and lock contracts converge concurrent
-finalization requests without duplicate Holdings, market evidence,
-AccountSnapshots, or NetWorthSnapshots. Ordinary checksum duplicates have no
-synthetic recovery ID and remain `not_required`. R10-A adds no schema,
-migration, worker, scheduler, queue, cache, or automatic retry.
+An import publication persists one narrow minute baseline anchor for every
+current member from the same exact `import_event` snapshot graph. Ordinary
+scheduled baselines remain day-granularity. The minute exception is restricted
+to `import_event`, so current-value reads can start from the newly published
+historical import without pretending that present-time provider evidence existed
+at midnight. For a viewer, the worker may force-refresh only the imported shared
+account under that target; unrelated viewer accounts remain reuse-only and no
+HTTP privilege expands.
+
+Current-value reads add an account-scoped publication fence around that durable
+workflow. An accessible account with an import job in `queued`, `running`,
+`retry_wait`, or `failed` is projected from its last published baseline;
+post-baseline canonical changes for that account are withheld. The service
+revalidates the same job set before planning and projection, and fails closed if
+the lifecycle or member set changes concurrently. Under the account membership
+lock, completion atomically sets every exact target `publishedAt` and the job
+status. The same transaction locks `AccountCanonicalState` and requires every
+member anchor to carry the current imported-account canonical revision. Only
+that completed publication releases the fence. Portfolio and
+dashboard share this service.
+
+Raw files remain local in R12. Therefore the embedded worker is a single-instance
+deployment boundary unless every instance mounts the same import storage. The
+PostgreSQL queue itself is safe for multiple claimers, but it does not make local
+raw bytes portable.
 
 ## Account-currency presentation representability
 

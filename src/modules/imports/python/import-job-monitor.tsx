@@ -16,6 +16,8 @@ import {
   finishImportPoll,
   importPollDelayMs,
   loadLatestPersistedImportJob,
+  resolveImportPollFailure,
+  resolveImportPollJob,
   type PersistedImportJob,
 } from "./import-job-state"
 
@@ -93,22 +95,24 @@ export function ImportJobMonitor() {
         .then((job) => {
           if (cancelled || currentGeneration !== generation.current) return
           setFailures(0)
-          if (job.status === "completed") {
+          const decision = resolveImportPollJob(job)
+          if (decision.kind === "completed") {
             clearPersistedImportJob(localStorage, record)
             setRecord(null)
             publishImportCompleted(job)
             return
           }
-          if (job.status === "failed") {
+          if (decision.kind === "failed") {
             setStoppedJobId(job.id)
             return
           }
-          setRunAfter(job.status === "retry_wait" ? job.run_after : null)
+          setRunAfter(decision.runAfter)
           setPollRevision((value) => value + 1)
         })
         .catch((error: unknown) => {
           if (cancelled || currentGeneration !== generation.current) return
-          if (error instanceof ImportClientError && error.status === 404) {
+          const status = error instanceof ImportClientError ? error.status : null
+          if (resolveImportPollFailure(status) === "discard") {
             clearPersistedImportJob(localStorage, record)
             setRecord(null)
             return

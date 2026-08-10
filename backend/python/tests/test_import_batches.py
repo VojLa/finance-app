@@ -18,18 +18,12 @@ from app.modules.accounts.access import AccountNotFoundError
 from app.modules.imports.api import (
     get_import_batch_post_processing_service,
     get_import_market_backed_snapshot_refresh_service,
-    get_import_multi_file_finalization_service,
 )
 from app.modules.imports.models import (
-    FinalizeImportBatchesResponse,
     ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportPostResponse,
     ImportSnapshotRefreshStatus,
-)
-from app.modules.imports.multi_file_service import (
-    FinalizeImportBatchesResult,
-    ImportMultiFileFinalizationService,
 )
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
 from app.modules.imports.posting_service import (
@@ -284,7 +278,6 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None
     assert sorted(path for path in schema["paths"] if "import" in path) == [
         "/api/v1/accounts/{account_id}/imports",
-        "/api/v1/accounts/{account_id}/imports/finalize",
         "/api/v1/accounts/{account_id}/imports/jobs",
         "/api/v1/accounts/{account_id}/imports/jobs/{job_id}",
         "/api/v1/accounts/{account_id}/imports/jobs/{job_id}/retry",
@@ -344,13 +337,10 @@ def test_import_api_composes_request_scoped_market_backed_service(
         test_settings,
     )
     service = get_import_batch_post_processing_service(session, resolved)
-    finalization_service = get_import_multi_file_finalization_service(session, resolved)
 
     constructor.assert_called_once_with(session, test_settings)
     assert service.session is session
     assert service.market_backed_service is market_backed
-    assert finalization_service.session is session
-    assert finalization_service.market_backed_service is market_backed
 
 
 def test_canonical_post_endpoint_does_not_run_post_processing(
@@ -359,8 +349,6 @@ def test_canonical_post_endpoint_does_not_run_post_processing(
 ) -> None:
     post_batch = AsyncMock(return_value=_posting_result())
     monkeypatch.setattr(ImportBatchPostingService, "post_batch", post_batch)
-    finalization = AsyncMock()
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalization)
 
     with _client(test_settings) as client:
         response = client.post("/api/v1/accounts/account-a/imports/batch-a/canonical-post")
@@ -376,61 +364,6 @@ def test_canonical_post_endpoint_does_not_run_post_processing(
         "replayed": False,
     }
     post_batch.assert_awaited_once()
-    finalization.assert_not_awaited()
-
-
-def test_finalize_endpoint_canonicalizes_batch_order_and_calls_once(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    finalize = AsyncMock(
-        return_value=FinalizeImportBatchesResult(
-            batch_ids=("batch-a", "batch-b"),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.created,
-        )
-    )
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalize)
-
-    with _client(test_settings) as client:
-        response = client.post(
-            "/api/v1/accounts/account-a/imports/finalize",
-            json={"batch_ids": ["batch-b", "batch-a"]},
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "batch_ids": ["batch-a", "batch-b"],
-        "snapshot_refresh_status": "created",
-    }
-    finalize.assert_awaited_once()
-    assert finalize.await_args is not None
-    command = finalize.await_args.args[0]
-    assert command.principal.user_id == "user-a"
-    assert command.account_id == "account-a"
-    assert command.batch_ids == ("batch-a", "batch-b")
-
-
-def test_empty_finalize_transport_is_python_owned_not_required(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    finalize = AsyncMock()
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalize)
-
-    with _client(test_settings) as client:
-        response = client.post(
-            "/api/v1/accounts/account-a/imports/finalize",
-            json={"batch_ids": []},
-        )
-
-    assert response.status_code == 200
-    assert FinalizeImportBatchesResponse.model_validate(response.json()) == (
-        FinalizeImportBatchesResponse(
-            batch_ids=(),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.not_required,
-        )
-    )
-    finalize.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
