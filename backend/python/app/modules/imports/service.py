@@ -90,7 +90,8 @@ class ImportUploadStateError(ApplicationError):
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    result = datetime.now(UTC).replace(tzinfo=None)
+    return result.replace(microsecond=(result.microsecond // 1000) * 1000)
 
 
 class ImportBatchService:
@@ -118,6 +119,8 @@ class ImportBatchService:
             checksum=payload.checksum,
         )
         if existing is not None:
+            if self._matches_create_payload(existing, payload):
+                return self._response(existing)
             raise ImportBatchExistsError()
 
         now = _now()
@@ -161,6 +164,8 @@ class ImportBatchService:
                 checksum=payload.checksum,
             )
             if duplicate is not None:
+                if self._matches_create_payload(duplicate, payload):
+                    return self._response(duplicate)
                 raise ImportBatchExistsError() from None
             raise
         except Exception:
@@ -253,6 +258,20 @@ class ImportBatchService:
         if batch is None:
             raise ImportBatchNotFoundError()
         return self._response(batch)
+
+    @staticmethod
+    def _matches_create_payload(
+        batch: ImportBatchModel,
+        payload: ImportBatchCreateRequest,
+    ) -> bool:
+        """Allow only an exact retry to reuse a registered batch identity."""
+        return (
+            batch.source == payload.source
+            and batch.filename == payload.filename
+            and batch.file_size == payload.file_size
+            and batch.file_encoding == payload.file_encoding
+            and batch.checksum == payload.checksum
+        )
 
     @staticmethod
     def _response(batch: ImportBatchModel) -> ImportBatchResponse:

@@ -10,11 +10,12 @@ async function source(relativePath: string): Promise<string> {
 }
 
 describe("version 0.1 current browser boundary inventory", () => {
-  it("keeps the historical NOT READY audit immutable while testing current routes", async () => {
+  it("keeps the historical NOT READY audit immutable while testing durable current routes", async () => {
     const historical = await source("ChatGPT/audits/0.1-final-acceptance.md")
     const accounts = await source("src/app/api/accounts/route.ts")
     const imports = await source("src/app/api/import/route.ts")
     const importHandler = await source("src/modules/imports/python/import-route.ts")
+    const importApi = await source("src/modules/imports/python/import-api.ts")
     const history = await source("src/app/api/portfolio/history/route.ts")
 
     expect(historical).toContain("B1 account browser cutover")
@@ -22,10 +23,16 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(historical).toContain("B6 portfolio history")
     expect(accounts).toContain("createAccount")
     expect(imports).toContain("handleImportPost")
-    expect(importHandler).toContain("runImportCanonicalWorkflow")
-    expect(importHandler).toContain("finalizeImportBatches")
+    expect(importHandler).toContain("createImportBatch")
+    expect(importHandler).toContain("uploadImportFile")
+    expect(importHandler).toContain("startImportJob")
+    expect(importApi).toContain("getImportJob")
+    expect(importApi).toContain("retryImportJob")
+    expect(`${importHandler}\n${importApi}`).not.toMatch(
+      /runImportCanonicalWorkflow|async parseImportBatch|async normalizeImportBatch|async deduplicateImportBatch|async classifyImportBatch|async canonicalPostImportBatch|async finalizeImportBatches|requestImportFinalization/
+    )
     expect(history).toContain("readSnapshotBackedPortfolioHistory")
-    expect(`${accounts}\n${imports}\n${importHandler}\n${history}`).not.toMatch(
+    expect(`${accounts}\n${imports}\n${importHandler}\n${importApi}\n${history}`).not.toMatch(
       /@\/lib\/prisma|importCsvFilesAsync|getPortfolioSnapshotHistory/
     )
   })

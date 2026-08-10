@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -26,12 +28,15 @@ from app.db.models.enums import (
     ImportLogLevel,
     ImportStatus,
 )
-from app.db.models.imports import ImportBatchModel, ImportLogModel
+from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.ledger import InvestmentEventModel
+from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
-from app.modules.imports.models import ImportBatchCreateRequest
-from app.modules.imports.service import ImportBatchExistsError, ImportBatchService
+from app.modules.imports.models import ImportBatchCreateRequest, ImportBatchResponse
+from app.modules.imports.service import ImportBatchService
+from app.modules.imports.storage import LocalImportStorage
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5a-internal-auth-secret-32-characters"
@@ -336,9 +341,8 @@ def test_import_batch_workflow_against_postgresql() -> None:
             headers=_headers("user-owner"),
             json=_payload("a"),
         )
-        assert duplicate.status_code == 409
-        assert duplicate.json()["error"]["code"] == "import_batch_exists"
-        assert owner_body["id"] not in json.dumps(duplicate.json())
+        assert duplicate.status_code == 201
+        assert duplicate.json() == owner_body
         assert _run(
             _counts(user_id="user-owner", account_id="account-active", checksum="a" * 64)
         ) == (1, 1)
@@ -404,11 +408,131 @@ def test_import_batch_workflow_against_postgresql() -> None:
 def test_concurrent_duplicate_registration_is_controlled() -> None:
     _run(_seed())
     results = _run(_concurrent_create())
-    successes = [result for result in results if not isinstance(result, BaseException)]
-    conflicts = [result for result in results if isinstance(result, ImportBatchExistsError)]
-    assert len(successes) == 1
-    assert len(conflicts) == 1
+    successes = [result for result in results if isinstance(result, ImportBatchResponse)]
+    assert len(successes) == 2
+    assert {result.id for result in successes} == {successes[0].id}
     assert _run(_counts(user_id="user-owner", account_id="account-active", checksum="7" * 64)) == (
         1,
         1,
     )
+
+
+def test_lost_registration_response_reuses_batch_for_upload_and_one_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run(_seed())
+    content = b"durable registration replay\n"
+    checksum = hashlib.sha256(content).hexdigest()
+    payload = {
+        "source": "raiffeisenbank",
+        "filename": "durable.csv",
+        "file_size": len(content),
+        "file_encoding": "utf-8",
+        "checksum": checksum,
+    }
+    monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
+    app = create_app(
+        Settings(
+            environment="test",
+            database_url=DATABASE_URL,
+            docs_enabled=True,
+            log_level="ERROR",
+            log_json=False,
+            internal_auth_secret=SECRET,
+            _env_file=None,
+        )
+    )
+    storage = LocalImportStorage(tmp_path)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            first = client.post(
+                "/api/v1/accounts/account-active/imports",
+                headers=_headers("user-owner"),
+                json=payload,
+            )
+            retry = client.post(
+                "/api/v1/accounts/account-active/imports",
+                headers=_headers("user-owner"),
+                json=payload,
+            )
+            assert first.status_code == retry.status_code == 201
+            assert first.json() == retry.json()
+            batch_id = first.json()["id"]
+
+            upload = client.put(
+                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
+                headers={**_headers("user-owner"), "Content-Type": "application/octet-stream"},
+                content=content,
+            )
+            assert upload.status_code == 200
+            assert upload.json()["idempotent"] is False
+            upload_replay = client.put(
+                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
+                headers={**_headers("user-owner"), "Content-Type": "application/octet-stream"},
+                content=content,
+            )
+            assert upload_replay.status_code == 200
+            assert upload_replay.json()["idempotent"] is True
+            assert storage.path_for(batch_id).read_bytes() == content
+
+            first_job = client.post(
+                "/api/v1/accounts/account-active/imports/jobs",
+                headers=_headers("user-owner"),
+                json={"batch_ids": [batch_id]},
+            )
+            replay_job = client.post(
+                "/api/v1/accounts/account-active/imports/jobs",
+                headers=_headers("user-owner"),
+                json={"batch_ids": [batch_id]},
+            )
+            assert first_job.status_code == replay_job.status_code == 202
+            assert first_job.json()["id"] == replay_job.json()["id"]
+
+        async def counts() -> tuple[int, int, int, int, int, int]:
+            assert DATABASE_URL is not None
+            engine = create_async_engine(normalize_database_url(DATABASE_URL))
+            async with AsyncSession(engine) as session:
+                batches = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportBatchModel)
+                    .where(ImportBatchModel.id == batch_id)
+                )
+                logs = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportLogModel)
+                    .where(ImportLogModel.import_batch_id == batch_id)
+                )
+                jobs = await session.scalar(
+                    select(func.count())
+                    .select_from(BackgroundJobModel)
+                    .where(BackgroundJobModel.id == first_job.json()["id"])
+                )
+                raw_rows = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportRowModel)
+                    .where(ImportRowModel.import_batch_id == batch_id)
+                )
+                transactions = await session.scalar(
+                    select(func.count())
+                    .select_from(TransactionModel)
+                    .where(TransactionModel.import_batch_id == batch_id)
+                )
+                investment_events = await session.scalar(
+                    select(func.count())
+                    .select_from(InvestmentEventModel)
+                    .where(InvestmentEventModel.import_batch_id == batch_id)
+                )
+            await engine.dispose()
+            return (
+                int(batches or 0),
+                int(logs or 0),
+                int(jobs or 0),
+                int(raw_rows or 0),
+                int(transactions or 0),
+                int(investment_events or 0),
+            )
+
+        assert _run(counts()) == (1, 1, 1, 0, 0, 0)
+    finally:
+        storage.remove(batch_id) if "batch_id" in locals() else None

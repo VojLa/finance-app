@@ -18,7 +18,7 @@ async function source(relativePath: string): Promise<string> {
 }
 
 describe("version 0.1 clean main browser call graph", () => {
-  it("keeps accounts and all required imports on authenticated Python adapters", async () => {
+  it("keeps accounts and durable imports on authenticated Python adapters", async () => {
     const accountRoute = await source("src/app/api/accounts/route.ts")
     const accountAdapter = await source("src/modules/accounts/server/account-api.ts")
     const importRoute = await source("src/app/api/import/route.ts")
@@ -30,19 +30,21 @@ describe("version 0.1 clean main browser call graph", () => {
     expect(accountRoute).toContain("createAccount")
     expect(accountAdapter).toContain('client.POST("/api/v1/accounts"')
     expect(importRoute).toContain("handleImportPost")
-    expect(importHandler).toContain("runImportCanonicalWorkflow")
-    expect(importHandler).toContain("finalizeImportBatches")
-    for (const stage of [
+    for (const operation of [
       "createImportBatch",
       "uploadImportFile",
-      "parseImportBatch",
-      "normalizeImportBatch",
-      "deduplicateImportBatch",
-      "classifyImportBatch",
-      "postImportBatch",
+      "startImportJob",
+      "getImportJob",
+      "retryImportJob",
     ]) {
-      expect(importAdapter).toContain(stage)
+      expect(importAdapter).toContain(operation)
     }
+    expect(importHandler).toContain("createImportBatch")
+    expect(importHandler).toContain("uploadImportFile")
+    expect(importHandler).toContain("startImportJob")
+    expect(`${importHandler}\n${importAdapter}`).not.toMatch(
+      /runImportCanonicalWorkflow|async parseImportBatch|async normalizeImportBatch|async deduplicateImportBatch|async classifyImportBatch|async canonicalPostImportBatch|async postImportBatch|async finalizeImportBatches|requestImportFinalization|\/finalize/
+    )
     expect(importHandler).toContain("isPythonImportSource")
     expect(active).toContain("createAuthenticatedPythonTransport")
     expect(active).not.toMatch(/@\/lib\/prisma|\bprisma\.|importCsvFilesAsync|papaparse/)

@@ -2,580 +2,209 @@ import { getServerSession } from "next-auth"
 import { NextRequest } from "next/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import {
-  createPythonImportApi,
-  runImportCanonicalWorkflow,
-} from "@/modules/imports/python/import-api"
-import {
-  recoverableBatchIds,
-  type PythonImportFinalizeResponse,
-} from "@/modules/imports/python/import-contract"
-import { forwardedPythonError } from "@/modules/python-api/server/errors"
-import * as finalizeRoute from "./finalize/route"
-import * as collectionRoute from "./route"
+import { createPythonImportApi } from "@/modules/imports/python/import-api"
+import * as route from "./route"
 
-vi.mock("next-auth", () => ({
-  getServerSession: vi.fn(),
-}))
+vi.mock("next-auth", () => ({ getServerSession: vi.fn() }))
+vi.mock("@/lib/auth", () => ({ authOptions: {} }))
+vi.mock("@/modules/imports/python/import-api", () => ({ createPythonImportApi: vi.fn() }))
 
-vi.mock("@/lib/auth", () => ({
-  authOptions: { providers: [] },
-}))
-
-vi.mock("@/modules/imports/python/import-api", () => ({
-  runImportCanonicalWorkflow: vi.fn(),
-  createPythonImportApi: vi.fn(),
-}))
-
-const getSession = vi.mocked(getServerSession)
-const runWorkflow = vi.mocked(runImportCanonicalWorkflow)
-const createApi = vi.mocked(createPythonImportApi)
-const finalizeBatches = vi.fn(
-  async (
-    _accountId: string,
-    batchIds: readonly string[]
-  ): Promise<PythonImportFinalizeResponse> => ({
-    batch_ids: [...batchIds].sort(),
-    snapshot_refresh_status: batchIds.length === 0 ? "not_required" : "created",
-  })
-)
-
-function completed(filename: string, batchId = `batch-${filename}`) {
-  return {
-    result: {
-      filename,
-      batchId,
-      status: "completed" as const,
-      lastSuccessfulStage: "status" as const,
-      rowsTotal: 1,
-      rowsImported: 1,
-      rowsSkipped: 0,
-      rowsFailed: 0,
-      rowsNeedsReview: 0,
-      issues: { failed: 0, needsReview: 0 },
-    },
-  }
+const session = vi.mocked(getServerSession)
+const api = vi.mocked(createPythonImportApi)
+let client: {
+  createImportBatch: ReturnType<typeof vi.fn>
+  uploadImportFile: ReturnType<typeof vi.fn>
+  startImportJob: ReturnType<typeof vi.fn>
 }
 
-function request(
-  fields: Array<[string, string | File]>,
-  path = "http://next.test/api/import"
-): NextRequest {
-  const formData = new FormData()
-  for (const [name, value] of fields) formData.append(name, value)
-  return new NextRequest(path, { method: "POST", body: formData })
+function request(files = [new File(["csv"], "one.csv")]) {
+  const body = new FormData()
+  body.append("accountId", "account-a")
+  body.append("source", "trading212")
+  files.forEach((file) => body.append("file", file))
+  return new NextRequest("http://next.test/api/import", { method: "POST", body })
 }
-
-function finalizationRequest(body: unknown): NextRequest {
-  return new NextRequest("http://next.test/api/import/finalize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  })
-}
-
-const validFields = (): Array<[string, string | File]> => [
-  ["accountId", "account-r4"],
-  ["source", "raiffeisenbank"],
-  ["file", new File([new Uint8Array([0xef, 0xbb, 0xbf, 0x61])], "fixture.csv")],
-]
-
-const INVALID_FORMS: Array<{ name: string; fields: Array<[string, string | File]> }> = [
-  {
-    name: "missing account",
-    fields: [
-      ["source", "raiffeisenbank"],
-      ["file", new File(["x"], "x.csv")],
-    ],
-  },
-  {
-    name: "missing source",
-    fields: [
-      ["accountId", "account-r4"],
-      ["file", new File(["x"], "x.csv")],
-    ],
-  },
-  {
-    name: "unsupported source",
-    fields: [
-      ["accountId", "account-r4"],
-      ["source", "manual"],
-      ["file", new File(["x"], "x.csv")],
-    ],
-  },
-  {
-    name: "zero files",
-    fields: [
-      ["accountId", "account-r4"],
-      ["source", "raiffeisenbank"],
-    ],
-  },
-  {
-    name: "non CSV file",
-    fields: [
-      ["accountId", "account-r4"],
-      ["source", "raiffeisenbank"],
-      ["file", new File(["x"], "x.txt")],
-    ],
-  },
-  {
-    name: "caller identity",
-    fields: [
-      ["accountId", "account-r4"],
-      ["source", "raiffeisenbank"],
-      ["file", new File(["x"], "x.csv")],
-      ["userId", "attacker"],
-    ],
-  },
-]
 
 beforeEach(() => {
   vi.clearAllMocks()
-  getSession.mockResolvedValue({
-    user: { id: "user-r4", email: "user-r4@example.test" },
-    expires: "2036-01-01",
-  })
-  runWorkflow.mockImplementation(async (_identity, input) => completed(input.filename))
-  createApi.mockReturnValue({ finalizeImportBatches: finalizeBatches } as unknown as ReturnType<
-    typeof createPythonImportApi
-  >)
+  session.mockResolvedValue({ user: { id: "user-a", email: "user@example.test" }, expires: "2030" })
+  let checksum = ""
+  client = {
+    createImportBatch: vi.fn(async (_account, payload) => {
+      checksum = payload.checksum
+      return {
+        id: `batch-${payload.filename}`,
+        account_id: "account-a",
+        source: payload.source,
+        filename: payload.filename,
+        file_size: payload.file_size,
+        file_encoding: null,
+        checksum,
+        status: "pending",
+      }
+    }),
+    uploadImportFile: vi.fn(async (_account, batchId, bytes) => ({
+      batch_id: batchId,
+      size: bytes.byteLength,
+      checksum,
+    })),
+    startImportJob: vi.fn(async () => ({
+      id: "job-a",
+      account_id: "account-a",
+      status: "queued",
+      kind: "import_workflow",
+      attempt_count: 0,
+      max_attempts: 5,
+      manual_retry_count: 0,
+      progress: {
+        schema_version: 1,
+        phase: "queued",
+        completed_units: 0,
+        total_units: 7,
+        completed_batches: 0,
+        total_batches: 1,
+      },
+      result: null,
+      error: null,
+      run_after: "2026-01-01T00:00:00",
+      started_at: null,
+      finished_at: null,
+      created_at: "2026-01-01T00:00:00",
+      updated_at: "2026-01-01T00:00:00",
+    })),
+  }
+  api.mockReturnValue(client as never)
 })
 
-describe("POST /api/import", () => {
-  it("exports POST only", () => {
-    expect(Object.keys(collectionRoute)).toEqual(["POST"])
-  })
-
-  it.each([
-    null,
-    { user: undefined, expires: "2036-01-01" },
-    { user: { id: " ", email: "user@example.test" }, expires: "2036-01-01" },
-  ])("rejects a missing identity before Python", async (session) => {
-    getSession.mockResolvedValue(session)
-
-    const response = await collectionRoute.POST(request(validFields()))
-
-    expect(getSession).toHaveBeenCalledTimes(1)
-    expect(runWorkflow).not.toHaveBeenCalled()
-    expect(response.status).toBe(401)
-    expect(response.headers.get("Cache-Control")).toBe("no-store")
-    expect(await response.json()).toEqual({
-      error: {
-        code: "authentication_required",
-        message: "Authentication is required.",
-      },
+describe("POST /api/import durable job handoff", () => {
+  it("returns 202 after registration/upload and exactly one durable job start", async () => {
+    const response = await route.POST(request())
+    if (response.status !== 202) throw new Error(await response.text())
+    expect(api).toHaveBeenCalledWith({ userId: "user-a", email: "user@example.test" })
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-one.csv"])
+    expect(await response.json()).toMatchObject({
+      job: { id: "job-a", status: "queued" },
+      rejectedFiles: [],
     })
   })
 
-  it.each(INVALID_FORMS)("rejects $name multipart before Python", async ({ fields }) => {
-    const response = await collectionRoute.POST(request(fields))
-
+  it("rejects malformed input before any Python call", async () => {
+    const body = new FormData()
+    body.append("accountId", "account-a")
+    const response = await route.POST(
+      new NextRequest("http://next.test/api/import", { method: "POST", body })
+    )
     expect(response.status).toBe(422)
-    expect(runWorkflow).not.toHaveBeenCalled()
-    expect(await response.json()).toEqual({
-      error: {
-        code: "validation_error",
-        message: "Request validation failed.",
-      },
-    })
+    expect(api).not.toHaveBeenCalled()
   })
 
-  it("rejects malformed multipart before Python", async () => {
-    const malformed = new NextRequest("http://next.test/api/import", {
-      method: "POST",
-      headers: { "Content-Type": "multipart/form-data; boundary=missing" },
-      body: "not-a-valid-multipart-body",
+  it("continues after an individual safe failure and enqueues every accepted batch once", async () => {
+    const checksums = new Map<string, string>()
+    client.createImportBatch.mockImplementation(async (_account, payload) => {
+      if (payload.filename === "bad.csv") {
+        const error = new Error("Bad file") as Error & { status: number; code: string }
+        error.status = 422
+        error.code = "import_file_rejected"
+        throw error
+      }
+      const batchId = payload.filename === "z.csv" ? "batch-z" : "batch-a"
+      checksums.set(batchId, payload.checksum)
+      return {
+        id: batchId,
+        account_id: "account-a",
+        source: payload.source,
+        filename: payload.filename,
+        file_size: payload.file_size,
+        file_encoding: null,
+        checksum: payload.checksum,
+        status: "pending",
+      }
     })
-
-    const response = await collectionRoute.POST(malformed)
-
-    expect(response.status).toBe(422)
-    expect(runWorkflow).not.toHaveBeenCalled()
-    expect(await response.json()).toEqual({
-      error: {
-        code: "validation_error",
-        message: "Request validation failed.",
-      },
-    })
-  })
-
-  it("rejects an oversized CSV before reading or calling Python", async () => {
-    const formData = new FormData()
-    formData.append("accountId", "account-r4")
-    formData.append("source", "raiffeisenbank")
-    const file = new File(["x"], "oversized.csv")
-    Object.defineProperty(file, "size", { value: 64 * 1024 * 1024 + 1 })
-    formData.append("file", file)
-    const oversizedRequest = {
-      formData: vi.fn(async () => formData),
-    } as unknown as NextRequest
-
-    const response = await collectionRoute.POST(oversizedRequest)
-
-    expect(response.status).toBe(422)
-    expect(runWorkflow).not.toHaveBeenCalled()
-  })
-
-  it("preserves multi-file order, exact bytes, source and session identity", async () => {
-    const first = new File([new Uint8Array([0xef, 0xbb, 0xbf, 1])], "first.csv")
-    const second = new File([new Uint8Array([2, 0x0d, 0x0a])], "second.csv")
-
-    const response = await collectionRoute.POST(
+    client.uploadImportFile.mockImplementation(async (_account, batchId, bytes) => ({
+      batch_id: batchId,
+      size: bytes.byteLength,
+      checksum: checksums.get(batchId),
+    }))
+    const response = await route.POST(
       request([
-        ["accountId", "account-r4"],
-        ["source", "anycoin"],
-        ["file", first],
-        ["file", second],
+        new File(["csv"], "z.csv"),
+        new File(["csv"], "bad.csv"),
+        new File(["csv"], "a.csv"),
       ])
     )
 
-    expect(response.status).toBe(200)
-    expect(getSession).toHaveBeenCalledTimes(1)
-    expect(runWorkflow).toHaveBeenCalledTimes(2)
-    expect(runWorkflow.mock.calls.map(([, input]) => input.filename)).toEqual([
-      "first.csv",
-      "second.csv",
-    ])
-    expect(runWorkflow.mock.calls[0][0]).toEqual({
-      userId: "user-r4",
-      email: "user-r4@example.test",
+    if (response.status !== 202) throw new Error(await response.text())
+    expect(client.startImportJob).toHaveBeenCalledTimes(1)
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-a", "batch-z"])
+    expect(await response.json()).toMatchObject({
+      acceptedBatchIds: ["batch-a", "batch-z"],
+      rejectedFiles: [{ filename: "bad.csv", code: "python_api_unavailable" }],
     })
-    expect(runWorkflow.mock.calls[0][1]).toMatchObject({
-      accountId: "account-r4",
-      source: "anycoin",
-    })
-    expect([...runWorkflow.mock.calls[0][1].bytes]).toEqual([0xef, 0xbb, 0xbf, 1])
-    expect([...runWorkflow.mock.calls[1][1].bytes]).toEqual([2, 0x0d, 0x0a])
-    expect(finalizeBatches).toHaveBeenCalledTimes(1)
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", [
-      "batch-first.csv",
-      "batch-second.csv",
-    ])
-    expect((await response.clone().json()).snapshotRefreshStatus).toBe("created")
-    expect(JSON.stringify(await response.json())).not.toMatch(
-      /user-r4@example|Authorization|Cookie|token/
-    )
   })
 
-  it("retains completed files and the failed batch boundary on partial failure", async () => {
-    runWorkflow.mockResolvedValueOnce(completed("first.csv")).mockResolvedValueOnce({
-      errorStatus: 409,
-      result: {
-        filename: "second.csv",
-        batchId: "batch-second",
-        status: "failed",
-        lastSuccessfulStage: "parsed",
-        rowsTotal: 3,
-        rowsImported: 0,
-        rowsSkipped: 0,
-        rowsFailed: 1,
-        rowsNeedsReview: 0,
-        issues: { failed: 1, needsReview: 0 },
-        error: {
-          code: "import_normalization_failed",
-          message: "Import normalization failed.",
-        },
-      },
-    })
+  it("re-enqueues an exact registration replay after the worker already advanced the batch", async () => {
+    client.createImportBatch.mockImplementation(async (_account, payload) => ({
+      id: "batch-existing",
+      account_id: "account-a",
+      source: payload.source,
+      filename: payload.filename,
+      file_size: payload.file_size,
+      file_encoding: null,
+      checksum: payload.checksum,
+      status: "processing",
+    }))
 
-    const response = await collectionRoute.POST(
-      request([
-        ["accountId", "account-r4"],
-        ["source", "trading212"],
-        ["file", new File(["one"], "first.csv")],
-        ["file", new File(["two"], "second.csv")],
-        ["file", new File(["three"], "third.csv")],
-      ])
-    )
-    const body = await response.json()
+    const response = await route.POST(request())
 
-    expect(response.status).toBe(409)
-    expect(body.partial.files.map((file: { filename: string }) => file.filename)).toEqual([
-      "first.csv",
-      "second.csv",
-      "third.csv",
-    ])
-    expect(body.partial.files[1]).toMatchObject({
-      batchId: "batch-second",
-      lastSuccessfulStage: "parsed",
-    })
-    expect(body.partial.snapshotRefreshStatus).toBe("not_run")
-    expect(runWorkflow).toHaveBeenCalledTimes(3)
-    expect(finalizeBatches).not.toHaveBeenCalled()
+    expect(response.status).toBe(202)
+    expect(client.uploadImportFile).not.toHaveBeenCalled()
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-existing"])
   })
 
-  it("continues past duplicate files and finalizes only persisted canonical batches", async () => {
-    runWorkflow
-      .mockResolvedValueOnce({
-        result: {
-          filename: "duplicate.csv",
-          status: "duplicate",
-          rowsTotal: 0,
-          rowsImported: 0,
-          rowsSkipped: 0,
-          rowsFailed: 0,
-          rowsNeedsReview: 0,
-          issues: { failed: 0, needsReview: 0 },
-          error: {
-            code: "import_batch_exists",
-            message: "This file was already imported.",
-          },
-        },
-      })
-      .mockResolvedValueOnce(completed("new.csv", "batch-new"))
+  it("collapses repeated copies of the same canonical batch into one job input", async () => {
+    client.createImportBatch.mockImplementation(async (_account, payload) => ({
+      id: "batch-same",
+      account_id: "account-a",
+      source: payload.source,
+      filename: payload.filename,
+      file_size: payload.file_size,
+      file_encoding: null,
+      checksum: payload.checksum,
+      status: "processing",
+    }))
 
-    const response = await collectionRoute.POST(
-      request([
-        ["accountId", "account-r4"],
-        ["source", "trading212"],
-        ["file", new File(["same"], "duplicate.csv")],
-        ["file", new File(["new"], "new.csv")],
-      ])
+    const response = await route.POST(
+      request([new File(["csv"], "same.csv"), new File(["csv"], "same.csv")])
     )
-    const body = await response.json()
 
-    expect(response.status).toBe(200)
-    expect(body).toMatchObject({
-      duplicateFiles: 1,
-      completedFiles: 1,
-      snapshotRefreshStatus: "created",
-    })
-    expect(finalizeBatches).toHaveBeenCalledOnce()
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-new"])
+    expect(response.status).toBe(202)
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-same"])
+    expect(await response.json()).toMatchObject({ acceptedBatchIds: ["batch-same"] })
   })
 
-  it("asks Python to classify an all-duplicate request as not required", async () => {
-    runWorkflow.mockResolvedValue({
-      result: {
-        filename: "duplicate.csv",
-        status: "duplicate",
-        rowsTotal: 0,
-        rowsImported: 0,
-        rowsSkipped: 0,
-        rowsFailed: 0,
-        rowsNeedsReview: 0,
-        issues: { failed: 0, needsReview: 0 },
-        error: {
-          code: "import_batch_exists",
-          message: "This file was already imported.",
-        },
-      },
-    })
-
-    const response = await collectionRoute.POST(
-      request([
-        ["accountId", "account-r4"],
-        ["source", "trading212"],
-        ["file", new File(["same"], "duplicate.csv")],
-      ])
-    )
-    const body = await response.json()
-
-    expect(response.status).toBe(200)
-    expect(body.snapshotRefreshStatus).toBe("not_required")
-    expect(recoverableBatchIds(body)).toEqual([])
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", [])
-  })
-
-  it("reports committed canonical files when request-level finalization fails", async () => {
-    finalizeBatches.mockRejectedValueOnce(new Error("provider transport detail"))
-
-    const response = await collectionRoute.POST(request(validFields()))
-    const body = await response.json()
+  it("does not enqueue a job when no file reached the durable upload boundary", async () => {
+    client.createImportBatch.mockRejectedValue(new Error("offline"))
+    const response = await route.POST(request([new File(["csv"], "a.csv")]))
 
     expect(response.status).toBe(502)
-    expect(body.error).toEqual({
-      code: "python_api_unavailable",
-      message: "The Python API is unavailable.",
-    })
-    expect(body.partial).toMatchObject({
-      completedFiles: 1,
-      snapshotRefreshStatus: "not_run",
-    })
-    expect(JSON.stringify(body)).not.toContain("provider transport detail")
+    expect(client.startImportJob).not.toHaveBeenCalled()
   })
 
-  it("recovers a canonical subset after a later file fails without re-uploading", async () => {
-    runWorkflow.mockResolvedValueOnce(completed("first.csv", "batch-first")).mockResolvedValueOnce({
-      errorStatus: 409,
-      result: {
-        filename: "second.csv",
-        batchId: "batch-second",
-        status: "failed",
-        lastSuccessfulStage: "parsed",
-        rowsTotal: 1,
-        rowsImported: 0,
-        rowsSkipped: 0,
-        rowsFailed: 1,
-        rowsNeedsReview: 0,
-        issues: { failed: 1, needsReview: 0 },
-        error: { code: "import_parse_failed", message: "Import parsing failed." },
-      },
-    })
-
-    const initial = await collectionRoute.POST(
-      request([
-        ["accountId", "account-r4"],
-        ["source", "trading212"],
-        ["file", new File(["one"], "first.csv")],
-        ["file", new File(["bad"], "second.csv")],
-      ])
-    )
-    const partial = (await initial.json()).partial
-    const batchIds = recoverableBatchIds(partial)
-    const recovered = await finalizeRoute.POST(
-      finalizationRequest({ accountId: "account-r4", batchIds })
-    )
-
-    expect(initial.status).toBe(409)
-    expect(batchIds).toEqual(["batch-first"])
-    expect(recovered.status).toBe(200)
-    expect(await recovered.json()).toEqual({
-      batchIds: ["batch-first"],
-      snapshotRefreshStatus: "created",
-    })
-    expect(runWorkflow).toHaveBeenCalledTimes(2)
-    expect(finalizeBatches).toHaveBeenCalledOnce()
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-first"])
-  })
-
-  it("recovers every terminal canonical batch after a follow-up status failure", async () => {
-    runWorkflow.mockResolvedValueOnce(completed("first.csv", "batch-first")).mockResolvedValueOnce({
-      errorStatus: 502,
-      result: {
-        filename: "second.csv",
-        batchId: "batch-second",
-        status: "failed",
-        lastSuccessfulStage: "posted",
-        rowsTotal: 1,
-        rowsImported: 1,
-        rowsSkipped: 0,
-        rowsFailed: 0,
-        rowsNeedsReview: 0,
-        issues: { failed: 0, needsReview: 0 },
-        error: { code: "python_api_unavailable", message: "The Python API is unavailable." },
-      },
-    })
-
-    const initial = await collectionRoute.POST(
-      request([
-        ["accountId", "account-r4"],
-        ["source", "trading212"],
-        ["file", new File(["one"], "first.csv")],
-        ["file", new File(["two"], "second.csv")],
-      ])
-    )
-    const partial = (await initial.json()).partial
-    const batchIds = recoverableBatchIds(partial)
-    await finalizeRoute.POST(finalizationRequest({ accountId: "account-r4", batchIds }))
-
-    expect(batchIds).toEqual(["batch-first", "batch-second"])
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-first", "batch-second"])
-  })
-
-  it("retries the same persisted IDs after finalization transport failure", async () => {
-    finalizeBatches.mockRejectedValueOnce(new Error("transport detail")).mockResolvedValueOnce({
-      batch_ids: ["batch-fixture.csv"],
-      snapshot_refresh_status: "created",
-    })
-
-    const initial = await collectionRoute.POST(request(validFields()))
-    const partial = (await initial.json()).partial
-    const batchIds = recoverableBatchIds(partial)
-    const recovered = await finalizeRoute.POST(
-      finalizationRequest({ accountId: "account-r4", batchIds })
-    )
-
-    expect(batchIds).toEqual(["batch-fixture.csv"])
-    expect(recovered.status).toBe(200)
-    expect(runWorkflow).toHaveBeenCalledOnce()
-    expect(finalizeBatches.mock.calls).toEqual([
-      ["account-r4", ["batch-fixture.csv"]],
-      ["account-r4", ["batch-fixture.csv"]],
-    ])
-  })
-
-  it("retries market-unavailable finalization without re-running canonical staging", async () => {
-    finalizeBatches
-      .mockResolvedValueOnce({
-        batch_ids: ["batch-fixture.csv"],
-        snapshot_refresh_status: "unavailable",
-      })
-      .mockResolvedValueOnce({
-        batch_ids: ["batch-fixture.csv"],
-        snapshot_refresh_status: "created",
-      })
-
-    const initial = await collectionRoute.POST(request(validFields()))
-    const summary = await initial.json()
-    const batchIds = recoverableBatchIds(summary)
-    const recovered = await finalizeRoute.POST(
-      finalizationRequest({ accountId: "account-r4", batchIds })
-    )
-
-    expect(summary.snapshotRefreshStatus).toBe("unavailable")
-    expect((await recovered.json()).snapshotRefreshStatus).toBe("created")
-    expect(runWorkflow).toHaveBeenCalledOnce()
-    expect(finalizeBatches).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe("POST /api/import/finalize", () => {
-  it("exports POST only and issues one authenticated Python finalization", async () => {
-    expect(Object.keys(finalizeRoute)).toEqual(["POST"])
-
-    const response = await finalizeRoute.POST(
-      finalizationRequest({
-        accountId: "account-r4",
-        batchIds: ["batch-b", "batch-a"],
-      })
-    )
-
-    expect(response.status).toBe(200)
-    expect(getSession).toHaveBeenCalledOnce()
-    expect(createApi).toHaveBeenCalledWith({
-      userId: "user-r4",
-      email: "user-r4@example.test",
-    })
-    expect(finalizeBatches).toHaveBeenCalledOnce()
-    expect(finalizeBatches).toHaveBeenCalledWith("account-r4", ["batch-b", "batch-a"])
-    expect(await response.json()).toEqual({
-      batchIds: ["batch-a", "batch-b"],
-      snapshotRefreshStatus: "created",
-    })
-  })
-
-  it.each([
-    {},
-    { accountId: "account-r4", batchIds: [] },
-    { accountId: " account-r4", batchIds: ["batch-a"] },
-    { accountId: "account-r4", batchIds: ["batch-a", "batch-a"] },
-    { accountId: "account-r4", batchIds: ["batch-a"], userId: "attacker" },
-    { accountId: "account-r4", batchIds: ["batch-a"], source: "trading212" },
-  ])("rejects an invalid or overpowered recovery request before Python", async (body) => {
-    const response = await finalizeRoute.POST(finalizationRequest(body))
+  it("rejects an aggregate upload over the cap before creating any Python batch", async () => {
+    const tooLarge = new File([new Uint8Array(64 * 1024 * 1024 + 1)], "large.csv")
+    const response = await route.POST(request([tooLarge]))
 
     expect(response.status).toBe(422)
-    expect(finalizeBatches).not.toHaveBeenCalled()
+    expect(api).not.toHaveBeenCalled()
   })
 
-  it("returns generic Python nondisclosure for a foreign batch set", async () => {
-    finalizeBatches.mockRejectedValueOnce(
-      forwardedPythonError(404, "import_batch_not_found", "Import batch was not found.")
+  it("has no synchronous stage authority", async () => {
+    const source = await import("node:fs/promises").then(({ readFile }) =>
+      readFile("src/modules/imports/python/import-route.ts", "utf8")
     )
-
-    const response = await finalizeRoute.POST(
-      finalizationRequest({ accountId: "account-r4", batchIds: ["foreign-batch"] })
+    expect(source).not.toMatch(
+      /parseImportBatch|normalizeImportBatch|deduplicateImportBatch|classifyImportBatch|canonicalPostImportBatch|finalizeImportBatches/
     )
-    const body = await response.json()
-
-    expect(response.status).toBe(404)
-    expect(body).toEqual({
-      error: {
-        code: "import_batch_not_found",
-        message: "Import batch was not found.",
-      },
-    })
-    expect(JSON.stringify(body)).not.toMatch(/foreign-user|owner|token/)
+    expect(source).toContain("startImportJob")
   })
 })

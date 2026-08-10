@@ -1,7 +1,8 @@
 from collections.abc import AsyncIterator
 from datetime import datetime
+from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,7 @@ from app.modules.imports.api import (
 )
 from app.modules.imports.models import (
     FinalizeImportBatchesResponse,
+    ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportPostResponse,
     ImportSnapshotRefreshStatus,
@@ -35,7 +37,11 @@ from app.modules.imports.posting_service import (
     ImportBatchPostStateError,
     PostImportBatchResult,
 )
-from app.modules.imports.service import ImportBatchNotFoundError, ImportBatchService
+from app.modules.imports.service import (
+    ImportBatchExistsError,
+    ImportBatchNotFoundError,
+    ImportBatchService,
+)
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -182,6 +188,64 @@ def test_create_import_batch_uses_authenticated_principal(
     assert payload.filename == "history.csv"
     assert payload.file_encoding == "utf-8"
     assert payload.checksum == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_create_batch_reuses_only_an_exact_authenticated_registration_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    service = ImportBatchService(session)
+    existing = SimpleNamespace(
+        id="batch-a",
+        account_id="account-a",
+        source=ImportSource.raiffeisenbank,
+        filename="history.csv",
+        file_size=1200,
+        file_encoding="utf-8",
+        checksum="a" * 64,
+        status=ImportStatus.pending,
+        rows_total=None,
+        rows_imported=None,
+        rows_skipped=None,
+        created_at=datetime(2026, 7, 19, 18),
+        completed_at=None,
+    )
+    repository = MagicMock()
+    repository.get_by_checksum = AsyncMock(return_value=existing)
+    service.repository = repository
+    monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
+    payload = {
+        "source": "raiffeisenbank",
+        "filename": "history.csv",
+        "file_size": 1200,
+        "file_encoding": "utf-8",
+        "checksum": "a" * 64,
+    }
+
+    replay = await service.create_batch(
+        principal=_principal(),
+        account_id="account-a",
+        payload=ImportBatchCreateRequest.model_validate(payload),
+    )
+
+    assert replay.id == "batch-a"
+    repository.add_batch.assert_not_called()
+    repository.add_log.assert_not_called()
+    session.commit.assert_not_called()
+
+    for immutable_mismatch in (
+        {"source": "anycoin"},
+        {"filename": "other.csv"},
+        {"file_size": 1201},
+        {"file_encoding": "latin-1"},
+    ):
+        with pytest.raises(ImportBatchExistsError):
+            await service.create_batch(
+                principal=_principal(),
+                account_id="account-a",
+                payload=ImportBatchCreateRequest.model_validate(payload | immutable_mismatch),
+            )
 
 
 @pytest.mark.parametrize(

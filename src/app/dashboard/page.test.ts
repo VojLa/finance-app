@@ -45,6 +45,18 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("dashboard snapshot cutover clients", () => {
+  it("refreshes only after the completed-import event and retains a ready snapshot on refresh error", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/dashboard/page.tsx"), "utf8")
+
+    expect(page).toContain(
+      'window.addEventListener("finance:import-completed", refreshOnImportCompleted)'
+    )
+    expect(page).toContain(
+      'next.status === "error" ? next.message : "Snapshot se ještě připravuje."'
+    )
+    expect(page).toContain("setFinancialState(lastReadyFinancialState.current)")
+  })
+
   it("uses one bodyless no-store POST and preserves the ready snapshot response", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

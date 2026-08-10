@@ -1,468 +1,406 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useSession } from "next-auth/react"
 
 import { ACCOUNT_TYPE_LABELS } from "@/lib/constants"
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
 import type { AccountPageModel } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
 import {
-  recoverableBatchIds,
-  requiresImportFinalizationRecovery,
-  withImportFinalization,
-  type ImportSummary,
-} from "@/modules/imports/python/import-contract"
-import {
   ImportClientError,
   requestImport,
-  requestImportFinalization,
+  requestImportJob,
+  retryImportJob,
 } from "@/modules/imports/python/import-client"
+import type { PythonImportJob } from "@/modules/imports/python/import-contract"
+import {
+  publishImportCompleted,
+  publishImportJobActive,
+} from "@/modules/imports/python/import-job-events"
+import {
+  beginImportPoll,
+  clearPersistedImportJob,
+  finishImportPoll,
+  importPollDelayMs,
+  loadLatestPersistedImportJob,
+  persistImportJob,
+  type PersistedImportJob,
+} from "@/modules/imports/python/import-job-state"
 import { IMPORT_SOURCE_OPTIONS } from "@/modules/imports/python/import-sources"
+
+const BACKGROUND_NOTICE_MS = 5_000
 
 type AccountLoadState =
   | { status: "loading" }
   | { status: "ready"; accounts: readonly AccountPageModel[] }
   | { status: "error"; message: string }
 
-type ImportPageState =
+type PageState =
   | { status: "idle" }
-  | { status: "uploading"; completed: number; total: number }
-  | { status: "recovering"; result: ImportSummary }
-  | { status: "completed"; result: ImportSummary }
-  | { status: "error"; message: string; partial?: ImportSummary }
+  | { status: "uploading"; backgroundNotice: boolean }
+  | { status: "resuming" }
+  | { status: "background"; job: PythonImportJob }
+  | { status: "completed"; job: PythonImportJob }
+  | { status: "failed"; job: PythonImportJob }
+  | { status: "error"; message: string }
 
-type ToastState = {
-  kind: "success" | "error"
-  title: string
-  message: string
-} | null
+type RejectedFile = { filename: string; code: string; message: string }
+type ImportSourceOption = (typeof IMPORT_SOURCE_OPTIONS)[number]
 
-function DropZone({ onFiles, files }: { onFiles: (files: File[]) => void; files: File[] }) {
-  const [dragging, setDragging] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+function isTerminal(job: PythonImportJob): boolean {
+  return job.status === "completed" || job.status === "failed"
+}
 
-  function acceptFiles(selected: FileList | File[]) {
-    const csvFiles = Array.from(selected).filter((file) => file.name.toLowerCase().endsWith(".csv"))
-    onFiles(csvFiles)
-  }
+function backgroundStatus(job: PythonImportJob): string {
+  if (job.status === "queued") return "čeká ve frontě"
+  if (job.status === "retry_wait") return "čeká na automatický další pokus"
+  return "zpracovává se"
+}
+
+function DropZone({ files, onFiles }: { files: File[]; onFiles: (files: File[]) => void }) {
+  const input = useRef<HTMLInputElement>(null)
+  const accept = (selected: FileList | File[]) =>
+    onFiles(Array.from(selected).filter((file) => file.name.toLocaleLowerCase().endsWith(".csv")))
 
   return (
     <div
-      onDragOver={(event) => {
-        event.preventDefault()
-        setDragging(true)
-      }}
-      onDragLeave={() => setDragging(false)}
+      className="cursor-pointer rounded-xl border-2 border-dashed border-gray-300 p-8 text-center"
+      onClick={() => input.current?.click()}
+      onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault()
-        setDragging(false)
-        acceptFiles(event.dataTransfer.files)
+        accept(event.dataTransfer.files)
       }}
-      onClick={() => inputRef.current?.click()}
-      className={`cursor-pointer rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
-        dragging
-          ? "border-blue-400 bg-blue-50"
-          : "border-gray-300 hover:border-gray-400 hover:bg-gray-50"
-      }`}
     >
       <input
-        ref={inputRef}
+        ref={input}
+        className="hidden"
         type="file"
         multiple
         accept=".csv,text/csv"
-        className="hidden"
         onChange={(event) => {
-          acceptFiles(event.target.files ?? [])
+          accept(event.target.files ?? [])
           event.target.value = ""
         }}
       />
-      {files.length > 0 ? (
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-gray-800">Vybráno souborů: {files.length}</p>
-          {files.map((file) => (
-            <p
-              key={`${file.name}-${file.size}-${file.lastModified}`}
-              className="text-xs text-gray-500"
-            >
-              {file.name} ({Math.ceil(file.size / 1024)} KB)
-            </p>
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <p className="text-2xl text-gray-300">↑</p>
-          <p className="text-sm font-medium text-gray-600">Přetáhni CSV soubory sem</p>
-          <p className="text-xs text-gray-400">nebo klikni pro výběr</p>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ImportResult({
-  result,
-  onRetry,
-  retrying = false,
-}: {
-  result: ImportSummary
-  onRetry?: () => void
-  retrying?: boolean
-}) {
-  const recoveryRequired = requiresImportFinalizationRecovery(result)
-  return (
-    <div className="space-y-3">
-      {recoveryRequired && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <p>Data byla zaúčtována, ale aktualizaci portfolia se nepodařilo dokončit.</p>
-          {onRetry && (
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={retrying}
-              className="mt-2 rounded-lg bg-amber-800 px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
-            >
-              {retrying ? "Dokončuji aktualizaci…" : "Zkusit dokončit aktualizaci"}
-            </button>
-          )}
-        </div>
-      )}
-      <div
-        className={`rounded-lg border px-4 py-3 text-sm ${
-          result.failedFiles > 0
-            ? "border-amber-200 bg-amber-50 text-amber-900"
-            : "border-green-200 bg-green-50 text-green-900"
-        }`}
-      >
-        <p>
-          Importováno: <strong>{result.rowsImported}</strong>, přeskočeno:{" "}
-          <strong>{result.rowsSkipped}</strong>, k revizi: <strong>{result.rowsNeedsReview}</strong>
-          , chybné: <strong>{result.rowsFailed}</strong>.
-        </p>
-        {result.duplicateFiles > 0 && (
-          <p className="mt-1">Duplicitní soubory: {result.duplicateFiles}.</p>
-        )}
-      </div>
-      <div className="space-y-2">
-        {result.files.map((file, index) => (
-          <div
-            key={`${file.filename}-${file.status}-${index}`}
-            className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span className="font-medium text-gray-800">{file.filename}</span>
-              <span className="text-xs text-gray-500">{file.status}</span>
-            </div>
-            <p className="mt-1 text-xs text-gray-600">
-              Řádky: {file.rowsTotal}; importováno: {file.rowsImported}; přeskočeno:{" "}
-              {file.rowsSkipped}; revize: {file.rowsNeedsReview}; chyby: {file.rowsFailed}.
-            </p>
-            {"error" in file && <p className="mt-1 text-xs text-red-700">{file.error.message}</p>}
-            {file.status === "failed" && file.batchId && (
-              <p className="mt-1 text-xs text-gray-500">
-                Batch {file.batchId}; poslední úspěšná fáze: {file.lastSuccessfulStage ?? "žádná"}.
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
+      <p className="text-sm text-gray-600">
+        {files.length ? `Vybráno souborů: ${files.length}` : "Přetáhni CSV soubory sem"}
+      </p>
     </div>
   )
 }
 
 export default function ImportPage() {
-  const initialAccountLoadStarted = useRef(false)
-  const [accountLoadState, setAccountLoadState] = useState<AccountLoadState>({
-    status: "loading",
-  })
-  const [source, setSource] = useState<(typeof IMPORT_SOURCE_OPTIONS)[number]>(
-    IMPORT_SOURCE_OPTIONS[0]
-  )
+  const accountLoadStarted = useRef(false)
+  const pollGeneration = useRef(0)
+  const pollImmediately = useRef(false)
+  const pollGate = useRef({ inFlight: false, pending: false })
+  const { data: session } = useSession()
+  const userId = session?.user?.id ?? ""
+
+  const [accounts, setAccounts] = useState<AccountLoadState>({ status: "loading" })
+  const [source, setSource] = useState<ImportSourceOption>(IMPORT_SOURCE_OPTIONS[0])
   const [accountId, setAccountId] = useState("")
   const [files, setFiles] = useState<File[]>([])
-  const [pageState, setPageState] = useState<ImportPageState>({ status: "idle" })
-  const [toast, setToast] = useState<ToastState>(null)
+  const [state, setState] = useState<PageState>({ status: "idle" })
+  const [persistedRecord, setPersistedRecord] = useState<PersistedImportJob | null>(null)
+  const [pollFailures, setPollFailures] = useState(0)
+  const [pollRevision, setPollRevision] = useState(0)
+  const [visible, setVisible] = useState(true)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [rejectedFiles, setRejectedFiles] = useState<readonly RejectedFile[]>([])
 
   useEffect(() => {
-    if (initialAccountLoadStarted.current) return
-    initialAccountLoadStarted.current = true
+    if (accountLoadStarted.current) return
+    accountLoadStarted.current = true
     void requestAccounts()
-      .then((accounts) => {
-        setAccountLoadState({
-          status: "ready",
-          accounts: accounts.map(toAccountPageModel),
-        })
-      })
-      .catch((error: unknown) => {
-        setAccountId("")
-        setAccountLoadState({
+      .then((value) => setAccounts({ status: "ready", accounts: value.map(toAccountPageModel) }))
+      .catch((error: unknown) =>
+        setAccounts({
           status: "error",
           message:
             error instanceof AccountClientError ? error.message : "Účty se nepodařilo načíst.",
         })
-      })
+      )
   }, [])
 
+  useEffect(() => {
+    const onVisibility = () => {
+      const isVisible = document.visibilityState === "visible"
+      setVisible(isVisible)
+      if (isVisible) {
+        pollImmediately.current = true
+        setPollRevision((value) => value + 1)
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    onVisibility()
+    return () => document.removeEventListener("visibilitychange", onVisibility)
+  }, [])
+
+  useEffect(() => {
+    if (!userId) return
+    const stored = loadLatestPersistedImportJob(localStorage, userId)
+    if (stored !== null) {
+      setPersistedRecord(stored)
+      setAccountId(stored.accountId)
+      setState({ status: "resuming" })
+    }
+  }, [userId])
+
+  const acceptJob = useCallback(
+    (job: PythonImportJob) => {
+      const record = userId ? persistImportJob(localStorage, userId, job) : null
+      setPersistedRecord(record)
+      setPollFailures(0)
+      setActionError(null)
+      if (job.status === "completed") {
+        if (record !== null) clearPersistedImportJob(localStorage, record)
+        setPersistedRecord(null)
+        publishImportCompleted(job)
+        setState({ status: "completed", job })
+      } else if (job.status === "failed") {
+        setState({ status: "failed", job })
+      } else {
+        setState({ status: "background", job })
+      }
+    },
+    [userId]
+  )
+
+  const job = "job" in state ? state.job : null
+  useEffect(() => {
+    if (!visible || (job !== null && isTerminal(job))) return
+    const target =
+      job !== null
+        ? {
+            accountId: job.account_id,
+            jobId: job.id,
+            runAfter: job.status === "retry_wait" ? job.run_after : null,
+          }
+        : state.status === "resuming" && persistedRecord !== null
+          ? {
+              accountId: persistedRecord.accountId,
+              jobId: persistedRecord.jobId,
+              runAfter: null,
+            }
+          : null
+    if (target === null) return
+
+    let cancelled = false
+    const generation = ++pollGeneration.current
+    const delay = importPollDelayMs(
+      pollFailures,
+      target.runAfter,
+      Date.now(),
+      pollImmediately.current
+    )
+    pollImmediately.current = false
+    const timer = window.setTimeout(() => {
+      if (!beginImportPoll(pollGate.current)) return
+      void requestImportJob(target.accountId, target.jobId)
+        .then((next) => {
+          if (!cancelled && generation === pollGeneration.current) acceptJob(next)
+        })
+        .catch((error: unknown) => {
+          if (cancelled || generation !== pollGeneration.current) return
+          if (error instanceof ImportClientError && error.status === 404) {
+            if (persistedRecord !== null) {
+              clearPersistedImportJob(localStorage, persistedRecord)
+              setPersistedRecord(null)
+            }
+            setState({ status: "error", message: error.message })
+            return
+          }
+          setActionError(
+            error instanceof ImportClientError
+              ? error.message
+              : "Spojení bylo přerušeno; stav zpracování načteme znovu."
+          )
+          setPollFailures((value) => Math.min(value + 1, 100))
+        })
+        .finally(() => {
+          if (finishImportPoll(pollGate.current)) {
+            pollImmediately.current = true
+            setPollRevision((value) => value + 1)
+          }
+        })
+    }, delay)
+    return () => {
+      cancelled = true
+      pollGeneration.current += 1
+      window.clearTimeout(timer)
+    }
+  }, [acceptJob, job, persistedRecord, pollFailures, pollRevision, state.status, visible])
+
   const filteredAccounts =
-    accountLoadState.status === "ready"
-      ? accountLoadState.accounts.filter((account) => source.accepts.includes(account.type))
+    accounts.status === "ready"
+      ? accounts.accounts.filter((account) => source.accepts.includes(account.type))
       : []
+  const busy = ["uploading", "resuming", "background"].includes(state.status)
 
-  function resetResult() {
-    setPageState({ status: "idle" })
-    setToast(null)
-  }
-
-  function handleSourceChange(nextSource: (typeof IMPORT_SOURCE_OPTIONS)[number]) {
-    setSource(nextSource)
-    setAccountId("")
-    setFiles([])
-    resetResult()
-  }
-
-  function handleReset() {
-    setFiles([])
-    resetResult()
-  }
-
-  async function handleImport() {
-    if (
-      accountLoadState.status !== "ready" ||
-      accountId.length === 0 ||
-      files.length === 0 ||
-      pageState.status === "uploading" ||
-      pageState.status === "recovering"
-    ) {
-      return
-    }
-    setPageState({ status: "uploading", completed: 0, total: files.length })
-    setToast(null)
+  async function submit() {
+    if (!accountId || !files.length || busy) return
+    setActionError(null)
+    setRejectedFiles([])
+    setState({ status: "uploading", backgroundNotice: false })
+    const noticeTimer = window.setTimeout(() => {
+      setState((current) =>
+        current.status === "uploading" ? { status: "uploading", backgroundNotice: true } : current
+      )
+    }, BACKGROUND_NOTICE_MS)
     try {
-      const result = await requestImport(accountId, source.value, files)
-      setPageState({ status: "completed", result })
+      const acceptance = await requestImport(accountId, source.value, files)
+      setRejectedFiles(acceptance.rejectedFiles)
       setFiles([])
-      if (requiresImportFinalizationRecovery(result)) {
-        setToast({
-          kind: "error",
-          title: "Aktualizace portfolia není dokončena",
-          message: "Import je zaúčtovaný a lze bezpečně zopakovat pouze jeho dokončení.",
-        })
-      } else {
-        setToast({
-          kind: "success",
-          title: "Import dokončen",
-          message: `Dokončeno ${result.completedFiles} souborů.`,
-        })
-      }
+      acceptJob(acceptance.job)
     } catch (error) {
-      const safeError =
-        error instanceof ImportClientError
-          ? error
-          : new ImportClientError(502, "python_api_unavailable", "Import API není dostupné.")
-      setPageState({
+      setState({
         status: "error",
-        message: safeError.message,
-        ...(safeError.partial ? { partial: safeError.partial } : {}),
+        message: error instanceof ImportClientError ? error.message : "Import API není dostupné.",
       })
-      setToast({
-        kind: "error",
-        title: "Import nebyl dokončen",
-        message: safeError.message,
-      })
+    } finally {
+      window.clearTimeout(noticeTimer)
     }
   }
 
-  async function handleFinalizationRetry(result: ImportSummary) {
-    const batchIds = recoverableBatchIds(result)
-    if (accountId.length === 0 || batchIds.length === 0 || pageState.status === "recovering") {
-      return
-    }
-    setPageState({ status: "recovering", result })
-    setToast(null)
+  async function retry() {
+    if (job?.status !== "failed") return
+    setActionError(null)
     try {
-      const finalized = await requestImportFinalization(accountId, batchIds)
-      const recovered = withImportFinalization(result, finalized.snapshotRefreshStatus)
-      setPageState({ status: "completed", result: recovered })
-      if (requiresImportFinalizationRecovery(recovered)) {
-        setToast({
-          kind: "error",
-          title: "Aktualizace portfolia není dokončena",
-          message: "Zaúčtovaná data zůstávají bezpečně dostupná pro další pokus.",
-        })
-      } else {
-        setToast({
-          kind: "success",
-          title: "Aktualizace portfolia dokončena",
-          message: "Zaúčtovaná data byla úspěšně promítnuta do portfolia.",
-        })
-      }
+      const retried = await retryImportJob(job.account_id, job.id)
+      publishImportJobActive(retried)
+      acceptJob(retried)
     } catch (error) {
-      const safeError =
-        error instanceof ImportClientError
-          ? error
-          : new ImportClientError(502, "python_api_unavailable", "Import API není dostupné.")
-      setPageState({
-        status: "error",
-        message: safeError.message,
-        partial: withImportFinalization(result, "not_run"),
-      })
-      setToast({
-        kind: "error",
-        title: "Aktualizaci portfolia se nepodařilo dokončit",
-        message: safeError.message,
-      })
+      if (error instanceof ImportClientError && error.status === 409) {
+        try {
+          const current = await requestImportJob(job.account_id, job.id)
+          if (!isTerminal(current)) publishImportJobActive(current)
+          acceptJob(current)
+          return
+        } catch {
+          // Keep the last failed job visible and retryable.
+        }
+      }
+      setActionError(
+        error instanceof ImportClientError ? error.message : "Opakování se nepodařilo spustit."
+      )
     }
   }
-
-  const isBusy = pageState.status === "uploading" || pageState.status === "recovering"
-  const canImport =
-    accountLoadState.status === "ready" && accountId.length > 0 && files.length > 0 && !isBusy
 
   return (
-    <div className="max-w-2xl">
-      {toast && (
-        <div
-          className={`fixed right-6 top-6 z-50 w-80 rounded-lg border px-4 py-3 text-sm shadow-lg ${
-            toast.kind === "success"
-              ? "border-green-200 bg-green-50 text-green-900"
-              : "border-red-200 bg-red-50 text-red-900"
-          }`}
-        >
-          <p className="font-semibold">{toast.title}</p>
-          <p className="mt-1 text-xs">{toast.message}</p>
-        </div>
-      )}
-
-      <h1 className="mb-6 text-2xl font-semibold">Import CSV</h1>
+    <div className="max-w-2xl space-y-5">
+      <h1 className="text-2xl font-semibold">Import CSV</h1>
       <div className="space-y-5 rounded-xl border border-gray-200 bg-white p-6">
-        <div>
-          <label className="mb-2 block text-sm font-medium text-gray-700">Zdroj</label>
-          <div className="flex flex-wrap gap-2">
-            {IMPORT_SOURCE_OPTIONS.map((candidate) => (
-              <button
-                key={candidate.value}
-                type="button"
-                onClick={() => handleSourceChange(candidate)}
-                disabled={isBusy}
-                className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-                  source.value === candidate.value
-                    ? "border-blue-600 bg-blue-600 text-white"
-                    : "border-gray-300 text-gray-700"
-                }`}
-              >
-                {candidate.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">Účet</label>
-          {accountLoadState.status === "loading" ? (
-            <p className="text-sm text-gray-500">Načítám účty…</p>
-          ) : accountLoadState.status === "error" ? (
-            <p className="text-sm text-red-600">{accountLoadState.message}</p>
-          ) : filteredAccounts.length === 0 ? (
-            <p className="text-sm text-amber-700">
-              Žádný kompatibilní účet (
-              {source.accepts.map((type) => ACCOUNT_TYPE_LABELS[type]).join(", ")}).
-            </p>
-          ) : (
-            <select
-              value={accountId}
-              disabled={isBusy}
-              onChange={(event) => {
-                setAccountId(event.target.value)
-                resetResult()
+        <div className="flex flex-wrap gap-2">
+          {IMPORT_SOURCE_OPTIONS.map((candidate) => (
+            <button
+              key={candidate.value}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setSource(candidate)
+                setAccountId("")
+                setFiles([])
+                setState({ status: "idle" })
               }}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              className="rounded border px-3 py-2 text-sm disabled:opacity-50"
             >
-              <option value="">Vyber účet</option>
-              {filteredAccounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name}
-                </option>
-              ))}
-            </select>
-          )}
+              {candidate.label}
+            </button>
+          ))}
         </div>
 
-        {accountLoadState.status === "ready" && filteredAccounts.length > 0 && (
-          <DropZone
-            files={files}
-            onFiles={(nextFiles) => {
-              setFiles(nextFiles)
-              resetResult()
-            }}
-          />
+        {accounts.status === "loading" && <p className="text-sm text-gray-500">Načítám účty…</p>}
+        {accounts.status === "error" && <p className="text-sm text-red-700">{accounts.message}</p>}
+        {accounts.status === "ready" && (
+          <select
+            value={accountId}
+            disabled={busy}
+            onChange={(event) => setAccountId(event.target.value)}
+            className="w-full rounded border p-2"
+          >
+            <option value="">Vyber účet</option>
+            {filteredAccounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.name} ({ACCOUNT_TYPE_LABELS[account.type]})
+              </option>
+            ))}
+          </select>
         )}
 
-        {pageState.status === "uploading" && (
-          <p className="text-sm text-blue-700">
-            Zpracovávám {pageState.total} souborů přes Python API…
+        <DropZone files={files} onFiles={setFiles} />
+
+        {state.status === "uploading" && (
+          <p className="text-sm text-blue-700" role="status">
+            {state.backgroundNotice
+              ? "Nahrání a přijetí trvá déle. Po zařazení do fronty můžeš stránku zavřít."
+              : "Nahrávám soubory a čekám na bezpečné zařazení do fronty…"}
           </p>
         )}
-        {pageState.status === "recovering" && (
-          <p className="text-sm text-blue-700">Dokončuji aktualizaci portfolia přes Python API…</p>
+        {state.status === "resuming" && (
+          <p className="text-sm text-blue-700" role="status">
+            Obnovuji stav zpracování na pozadí…
+          </p>
         )}
-        {pageState.status === "error" && (
-          <div className="space-y-3">
-            <p className="text-sm text-red-700">{pageState.message}</p>
-            {pageState.partial && (
-              <ImportResult
-                result={pageState.partial}
-                onRetry={() => handleFinalizationRetry(pageState.partial!)}
-              />
-            )}
+        {state.status === "background" && (
+          <div className="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+            <p>
+              Zpracování běží na pozadí: {backgroundStatus(state.job)} ({state.job.progress.phase}).
+            </p>
+            <p>
+              Dokončeno {state.job.progress.completed_units} z {state.job.progress.total_units}{" "}
+              kroků.
+            </p>
+            <p className="mt-1 text-xs">Stránku můžeš bezpečně zavřít.</p>
           </div>
         )}
-        {pageState.status === "recovering" && (
-          <ImportResult
-            result={pageState.result}
-            onRetry={() => handleFinalizationRetry(pageState.result)}
-            retrying
-          />
+        {state.status === "completed" && (
+          <div className="rounded border border-green-200 bg-green-50 p-3 text-sm text-green-900">
+            Import je dokončen. Importováno {state.job.result?.rows_imported ?? 0} řádků, přeskočeno{" "}
+            {state.job.result?.rows_skipped ?? 0}.
+          </div>
         )}
-        {pageState.status === "completed" && (
-          <ImportResult
-            result={pageState.result}
-            onRetry={() => handleFinalizationRetry(pageState.result)}
-          />
-        )}
-
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={handleImport}
-            disabled={!canImport}
-            className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {isBusy
-              ? pageState.status === "recovering"
-                ? "Dokončuji…"
-                : "Importuji…"
-              : files.length > 1
-                ? `Importovat ${files.length} souborů`
-                : "Importovat"}
-          </button>
-          {(files.length > 0 ||
-            pageState.status === "completed" ||
-            pageState.status === "error") && (
+        {state.status === "failed" && (
+          <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+            <p>{state.job.error?.message ?? "Import se nepodařilo dokončit."}</p>
             <button
               type="button"
-              onClick={handleReset}
-              disabled={isBusy}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm"
+              onClick={() => void retry()}
+              className="mt-2 rounded bg-red-700 px-3 py-2 text-white"
             >
-              Reset
+              Zkusit znovu
             </button>
-          )}
-        </div>
-      </div>
+          </div>
+        )}
+        {state.status === "error" && <p className="text-sm text-red-700">{state.message}</p>}
+        {actionError !== null && (
+          <p className="text-sm text-amber-800" role="status">
+            {actionError}
+          </p>
+        )}
+        {rejectedFiles.length > 0 && (
+          <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <p>Některé soubory nebyly přijaty, ostatní se zpracují na pozadí:</p>
+            <ul className="mt-1 list-disc pl-5">
+              {rejectedFiles.map((file) => (
+                <li key={`${file.filename}:${file.code}`}>
+                  {file.filename}: {file.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
-      <div className="mt-6 space-y-1 text-xs text-gray-400">
-        <p>Raiffeisenbank: Internetbanking → Pohyby / Karty → Export CSV</p>
-        <p>Trading 212: History → Export CSV</p>
-        <p>Anycoin: Účet → Přehled transakcí → Export</p>
+        <button
+          type="button"
+          disabled={!accountId || !files.length || busy}
+          onClick={() => void submit()}
+          className="w-full rounded bg-blue-600 py-2 text-white disabled:opacity-50"
+        >
+          {busy ? "Zpracování běží…" : "Spustit import"}
+        </button>
       </div>
     </div>
   )

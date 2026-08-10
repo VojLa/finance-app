@@ -38,12 +38,24 @@ export default function PortfolioPage() {
   const [historyRange, setHistoryRange] = useState<SnapshotPortfolioHistoryRange>("1Y")
   const [historyValueMode, setHistoryValueMode] = useState<PortfolioHistoryValueMode>("netWorth")
   const initialLoadStarted = useRef(false)
+  const lastReadyState = useRef<Extract<PortfolioPageState, { status: "ready" }> | null>(null)
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null)
 
   const loadPortfolio = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
     try {
       // Current values have one authority: POST /api/snapshot-workflow/portfolio.
-      setState(await requestPortfolioPageState())
+      const next = await requestPortfolioPageState()
+      if (next.status === "ready") {
+        lastReadyState.current = next
+        setRefreshWarning(null)
+        setState(next)
+      } else if (isRefresh && lastReadyState.current !== null) {
+        setRefreshWarning(next.status === "error" ? next.message : "Snapshot se ještě připravuje.")
+        setState(lastReadyState.current)
+      } else {
+        setState(next)
+      }
     } finally {
       if (isRefresh) setRefreshing(false)
     }
@@ -53,6 +65,12 @@ export default function PortfolioPage() {
     if (initialLoadStarted.current) return
     initialLoadStarted.current = true
     void loadPortfolio()
+  }, [loadPortfolio])
+
+  useEffect(() => {
+    const refreshOnImportCompleted = () => void loadPortfolio(true)
+    window.addEventListener("finance:import-completed", refreshOnImportCompleted)
+    return () => window.removeEventListener("finance:import-completed", refreshOnImportCompleted)
   }, [loadPortfolio])
 
   const pageModel = useMemo(
@@ -121,6 +139,16 @@ export default function PortfolioPage() {
         <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-5">
           <p className="font-medium text-red-800">Portfolio se nepodařilo načíst</p>
           <p className="mt-1 text-sm text-red-700">{state.message}</p>
+        </div>
+      )}
+
+      {refreshWarning !== null && (
+        <div
+          role="status"
+          className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+        >
+          Portfolio zůstává z posledního dokončeného snapshotu. Aktualizaci se nepodařilo dokončit:{" "}
+          {refreshWarning}
         </div>
       )}
 

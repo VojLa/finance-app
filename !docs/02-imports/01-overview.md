@@ -16,9 +16,13 @@ atomically posts classified batches into canonical history.
 | Post        | `POST .../{batch_id}/post`                           | Atomic canonical history and terminal batch counters            |
 
 Registration requires source metadata and a lower-case SHA-256 hexadecimal digest.
+An authenticated retry by the same user for the same account, source, checksum, filename,
+declared size, and encoding returns the canonical existing batch identity. A
+metadata mismatch is rejected without revealing or reconciling a batch outside
+that exact authenticated registration scope.
 The body upload must be `application/octet-stream`; it is streamed, checked
 against declared metadata, and is safe to repeat after a successful identical
-write. A file may be up to 1 GiB, while synchronous parsing intentionally has a
+write. A file may be up to 1 GiB, while worker-side parsing intentionally has a
 64 MiB limit.
 
 Parsing keeps every source row. A blank row, malformed column count, or parser
@@ -111,12 +115,23 @@ A completed batch request is an exact replay, not a shortcut: every imported row
 is revalidated against its canonical entity graph while counters, identity
 records, and the original `completed_at` remain unchanged. Missing or corrupt
 rows, counters, transactions, events, movements, assets, or listings fail
-closed without repair. Posting does not update holdings or snapshots and does
-not run in a background worker.
+closed without repair. The posting operation itself does not update Holdings or
+snapshots. The durable worker invokes that same idempotent operation and then
+runs one coordinated Holding rebuild and snapshot finalization for the complete
+logical batch set.
 
-There is currently no background queue: parse, normalize, and duplicate
-detection run synchronously in the request. There is also no raw-data retention
-or purge worker, even though the database model reserves retention fields.
+The browser registers and uploads every accepted file, then enqueues one
+PostgreSQL-backed `import_workflow` job for the sorted logical batch set. The
+embedded Python worker owns parse, normalize, deduplicate, classify, canonical
+post, one coordinated Holding rebuild, and atomic snapshot refresh. It claims
+jobs with a fenced lease, persists safe progress and retry state, and can resume
+after process or browser interruption. Next.js contains only authenticated
+transport, response validation, persisted job identity, and presentation.
+
+Raw files remain on local storage in R12, so the embedded worker is intentionally
+single-instance unless that directory is mounted as shared storage. Automated
+raw-data retention and purge remain unimplemented even though the database model
+reserves retention fields.
 
 # Import workflow
 

@@ -61,10 +61,16 @@
       "sessionEnforcement": "public"
     },
     {
-      "file": "src/app/api/import/finalize/route.ts",
+      "file": "src/app/api/import/jobs/[jobId]/retry/route.ts",
       "methods": ["POST"],
-      "classification": "delegated_authenticated_python_transport",
-      "sessionEnforcement": "delegate"
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/import/jobs/[jobId]/route.ts",
+      "methods": ["GET"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
     },
     {
       "file": "src/app/api/import/route.ts",

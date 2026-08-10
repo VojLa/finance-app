@@ -1,5 +1,7 @@
 import "server-only"
 
+import { createHash } from "node:crypto"
+
 import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
@@ -11,245 +13,138 @@ import {
   toErrorResponse,
   validationError,
 } from "@/modules/python-api/server/errors"
-import {
-  isPythonImportSource,
-  summarizeImportFiles,
-  withImportFinalization,
-  type ImportApiErrorResponse,
-  type ImportFinalizationRequest,
-  type ImportFinalizationResult,
-  type PythonImportSource,
-} from "./import-contract"
-import { createPythonImportApi, runImportCanonicalWorkflow } from "./import-api"
+import { createPythonImportApi } from "./import-api"
+import { isPythonImportSource, type PythonImportSource } from "./import-contract"
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 const MAX_FILES = 10
 const MAX_FILE_SIZE = 64 * 1024 * 1024
+const MAX_TOTAL_SIZE = 64 * 1024 * 1024
 
 function authenticationRequired() {
   return NextResponse.json(
-    {
-      error: {
-        code: "authentication_required",
-        message: "Authentication is required.",
-      },
-    },
+    { error: { code: "authentication_required", message: "Authentication is required." } },
     { status: 401, headers: NO_STORE_HEADERS }
   )
 }
 
-function safeAdapterResponse(error: unknown) {
+function errorResponse(error: unknown) {
   const mapped = toErrorResponse(normalizeAdapterError(error))
-  return NextResponse.json(mapped.body, {
-    status: mapped.status,
-    headers: NO_STORE_HEADERS,
-  })
+  return NextResponse.json(mapped.body, { status: mapped.status, headers: NO_STORE_HEADERS })
 }
 
-function exactFormKeys(formData: FormData, fixedSource?: PythonImportSource): boolean {
-  const allowed = new Set(fixedSource ? ["accountId", "file"] : ["accountId", "source", "file"])
-  return [...formData.keys()].every((key) => allowed.has(key))
-}
-
-function parseAccountId(formData: FormData): string {
+function formAccountId(formData: FormData): string {
   const values = formData.getAll("accountId")
-  const value = values[0]
   if (
     values.length !== 1 ||
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value !== value.trim()
+    typeof values[0] !== "string" ||
+    !values[0].trim() ||
+    values[0] !== values[0].trim()
   ) {
-    throw validationError()
-  }
-  return value
-}
-
-function parseSource(formData: FormData, fixedSource?: PythonImportSource): PythonImportSource {
-  if (fixedSource) return fixedSource
-  const values = formData.getAll("source")
-  if (values.length !== 1 || !isPythonImportSource(values[0])) {
     throw validationError()
   }
   return values[0]
 }
 
-function parseFiles(formData: FormData): File[] {
-  const files = formData.getAll("file").filter((value): value is File => value instanceof File)
-  if (
-    files.length === 0 ||
-    files.length > MAX_FILES ||
-    files.length !== formData.getAll("file").length
-  ) {
+function formSource(formData: FormData): PythonImportSource {
+  const values = formData.getAll("source")
+  if (values.length !== 1 || !isPythonImportSource(values[0])) throw validationError()
+  return values[0]
+}
+
+function formFiles(formData: FormData): File[] {
+  if (![...formData.keys()].every((key) => ["accountId", "source", "file"].includes(key))) {
     throw validationError()
   }
-  for (const file of files) {
-    if (
-      file.name.length === 0 ||
-      !file.name.toLowerCase().endsWith(".csv") ||
-      file.size === 0 ||
-      file.size > MAX_FILE_SIZE
-    ) {
-      throw validationError()
-    }
+  const values = formData.getAll("file")
+  const files = values.filter((value): value is File => value instanceof File)
+  if (files.length === 0 || files.length !== values.length || files.length > MAX_FILES) {
+    throw validationError()
+  }
+  if (
+    files.some(
+      (file) =>
+        !file.name ||
+        !file.name.toLowerCase().endsWith(".csv") ||
+        file.size === 0 ||
+        file.size > MAX_FILE_SIZE
+    ) ||
+    files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_SIZE
+  ) {
+    throw validationError()
   }
   return files
 }
 
-function parseFinalizationRequest(value: unknown): ImportFinalizationRequest {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw validationError()
-  }
-  const record = value as Record<string, unknown>
-  if (
-    Object.keys(record).length !== 2 ||
-    !Object.hasOwn(record, "accountId") ||
-    !Object.hasOwn(record, "batchIds") ||
-    typeof record.accountId !== "string" ||
-    record.accountId.length === 0 ||
-    record.accountId !== record.accountId.trim() ||
-    !Array.isArray(record.batchIds) ||
-    record.batchIds.length === 0 ||
-    record.batchIds.length > MAX_FILES ||
-    record.batchIds.some(
-      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId !== batchId.trim()
-    ) ||
-    new Set(record.batchIds).size !== record.batchIds.length
-  ) {
-    throw validationError()
-  }
-  return {
-    accountId: record.accountId,
-    batchIds: record.batchIds,
-  }
-}
-
-export async function handleImportPost(request: NextRequest, fixedSource?: PythonImportSource) {
+/** Register and upload files, then hand the entire durable workflow to Python. */
+export async function handleImportPost(request: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
+  if (!session?.user?.id || session.user.id !== session.user.id.trim())
     return authenticationRequired()
-  }
-
   try {
-    let formData: FormData
-    try {
-      formData = await request.formData()
-    } catch {
+    const formData = await request.formData().catch(() => {
       throw validationError()
-    }
-    if (!exactFormKeys(formData, fixedSource)) throw validationError()
-
-    const accountId = parseAccountId(formData)
-    const source = parseSource(formData, fixedSource)
-    const files = parseFiles(formData)
-    const identity = {
+    })
+    const accountId = formAccountId(formData)
+    const source = formSource(formData)
+    const files = formFiles(formData)
+    const api = createPythonImportApi({
       userId: session.user.id,
       email: session.user.email || undefined,
-    }
-
-    const executions = []
+    })
+    const batchIds: string[] = []
+    const rejectedFiles: Array<{ filename: string; code: string; message: string }> = []
+    let firstFailure: unknown
     for (const file of files) {
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      executions.push(
-        await runImportCanonicalWorkflow(identity, {
-          accountId,
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const checksum = createHash("sha256").update(bytes).digest("hex")
+        const batch = await api.createImportBatch(accountId, {
           source,
           filename: file.name,
-          bytes,
+          file_size: bytes.byteLength,
+          file_encoding: null,
+          checksum,
         })
-      )
-    }
-    const summary = summarizeImportFiles(executions.map((execution) => execution.result))
-    const failed = executions.find((execution) => execution.errorStatus !== undefined)
-    if (failed) {
-      const result = failed.result
-      const error =
-        "error" in result
-          ? result.error
-          : {
-              code: "python_api_contract_error",
-              message: "The Python API returned an incompatible response.",
-            }
-      const body: ImportApiErrorResponse = {
-        error,
-        partial: withImportFinalization(summary, "not_run"),
+        if (
+          batch.account_id !== accountId ||
+          batch.source !== source ||
+          batch.filename !== file.name ||
+          batch.file_size !== bytes.byteLength ||
+          batch.file_encoding !== null ||
+          batch.checksum !== checksum
+        ) {
+          throw contractError()
+        }
+        if (batch.status === "pending") {
+          const upload = await api.uploadImportFile(accountId, batch.id, bytes)
+          if (
+            upload.batch_id !== batch.id ||
+            upload.size !== bytes.byteLength ||
+            upload.checksum !== checksum
+          ) {
+            throw contractError()
+          }
+        }
+        if (!batchIds.includes(batch.id)) batchIds.push(batch.id)
+      } catch (error) {
+        firstFailure ??= error
+        const mapped = toErrorResponse(normalizeAdapterError(error))
+        rejectedFiles.push({
+          filename: file.name,
+          code: mapped.body.error.code,
+          message: mapped.body.error.message,
+        })
       }
-      return NextResponse.json(body, {
-        status: failed.errorStatus,
-        headers: NO_STORE_HEADERS,
-      })
     }
-    const batchIds = executions.flatMap((execution) =>
-      "batchId" in execution.result && execution.result.status !== "failed"
-        ? [execution.result.batchId]
-        : []
-    )
-    const expectedBatchIds = [...batchIds].sort()
-    let finalized
-    try {
-      finalized = await createPythonImportApi(identity).finalizeImportBatches(accountId, batchIds)
-    } catch (error) {
-      const mapped = toErrorResponse(normalizeAdapterError(error))
-      const body: ImportApiErrorResponse = {
-        error: mapped.body.error,
-        partial: withImportFinalization(summary, "not_run"),
-      }
-      return NextResponse.json(body, {
-        status: mapped.status,
-        headers: NO_STORE_HEADERS,
-      })
-    }
-    if (
-      finalized.batch_ids.length !== expectedBatchIds.length ||
-      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
-    ) {
-      throw contractError()
-    }
-    return NextResponse.json(withImportFinalization(summary, finalized.snapshot_refresh_status), {
-      headers: NO_STORE_HEADERS,
-    })
-  } catch (error) {
-    return safeAdapterResponse(error)
-  }
-}
-
-export async function handleImportFinalize(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
-    return authenticationRequired()
-  }
-  try {
-    let value: unknown
-    try {
-      value = await request.json()
-    } catch {
-      throw validationError()
-    }
-    const input = parseFinalizationRequest(value)
-    const expectedBatchIds = [...input.batchIds].sort()
-    const finalized = await createPythonImportApi({
-      userId: session.user.id,
-      email: session.user.email || undefined,
-    }).finalizeImportBatches(input.accountId, input.batchIds)
-    if (
-      finalized.batch_ids.length !== expectedBatchIds.length ||
-      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
-    ) {
-      throw contractError()
-    }
+    if (batchIds.length === 0) throw firstFailure ?? contractError()
+    const job = await api.startImportJob(accountId, [...batchIds].sort())
+    if (job.account_id !== accountId) throw contractError()
     return NextResponse.json(
-      {
-        batchIds: finalized.batch_ids,
-        snapshotRefreshStatus: finalized.snapshot_refresh_status,
-      } satisfies ImportFinalizationResult,
-      { headers: NO_STORE_HEADERS }
+      { job, acceptedBatchIds: [...batchIds].sort(), rejectedFiles },
+      { status: 202, headers: NO_STORE_HEADERS }
     )
   } catch (error) {
-    return safeAdapterResponse(error)
+    return errorResponse(error)
   }
 }

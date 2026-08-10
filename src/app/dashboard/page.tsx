@@ -58,11 +58,28 @@ export default function DashboardPage() {
     status: "loading",
   })
   const [financialRefreshInProgress, setFinancialRefreshInProgress] = useState(false)
+  const lastReadyFinancialState = useRef<Extract<
+    DashboardFinancialState,
+    { status: "ready" }
+  > | null>(null)
+  const [financialRefreshWarning, setFinancialRefreshWarning] = useState<string | null>(null)
 
   const loadFinancialOverview = useCallback(async (isRefresh = false) => {
     if (isRefresh) setFinancialRefreshInProgress(true)
     try {
-      setFinancialState(await requestDashboardFinancialState())
+      const next = await requestDashboardFinancialState()
+      if (next.status === "ready") {
+        lastReadyFinancialState.current = next
+        setFinancialRefreshWarning(null)
+        setFinancialState(next)
+      } else if (isRefresh && lastReadyFinancialState.current !== null) {
+        setFinancialRefreshWarning(
+          next.status === "error" ? next.message : "Snapshot se ještě připravuje."
+        )
+        setFinancialState(lastReadyFinancialState.current)
+      } else {
+        setFinancialState(next)
+      }
     } finally {
       if (isRefresh) setFinancialRefreshInProgress(false)
     }
@@ -74,6 +91,12 @@ export default function DashboardPage() {
 
     void loadFinancialOverview()
     void requestOperationalDashboardState().then(setOperationalState)
+  }, [loadFinancialOverview])
+
+  useEffect(() => {
+    const refreshOnImportCompleted = () => void loadFinancialOverview(true)
+    window.addEventListener("finance:import-completed", refreshOnImportCompleted)
+    return () => window.removeEventListener("finance:import-completed", refreshOnImportCompleted)
   }, [loadFinancialOverview])
 
   const financialModel = useMemo(
@@ -110,6 +133,15 @@ export default function DashboardPage() {
         <SectionSkeleton label="Načítání finančního přehledu" />
       )}
       {financialState.status === "error" && <FinancialError state={financialState} />}
+      {financialRefreshWarning !== null && (
+        <section
+          className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+          role="status"
+        >
+          Finanční přehled zůstává z posledního dokončeného snapshotu. Aktualizaci se nepodařilo
+          dokončit: {financialRefreshWarning}
+        </section>
+      )}
       {financialState.status === "ready" && financialModel && (
         <section aria-labelledby="financial-overview-heading" className="space-y-6">
           <div>

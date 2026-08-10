@@ -30,6 +30,18 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("portfolio page snapshot workflow", () => {
+  it("refreshes only after the completed-import event and retains a ready snapshot on refresh error", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
+
+    expect(page).toContain(
+      'window.addEventListener("finance:import-completed", refreshOnImportCompleted)'
+    )
+    expect(page).toContain(
+      'next.status === "error" ? next.message : "Snapshot se ještě připravuje."'
+    )
+    expect(page).toContain("setState(lastReadyState.current)")
+  })
+
   it("uses one bodyless no-store POST for initial current data", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       jsonResponse({
