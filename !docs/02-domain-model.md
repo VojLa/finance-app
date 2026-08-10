@@ -278,6 +278,16 @@ and returns only aggregate rebuild counts. Viewer, foreign, removed, and
 archived access is rejected without mutation. Replay remains read-only and
 automatic post-import rebuild remains deferred.
 
+For Trading212 trades, executed settlement is canonical evidence. Buy principal
+is fee-inclusive provider `Total` minus fee; sell principal is net provider
+`Total` plus fee. The implicit direct trade rate is the exact ratio of quoted
+asset notional (`quantity * source unit price`) to that principal. A standalone
+provider exchange-rate field does not create currency-conversion movements.
+Listing currency remains the quoted market currency, while movement and Holding
+cost currency remain the settlement currency. Only the derived unit-cost and
+weighted-average representations are rounded half-even at the `QUANTITY`
+storage boundary; the principal and fee legs remain exact.
+
 ## Money and snapshot invariants
 
 ### Pure portfolio snapshot presentation contract

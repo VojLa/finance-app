@@ -57,6 +57,7 @@ services:
       INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}
     depends_on:
       db:
         condition: service_healthy

@@ -57,7 +57,7 @@ def test_trading212_canonical_buy_and_complete_intent() -> None:
         },
         "quantity": "2",
         "price": {"amount": "100.5", "currency": "EUR"},
-        "total": {"amount": "201", "currency": "EUR"},
+        "total": {"amount": "200.75", "currency": "EUR"},
         "fee": {"amount": "0.25", "currency": "EUR"},
         "conversion": None,
         "realized_pnl": None,
@@ -70,6 +70,80 @@ def test_trading212_canonical_buy_and_complete_intent() -> None:
     assert intent.investment_event_type is InvestmentEventType.trade
     assert intent.quantity == Decimal("2")
     assert intent.model_dump(mode="json")["fee"]["amount"] == "0.25"
+
+
+def test_cross_currency_buy_derives_trade_principal_without_conversion_legs() -> None:
+    result = _normalize(
+        **{
+            "No. of shares": "0.2066590000",
+            "Price / share": "93.9200000000",
+            "Currency (Price / share)": "USD",
+            "Total": "17.98",
+            "Currency (Total)": "EUR",
+            "Exchange rate": "1.08130436",
+            "Currency conversion fee": "0.03",
+            "Currency (Currency conversion fee)": "EUR",
+        }
+    )
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["quantity"] == "0.206659"
+    assert result.data["price"] == {"amount": "93.92", "currency": "USD"}
+    assert result.data["total"] == {"amount": "17.95", "currency": "EUR"}
+    assert result.data["fee"] == {"amount": "0.03", "currency": "EUR"}
+    assert result.data["conversion"] is None
+    intent = classify_import_row(source=ImportSource.trading212, normalized_data=result.data)
+    assert isinstance(intent, InvestmentEventPostingIntent)
+
+
+def test_cross_currency_sell_derives_gross_trade_proceeds_without_conversion_legs() -> None:
+    result = _normalize(
+        Action="Market sell",
+        **{
+            "No. of shares": "0.2066590000",
+            "Price / share": "126.4200000000",
+            "Currency (Price / share)": "USD",
+            "Total": "24.61",
+            "Currency (Total)": "EUR",
+            "Exchange rate": "1.05987143",
+            "Currency conversion fee": "0.04",
+            "Currency (Currency conversion fee)": "EUR",
+        },
+    )
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["total"] == {"amount": "24.65", "currency": "EUR"}
+    assert result.data["fee"] == {"amount": "0.04", "currency": "EUR"}
+    assert result.data["conversion"] is None
+
+
+def test_trade_fee_must_share_settlement_currency_for_principal_derivation() -> None:
+    result = _normalize(
+        **{
+            "Currency conversion fee": "0.25",
+            "Currency (Currency conversion fee)": "USD",
+        }
+    )
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert any(error["code"] == "conflicting_currency" for error in result.validation_errors)
+
+
+def test_buy_fee_cannot_consume_the_complete_settled_total() -> None:
+    result = _normalize(
+        Total="0.25",
+        **{
+            "Currency conversion fee": "0.25",
+            "Currency (Currency conversion fee)": "EUR",
+        },
+    )
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert any(error["field"] == "total" for error in result.validation_errors)
 
 
 def test_zero_provider_fee_column_is_absent_from_canonical_payload() -> None:

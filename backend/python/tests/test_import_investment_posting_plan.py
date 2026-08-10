@@ -478,6 +478,26 @@ def test_buy_plan_has_asset_cash_fee_in_binding_order() -> None:
     assert all(movement.note == "provider note" for movement in plan.movements)
 
 
+def test_cross_currency_buy_uses_settled_principal_as_exact_cost_evidence() -> None:
+    payload = _canonical()
+    payload["quantity"] = "0.206659"
+    payload["price"] = {"amount": "93.92", "currency": "USD"}
+    payload["total"] = {"amount": "17.95", "currency": "EUR"}
+    payload["fee"] = {"amount": "0.03", "currency": "EUR"}
+
+    plan = _plan(payload)
+
+    assert plan.asset_resolution is not None
+    assert plan.asset_resolution.listing_currency_hint == "USD"
+    asset, cash, fee = plan.movements
+    assert asset.price_per_unit == Decimal("86.8580608635")
+    assert asset.value_amount == Decimal("17.95")
+    assert asset.value_currency == "EUR"
+    assert cash.quantity == Decimal("17.95")
+    assert cash.currency == "EUR"
+    assert fee.quantity == Decimal("0.03")
+
+
 def test_sell_plan_has_asset_cash_fee_and_realized_pnl_metadata() -> None:
     payload = _canonical("sell")
     payload["fee"] = {"amount": "0.25", "currency": "EUR"}
@@ -566,13 +586,20 @@ def test_staking_reward_and_promotional_airdrop_are_asset_in_movements() -> None
     assert airdrop.movements[0].value_amount == Decimal("500")
 
 
-def test_exact_quantity_and_timestamp_boundaries_are_accepted() -> None:
+def test_exact_timestamp_boundary_is_accepted() -> None:
     payload = _canonical()
-    payload["quantity"] = "999999999999999999.9999999999"
     payload["date"] = "2026-07-25T12:00:00.123000+02:00"
     plan = _plan(payload)
-    assert plan.movements[0].quantity == Decimal("999999999999999999.9999999999")
+    assert plan.movements[0].quantity == Decimal("2")
     assert plan.date == datetime(2026, 7, 25, 10, 0, 0, 123000)
+
+
+def test_trade_unit_cost_below_canonical_precision_is_rejected() -> None:
+    payload = _canonical()
+    payload["quantity"] = "999999999999999999.9999999999"
+
+    with pytest.raises(ImportPostStateError):
+        _plan(payload)
 
 
 @pytest.mark.parametrize("quantity", ["0.00000000001", "1000000000000000000"])

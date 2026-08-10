@@ -18,6 +18,11 @@ from app.modules.holdings.projection import (
     HoldingProjectionStateError,
     build_holding_projection,
 )
+from app.shared.canonical_arithmetic import (
+    CanonicalArithmeticError,
+    canonical_ratio,
+    canonical_rounded,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,8 +170,11 @@ def _basis(movement: HoldingPersistenceMovement) -> tuple[Decimal, str]:
     price = _exact(movement.price_per_unit, positive=True)
     value = _exact(movement.value_amount, positive=True)
     currency = _currency(movement.value_currency)
-    calculated = _exact(value / quantity, positive=True)
-    if calculated != price or _exact(price * quantity, positive=True) != value:
+    try:
+        calculated = canonical_ratio(value, quantity, QUANTITY)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    if calculated != price:
         raise _fail()
     return price, currency
 
@@ -280,10 +288,18 @@ def _acquire(
         or position.currency != currency
     ):
         raise _fail()
-    existing_cost = _exact(position.quantity * position.average)
-    new_cost = _exact(existing_cost + _exact(movement.value_amount, positive=True))
+    try:
+        new_cost = canonical_rounded(
+            (position.quantity * position.average) + _exact(movement.value_amount, positive=True),
+            QUANTITY,
+        )
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
     new_quantity = _exact(position.quantity + movement.quantity, positive=True)
-    position.average = _exact(new_cost / new_quantity, positive=True)
+    try:
+        position.average = canonical_ratio(new_cost, new_quantity, QUANTITY)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
     position.quantity = new_quantity
 
 

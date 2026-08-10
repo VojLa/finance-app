@@ -39,6 +39,7 @@ from app.modules.imports.posting_common import (
     exact_naive_timestamp,
     exact_numeric,
 )
+from app.shared.canonical_arithmetic import CanonicalArithmeticError, canonical_ratio
 
 _ASSET_ACTIONS: Final = frozenset(
     {
@@ -267,13 +268,23 @@ def _asset_movement(
 ) -> InvestmentMovementPlan:
     if intent.quantity is None:
         raise ImportPostStateError()
+    price_per_unit = intent.price.amount if intent.price is not None else None
+    if intent.price is not None:
+        exact_numeric(intent.price.amount, QUANTITY)
+    if intent.action in {InvestmentAction.buy, InvestmentAction.sell}:
+        if intent.total is None:
+            raise ImportPostStateError()
+        try:
+            price_per_unit = canonical_ratio(intent.total.amount, intent.quantity, QUANTITY)
+        except CanonicalArithmeticError as exc:
+            raise ImportPostStateError() from exc
     return _movement(
         kind=InvestmentMovementKind.asset,
         direction=direction,
         quantity=intent.quantity,
         currency=asset.symbol,
         requires_asset=True,
-        price_per_unit=intent.price.amount if intent.price is not None else None,
+        price_per_unit=price_per_unit,
         value_amount=intent.total.amount if intent.total is not None else None,
         value_currency=intent.total.currency if intent.total is not None else None,
         asset=asset,

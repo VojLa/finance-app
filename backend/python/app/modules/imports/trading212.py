@@ -325,14 +325,22 @@ def normalize_trading212_import_row(
         ("Result", "Realized P/L"),
         ("Currency (Result)", "Currency (Realized P/L)"),
     )
+    fee = None if promotional else _fees(raw_data, errors)
     exchange_rate = _decimal(
         _value(raw_data, "Exchange rate", "Exchange Rate"),
         errors,
         "conversion.exchange_rate",
         positive=True,
     )
-    conversion = _conversion(raw_data, errors, exchange_rate)
-    fee = None if promotional else _fees(raw_data, errors)
+    # Trading212's trade-level exchange rate is redundant execution evidence,
+    # not a separate cash conversion. Exact trade economics are reconstructed
+    # from quantity, quoted unit price, settled total and fee below.
+    conversion = _conversion(
+        raw_data,
+        errors,
+        exchange_rate if action == "currency_conversion" else None,
+    )
+    total = _trade_principal(action, total, fee, errors)
     external_id = _optional(raw_data, errors, "external_id", "ID", "Transaction ID")
     note = _optional(
         raw_data, errors, "note", "Notes", "Note", "Category", "Merchant category", "Card category"
@@ -404,6 +412,42 @@ def _fees(raw: dict[str, Any], errors: list[dict[str, str]]) -> dict[str, str] |
         return None
     total = sum(values, Decimal("0"))
     return {"amount": format(total.normalize(), "f"), "currency": next(iter(currencies))}
+
+
+def _trade_principal(
+    action: str | None,
+    settled_total: dict[str, str] | None,
+    fee: dict[str, str] | None,
+    errors: list[dict[str, str]],
+) -> dict[str, str] | None:
+    """Separate Trading212's fee-inclusive/net settlement from trade principal."""
+    if action not in {"buy", "sell"} or settled_total is None or fee is None:
+        return settled_total
+    if fee["currency"] != settled_total["currency"]:
+        errors.append(
+            {
+                "field": "fee.currency",
+                "code": "conflicting_currency",
+                "message": "Trade fee currency must match the settlement currency.",
+            }
+        )
+        return settled_total
+    settled = Decimal(settled_total["amount"])
+    fee_amount = Decimal(fee["amount"])
+    principal = settled - fee_amount if action == "buy" else settled + fee_amount
+    if principal <= 0:
+        errors.append(
+            {
+                "field": "total",
+                "code": "positive_required",
+                "message": "Trade principal must be positive after separating the fee.",
+            }
+        )
+        return settled_total
+    return {
+        "amount": format(principal.normalize(), "f"),
+        "currency": settled_total["currency"],
+    }
 
 
 def _conversion(

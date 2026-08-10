@@ -535,12 +535,13 @@ def test_equal_timestamps_use_event_id_order() -> None:
     assert _project(first, second) == _project(second, first)
 
 
-def test_repeating_weighted_average_fails_without_rounding() -> None:
-    with pytest.raises(HoldingProjectionStateError):
-        _project(
-            _buy("a", "1", "1", date=datetime(2026, 7, 20)),
-            _buy("b", "2", "2", date=datetime(2026, 7, 21)),
-        )
+def test_repeating_weighted_average_uses_explicit_half_even_storage_rounding() -> None:
+    result = _project(
+        _buy("a", "1", "1", date=datetime(2026, 7, 20)),
+        _buy("b", "2", "2", date=datetime(2026, 7, 21)),
+    )
+
+    assert result.holdings[0].avg_buy_price == Decimal("1.6666666667")
 
 
 @pytest.mark.parametrize(
@@ -784,6 +785,39 @@ def test_actual_trading212_buy_and_sell_plans_project_exactly() -> None:
     buy = _from_plan(_trading("Market buy", "2026-07-20T10:00:00Z", "buy"), "buy")
     sell = _from_plan(_trading("Market sell", "2026-07-21T10:00:00Z", "sell"), "sell")
     assert _project(buy, sell).holdings == ()
+
+
+def test_actual_cross_currency_trading212_buy_projects_executed_cost() -> None:
+    normalized = normalize_import_row(
+        source=ImportSource.trading212,
+        account_id="account",
+        raw_data={
+            "Action": "Market buy",
+            "Time": "2026-07-20T10:00:00Z",
+            "ISIN": "TEST00000001",
+            "Ticker": "tst",
+            "Name": "Cross-currency fixture",
+            "No. of shares": "0.2066590000",
+            "Price / share": "93.9200000000",
+            "Currency (Price / share)": "USD",
+            "Total": "17.98",
+            "Currency (Total)": "EUR",
+            "Exchange rate": "1.08130436",
+            "Currency conversion fee": "0.03",
+            "Currency (Currency conversion fee)": "EUR",
+            "ID": "cross-buy",
+        },
+    )
+    assert normalized.data is not None, normalized.validation_errors
+
+    plan = _plan(normalized.data, ImportSource.trading212)
+    result = _project(_from_plan(plan, "cross-buy"))
+
+    assert plan.asset_resolution is not None
+    assert plan.asset_resolution.listing_currency_hint == "USD"
+    assert result.holdings[0].quantity == Decimal("0.206659")
+    assert result.holdings[0].avg_buy_price == Decimal("86.8580608635")
+    assert result.holdings[0].currency == "EUR"
 
 
 def test_actual_anycoin_grouped_trade_and_outgoing_transfer_project_exactly() -> None:

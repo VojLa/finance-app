@@ -30,6 +30,16 @@ allowlists, Decimal amounts, asset identity, price/total/fee/conversion fields,
 and deterministic source-scoped deduplication. Invalid Trading212 rows become
 `needs_review`; normalization never posts them.
 
+Trading212 trade rows use executed settlement evidence. For a buy, canonical
+trade principal is provider `Total - fee`; for a sell it is `Total + fee`.
+The fee must share the settlement currency and remains one separate fee
+movement, so the canonical cash effect exactly reproduces the provider total.
+The direct trade FX is implied by `quantity * quoted price / principal`.
+A standalone positive `Exchange rate` is redundant trade evidence and never
+creates synthetic conversion legs; only an explicit currency-conversion action
+may populate the canonical `conversion` object. The quoted price currency still
+selects the Listing currency, while Holding cost stays in settlement currency.
+
 Duplicate detection is scoped to one account and import source. An already
 imported row always wins so canonical history is not rewritten. Otherwise the
 earliest eligible row by batch creation time, batch id, source row number, and
