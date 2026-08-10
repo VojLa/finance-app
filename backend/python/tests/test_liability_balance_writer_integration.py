@@ -560,11 +560,12 @@ async def test_same_external_identity_concurrency_creates_once_and_conflicts_onc
 
 
 @pytest.mark.asyncio
-async def test_same_account_different_manual_timestamps_do_not_share_identity_lock() -> None:
+async def test_same_account_different_manual_timestamps_serialize_canonical_revisions() -> None:
     prefix = "l2a-parallel-timestamps"
     await _seed(prefix)
     engine = _engine()
     holding, release = asyncio.Event(), asyncio.Event()
+    pid_ready = asyncio.get_running_loop().create_future()
     first_command = _command(
         prefix,
         source=LiabilityBalanceSource.manual,
@@ -589,15 +590,19 @@ async def test_same_account_different_manual_timestamps_do_not_share_identity_lo
             ).write(first_command)
         )
         await holding.wait()
-        second = await asyncio.wait_for(
-            LiabilityBalanceWriter(second_session).write(second_command),
-            timeout=2,
+        second = asyncio.create_task(
+            LiabilityBalanceWriter(
+                second_session,
+                repository=_PidRepository(second_session, pid_ready=pid_ready),
+            ).write(second_command)
         )
-        assert second.disposition is LiabilityBalanceWriteDisposition.created
+        await _wait_for_blocker(engine, await pid_ready)
         release.set()
         first_result = await first
+        second_result = await second
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
+    assert second_result.disposition is LiabilityBalanceWriteDisposition.created
     assert len(await _rows(prefix)) == 2
     await engine.dispose()
     await _cleanup(prefix)

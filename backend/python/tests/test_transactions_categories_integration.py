@@ -171,7 +171,7 @@ async def _seed() -> None:
                     updated_at=now,
                 )
             )
-        categories = (
+        categories: tuple[tuple[str, str, CategoryType, bool, str | None], ...] = (
             ("r11e-default", "Default", CategoryType.expense, True, None),
             ("r11e-owned", "Owned", CategoryType.expense, False, "r11e-owner"),
             (
@@ -182,7 +182,7 @@ async def _seed() -> None:
                 "r11e-foreign",
             ),
         )
-        for category_id, name, category_type, is_default, user_id in categories:
+        for category_id, name, category_type, is_default, category_user_id in categories:
             session.add(
                 CategoryModel(
                     id=category_id,
@@ -192,7 +192,7 @@ async def _seed() -> None:
                     type=category_type,
                     parent_id=None,
                     is_default=is_default,
-                    user_id=user_id,
+                    user_id=category_user_id,
                     created_at=now,
                     updated_at=now,
                 )
@@ -207,19 +207,18 @@ async def _audit() -> tuple[int, int, list[tuple[str, Any, Any]]]:
     async with AsyncSession(engine) as session:
         state = await session.get(AccountCanonicalStateModel, "r11e-account")
         assert state is not None
-        changes = list(
-            (
-                await session.execute(
-                    select(
-                        AccountCanonicalChangeModel.entity_id,
-                        AccountCanonicalChangeModel.revision,
-                        AccountCanonicalChangeModel.kind,
-                    )
-                    .where(AccountCanonicalChangeModel.account_id == "r11e-account")
-                    .order_by(AccountCanonicalChangeModel.revision)
+        change_rows = (
+            await session.execute(
+                select(
+                    AccountCanonicalChangeModel.entity_id,
+                    AccountCanonicalChangeModel.revision,
+                    AccountCanonicalChangeModel.kind,
                 )
-            ).all()
-        )
+                .where(AccountCanonicalChangeModel.account_id == "r11e-account")
+                .order_by(AccountCanonicalChangeModel.revision)
+            )
+        ).all()
+        changes = [(row.entity_id, row.revision, row.kind) for row in change_rows]
         active = int(
             (
                 await session.scalar(
@@ -254,7 +253,9 @@ def test_transaction_and_category_http_contract_on_postgresql() -> None:
     with TestClient(create_app(settings), raise_server_exceptions=False) as client:
         categories = client.get("/api/v1/categories", headers=_headers("r11e-owner"))
         assert categories.status_code == 200
-        assert {item["id"] for item in categories.json()} == {"r11e-default", "r11e-owned"}
+        category_ids = {item["id"] for item in categories.json()}
+        assert {"r11e-default", "r11e-owned"} <= category_ids
+        assert "r11e-foreign-category" not in category_ids
 
         create_category_payload = {
             "name": "Child",

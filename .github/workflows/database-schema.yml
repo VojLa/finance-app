@@ -161,3 +161,54 @@ jobs:
           uv run python scripts/database_migrate.py check
           uv run python scripts/database_schema.py --check --revision 3j0001twfx
           uv run python scripts/sqlalchemy_schema.py --check
+
+      - name: Verify final PostgreSQL business boundary matrix
+        working-directory: backend/python
+        run: >-
+          uv run pytest
+          tests/test_auth_credentials_integration.py
+          tests/test_accounts_integration.py
+          tests/test_transactions_categories_integration.py
+          tests/test_budgets_operational_dashboard_integration.py
+          tests/test_account_invitations_integration.py
+          -v
+
+      - name: Verify version 0.1 persisted authorization acceptance
+        working-directory: backend/python
+        env:
+          ACCEPTANCE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_version_0_1_acceptance
+        run: |
+          createdb --host localhost --username postgres finance_app_version_0_1_acceptance
+          export DATABASE_URL="$ACCEPTANCE_DATABASE_URL"
+          uv run python scripts/database_migrate.py bootstrap
+          uv run python scripts/database_schema.py --check --revision 3j0001twfx
+          uv run pytest tests/test_version_0_1_acceptance_integration.py -v
+
+      - name: Verify clean register-to-dashboard acceptance
+        working-directory: backend/python
+        env:
+          CLEAN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_version_0_1_r8
+        run: |
+          createdb --host localhost --username postgres finance_app_version_0_1_r8
+          export DATABASE_URL="$CLEAN_DATABASE_URL"
+          uv run python scripts/database_migrate.py bootstrap
+          uv run python scripts/database_schema.py --check --revision 3j0001twfx
+          uv run pytest tests/test_version_0_1_clean_main_scenario_integration.py -v
+
+      - name: Rehearse backup recovery without financial data loss
+        working-directory: backend/python
+        env:
+          SOURCE_DATABASE: finance_app_version_0_1_r8
+          RECOVERY_DATABASE: finance_app_r11_recovery
+          RECOVERY_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_r11_recovery
+        run: |
+          pg_dump --host localhost --username postgres --format=custom --file="$RUNNER_TEMP/r11-recovery.dump" "$SOURCE_DATABASE"
+          createdb --host localhost --username postgres "$RECOVERY_DATABASE"
+          pg_restore --host localhost --username postgres --dbname="$RECOVERY_DATABASE" --exit-on-error "$RUNNER_TEMP/r11-recovery.dump"
+          pg_dump --host localhost --username postgres --data-only --column-inserts --no-owner --no-privileges "$SOURCE_DATABASE" | sed '/^\\restrict /d;/^\\unrestrict /d' > "$RUNNER_TEMP/r11-source.sql"
+          pg_dump --host localhost --username postgres --data-only --column-inserts --no-owner --no-privileges "$RECOVERY_DATABASE" | sed '/^\\restrict /d;/^\\unrestrict /d' > "$RUNNER_TEMP/r11-restored.sql"
+          diff --strip-trailing-cr "$RUNNER_TEMP/r11-source.sql" "$RUNNER_TEMP/r11-restored.sql"
+          export DATABASE_URL="$RECOVERY_DATABASE_URL"
+          uv run python scripts/database_migrate.py check
+          uv run python scripts/database_schema.py --check --revision 3j0001twfx
+          uv run python scripts/sqlalchemy_schema.py --check

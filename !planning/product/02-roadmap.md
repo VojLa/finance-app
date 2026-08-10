@@ -102,9 +102,11 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
-Status: FINAL BOUNDARY AUDIT OPEN. Python core i odstraneni aktivniho
-TypeScript/Prisma business runtime jsou implementovane; zbyva R11-L enforcement,
-regresni audit a uzavreni exit podminky. Plan dokonceni je v
+Status: COMPLETE / ARCHITECTURE LOCKED. Python core, odstraneni aktivniho
+TypeScript/Prisma business runtime, R11-L enforcement i regresni audit jsou
+dokonceny s verdiktem PASS. Finalni evidence je v
+[`../../ChatGPT/audits/0.1-r11-final-audit.md`](../../ChatGPT/audits/0.1-r11-final-audit.md)
+a plan dokonceni je v
 [`../architecture/12-python-backend-completion.md`](../architecture/12-python-backend-completion.md).
 Toto neni public-production readiness a prace `0.2` v tomto milniku nezacala.
 

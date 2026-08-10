@@ -23,9 +23,9 @@ canonicalizes every public MONEY value to the exact six-decimal wire contract
 without changing financial arithmetic. Real authenticated mixed-currency
 portfolio and dashboard responses now pass the strict browser validator.
 
-The Python core and runtime cutover of version 0.1 are implemented. The strict
-Architecture Locked boundary still requires the final R11-L enforceability and
-regression audit. This status is not a declaration of public-production readiness.
+The Python core, runtime cutover, enforceable boundary, and final R10/R11
+regression audit of version 0.1 are complete. Version 0.1 is Architecture
+Locked. This status is not a declaration of public-production readiness.
 
 ## Reading guide
 

@@ -1,8 +1,8 @@
 # Epic: Dokonceni Python backendu a odstraneni legacy business kodu
 
-Status: implementace R11-A az R11-K dokoncena; R11-L audit otevren
+Status: implementace R11-A az R11-L dokoncena; finalni audit PASS
 
-Execution status: in progress; exact commit-sized sequence is maintained in
+Execution status: complete; exact commit-sized sequence and final evidence are maintained in
 `../../ChatGPT/steps/0.1-r11.md`.
 
 Priorita: blokuje dalsi produktove rozsireni po `0.1`
@@ -30,10 +30,10 @@ vertikalnich rezech; nema vzniknout jeden nevratny big-bang prepis.
 
 ## Proc je epic nutny
 
-Runtime cutover je po R11-K dokoncen: aktivni business schopnosti vlastni Python,
-FX pouziva prime Twelve Data pary, Alembic je jediny vlastnik migraci a Prisma
-runtime/schema/generator byly odstraneny. Hranice bude formalne uzavrena az po
-zaverecnem R11-L enforcement a regresnim auditu.
+Runtime cutover i R11-L finalni audit jsou dokonceny: aktivni business schopnosti
+vlastni Python, FX pouziva prime Twelve Data pary, Alembic je jediny vlastnik
+migraci a Prisma runtime/schema/generator byly odstraneny. Hranice je formalne
+uzavrena s verdiktem PASS.
 
 ## Cilova architektura
 

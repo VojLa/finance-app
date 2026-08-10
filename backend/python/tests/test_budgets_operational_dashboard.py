@@ -41,7 +41,7 @@ def _transaction(**overrides: object) -> TransactionModel:
         "updated_at": datetime(2026, 8, 1),
     }
     values.update(overrides)
-    return TransactionModel(**values)  # type: ignore[arg-type]
+    return TransactionModel(**values)
 
 
 def test_budget_request_preserves_exact_money_and_rejects_duplicates() -> None:

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -26,6 +27,7 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.snapshot_refresh.executor import ExecuteUserSnapshotRefreshCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -196,6 +198,17 @@ async def seed_listed_holding(
                     updated_at=created_at,
                 )
             )
+            recorded = await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=event_at,
+                created_at=created_at,
+                replay=False,
+            )
+            state = await session.get(AccountCanonicalStateModel, account_id)
+            assert state is not None
+            state.holding_revision = recorded.revision
             await session.commit()
     finally:
         await engine.dispose()

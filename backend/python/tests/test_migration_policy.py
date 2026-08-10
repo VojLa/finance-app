@@ -182,7 +182,7 @@ def test_database_workflow_verifies_current_head_artifact() -> None:
     workflow = BACKEND_ROOT.parents[1] / ".github" / "workflows" / "database-schema.yml"
     source = workflow.read_text(encoding="utf-8")
 
-    assert source.count("python scripts/database_schema.py --check --revision 3j0001twfx") == 2
+    assert source.count("python scripts/database_schema.py --check --revision 3j0001twfx") >= 2
 
 
 def test_policy_revision_boundary_is_stable() -> None:

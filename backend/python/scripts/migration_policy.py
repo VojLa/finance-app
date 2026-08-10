@@ -550,7 +550,7 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
                     f"Database CI contains removed Prisma tooling: {forbidden_command}."
                 )
         head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
-        if source.count(head_schema_check) != 2:
+        if source.count(head_schema_check) < 2:
             raise RuntimeError(
                 "Database CI must verify the current head artifact after upgrade and bootstrap."
             )

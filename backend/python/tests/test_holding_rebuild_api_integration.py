@@ -37,6 +37,7 @@ from app.modules.accounts.access import (
     AccountAccessDeniedError,
     AccountNotFoundError,
 )
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.holdings.orchestration import (
     HoldingRebuildApplicationService,
     HoldingRebuildUnavailableError,
@@ -261,6 +262,15 @@ async def _seed(
                         updated_at=NOW,
                     )
                 )
+            await session.flush()
+            await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=NOW,
+                created_at=NOW,
+                replay=False,
+            )
         await session.commit()
     await engine.dispose()
     return account_id, user_ids

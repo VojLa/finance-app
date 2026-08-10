@@ -114,14 +114,15 @@ def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> No
     for command in (
         "npm ci",
         "npm run api:python:check",
+        "npm run boundary:check",
         "npm test",
         "npm run lint",
         "npx tsc --noEmit --incremental false",
-        "npm run db:validate",
         "git diff --check",
         'test -z "$(git status --porcelain)"',
     ):
         assert command in frontend
+    assert "npm run db:validate" not in frontend
 
 
 def test_release_roadmap_records_complete_version_0_1_closure() -> None:

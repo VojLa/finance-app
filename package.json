@@ -13,6 +13,7 @@
     "format:check": "prettier --check .",
     "api:python:generate": "node scripts/generate-python-api-types.mjs",
     "api:python:check": "node scripts/generate-python-api-types.mjs --check",
+    "boundary:check": "node scripts/check-typescript-boundary.mjs",
     "db:migrate": "cd backend/python && uv run python scripts/database_migrate.py upgrade",
     "db:deploy": "cd backend/python && uv run python scripts/database_migrate.py upgrade",
     "db:check": "cd backend/python && uv run python scripts/database_migrate.py check",
@@ -30,8 +31,8 @@
   "dependencies": {
     "autoprefixer": "^10.5.0",
     "jose": "^6.2.5",
-    "next": "14.2.30",
-    "next-auth": "^4.24.11",
+    "next": "15.5.21",
+    "next-auth": "4.24.15",
     "openapi-fetch": "^0.17.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -45,11 +46,17 @@
     "@typescript-eslint/eslint-plugin": "^8.59.4",
     "@typescript-eslint/parser": "^8.59.4",
     "eslint": "^8.57.1",
-    "eslint-config-next": "^14.2.30",
+    "eslint-config-next": "15.5.21",
     "eslint-config-prettier": "^10.1.8",
     "openapi-typescript": "^7.13.0",
     "prettier": "^3.8.3",
     "typescript": "^5.8.3",
     "vitest": "^4.1.8"
+  },
+  "overrides": {
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.17",
+    "postcss": "8.5.26",
+    "sharp": "0.35.3"
   }
 }

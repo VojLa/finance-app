@@ -591,7 +591,7 @@ async def test_physical_postgresql_snapshot_contract_matches_final_5k_audit() ->
                     )
                 )
             ).one()
-            assert physical_counts == (32, 28)
+            assert physical_counts == (37, 28)
 
             columns = {
                 (row.table_name, row.column_name): row

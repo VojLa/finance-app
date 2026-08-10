@@ -1,0 +1,106 @@
+{
+  "routes": [
+    {
+      "file": "src/app/api/accounts/[id]/archive/route.ts",
+      "methods": ["POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/accounts/[id]/route.ts",
+      "methods": ["PATCH"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/accounts/route.ts",
+      "methods": ["GET", "POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/auth/[...nextauth]/route.ts",
+      "methods": ["GET", "POST"],
+      "classification": "nextauth_session_transport",
+      "sessionEnforcement": "nextauth"
+    },
+    {
+      "file": "src/app/api/auth/password/route.ts",
+      "methods": ["PUT"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/auth/register/route.ts",
+      "methods": ["POST"],
+      "classification": "public_python_transport",
+      "sessionEnforcement": "public"
+    },
+    {
+      "file": "src/app/api/budget/route.ts",
+      "methods": ["GET", "PUT"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/categories/route.ts",
+      "methods": ["DELETE", "GET", "PATCH", "POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/dashboard/route.ts",
+      "methods": ["GET"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/health/route.ts",
+      "methods": ["GET"],
+      "classification": "local_health",
+      "sessionEnforcement": "public"
+    },
+    {
+      "file": "src/app/api/import/finalize/route.ts",
+      "methods": ["POST"],
+      "classification": "delegated_authenticated_python_transport",
+      "sessionEnforcement": "delegate"
+    },
+    {
+      "file": "src/app/api/import/route.ts",
+      "methods": ["POST"],
+      "classification": "delegated_authenticated_python_transport",
+      "sessionEnforcement": "delegate"
+    },
+    {
+      "file": "src/app/api/portfolio/history/route.ts",
+      "methods": ["GET"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/portfolio/transactions/route.ts",
+      "methods": ["GET", "POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/snapshot-workflow/dashboard/route.ts",
+      "methods": ["POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/snapshot-workflow/portfolio/route.ts",
+      "methods": ["POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/transactions/route.ts",
+      "methods": ["DELETE", "GET", "PATCH", "POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    }
+  ]
+}

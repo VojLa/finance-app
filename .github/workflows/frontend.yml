@@ -70,6 +70,9 @@ jobs:
       - name: Check Python API generated contract
         run: npm run api:python:check
 
+      - name: Enforce TypeScript architecture boundary
+        run: npm run boundary:check
+
       - name: Run Vitest
         run: npm test
 

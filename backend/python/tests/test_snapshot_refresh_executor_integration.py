@@ -15,6 +15,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import DailySnapshotBaselineModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -144,6 +145,11 @@ async def _cleanup(prefix: str) -> None:
             )
         if user_ids:
             await session.execute(
+                delete(DailySnapshotBaselineModel).where(
+                    DailySnapshotBaselineModel.user_id.in_(user_ids)
+                )
+            )
+            await session.execute(
                 delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
             )
         if account_ids:
@@ -183,7 +189,6 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                 updated_at=EVIDENCE_AT,
             )
         )
-        needs_eur_pivot = False
         for spec in specs:
             account_id = _account_id(prefix, spec.suffix)
             session.add(
@@ -238,30 +243,17 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                 replay=False,
             )
             if spec.currency != "EUR" and spec.with_rate:
-                needs_eur_pivot = True
                 session.add(
                     ExchangeRateModel(
                         id=f"{prefix}-rate-{spec.suffix}",
                         from_currency=spec.currency,
-                        to_currency="CZK",
-                        rate=Decimal("18.00000000"),
+                        to_currency="EUR",
+                        rate=Decimal("0.90000000"),
                         date=EVIDENCE_AT,
                         source=ExchangeRateSource.twelve_data,
                         created_at=EVIDENCE_AT,
                     )
                 )
-        if needs_eur_pivot:
-            session.add(
-                ExchangeRateModel(
-                    id=f"{prefix}-rate-eur-pivot",
-                    from_currency="EUR",
-                    to_currency="CZK",
-                    rate=Decimal("20.00000000"),
-                    date=EVIDENCE_AT,
-                    source=ExchangeRateSource.twelve_data,
-                    created_at=EVIDENCE_AT,
-                )
-            )
         await session.commit()
     await engine.dispose()
 
@@ -432,17 +424,8 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
                     ExchangeRateModel(
                         id=f"{prefix}-rate-b-xzz",
                         from_currency="XZZ",
-                        to_currency="CZK",
-                        rate=Decimal("18.00000000"),
-                        date=EVIDENCE_AT,
-                        source=ExchangeRateSource.twelve_data,
-                        created_at=EVIDENCE_AT,
-                    ),
-                    ExchangeRateModel(
-                        id=f"{prefix}-rate-eur-pivot",
-                        from_currency="EUR",
-                        to_currency="CZK",
-                        rate=Decimal("20.00000000"),
+                        to_currency="EUR",
+                        rate=Decimal("0.90000000"),
                         date=EVIDENCE_AT,
                         source=ExchangeRateSource.twelve_data,
                         created_at=EVIDENCE_AT,

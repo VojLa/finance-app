@@ -578,10 +578,19 @@ async def test_current_archive_unsupported_incomplete_and_foreign_semantics() ->
         await engine.dispose()
     await _cleanup(archived_prefix)
 
-    for prefix, account_type, accepted_at in (
-        ("k5b-unsupported", AccountType.bank, NOW),
-        ("k5b-incomplete", AccountType.broker, None),
-    ):
+    supported_prefix = "k5b-cash-like"
+    await _cleanup(supported_prefix)
+    supported = _account(supported_prefix, "bank", account_type=AccountType.bank)
+    await _seed(supported_prefix, (supported,))
+    engine = _engine()
+    try:
+        result = await _build(engine, supported_prefix)
+        assert tuple(target.account_id for target in result.refresh_targets) == (supported.id,)
+    finally:
+        await engine.dispose()
+    await _cleanup(supported_prefix)
+
+    for prefix, account_type, accepted_at in (("k5b-incomplete", AccountType.broker, None),):
         await _cleanup(prefix)
         account = _account(prefix, "account", account_type=account_type)
         await _seed(

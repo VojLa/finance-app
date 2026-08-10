@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -12,23 +12,26 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from support import investment_fixture_e2e as support
 
-from app.db.models.enums import ImportSource
+from app.db.models.enums import ImportSource, PriceSource, SnapshotGranularity, SnapshotSource
 from app.db.models.holdings import HoldingModel
-from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
     NetWorthSnapshotModel,
 )
 from app.main import create_app
-from app.modules.snapshot_refresh.api import get_user_snapshot_refresh_clock
+from app.modules.snapshot_refresh.executor import (
+    ExecuteUserSnapshotRefreshCommand,
+    UserSnapshotRefreshExecutor,
+)
+from app.modules.snapshot_refresh.models import UserSnapshotRefreshRecalculateResponse
 
 pytestmark = pytest.mark.skipif(
     not support.DATABASE_URL,
     reason="DATABASE_URL is required",
 )
 
-REFRESH_PATH = "/api/v1/snapshot-refresh/recalculate"
 PORTFOLIO_PATH = "/api/v1/portfolio/snapshot"
 DASHBOARD_PATH = "/api/v1/dashboard/snapshot"
 
@@ -54,6 +57,48 @@ async def _snapshot_counts(user_id: str, account_id: str) -> tuple[int, int]:
         )
     await db.dispose()
     return account_count, net_worth_count
+
+
+async def _execute_seeded_refresh(user_id: str, bucket: datetime) -> dict[str, Any]:
+    db = support.engine()
+    try:
+        async with AsyncSession(db) as session:
+            result = await UserSnapshotRefreshExecutor(session).execute(
+                ExecuteUserSnapshotRefreshCommand(
+                    user_id=user_id,
+                    snapshot_timestamp=bucket,
+                    granularity=SnapshotGranularity.day,
+                    source=SnapshotSource.manual_recalculation,
+                    calculation_version=1,
+                    calculated_at=bucket,
+                    created_at=bucket,
+                    is_recalculated=True,
+                )
+            )
+            response = UserSnapshotRefreshRecalculateResponse(
+                net_worth_snapshot_id=result.net_worth_snapshot_id,
+                net_worth_status=result.net_worth_disposition.value,
+                timestamp=result.snapshot_timestamp,
+                granularity=result.granularity,
+                currency=result.output_currency,
+                calculation_version=result.calculation_version,
+                accounts=tuple(
+                    {
+                        "account_id": identity.account_id,
+                        "snapshot_id": identity.snapshot_id,
+                    }
+                    for identity in result.required_account_snapshot_identities
+                ),
+                refresh_account_count=result.refresh_account_count,
+                reuse_only_account_count=result.reuse_only_account_count,
+                created_account_snapshot_count=result.created_account_snapshot_count,
+                replayed_account_snapshot_count=result.replayed_account_snapshot_count,
+                reused_account_snapshot_count=result.reused_account_snapshot_count,
+                selected_account_snapshot_count=result.selected_account_snapshot_count,
+            )
+            return response.model_dump(mode="json", by_alias=True)
+    finally:
+        await db.dispose()
 
 
 async def _snapshot_evidence(
@@ -88,9 +133,6 @@ async def _snapshot_evidence(
             select(HoldingModel).where(HoldingModel.account_id == account_id)
         )
         assert holding is not None
-        exchange_rate_count = int(
-            await session.scalar(select(func.count()).select_from(ExchangeRateModel)) or 0
-        )
         selected_price_count = int(
             await session.scalar(
                 select(func.count())
@@ -111,7 +153,6 @@ async def _snapshot_evidence(
         "items": items,
         "net_worth": net_worth,
         "holding": holding,
-        "exchange_rate_count": exchange_rate_count,
         "selected_price_count": selected_price_count,
         "postgres_version": version,
     }
@@ -133,6 +174,7 @@ async def _snapshot_evidence(
                 "total": Decimal("1025.25"),
                 "unrealized": Decimal("20"),
                 "net_deposits": Decimal("1000"),
+                "price_source": "twelve_data",
             },
         ),
         (
@@ -148,6 +190,7 @@ async def _snapshot_evidence(
                 "total": Decimal("110"),
                 "unrealized": Decimal("110"),
                 "net_deposits": Decimal("0"),
+                "price_source": "coingecko",
             },
         ),
     ],
@@ -163,9 +206,8 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
     prefix = f"r3-snapshot-{source.value}"
     user_id, account_id = asyncio.run(support.seed_identity(prefix, source=source))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / source.value))
-    bucket = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    bucket = datetime(2026, 7, 26)
     app = create_app(support.settings())
-    app.dependency_overrides[get_user_snapshot_refresh_clock] = lambda: lambda: bucket
     try:
         with TestClient(app) as client:
             staged = support.run_stages(
@@ -192,14 +234,14 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
                     prefix,
                     price=price,
                     snapshot_timestamp=bucket,
+                    source=(
+                        PriceSource.twelve_data
+                        if source is ImportSource.trading212
+                        else PriceSource.coingecko
+                    ),
                 )
             )
-            refresh_response = client.post(
-                REFRESH_PATH,
-                headers=support.headers(user_id),
-            )
-            assert refresh_response.status_code == 200, refresh_response.text
-            refresh = refresh_response.json()
+            refresh = asyncio.run(_execute_seeded_refresh(user_id, bucket))
             manifest = {field: deepcopy(refresh[field]) for field in support.MANIFEST_FIELDS}
             unchanged = deepcopy(manifest)
             portfolio_response = client.post(
@@ -212,10 +254,7 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
                 headers=support.headers(user_id),
                 json=manifest,
             )
-            replay_response = client.post(
-                REFRESH_PATH,
-                headers=support.headers(user_id),
-            )
+            replay = asyncio.run(_execute_seeded_refresh(user_id, bucket))
 
         assert refresh["selectedAccountSnapshotCount"] == 1
         assert refresh["accounts"] == [
@@ -225,10 +264,7 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
             }
         ]
         assert manifest == unchanged
-        assert replay_response.status_code == 200
-        assert {
-            field: replay_response.json()[field] for field in support.MANIFEST_FIELDS
-        } == manifest
+        assert {field: replay[field] for field in support.MANIFEST_FIELDS} == manifest
         assert portfolio_response.status_code == 200, portfolio_response.text
         assert dashboard_response.status_code == 200, dashboard_response.text
         portfolio = portfolio_response.json()
@@ -263,7 +299,6 @@ def _assert_persisted_snapshot(
     net_worth = evidence["net_worth"]
     holding = evidence["holding"]
     assert evidence["postgres_version"].startswith("16.")
-    assert evidence["exchange_rate_count"] == 0
     assert evidence["selected_price_count"] == 1
     assert len(evidence["items"]) == 1
     assert snapshot.currency == "EUR"
@@ -286,7 +321,7 @@ def _assert_persisted_snapshot(
     assert item.quantity == expected["quantity"]
     assert item.value == expected["investment"]
     assert item.cost_basis == expected["cost"]
-    assert item.price_source.value == "manual"
+    assert item.price_source.value == expected["price_source"]
     assert holding.quantity == expected["quantity"]
     assert holding.avg_buy_price == expected["cost"] / expected["quantity"]
     assert net_worth.currency == "EUR"

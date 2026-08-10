@@ -14,7 +14,8 @@ def test_clean_database_acceptance_runs_the_full_supported_main_scenario() -> No
     source = SCENARIO.read_text(encoding="utf-8")
 
     assert 'EXPECTED_DATABASE = "finance_app_version_0_1_r8"' in source
-    assert 'base_currency="CZK"' in source
+    assert '"/api/v1/auth/register"' in source
+    assert '"/api/v1/auth/credentials/verify"' in source
     assert '"main_scenario.csv"' in source
     assert '"history.csv"' in source
     assert '"account_statement.csv"' in source
@@ -27,10 +28,10 @@ def test_clean_database_acceptance_runs_the_full_supported_main_scenario() -> No
     assert "NOT READY boundary" not in source
 
 
-def test_clean_scenario_creates_only_the_user_directly() -> None:
+def test_clean_scenario_does_not_create_domain_models_directly() -> None:
     source = SCENARIO.read_text(encoding="utf-8")
 
-    assert "UserModel(" in source
+    assert "UserModel(" not in source
     assert "AccountModel(" not in source
     assert "AccountSnapshotModel(" not in source
     assert "NetWorthSnapshotModel(" not in source

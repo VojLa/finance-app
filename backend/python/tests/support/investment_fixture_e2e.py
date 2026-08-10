@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import DailySnapshotBaselineModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -168,6 +169,12 @@ async def cleanup(prefix: str) -> None:
             ).all()
             if value
         )
+        if user_ids:
+            await session.execute(
+                delete(DailySnapshotBaselineModel).where(
+                    DailySnapshotBaselineModel.user_id.in_(user_ids)
+                )
+            )
         if snapshot_ids:
             await session.execute(
                 delete(AccountSnapshotItemModel).where(
@@ -353,6 +360,7 @@ async def seed_price(
     *,
     price: str,
     snapshot_timestamp: datetime,
+    source: PriceSource,
 ) -> str:
     db = engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
@@ -365,7 +373,7 @@ async def seed_price(
                 listing_id=f"{prefix}-listing",
                 price=Decimal(price),
                 currency="EUR",
-                source=PriceSource.manual,
+                source=source,
                 timestamp=(snapshot_timestamp - timedelta(hours=1)).replace(tzinfo=None),
                 created_at=now,
             )

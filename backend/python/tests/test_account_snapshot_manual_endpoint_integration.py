@@ -297,7 +297,7 @@ async def _seed_account(
                             to_currency="CZK",
                             rate=Decimal("20"),
                             date=event_at,
-                            source=ExchangeRateSource.ecb,
+                            source=ExchangeRateSource.twelve_data,
                             created_at=event_at,
                         ),
                         ExchangeRateModel(
@@ -306,7 +306,7 @@ async def _seed_account(
                             to_currency="CZK",
                             rate=Decimal("25"),
                             date=NOW,
-                            source=ExchangeRateSource.ecb,
+                            source=ExchangeRateSource.twelve_data,
                             created_at=NOW,
                         ),
                         InvestmentEventModel(
@@ -482,7 +482,7 @@ async def _seed_exchange_rate(
                 to_currency=to_currency,
                 rate=rate,
                 date=NOW,
-                source=ExchangeRateSource.ecb,
+                source=ExchangeRateSource.twelve_data,
                 created_at=NOW,
             )
         )
@@ -709,7 +709,7 @@ def test_hidden_account_matrix_creates_nothing(
 
 
 @pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.cash, AccountType.savings])
-def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
+def test_cash_like_accounts_create_zero_value_snapshots(
     account_type: AccountType,
 ) -> None:
     prefix = f"i5e-unsupported-{account_type.value}"
@@ -717,13 +717,10 @@ def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
     account_id, user_id = asyncio.run(_seed_account(prefix, account_type=account_type))
     try:
         response = _call(account_id, user_id)
-        assert response.status_code == 409
-        assert response.json()["error"] == {
-            "code": "account_snapshot_unavailable",
-            "message": "Account snapshot cannot be created from the current account data.",
-            "request_id": response.headers["x-request-id"],
-        }
-        assert asyncio.run(_counts(account_id)) == (0, 0)
+        assert response.status_code == 200
+        assert response.json()["status"] == "created"
+        assert response.json()["itemCount"] == 0
+        assert asyncio.run(_counts(account_id)) == (1, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 
@@ -826,11 +823,11 @@ def test_manual_mixed_currency_liability_creates_and_replays_zero_item_snapshot(
         assert replay.json()["status"] == "replayed"
         assert replay.json()["snapshotId"] == first.json()["snapshotId"]
         rows = asyncio.run(_snapshots(account_id))
-        assert len(rows) == 1
-        assert rows[0].currency == "EUR"
-        assert rows[0].liabilities_value == Decimal("4.600000")
-        assert rows[0].total_value == Decimal("-4.600000")
-        assert rows[0].exchange_rates == {
+        assert {row.currency for row in rows} == {"CZK", "EUR"}
+        output_row = next(row for row in rows if row.currency == "EUR")
+        assert output_row.liabilities_value == Decimal("4.600000")
+        assert output_row.total_value == Decimal("-4.600000")
+        assert output_row.exchange_rates == {
             "version": 1,
             "snapshotRates": [
                 {
@@ -839,12 +836,12 @@ def test_manual_mixed_currency_liability_creates_and_replays_zero_item_snapshot(
                     "to": "EUR",
                     "rate": "0.04000000",
                     "timestamp": NOW.isoformat(timespec="milliseconds"),
-                    "source": "ecb",
+                    "source": "twelve_data",
                 }
             ],
             "historicalRateIds": [],
         }
-        assert asyncio.run(_counts(account_id)) == (1, 0)
+        assert asyncio.run(_counts(account_id)) == (2, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 

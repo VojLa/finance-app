@@ -172,7 +172,20 @@ async def _seed() -> tuple[int, int]:
             )
         await session.flush()
 
-        transactions = (
+        transactions: tuple[
+            tuple[
+                str,
+                datetime,
+                Decimal,
+                str,
+                Decimal | None,
+                str | None,
+                TransactionType,
+                str,
+                str | None,
+            ],
+            ...,
+        ] = (
             (
                 "r11f-previous-expense",
                 previous_start,
@@ -238,7 +251,7 @@ async def _seed() -> tuple[int, int]:
             reporting_currency,
             transaction_type,
             account_id,
-            category_id,
+            transaction_category_id,
         ) in transactions:
             session.add(
                 TransactionModel(
@@ -262,7 +275,7 @@ async def _seed() -> tuple[int, int]:
                     is_reviewed=True,
                     archived_at=None,
                     deleted_at=None,
-                    category_id=category_id,
+                    category_id=transaction_category_id,
                     account_id=account_id,
                     import_batch_id=None,
                     created_at=now,

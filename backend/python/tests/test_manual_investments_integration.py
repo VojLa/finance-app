@@ -7,7 +7,6 @@ import os
 import time
 from collections.abc import Coroutine
 from datetime import datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +23,7 @@ from app.db.models.enums import (
     AccountRelationType,
     AccountType,
     PriceSource,
+    SnapshotGranularity,
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
@@ -31,9 +31,16 @@ from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.holdings.rebuild_service import HoldingRebuildService, HoldingRebuildStateError
-from app.modules.investments.models import ManualInvestmentCreateRequest
+from app.modules.investments.models import (
+    ManualInvestmentCreateRequest,
+    ManualInvestmentCreateResponse,
+)
 from app.modules.investments.service import InvestmentService
 from app.modules.snapshot_refresh.api import get_manual_user_snapshot_refresh_service
+from app.modules.snapshot_refresh.manual_service import (
+    RecalculateUserSnapshotRefreshCommand,
+    RecalculateUserSnapshotRefreshResult,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "r11g-internal-auth-secret-32-characters"
@@ -82,10 +89,23 @@ def _headers(user_id: str) -> dict[str, str]:
 
 
 class _ReadySnapshotService:
-    async def recalculate(self, _command: object) -> object:
-        return SimpleNamespace(
+    async def recalculate(
+        self, _command: RecalculateUserSnapshotRefreshCommand
+    ) -> RecalculateUserSnapshotRefreshResult:
+        return RecalculateUserSnapshotRefreshResult(
             net_worth_snapshot_id="r11g-net-worth-snapshot",
+            net_worth_status="created",
             timestamp=NOW,
+            granularity=SnapshotGranularity.minute,
+            currency="EUR",
+            calculation_version=1,
+            accounts=(),
+            refresh_account_count=0,
+            reuse_only_account_count=0,
+            created_account_snapshot_count=0,
+            replayed_account_snapshot_count=0,
+            reused_account_snapshot_count=0,
+            selected_account_snapshot_count=0,
         )
 
 
@@ -203,11 +223,13 @@ def _payload(
     }
 
 
-async def _concurrent_replay(payload: dict[str, object]) -> tuple[object, object]:
+async def _concurrent_replay(
+    payload: dict[str, object],
+) -> tuple[ManualInvestmentCreateResponse, ManualInvestmentCreateResponse]:
     engine = _engine()
     principal = AuthenticatedPrincipal(user_id="r11g-owner", email="r11g-owner@example.com")
 
-    async def execute() -> object:
+    async def execute() -> ManualInvestmentCreateResponse:
         async with AsyncSession(engine) as session:
             return await InvestmentService(
                 session, snapshot_service=_ReadySnapshotService()

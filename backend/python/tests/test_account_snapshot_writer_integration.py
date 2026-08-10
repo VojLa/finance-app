@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -299,6 +300,42 @@ async def _seed_investment(
                     source=ExchangeRateSource.twelve_data,
                     created_at=snapshot_at,
                 ),
+                ExchangeRateModel(
+                    id=f"{prefix}-event-rate-eur-usd",
+                    from_currency="EUR",
+                    to_currency="USD",
+                    rate=Decimal("1.25"),
+                    date=event_at,
+                    source=ExchangeRateSource.twelve_data,
+                    created_at=event_at,
+                ),
+                ExchangeRateModel(
+                    id=f"{prefix}-snapshot-rate-eur-usd",
+                    from_currency="EUR",
+                    to_currency="USD",
+                    rate=Decimal("1.25"),
+                    date=snapshot_at,
+                    source=ExchangeRateSource.twelve_data,
+                    created_at=snapshot_at,
+                ),
+                ExchangeRateModel(
+                    id=f"{prefix}-event-rate-usd-eur",
+                    from_currency="USD",
+                    to_currency="EUR",
+                    rate=Decimal("0.8"),
+                    date=event_at,
+                    source=ExchangeRateSource.twelve_data,
+                    created_at=event_at,
+                ),
+                ExchangeRateModel(
+                    id=f"{prefix}-snapshot-rate-usd-eur",
+                    from_currency="USD",
+                    to_currency="EUR",
+                    rate=Decimal("0.8"),
+                    date=snapshot_at,
+                    source=ExchangeRateSource.twelve_data,
+                    created_at=snapshot_at,
+                ),
             ]
         )
         session.add(
@@ -477,30 +514,17 @@ async def _seed_liability(
             replay=False,
         )
         if output_currency is not None and output_currency != account_currency:
-            rates = [
+            session.add(
                 ExchangeRateModel(
-                    id=f"{prefix}-liability-source-rate",
+                    id=f"{prefix}-liability-direct-rate",
                     from_currency=account_currency,
-                    to_currency="CZK",
-                    rate=Decimal("18"),
+                    to_currency=output_currency,
+                    rate=Decimal("0.9") if output_currency == "EUR" else Decimal("18"),
                     date=event_at,
                     source=ExchangeRateSource.twelve_data,
                     created_at=event_at,
                 )
-            ]
-            if output_currency != "CZK":
-                rates.append(
-                    ExchangeRateModel(
-                        id=f"{prefix}-liability-target-rate",
-                        from_currency=output_currency,
-                        to_currency="CZK",
-                        rate=Decimal("20"),
-                        date=event_at,
-                        source=ExchangeRateSource.twelve_data,
-                        created_at=event_at,
-                    )
-                )
-            session.add_all(rates)
+            )
         await session.commit()
     await engine.dispose()
     return account_id
@@ -680,7 +704,7 @@ async def test_create_exact_snapshot_and_fresh_session_replay() -> None:
                         "to": "CZK",
                         "rate": "25.00000000",
                         "timestamp": snapshot_at.isoformat(timespec="milliseconds"),
-                        "source": "cnb",
+                        "source": "twelve_data",
                     }
                 ],
                 "historicalRateIds": [f"{prefix}-event-rate"],
@@ -735,55 +759,18 @@ async def test_mixed_currency_investment_create_replay_and_native_fields() -> No
             assert snapshot.investment_value_by_currency == {"EUR": "30.0000000000"}
             assert snapshot.investment_cost_basis_by_currency == {"EUR": "20.0000000000"}
             assert snapshot.exchange_rates == {
-                "version": 2,
+                "version": 1,
                 "snapshotRates": [
                     {
-                        "rateId": f"{prefix}-snapshot-rate",
+                        "rateId": f"{prefix}-snapshot-rate-eur-usd",
                         "from": "EUR",
-                        "to": "CZK",
-                        "rate": "25.00000000",
+                        "to": "USD",
+                        "rate": "1.25000000",
                         "timestamp": snapshot_at.isoformat(timespec="milliseconds"),
-                        "source": "cnb",
-                        "roles": ["pivot_source"],
-                    },
-                    {
-                        "rateId": f"{prefix}-snapshot-rate-usd",
-                        "from": "USD",
-                        "to": "CZK",
-                        "rate": "20.00000000",
-                        "timestamp": snapshot_at.isoformat(timespec="milliseconds"),
-                        "source": "cnb",
-                        "roles": ["pivot_target"],
+                        "source": "twelve_data",
                     },
                 ],
-                "historicalRateIds": [
-                    f"{prefix}-event-rate",
-                    f"{prefix}-event-rate-usd",
-                ],
-                "historicalRates": [
-                    {
-                        "rateId": f"{prefix}-event-rate",
-                        "evidenceId": f"deposit:{prefix}-cash",
-                        "from": "EUR",
-                        "to": "CZK",
-                        "rate": "20.00000000",
-                        "timestamp": (snapshot_at - timedelta(days=1)).isoformat(
-                            timespec="milliseconds"
-                        ),
-                        "role": "pivot_source",
-                    },
-                    {
-                        "rateId": f"{prefix}-event-rate-usd",
-                        "evidenceId": f"deposit:{prefix}-cash",
-                        "from": "USD",
-                        "to": "CZK",
-                        "rate": "16.00000000",
-                        "timestamp": (snapshot_at - timedelta(days=1)).isoformat(
-                            timespec="milliseconds"
-                        ),
-                        "role": "pivot_target",
-                    },
-                ],
+                "historicalRateIds": [f"{prefix}-event-rate-eur-usd"],
             }
             assert len(items) == 1
             assert items[0].price_currency == "EUR"
@@ -874,8 +861,8 @@ async def test_r10b1_mixed_account_currency_pair_is_atomic_and_concurrent() -> N
                     ).where(ExchangeRateModel.id.startswith(f"{prefix}-"))
                 )
             )
-            assert ("USD", "EUR") not in pairs
-            assert all(quote == "CZK" for _, quote in pairs)
+            assert ("USD", "EUR") in pairs
+            assert ("EUR", "USD") in pairs
             assert await _counts(session, account_id) == (2, 2)
 
         async with AsyncSession(engine) as session:
@@ -905,10 +892,10 @@ async def test_r10b1_nonrepresentable_companion_rolls_back_primary() -> None:
         async with AsyncSession(engine) as session:
             snapshot_rate = await session.get(
                 ExchangeRateModel,
-                f"{prefix}-snapshot-rate",
+                f"{prefix}-snapshot-rate-usd-eur",
             )
             assert snapshot_rate is not None
-            snapshot_rate.rate = Decimal("7")
+            snapshot_rate.rate = Decimal("0.33333333")
             await session.commit()
         async with AsyncSession(engine) as session:
             with pytest.raises(AccountSnapshotEvidenceStateError):
@@ -1111,29 +1098,18 @@ async def test_mixed_currency_liability_create_and_replay(amount: Decimal) -> No
             assert snapshot.liabilities_value == expected
             assert snapshot.total_value == -expected
             assert snapshot.exchange_rates == {
-                "version": 2,
+                "version": 1,
                 "snapshotRates": [
                     {
-                        "rateId": f"{prefix}-liability-target-rate",
-                        "from": "EUR",
-                        "to": "CZK",
-                        "rate": "20.00000000",
-                        "timestamp": event_at.isoformat(timespec="milliseconds"),
-                        "source": "cnb",
-                        "roles": ["pivot_target"],
-                    },
-                    {
-                        "rateId": f"{prefix}-liability-source-rate",
+                        "rateId": f"{prefix}-liability-direct-rate",
                         "from": "USD",
-                        "to": "CZK",
-                        "rate": "18.00000000",
+                        "to": "EUR",
+                        "rate": "0.90000000",
                         "timestamp": event_at.isoformat(timespec="milliseconds"),
-                        "source": "cnb",
-                        "roles": ["pivot_source"],
+                        "source": "twelve_data",
                     },
                 ],
                 "historicalRateIds": [],
-                "historicalRates": [],
             }
             assert await _counts(session, account_id) == (2, 0)
 
@@ -1275,7 +1251,7 @@ async def test_ambiguous_price_fails_before_physical_write() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_fx_fails_before_physical_write() -> None:
+async def test_ambiguous_direct_fx_is_rejected_by_database_uniqueness() -> None:
     prefix = "i5d-ambiguous-fx"
     await _cleanup(prefix)
     account_id = await _seed_investment(prefix)
@@ -1290,14 +1266,13 @@ async def test_ambiguous_fx_fails_before_physical_write() -> None:
                     to_currency="CZK",
                     rate=Decimal("26"),
                     date=snapshot_at,
-                    source=ExchangeRateSource.manual,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=snapshot_at,
                 )
             )
-            await session.commit()
-        async with AsyncSession(engine) as session:
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotWriter(session).write(_command(account_id))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
         async with AsyncSession(engine) as session:
             assert await _counts(session, account_id) == (0, 0)
     finally:
@@ -1517,8 +1492,8 @@ async def test_new_mixed_liability_fx_waits_and_retry_conflicts() -> None:
                     ExchangeRateModel(
                         id=f"{prefix}-new-rate",
                         from_currency="USD",
-                        to_currency="CZK",
-                        rate=Decimal("19"),
+                        to_currency="EUR",
+                        rate=Decimal("0.95"),
                         date=snapshot_at,
                         source=ExchangeRateSource.twelve_data,
                         created_at=snapshot_at,

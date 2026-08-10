@@ -10,5 +10,6 @@ __pycache__
 .coverage
 coverage.xml
 htmlcov
+backend/python/.tmp/
 *.egg-info
 target

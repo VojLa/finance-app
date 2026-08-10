@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import INTERNAL_AUTH_SERVICE_SUBJECT
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel
 from app.db.models.holdings import HoldingModel
@@ -104,25 +105,6 @@ async def _counts() -> dict[str, int]:
         }
     await engine.dispose()
     return result
-
-
-async def _seed_user() -> None:
-    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    engine = investment_support.engine()
-    async with AsyncSession(engine) as session:
-        session.add(
-            UserModel(
-                id=USER_ID,
-                email=USER_EMAIL,
-                name="Version 0.1 R8 clean scenario",
-                password_hash=None,
-                base_currency="CZK",
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
-    await engine.dispose()
 
 
 async def _financial_state() -> dict[str, Any]:
@@ -446,6 +428,8 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    global USER_ID
+
     assert DATABASE_URL is not None
     database, version, migration = _run(_database_name_version_and_head())
     assert database == EXPECTED_DATABASE
@@ -467,7 +451,6 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         "rates": 0,
     }
 
-    _run(_seed_user())
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / "imports"))
     base_bucket = datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0) - timedelta(
         minutes=8
@@ -483,6 +466,25 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     )
 
     with TestClient(app) as client:
+        registered = client.post(
+            "/api/v1/auth/register",
+            headers=investment_support.headers(INTERNAL_AUTH_SERVICE_SUBJECT),
+            json={
+                "email": USER_EMAIL,
+                "password": "version-0-1-r8-password",
+                "name": "Version 0.1 R8 clean scenario",
+            },
+        )
+        assert registered.status_code == 201
+        USER_ID = str(registered.json()["id"])
+        verified = client.post(
+            "/api/v1/auth/credentials/verify",
+            headers=investment_support.headers(INTERNAL_AUTH_SERVICE_SUBJECT),
+            json={"email": USER_EMAIL, "password": "version-0-1-r8-password"},
+        )
+        assert verified.status_code == 200
+        assert verified.json()["id"] == USER_ID
+
         account_ids = {
             "trading212": _create_account(
                 client,
