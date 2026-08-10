@@ -28,7 +28,8 @@ CUTOVER_REVISION = "3e0001cutover"
 FIRST_SCHEMA_REVISION = "3f0001acctnote"
 LIABILITY_REVISION = "3g0001liabbal"
 PREVIOUS_HEAD_REVISION = "3h0001twdata"
-HEAD_REVISION = "3i0001d1base"
+DAILY_BASELINE_REVISION = "3i0001d1base"
+HEAD_REVISION = "3j0001twfx"
 EXPECTED_TABLE_COUNT = 36
 EXPECTED_ENUM_COUNT = 28
 PREVIOUS_TABLE_COUNT = 31
@@ -53,8 +54,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 6:
-        raise RuntimeError(f"Expected exactly six Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 7:
+        raise RuntimeError(f"Expected exactly seven Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -66,6 +67,7 @@ def verify_revision_graph() -> None:
     first_schema = by_revision.get(FIRST_SCHEMA_REVISION)
     liability = by_revision.get(LIABILITY_REVISION)
     previous_head = by_revision.get(PREVIOUS_HEAD_REVISION)
+    daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
@@ -77,15 +79,17 @@ def verify_revision_graph() -> None:
         raise RuntimeError("The liability schema revision must follow the previous head.")
     if previous_head is None or previous_head.down_revision != LIABILITY_REVISION:
         raise RuntimeError("The Twelve Data identity revision must follow the liability head.")
-    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+    if daily_baseline is None or daily_baseline.down_revision != PREVIOUS_HEAD_REVISION:
         raise RuntimeError("The D1 lineage revision must follow the provider identity head.")
+    if head is None or head.down_revision != DAILY_BASELINE_REVISION:
+        raise RuntimeError("The direct FX revision must follow the D1 lineage head.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 10:
+    if manifest.get("schema_version") != 11:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 10 after the D1 lineage change."
+            "Ownership manifest schema_version must be 11 after the direct FX change."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -115,7 +119,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 6,
+        "revision_count": 7,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -184,7 +188,7 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 def verify_database_state(state: DatabaseState) -> None:
     revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
-    if revision == HEAD_REVISION:
+    if revision in {DAILY_BASELINE_REVISION, HEAD_REVISION}:
         expected_tables = EXPECTED_TABLE_COUNT
         expected_enums = EXPECTED_ENUM_COUNT
     elif revision in {LIABILITY_REVISION, PREVIOUS_HEAD_REVISION}:

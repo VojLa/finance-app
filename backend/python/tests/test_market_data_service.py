@@ -299,7 +299,7 @@ def test_price_registry_rejects_duplicate_and_manual(
     ],
 )
 def test_fx_registry_rejects_duplicate_and_manual(registry: Any) -> None:
-    provider = cast(Any, type("Fx", (), {"source": ExchangeRateSource.cnb})())
+    provider = cast(Any, type("Fx", (), {"source": ExchangeRateSource.twelve_data})())
     with pytest.raises(MarketEvidenceStateError):
         registry(provider)
 

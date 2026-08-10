@@ -12,7 +12,7 @@ application service yet.
 | Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | filtered/paginated transaction view                           | Python manual lifecycle and canonical revision writes implemented                   |
 | Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | accessible category hierarchy                                | Python category hierarchy/default/user ownership implemented                        |
 | Budgets                | `Budget` and related item/account/alert tables                         | exact monthly plan, rollover, progress, and alerts            | Python read/write workflow implemented in R11-F                                     |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | exact requirements, CNB FX, CoinGecko, Twelve Data prices    | Production evidence plus R5-B4 server-operator exact alias onboarding               |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | direct FX and exact persisted price evidence                 | Twelve Data direct FX, CoinGecko/Twelve Data prices, and exact alias onboarding      |
 | Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | authorized symbol event history                              | Python import and idempotent manual command writers implemented                     |
 | Portfolio              | —                                                                      | `Holding` and authorized symbol positions                    | Deterministic Python rebuild and read models implemented                             |
 | Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                             |
@@ -116,19 +116,19 @@ current price, current FX, and historical event-date FX. Missing or stale
 evidence therefore creates neither a partial AccountSnapshot nor a partial
 NetWorthSnapshot.
 
-R5-B1 supplies the first production source without changing this model. The
-production FX registry contains exactly the CNB adapter. CNB requirements are
-limited to direct
-`foreign currency -> CZK` pairs. One official daily XML document is requested
-for the exact requirement date; there is no inverse, cross, alternate-source,
-current-date, or previous-date lookup. The source document publication date,
-not request time, becomes the evidence timestamp. An older weekend or holiday
-publication must still satisfy the shared seven-day freshness policy.
+R11-J replaces the historical CNB runtime with exactly one production FX
+adapter: Twelve Data `/time_series`. Every requirement is the requested direct
+`FROM/TO` pair, including foreign-to-foreign pairs such as `EUR/USD`. The
+adapter never inverts a response, triangulates through CZK, substitutes another
+provider, or persists a synthetic pair. It requests a bounded daily window and
+selects the newest non-future point through the explicit requirement timestamp;
+weekend and holiday evidence must still satisfy the shared seven-day policy.
 
-CNB publishes a CZK value for an explicit currency amount. The canonical
-`ExchangeRate.rate` is their exact Decimal quotient. Parser locale rules,
-currency uniqueness, positive finite values, and the `NUMERIC(18,8)` boundary
-are fail-closed; no rounding or `float` conversion is permitted.
+The strict JSON parser requires an exact response symbol, unique daily dates,
+positive finite Decimal `close` strings, and the `NUMERIC(18,8)` boundary. The
+API key is sent only in the Authorization header, so request logging cannot
+expose it in a URL. HTTP, quota, schema, direction, freshness, and precision
+failures are closed without rounding, retry, inversion, or fallback.
 
 Market evidence persistence is append-only. Price UUIDv5 identity is based on
 Listing, observation timestamp, and source; FX UUIDv5 identity is based on the
@@ -136,9 +136,9 @@ direct pair, effective timestamp, and source. Price, rate, creation time, User,
 Account, and randomness are excluded from those identities. Exact persisted
 state replays without a write. A different value under the same identity is a
 conflict, and the single mixed price/FX batch rolls back completely. R5-A
-defines provider ports. R5-B1 PostgreSQL tests use mocked CNB HTTP responses
-with the real production registry, R5-A service, and writer; they add no direct
-rate or price rows.
+defines provider ports. R11-J PostgreSQL tests use mocked Twelve Data HTTP
+responses with the real production registry, service, and writer. Exact replay
+uses the same deterministic identities without duplicate rows.
 
 R5-B2A adds exactly one production price source, CoinGecko, without changing
 the physical model. A requirement is eligible only through one persisted exact
@@ -175,9 +175,10 @@ The response `close` string becomes the exact positive Decimal price.
 minute-aligned interval `timestamp` and the UTC response `datetime` represents
 the same instant. Identity, currency, timestamp, freshness, and physical
 precision mismatches fail closed without rounding, clamping, or fallback.
-Production composition is CoinGecko plus Twelve Data for prices and CNB for
-direct FX. Public market/snapshot orchestration remains R5-B3, so overall R5
-remains in progress.
+Production composition is CoinGecko plus Twelve Data for prices and Twelve Data
+for direct FX. Historical `cnb` and `yahoo_finance` values and rows remain
+readable audit evidence but are not registered providers or eligible for new
+snapshot selection.
 
 The fixed UUIDv5 namespaces are
 `8c46da0b-b09a-49c7-94f1-a510cf4c2f7c` for `PriceSnapshot` and
@@ -1157,20 +1158,18 @@ liability companion persists the exact native liability in
 `liabilitiesValue`, so account-currency presentation no longer depends on a
 missing `liabilitiesValueByCurrency` physical column.
 
-The conversion contract composes only persisted direct-to-CZK observations at
-snapshot write time. For foreign source A and foreign target B, the one exact
-expression is `amount * rate(A -> CZK) / rate(B -> CZK)`. The calculation uses
-high-precision `Decimal` arithmetic and accepts only an exactly representable
-final MONEY value. It neither rounds an intermediate result nor persists a
-synthetic A-to-B `ExchangeRate`. Each pivot leg must be a persisted direct ČNB
-observation; a different provider fails closed.
+The conversion contract consumes exactly one persisted direct observation at
+snapshot write time. For foreign source A and target B, the expression is
+`amount * rate(A -> B)`. The calculation uses high-precision `Decimal`
+arithmetic and accepts only an exactly representable final MONEY value. It does
+not invert, triangulate, round, or persist a synthetic pair.
 
-Snapshot-time components use snapshot-as-of direct legs. Historical net
-deposits, realized P/L, fees, and taxes select both source and target pivot
-legs using the existing event-date policy. Versioned internal exchange-rate
-audit evidence records the exact persisted observation IDs and consumption
-roles. Missing, stale, future, wrong-pair, conflicting, or non-representable
-evidence causes the complete primary/companion write to fail closed.
+Snapshot-time components use the direct pair as of the snapshot. Historical net
+deposits, realized P/L, fees, and taxes select the direct pair as of each event.
+Internal exchange-rate audit evidence records the exact persisted observation
+ID. Missing, stale, future, wrong-direction, wrong-source, conflicting, or
+non-representable evidence causes the complete write to fail closed. Version 2
+pivot roles remain readable only for snapshots created before R11-J.
 
 This remediation changes no public portfolio, dashboard, or history contract.
 Those readers continue to consume the primary user-base snapshot until
@@ -1324,8 +1323,8 @@ Historical net deposits, realized P/L, fees, and taxes preserve their persisted
 baseline values and add only forward evidence converted at each event date.
 Unrealized P/L is recalculated from reconstructed quantity/native cost and exact
 current price/FX evidence. Current cash, investment value, and liability value
-use current-as-of FX. Foreign-to-foreign presentation retains the existing exact
-CZK-pivot composition and never creates a synthetic provider observation.
+use current-as-of FX. Foreign-to-foreign presentation requires the exact direct
+market pair and never creates a synthetic provider observation.
 
 One reconstructed canonical state owns both a primary projection in
 User.baseCurrency and a presentation projection in Account.currency. Only

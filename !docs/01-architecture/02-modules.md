@@ -26,7 +26,7 @@ thin and shared database infrastructure lives outside modules.
 | snapshot_refresh      | Cross-domain planning, persisted coverage, coordinated execution, and manual API      | R5-B3A coordinator used by R5-B3B manual and R5-B3C import paths            |
 | snapshots             | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                |
 | market_data           | Exact market requirements, provider ports, orchestration, and atomic evidence writes  | R5-A through R5-B3C coordinated production consumption implemented          |
-| prices / FX           | Canonical price and direct-FX observation models, validation, and providers           | CNB, CoinGecko, and Twelve Data used by manual and import refresh           |
+| prices / FX           | Canonical price and direct-FX observation models, validation, and providers           | Twelve Data direct FX plus CoinGecko and Twelve Data prices                 |
 | dashboard / reporting | Dashboard read models                                                                 | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
@@ -47,9 +47,10 @@ Price and FX providers are injected protocols registered by exact source enum.
 The registry permits at most one adapter per non-manual source and performs no
 fallback between sources. Provider calls occur sequentially and outside every
 database transaction. Production composition registers exactly
-`ExchangeRateSource.cnb` for direct foreign-currency-to-CZK evidence and
+`ExchangeRateSource.twelve_data` for direct `FROM/TO` FX evidence, plus
 `PriceSource.coingecko` for crypto and `PriceSource.twelve_data` for listed
-securities, each selected through one exact persisted provider AssetAlias.
+securities. Historical CNB/Yahoo source identities remain readable but cannot
+be selected by production composition.
 
 R5-B4 adds the `asset_aliases` application module and
 `scripts/asset_alias.py` as the supported server-operator boundary for those
@@ -107,21 +108,21 @@ minute-aligned, and the UTC datetime must represent that exact epoch.
 objects, excessive structure, non-string price, timestamp mismatch, stale or
 future evidence, and `NUMERIC(28,10)` overprecision fail without repair.
 
-The CNB adapter performs one HTTPS GET per exact FX requirement against the
-official daily XML document, using `through.date()` as the `DD.MM.YYYY` query.
-It has no retry, response cache, current-date substitution, previous-date
-search, inverse derivation, cross-rate derivation, or alternate provider.
-Transport timeout, response bytes, User-Agent, credential-free HTTPS URL, and
-redirect rejection are explicit configuration. A short-lived HTTP client is
-closed after each request and sends neither authentication nor cookies.
+The Twelve Data FX adapter performs one HTTPS `/time_series` GET per exact
+direct pair. It requests daily UTC data from seven days before `through` through
+the following day and selects the newest point no later than `through`. It has
+no retry, response cache, inverse derivation, pivot, cross-rate derivation, or
+alternate provider. Timeout, streamed response-byte limit, User-Agent,
+credential-free HTTPS URL, and redirect rejection are explicit configuration.
+The API key is required before HTTP and travels only in the Authorization
+header, never in the logged request URL.
 
-The strict standard-library XML parser validates the CNB root, publication
-date, table type, rows, canonical currency codes, positive amount, decimal
-comma rate, and uniqueness. The direct Decimal rate is the published CZK value
-divided by its amount and must already fit `NUMERIC(18,8)` without rounding.
-Its effective timestamp is midnight on the publication date. An older
-weekend/holiday publication is accepted only through the shared seven-day
-freshness check; future or stale documents fail closed.
+The strict JSON parser validates status, exact `FROM/TO` symbol, unique
+`YYYY-MM-DD` rows, and a positive Decimal `close` already representable as
+`NUMERIC(18,8)`. Midnight on the provider date is the effective timestamp. An
+older weekend or holiday point is accepted only through the shared seven-day
+freshness check; future, stale, quota, schema, and direction failures close the
+entire evidence refresh.
 
 Canonical observations use exact `Decimal`, direct currency direction, and
 naive UTC `TIMESTAMP(3)` values. Prices must fit `NUMERIC(28,10)` and direct FX
@@ -187,11 +188,10 @@ counts are not public.
 There is no direct manual executor fallback. Market failure prevents snapshot
 execution, while snapshot failure after the market commit preserves valid
 append-only evidence. Empty market plans continue normally. Production
-mixed-currency endpoint refresh is supported for CZK output through exact
-Twelve Data, CoinGecko, and ČNB evidence. Non-CZK plans remain supported when
-they need no cross-FX; unsupported direct pairs such as USD-to-EUR fail through
-the generic unavailable contract without ECB, inverse, cross-rate, or manual
-fallback.
+mixed-currency endpoint refresh uses exact Twelve Data and CoinGecko prices plus
+exact direct Twelve Data FX. Non-CZK outputs request their direct pairs (for
+example USD/EUR); missing pairs fail through the generic unavailable contract
+without CNB, Yahoo, ECB, inverse, pivot, or manual fallback.
 
 R5-B3B adds no new endpoint, scheduler, worker, queue, retry, cache, frontend,
 schema, migration, or OpenAPI surface. R5-B3C now makes the existing import

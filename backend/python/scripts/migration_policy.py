@@ -33,8 +33,9 @@ BASELINE_REVISION = "3d0001base"
 CUTOVER_REVISION = "3e0001cutover"
 FIRST_SCHEMA_REVISION = "3f0001acctnote"
 LIABILITY_REVISION = "3g0001liabbal"
-PREVIOUS_HEAD_REVISION = "3h0001twdata"
-HEAD_REVISION = "3i0001d1base"
+TWELVE_DATA_PRICE_REVISION = "3h0001twdata"
+DAILY_BASELINE_REVISION = "3i0001d1base"
+HEAD_REVISION = "3j0001twfx"
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -47,6 +48,9 @@ TWELVE_DATA_REVISION_PATH = (
 )
 D1_LINEAGE_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3i0001d1base_add_daily_baseline_lineage.py"
+)
+TWELVE_DATA_FX_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3j0001twfx_add_twelve_data_fx_source.py"
 )
 PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
@@ -205,7 +209,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 10,
+        "schema_version": 11,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -244,7 +248,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 6,
+        "revision_count": 7,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -252,8 +256,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3i0001d1base/schema.sql",
-        "checksum_source": "database/revisions/3i0001d1base/schema.sha256",
+        "schema_source": "database/revisions/3j0001twfx/schema.sql",
+        "checksum_source": "database/revisions/3j0001twfx/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -293,15 +297,16 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 6:
-        raise RuntimeError("The D1 lineage schema requires exactly six Alembic revisions.")
+    if len(revisions) != 7:
+        raise RuntimeError("The direct FX schema requires exactly seven Alembic revisions.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
     cutover = by_revision.get(CUTOVER_REVISION)
     first_head = by_revision.get(FIRST_SCHEMA_REVISION)
     liability = by_revision.get(LIABILITY_REVISION)
-    provider_identity = by_revision.get(PREVIOUS_HEAD_REVISION)
+    provider_identity = by_revision.get(TWELVE_DATA_PRICE_REVISION)
+    daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
@@ -313,8 +318,10 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError("The liability balance revision must follow the previous head.")
     if provider_identity is None or provider_identity.down_revision != LIABILITY_REVISION:
         raise RuntimeError("The Twelve Data identity revision must follow the liability head.")
-    if head is None or head.down_revision != PREVIOUS_HEAD_REVISION:
+    if daily_baseline is None or daily_baseline.down_revision != TWELVE_DATA_PRICE_REVISION:
         raise RuntimeError("The D1 lineage revision must follow the provider identity head.")
+    if head is None or head.down_revision != DAILY_BASELINE_REVISION:
+        raise RuntimeError("The Twelve Data FX revision must follow the D1 lineage head.")
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -403,7 +410,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": True,
     }
     for key, value in expected_head_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(daily_baseline.module, key, None) != value:
             raise RuntimeError(f"D1 lineage revision metadata is invalid for {key}.")
     lineage_source = D1_LINEAGE_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -416,6 +423,25 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     ):
         if token not in lineage_source:
             raise RuntimeError(f"D1 lineage revision is missing required token {token}.")
+
+    expected_fx_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "extend_exchange_rate_source_identity",
+        "affected_tables": ("ExchangeRate",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_fx_metadata.items():
+        if getattr(head.module, key, None) != value:
+            raise RuntimeError(f"Twelve Data FX revision metadata is invalid for {key}.")
+    fx_source = TWELVE_DATA_FX_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        'ALTER TYPE "public"."ExchangeRateSource"',
+        "ADD VALUE IF NOT EXISTS 'twelve_data'",
+        "cannot be downgraded automatically",
+    ):
+        if token not in fx_source:
+            raise RuntimeError(f"Twelve Data FX revision is missing required token {token}.")
 
 
 def verify_schema_registry(
@@ -479,6 +505,10 @@ def verify_schema_registry(
         enum_end = prisma_source.index("\n}", enum_start)
         if "twelve_data" not in prisma_source[enum_start:enum_end]:
             raise RuntimeError(f"Prisma must mirror Twelve Data in {enum_name}.")
+    exchange_rate_start = prisma_source.index("enum ExchangeRateSource {")
+    exchange_rate_end = prisma_source.index("\n}", exchange_rate_start)
+    if "twelve_data" not in prisma_source[exchange_rate_start:exchange_rate_end]:
+        raise RuntimeError("Prisma must mirror Twelve Data in ExchangeRateSource.")
 
 
 def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:

@@ -17,6 +17,7 @@ def test_build_report_preserves_source_collision_evidence() -> None:
         ],
         duplicate_source_identities=0,
         invalid_rows=0,
+        legacy_snapshot_dependencies=3,
     )
 
     assert report.total_rows == 3
@@ -30,3 +31,4 @@ def test_build_report_preserves_source_collision_evidence() -> None:
     assert report.source_collisions[0].sources == ("cnb", "yahoo_finance")
     assert report.duplicate_source_identities == 0
     assert report.invalid_rows == 0
+    assert report.legacy_snapshot_dependencies == 3

@@ -21,7 +21,6 @@ from app.db.models.enums import (
 )
 
 _ERROR_MESSAGE = "Account snapshot evidence cannot produce an exact valuation."
-FX_PIVOT_CURRENCY = "CZK"
 _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
@@ -299,7 +298,7 @@ def convert_currency_amount(
     rates: Mapping[tuple[str, str], Decimal],
     numeric: Numeric,
 ) -> tuple[Decimal, tuple[CurrencyConversionLeg, ...]]:
-    """Convert once at high precision using only direct-to-CZK observations."""
+    """Convert once at high precision using one direct market observation."""
 
     base = _currency(base_currency)
     output = _currency(output_currency)
@@ -313,82 +312,18 @@ def convert_currency_amount(
 
     direct_pair = (base, output)
     direct_rate = rates.get(direct_pair)
-    if direct_rate is not None:
-        if set(rates) != {direct_pair}:
-            raise _fail()
-        return (
-            _calculated("multiply", exact_amount, direct_rate, numeric),
-            (
-                CurrencyConversionLeg(
-                    base_currency=direct_pair[0],
-                    quote_currency=direct_pair[1],
-                    role=ExchangeRateConsumptionRole.direct,
-                ),
-            ),
-        )
-
-    if output == FX_PIVOT_CURRENCY:
-        pair = (base, FX_PIVOT_CURRENCY)
-        rate = rates.get(pair)
-        if rate is None or set(rates) != {pair}:
-            raise _fail()
-        return (
-            _calculated("multiply", exact_amount, rate, numeric),
-            (
-                CurrencyConversionLeg(
-                    base_currency=pair[0],
-                    quote_currency=pair[1],
-                    role=ExchangeRateConsumptionRole.direct,
-                ),
-            ),
-        )
-
-    target_pair = (output, FX_PIVOT_CURRENCY)
-    target_rate = rates.get(target_pair)
-    if target_rate is None:
+    if direct_rate is None or set(rates) != {direct_pair}:
         raise _fail()
-    legs: tuple[CurrencyConversionLeg, ...]
-    if base == FX_PIVOT_CURRENCY:
-        expected_pairs = {target_pair}
-        source_rate: Decimal | None = None
-        legs = (
+    return (
+        _calculated("multiply", exact_amount, direct_rate, numeric),
+        (
             CurrencyConversionLeg(
-                base_currency=target_pair[0],
-                quote_currency=target_pair[1],
-                role=ExchangeRateConsumptionRole.pivot_target,
+                base_currency=direct_pair[0],
+                quote_currency=direct_pair[1],
+                role=ExchangeRateConsumptionRole.direct,
             ),
-        )
-    else:
-        source_pair = (base, FX_PIVOT_CURRENCY)
-        source_rate = rates.get(source_pair)
-        if source_rate is None:
-            raise _fail()
-        expected_pairs = {source_pair, target_pair}
-        legs = (
-            CurrencyConversionLeg(
-                base_currency=source_pair[0],
-                quote_currency=source_pair[1],
-                role=ExchangeRateConsumptionRole.pivot_source,
-            ),
-            CurrencyConversionLeg(
-                base_currency=target_pair[0],
-                quote_currency=target_pair[1],
-                role=ExchangeRateConsumptionRole.pivot_target,
-            ),
-        )
-    if set(rates) != expected_pairs:
-        raise _fail()
-    try:
-        with localcontext() as context:
-            context.prec = 112
-            result = (
-                exact_amount / target_rate
-                if source_rate is None
-                else exact_amount * source_rate / target_rate
-            )
-    except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
-        raise _fail() from exc
-    return _exact(result, numeric), legs
+        ),
+    )
 
 
 def _sum(values: list[Decimal], numeric: Numeric) -> Decimal:
@@ -548,21 +483,7 @@ def _convert(
     consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]],
     numeric: Numeric,
 ) -> Decimal:
-    direct_pair = (base_currency, output_currency)
-    required_pairs: tuple[tuple[str, str], ...]
-    if base_currency == output_currency:
-        required_pairs = ()
-    elif direct_pair in rates:
-        required_pairs = (direct_pair,)
-    elif output_currency == FX_PIVOT_CURRENCY:
-        required_pairs = ((base_currency, FX_PIVOT_CURRENCY),)
-    elif base_currency == FX_PIVOT_CURRENCY:
-        required_pairs = ((output_currency, FX_PIVOT_CURRENCY),)
-    else:
-        required_pairs = (
-            (base_currency, FX_PIVOT_CURRENCY),
-            (output_currency, FX_PIVOT_CURRENCY),
-        )
+    required_pairs = () if base_currency == output_currency else ((base_currency, output_currency),)
     selected = {pair: rate.rate for pair in required_pairs if (rate := rates.get(pair)) is not None}
     converted, legs = convert_currency_amount(
         amount,

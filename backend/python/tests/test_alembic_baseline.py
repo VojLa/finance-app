@@ -10,6 +10,7 @@ import pytest
 from scripts.alembic_baseline import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
+    DAILY_BASELINE_REVISION,
     HEAD_REVISION,
     PREVIOUS_HEAD_REVISION,
     DatabaseState,
@@ -120,7 +121,7 @@ def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> Non
     revision = load_revision(HEAD_PATH, "daily_baseline_lineage")
     source = HEAD_PATH.read_text(encoding="utf-8")
 
-    assert revision.revision == HEAD_REVISION
+    assert revision.revision == DAILY_BASELINE_REVISION
     assert revision.down_revision == PREVIOUS_HEAD_REVISION
     assert revision.schema_change is True
     assert revision.schema_change_kind == "add_daily_baseline_lineage"
@@ -142,13 +143,13 @@ def test_manifest_records_first_alembic_schema_head() -> None:
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 10
+    assert manifest["schema_version"] == 11
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 6
+    assert baseline["revision_count"] == 7
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 6
+    assert alembic["revision_count"] == 7
 
     verify_manifest()
     verify_revision_graph()

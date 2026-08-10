@@ -9,7 +9,6 @@ from enum import StrEnum
 
 from app.db.models.common import MONEY, RATE, TIMESTAMP
 from app.modules.snapshots.account_projection import (
-    FX_PIVOT_CURRENCY,
     CurrencyAmount,
     ExchangeRateConsumptionRole,
     ExpectedAccountSnapshotValuation,
@@ -202,7 +201,7 @@ def build_financial_metrics(
         pair = (base_currency, quote_currency)
         if (
             metric_item is None
-            or quote_currency not in {output_currency, FX_PIVOT_CURRENCY}
+            or quote_currency != output_currency
             or timestamp > metric_item.timestamp
             or pair in rates_by_evidence.setdefault(selected.evidence_id, {})
         ):

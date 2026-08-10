@@ -246,7 +246,7 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                         to_currency="CZK",
                         rate=Decimal("18.00000000"),
                         date=EVIDENCE_AT,
-                        source=ExchangeRateSource.cnb,
+                        source=ExchangeRateSource.twelve_data,
                         created_at=EVIDENCE_AT,
                     )
                 )
@@ -258,7 +258,7 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                     to_currency="CZK",
                     rate=Decimal("20.00000000"),
                     date=EVIDENCE_AT,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=EVIDENCE_AT,
                 )
             )
@@ -435,7 +435,7 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
                         to_currency="CZK",
                         rate=Decimal("18.00000000"),
                         date=EVIDENCE_AT,
-                        source=ExchangeRateSource.cnb,
+                        source=ExchangeRateSource.twelve_data,
                         created_at=EVIDENCE_AT,
                     ),
                     ExchangeRateModel(
@@ -444,7 +444,7 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
                         to_currency="CZK",
                         rate=Decimal("20.00000000"),
                         date=EVIDENCE_AT,
-                        source=ExchangeRateSource.cnb,
+                        source=ExchangeRateSource.twelve_data,
                         created_at=EVIDENCE_AT,
                     ),
                 )

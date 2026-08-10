@@ -710,6 +710,7 @@ model ExchangeRate {
 }
 
 enum ExchangeRateSource {
+  twelve_data
   cnb
   ecb
   yahoo_finance

@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from support import investment_fixture_e2e as investment_support
-from support.cnb_fx import cnb_xml
 
 from app.config.settings import Settings
 from app.db.connection import get_db_session
@@ -85,14 +84,14 @@ class _ProviderHarness:
         observed_at: datetime,
         twelve_status: int = 200,
         coingecko_stale: bool = False,
-        cnb_status: int = 200,
+        fx_status: int = 200,
         fail_on_any_call: bool = False,
         coin_price: Decimal = Decimal("414.5888"),
     ) -> None:
         self.observed_at = observed_at
         self.twelve_status = twelve_status
         self.coingecko_stale = coingecko_stale
-        self.cnb_status = cnb_status
+        self.fx_status = fx_status
         self.fail_on_any_call = fail_on_any_call
         self.coin_price = coin_price
         self.calls: list[tuple[str, str]] = []
@@ -151,32 +150,32 @@ class _ProviderHarness:
                 },
             )
 
-        def cnb_handler(request: httpx.Request) -> httpx.Response:
-            requested = request.url.params["date"]
-            before_call("cnb", requested)
-            if self.cnb_status != 200:
+        def fx_handler(request: httpx.Request) -> httpx.Response:
+            symbol = request.url.params["symbol"]
+            requested = request.url.params["end_date"]
+            publication = datetime.fromisoformat(requested).date() - timedelta(days=1)
+            before_call("twelve_data_fx", f"{symbol}@{publication.isoformat()}")
+            if self.fx_status != 200:
                 return httpx.Response(
-                    self.cnb_status,
-                    headers={"content-type": "text/xml"},
-                    content=b"unavailable",
+                    self.fx_status,
+                    headers={"content-type": "application/json"},
+                    content=b'{"status":"error"}',
                 )
-            publication = datetime.strptime(requested, "%d.%m.%Y").date()
+            rate = {"EUR/CZK": "25.00000000", "USD/CZK": "23.00000000"}.get(symbol, "1.10000000")
             return httpx.Response(
                 200,
-                headers={"content-type": "text/xml"},
-                content=cnb_xml(
-                    publication,
-                    (
-                        ("EUR", "1", "25,000"),
-                        ("USD", "1", "23,000"),
-                    ),
-                ),
+                headers={"content-type": "application/json"},
+                content=(
+                    f'{{"meta":{{"symbol":"{symbol}"}},"values":['
+                    f'{{"datetime":"{publication.isoformat()}","close":"{rate}"}}],'
+                    '"status":"ok"}'
+                ).encode(),
             )
 
         return (
             httpx.MockTransport(twelve_handler),
             httpx.MockTransport(coingecko_handler),
-            httpx.MockTransport(cnb_handler),
+            httpx.MockTransport(fx_handler),
         )
 
 
@@ -189,13 +188,13 @@ def _install_market_override(
     def override(
         session: AsyncSession = Depends(get_db_session),
     ) -> MarketBackedSnapshotRefreshService:
-        twelve, coingecko, cnb = harness.transports(session)
+        twelve, coingecko, fx = harness.transports(session)
 
         def factory(active_session: AsyncSession, settings: Settings):
             return create_production_market_evidence_service(
                 active_session,
                 settings,
-                http_transport=cnb,
+                twelve_data_fx_http_transport=fx,
                 coingecko_http_transport=coingecko,
                 twelve_data_http_transport=twelve,
             )
@@ -311,7 +310,7 @@ async def _database_state(prefix: str) -> dict[str, Any]:
             (
                 await session.scalars(
                     select(ExchangeRateModel)
-                    .where(ExchangeRateModel.source == ExchangeRateSource.cnb)
+                    .where(ExchangeRateModel.source == ExchangeRateSource.twelve_data)
                     .order_by(ExchangeRateModel.id)
                 )
             ).all()
@@ -334,11 +333,13 @@ async def _database_state(prefix: str) -> dict[str, Any]:
     }
 
 
-async def _delete_cnb_rates() -> None:
+async def _delete_twelve_data_fx_rates() -> None:
     engine = investment_support.engine()
     async with AsyncSession(engine) as session:
         await session.execute(
-            delete(ExchangeRateModel).where(ExchangeRateModel.source == ExchangeRateSource.cnb)
+            delete(ExchangeRateModel).where(
+                ExchangeRateModel.source == ExchangeRateSource.twelve_data
+            )
         )
         await session.commit()
     await engine.dispose()
@@ -546,15 +547,15 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         assert harness.calls.count(expected_call) == 2
         if source is ImportSource.trading212:
             assert not any(call[0] == "coingecko" for call in harness.calls)
-            requested_dates = [value for name, value in harness.calls if name == "cnb"]
-            assert set(requested_dates) == {
-                "20.07.2026",
-                "21.07.2026",
-                state["batch"].completed_at.strftime("%d.%m.%Y"),
+            requested_dates = [value for name, value in harness.calls if name == "twelve_data_fx"]
+            assert {value.rsplit("@", 1)[1] for value in requested_dates} == {
+                "2026-07-20",
+                "2026-07-21",
+                state["batch"].completed_at.date().isoformat(),
             }
             assert state["rates"]
         else:
-            assert not any(call[0] in {"twelve_data", "cnb"} for call in harness.calls)
+            assert not any(call[0] in {"twelve_data", "twelve_data_fx"} for call in harness.calls)
         serialized_logs = json.dumps(
             [
                 {
@@ -577,7 +578,7 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         )
     finally:
         asyncio.run(_cleanup(prefix))
-        asyncio.run(_delete_cnb_rates())
+        asyncio.run(_delete_twelve_data_fx_rates())
 
 
 @pytest.mark.parametrize(
@@ -599,7 +600,7 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
             ImportSource.trading212,
             AssetAliasProvider.twelve_data,
             '{"symbol":"AAPL","mic_code":"XNAS"}',
-            "cnb-failure",
+            "fx-failure",
         ),
     ],
 )
@@ -618,7 +619,7 @@ def test_provider_failure_preserves_posting_and_holdings_without_partial_graph(
         observed_at=_observed_at(),
         twelve_status=429 if failure == "twelve-429" else 200,
         coingecko_stale=failure == "coingecko-stale",
-        cnb_status=503 if failure == "cnb-failure" else 200,
+        fx_status=503 if failure == "fx-failure" else 200,
     )
     app = create_app(_settings())
     _install_market_override(app, harness)
@@ -638,7 +639,7 @@ def test_provider_failure_preserves_posting_and_holdings_without_partial_graph(
             )
             asyncio.run(investment_support.seed_asset_listing(prefix, source=source))
             asyncio.run(_add_alias(prefix, provider=provider, external_id=alias))
-            if failure == "cnb-failure":
+            if failure == "fx-failure":
                 asyncio.run(_configure_trading_czk(prefix))
             response = investment_support.post_batch(
                 client,

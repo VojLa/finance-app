@@ -450,7 +450,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     database, version, migration = _run(_database_name_version_and_head())
     assert database == EXPECTED_DATABASE
     assert version.startswith("16.")
-    assert migration == "3i0001d1base"
+    assert migration == "3j0001twfx"
     assert _run(_counts()) == {
         "users": 0,
         "accounts": 0,
@@ -751,13 +751,13 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     }
     assert all(row.from_currency == "EUR" for row in after_reimport["rates"])
     assert all(row.to_currency == "CZK" for row in after_reimport["rates"])
-    assert all(row.source.value == "cnb" for row in after_reimport["rates"])
+    assert all(row.source.value == "twelve_data" for row in after_reimport["rates"])
     assert not any(row.from_currency == "CZK" for row in after_reimport["rates"])
     assert ("twelve_data", "AAPL:XNAS") in harness.calls
     assert ("coingecko", "bitcoin") in harness.calls
-    cnb_dates = [identity for provider, identity in harness.calls if provider == "cnb"]
-    assert cnb_dates
-    assert "20.07.2026" in cnb_dates
+    fx_requests = [identity for provider, identity in harness.calls if provider == "twelve_data_fx"]
+    assert fx_requests
+    assert any(identity.endswith("@2026-07-20") for identity in fx_requests)
 
     latest_snapshots = {
         row.account_id: row
@@ -788,7 +788,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
             selected["to"],
             selected["source"],
             selected["rate"],
-        ) == ("EUR", "CZK", "cnb", "25.00000000")
+        ) == ("EUR", "CZK", "twelve_data", "25.00000000")
         assert selected["rateId"] in persisted_rate_ids
     assert len(trading_rates["historicalRateIds"]) == 1
     assert set(trading_rates["historicalRateIds"]).issubset(persisted_rate_ids)
@@ -884,9 +884,10 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     )
     assert '"CZK"' not in source_guard
     assert '"CZK"' not in api_guard
-    cnb_provider = (PYTHON_ROOT / "app" / "modules" / "fx" / "providers" / "cnb.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'requirement.from_currency == "CZK"' in cnb_provider
-    assert 'requirement.to_currency != "CZK"' in cnb_provider
-    assert "1 /" not in cnb_provider
+    fx_provider = (
+        PYTHON_ROOT / "app" / "modules" / "fx" / "providers" / "twelve_data.py"
+    ).read_text(encoding="utf-8")
+    assert '"CZK"' not in fx_provider
+    assert "inverse" not in fx_provider.lower()
+    assert "pivot" not in fx_provider.lower()
+    assert "1 /" not in fx_provider

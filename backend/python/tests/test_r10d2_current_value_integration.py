@@ -316,18 +316,19 @@ async def _rate(
     currency: str,
     at: datetime,
     value: str,
+    quote_currency: str = "CZK",
 ) -> str:
-    rate_id = f"{prefix}-{currency.lower()}-{at:%Y%m%d%H%M}-rate"
+    rate_id = f"{prefix}-{currency.lower()}-{quote_currency.lower()}-{at:%Y%m%d%H%M}-rate"
     engine = _engine()
     async with AsyncSession(engine) as session:
         session.add(
             ExchangeRateModel(
                 id=rate_id,
                 from_currency=currency,
-                to_currency="CZK",
+                to_currency=quote_currency,
                 rate=Decimal(value),
                 date=at,
-                source=ExchangeRateSource.cnb,
+                source=ExchangeRateSource.twelve_data,
                 created_at=at,
             )
         )
@@ -794,9 +795,21 @@ def test_forward_historical_metric_uses_event_date_fx_separately_from_current_ca
         )
         rate_ids = (
             await _rate(prefix, currency="USD", at=event_at, value="21.00000000"),
-            await _rate(prefix, currency="EUR", at=event_at, value="24.00000000"),
+            await _rate(
+                prefix,
+                currency="USD",
+                quote_currency="EUR",
+                at=event_at,
+                value="0.87500000",
+            ),
             await _rate(prefix, currency="USD", at=CURRENT_AT, value="20.00000000"),
-            await _rate(prefix, currency="EUR", at=CURRENT_AT, value="25.00000000"),
+            await _rate(
+                prefix,
+                currency="USD",
+                quote_currency="EUR",
+                at=CURRENT_AT,
+                value="0.80000000",
+            ),
         )
 
         result = await _current(

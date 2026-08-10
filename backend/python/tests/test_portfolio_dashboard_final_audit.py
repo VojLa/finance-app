@@ -410,6 +410,7 @@ def test_exact_production_route_inventory(test_settings: Settings) -> None:
         ("POST", DASHBOARD_PATH),
         ("POST", "/api/v1/portfolio/current"),
         ("POST", "/api/v1/dashboard/current"),
+        ("GET", "/api/v1/operational-dashboard"),
     }
 
 

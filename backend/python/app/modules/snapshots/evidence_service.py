@@ -40,7 +40,6 @@ from app.modules.market_data.policy import (
     validate_market_evidence_policy,
 )
 from app.modules.snapshots.account_projection import (
-    FX_PIVOT_CURRENCY,
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
@@ -81,7 +80,7 @@ _LIABILITY_ACCOUNT_TYPES = {
     AccountType.loan,
     AccountType.mortgage,
 }
-_FX_EVIDENCE_SOURCE = ExchangeRateSource.cnb
+_FX_EVIDENCE_SOURCE = ExchangeRateSource.twelve_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,18 +311,7 @@ def _conversion_pairs(
     output = canonical_currency(output_currency)
     if base == output:
         return ()
-    if output == FX_PIVOT_CURRENCY:
-        return ((base, FX_PIVOT_CURRENCY),)
-    if base == FX_PIVOT_CURRENCY:
-        return ((output, FX_PIVOT_CURRENCY),)
-    return tuple(
-        sorted(
-            {
-                (base, FX_PIVOT_CURRENCY),
-                (output, FX_PIVOT_CURRENCY),
-            }
-        )
-    )
+    return ((base, output),)
 
 
 def _selected_snapshot_rates(
@@ -786,14 +774,14 @@ class AccountSnapshotEvidenceService:
                     liability_bases = tuple(sorted({pair[0] for pair in liability_pairs}))
                     loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                         liability_bases,
-                        FX_PIVOT_CURRENCY,
+                        output_currency,
                         source=_FX_EVIDENCE_SOURCE,
                         through=snapshot_timestamp,
                     )
                     rate_candidates = _validate_rate_candidates(
                         loaded_rate_candidates,
                         base_currencies=liability_bases,
-                        quote_currency=FX_PIVOT_CURRENCY,
+                        quote_currency=output_currency,
                         source=_FX_EVIDENCE_SOURCE,
                         through=snapshot_timestamp,
                     )
@@ -875,14 +863,14 @@ class AccountSnapshotEvidenceService:
             required_currencies = tuple(sorted({pair[0] for pair in required_pairs}))
             loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                 required_currencies,
-                FX_PIVOT_CURRENCY,
+                output_currency,
                 source=_FX_EVIDENCE_SOURCE,
                 through=snapshot_timestamp,
             )
             rate_candidates = _validate_rate_candidates(
                 loaded_rate_candidates,
                 base_currencies=required_currencies,
-                quote_currency=FX_PIVOT_CURRENCY,
+                quote_currency=output_currency,
                 source=_FX_EVIDENCE_SOURCE,
                 through=snapshot_timestamp,
             )

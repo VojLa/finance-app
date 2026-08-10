@@ -117,7 +117,7 @@ def _validate_plan(
         or not isinstance(value.fx_requirements, tuple)
     ):
         raise _fail()
-    output_currency = _currency(value.output_currency)
+    _currency(value.output_currency)
     price_keys: set[tuple[str, object, datetime]] = set()
     for price_requirement in value.price_requirements:
         if (
@@ -169,12 +169,7 @@ def _validate_plan(
             through,
             fx_requirement.provider,
         )
-        if (
-            from_currency == to_currency
-            or to_currency not in {output_currency, "CZK"}
-            or through > snapshot_timestamp
-            or fx_key in fx_keys
-        ):
+        if from_currency == to_currency or through > snapshot_timestamp or fx_key in fx_keys:
             raise _fail()
         fx_keys.add(fx_key)
     if value.fx_requirements != tuple(

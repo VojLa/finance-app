@@ -50,7 +50,7 @@ def _rate(
         base_currency=base,
         quote_currency=quote,
         rate=Decimal(value),
-        source=ExchangeRateSource.cnb,
+        source=ExchangeRateSource.twelve_data,
         timestamp=SNAPSHOT_AT,
     )
 
@@ -214,7 +214,7 @@ def test_eur_native_investment_account_still_persists_user_output_scalars() -> N
     assert "account_currency_summary" not in persisted.model_values()
 
 
-def test_mixed_native_eur_account_is_exactly_representable_with_czk_pivot() -> None:
+def test_mixed_native_eur_account_uses_direct_usd_eur_observation() -> None:
     account_id = "account-c"
     usd_czk = _rate("USD", "CZK", "23.00000000", rate_id="account-c-usd-czk")
     eur_czk = _rate("EUR", "CZK", "25.00000000", rate_id="account-c-eur-czk")
@@ -235,19 +235,20 @@ def test_mixed_native_eur_account_is_exactly_representable_with_czk_pivot() -> N
         CurrencyAmount(currency="USD", amount=Decimal("200.0000000000")),
     )
 
+    usd_eur = _rate("USD", "EUR", "0.92000000", rate_id="account-c-usd-eur")
     account_valuation = build_account_snapshot_projection(
         _investment_input(
             account_id,
             price_currency="USD",
             cost_currency="EUR",
-            rates=(usd_czk, eur_czk),
+            rates=(usd_eur,),
             output_currency="EUR",
         )
     )
     persisted = _persist(
         account_valuation,
         selected_price_ids=(f"{account_id}-price",),
-        selected_rate_ids=(eur_czk.rate_id, usd_czk.rate_id),
+        selected_rate_ids=(usd_eur.rate_id,),
     )
 
     assert account_valuation.currency == "EUR"
@@ -257,12 +258,11 @@ def test_mixed_native_eur_account_is_exactly_representable_with_czk_pivot() -> N
         (rate.base_currency, rate.quote_currency, tuple(role.value for role in rate.roles))
         for rate in account_valuation.exchange_rates
     } == {
-        ("EUR", "CZK", ("pivot_target",)),
-        ("USD", "CZK", ("pivot_source",)),
+        ("USD", "EUR", ("direct",)),
     }
     assert persisted.currency == "EUR"
     assert persisted.investment_value == Decimal("184.000000")
-    assert persisted.exchange_rates.to_json()["version"] == 2
+    assert persisted.exchange_rates.to_json()["version"] == 1
 
 
 def test_liability_account_currency_is_persisted_as_companion_scalar() -> None:

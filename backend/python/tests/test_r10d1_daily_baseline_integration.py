@@ -160,7 +160,7 @@ async def _seed_direct_rate(prefix: str, *, from_currency: str, to_currency: str
                 to_currency=to_currency,
                 rate=Decimal("25.00000000"),
                 date=INITIAL_AT,
-                source=ExchangeRateSource.cnb,
+                source=ExchangeRateSource.twelve_data,
                 created_at=INITIAL_AT,
             )
         )

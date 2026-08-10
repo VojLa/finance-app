@@ -269,7 +269,7 @@ async def _seed_investment(
                     to_currency="CZK",
                     rate=Decimal("20"),
                     date=event_at,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=event_at,
                 ),
                 ExchangeRateModel(
@@ -278,7 +278,7 @@ async def _seed_investment(
                     to_currency="CZK",
                     rate=Decimal("25"),
                     date=snapshot_at,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=snapshot_at,
                 ),
                 ExchangeRateModel(
@@ -287,7 +287,7 @@ async def _seed_investment(
                     to_currency="CZK",
                     rate=Decimal("16"),
                     date=event_at,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=event_at,
                 ),
                 ExchangeRateModel(
@@ -296,7 +296,7 @@ async def _seed_investment(
                     to_currency="CZK",
                     rate=Decimal("20"),
                     date=snapshot_at,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=snapshot_at,
                 ),
             ]
@@ -484,7 +484,7 @@ async def _seed_liability(
                     to_currency="CZK",
                     rate=Decimal("18"),
                     date=event_at,
-                    source=ExchangeRateSource.cnb,
+                    source=ExchangeRateSource.twelve_data,
                     created_at=event_at,
                 )
             ]
@@ -496,7 +496,7 @@ async def _seed_liability(
                         to_currency="CZK",
                         rate=Decimal("20"),
                         date=event_at,
-                        source=ExchangeRateSource.cnb,
+                        source=ExchangeRateSource.twelve_data,
                         created_at=event_at,
                     )
                 )
@@ -1520,7 +1520,7 @@ async def test_new_mixed_liability_fx_waits_and_retry_conflicts() -> None:
                         to_currency="CZK",
                         rate=Decimal("19"),
                         date=snapshot_at,
-                        source=ExchangeRateSource.cnb,
+                        source=ExchangeRateSource.twelve_data,
                         created_at=snapshot_at,
                     )
                 )

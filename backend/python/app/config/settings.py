@@ -21,19 +21,13 @@ class Settings(BaseSettings):
     internal_auth_issuer: str = "finance-app-next"
     internal_auth_audience: str = "finance-app-python"
     internal_auth_clock_skew_seconds: int = 30
-    cnb_fx_base_url: str = (
-        "https://www.cnb.cz/cs/financni-trhy/devizovy-trh/"
-        "kurzy-devizoveho-trhu/kurzy-devizoveho-trhu/denni_kurz.xml"
-    )
-    cnb_fx_timeout_seconds: float = 10.0
-    cnb_fx_max_response_bytes: int = 1_048_576
-    cnb_fx_user_agent: str = "finance-app/0.1"
     coingecko_price_base_url: str = "https://api.coingecko.com/api/v3/simple/price"
     coingecko_price_timeout_seconds: float = 10.0
     coingecko_price_max_response_bytes: int = 1_048_576
     coingecko_price_user_agent: str = "finance-app/0.1"
     coingecko_demo_api_key: SecretStr | None = None
     twelve_data_quote_base_url: str = "https://api.twelvedata.com/quote"
+    twelve_data_fx_base_url: str = "https://api.twelvedata.com/time_series"
     twelve_data_timeout_seconds: float = 10.0
     twelve_data_max_response_bytes: int = 1_048_576
     twelve_data_user_agent: str = "finance-app/0.1"
@@ -49,31 +43,6 @@ class Settings(BaseSettings):
     def validate_settings(self) -> Self:
         if self.internal_auth_clock_skew_seconds < 0:
             raise ValueError("INTERNAL_AUTH_CLOCK_SKEW_SECONDS must be non-negative")
-        url = urlsplit(self.cnb_fx_base_url)
-        if (
-            url.scheme != "https"
-            or not url.hostname
-            or url.username is not None
-            or url.password is not None
-            or bool(url.query)
-            or bool(url.fragment)
-            or any(character.isspace() for character in self.cnb_fx_base_url)
-        ):
-            raise ValueError("CNB_FX_BASE_URL must be an absolute credential-free HTTPS URL")
-        if not 0 < self.cnb_fx_timeout_seconds <= 120:
-            raise ValueError("CNB_FX_TIMEOUT_SECONDS must be greater than zero and at most 120")
-        if not 0 < self.cnb_fx_max_response_bytes <= 10_485_760:
-            raise ValueError(
-                "CNB_FX_MAX_RESPONSE_BYTES must be greater than zero and at most 10485760"
-            )
-        if (
-            not self.cnb_fx_user_agent
-            or self.cnb_fx_user_agent != self.cnb_fx_user_agent.strip()
-            or "\r" in self.cnb_fx_user_agent
-            or "\n" in self.cnb_fx_user_agent
-            or len(self.cnb_fx_user_agent) > 256
-        ):
-            raise ValueError("CNB_FX_USER_AGENT must be a safe non-empty value")
         price_url = urlsplit(self.coingecko_price_base_url)
         if (
             price_url.scheme != "https"
@@ -119,6 +88,19 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "TWELVE_DATA_QUOTE_BASE_URL must be an absolute credential-free HTTPS URL"
+            )
+        fx_url = urlsplit(self.twelve_data_fx_base_url)
+        if (
+            fx_url.scheme != "https"
+            or not fx_url.hostname
+            or fx_url.username is not None
+            or fx_url.password is not None
+            or bool(fx_url.query)
+            or bool(fx_url.fragment)
+            or any(character.isspace() for character in self.twelve_data_fx_base_url)
+        ):
+            raise ValueError(
+                "TWELVE_DATA_FX_BASE_URL must be an absolute credential-free HTTPS URL"
             )
         if not 0 < self.twelve_data_timeout_seconds <= 120:
             raise ValueError(

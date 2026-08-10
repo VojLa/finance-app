@@ -42,6 +42,7 @@ class ExchangeRateAuditReport:
     source_collisions: tuple[SourceCollision, ...]
     duplicate_source_identities: int
     invalid_rows: int
+    legacy_snapshot_dependencies: int
 
 
 def build_report(
@@ -50,6 +51,7 @@ def build_report(
     collision_rows: list[tuple[str, str, datetime, list[str], int]],
     duplicate_source_identities: int,
     invalid_rows: int,
+    legacy_snapshot_dependencies: int = 0,
 ) -> ExchangeRateAuditReport:
     source_counts = tuple(SourceCount(source, count) for source, count in source_rows)
     collisions = tuple(
@@ -68,6 +70,7 @@ def build_report(
         source_collisions=collisions,
         duplicate_source_identities=duplicate_source_identities,
         invalid_rows=invalid_rows,
+        legacy_snapshot_dependencies=legacy_snapshot_dependencies,
     )
 
 
@@ -130,11 +133,35 @@ async def audit(database_url: str) -> ExchangeRateAuditReport:
                     )
                     or 0
                 )
+                legacy_snapshot_dependencies = int(
+                    await connection.scalar(
+                        text(
+                            "WITH legacy AS ("
+                            'SELECT id FROM "ExchangeRate" '
+                            "WHERE source IN ('cnb', 'yahoo_finance')"
+                            "), dependent AS ("
+                            'SELECT id FROM "AccountSnapshot" AS snapshot '
+                            'WHERE snapshot."exchangeRates" IS NOT NULL AND EXISTS ('
+                            "SELECT 1 FROM legacy "
+                            'WHERE snapshot."exchangeRates"::text LIKE '
+                            "('%' || legacy.id || '%')"
+                            ") UNION ALL "
+                            'SELECT id FROM "NetWorthSnapshot" AS snapshot '
+                            'WHERE snapshot."exchangeRates" IS NOT NULL AND EXISTS ('
+                            "SELECT 1 FROM legacy "
+                            'WHERE snapshot."exchangeRates"::text LIKE '
+                            "('%' || legacy.id || '%')"
+                            ")) SELECT COUNT(*) FROM dependent"
+                        )
+                    )
+                    or 0
+                )
         return build_report(
             source_rows=source_rows,
             collision_rows=collision_rows,
             duplicate_source_identities=duplicate_source_identities,
             invalid_rows=invalid_rows,
+            legacy_snapshot_dependencies=legacy_snapshot_dependencies,
         )
     finally:
         await engine.dispose()

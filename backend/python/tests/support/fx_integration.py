@@ -21,12 +21,14 @@ from app.db.models.enums import (
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
+from app.modules.holdings.rebuild_service import HoldingRebuildService
 from app.modules.snapshot_refresh.executor import ExecuteUserSnapshotRefreshCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-def cnb_engine():
+def fx_engine():
     assert DATABASE_URL is not None
     return create_async_engine(normalize_database_url(DATABASE_URL), pool_size=8)
 
@@ -37,10 +39,11 @@ async def seed_eur_cash_flow(
     event_at: datetime,
     created_at: datetime,
     amount: Decimal = Decimal("1000"),
+    base_currency: str = "CZK",
 ) -> tuple[str, str]:
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
-    engine = cnb_engine()
+    engine = fx_engine()
     try:
         async with AsyncSession(engine) as session:
             session.add(
@@ -49,7 +52,7 @@ async def seed_eur_cash_flow(
                     email=f"{user_id}@example.test",
                     name=None,
                     password_hash=None,
-                    base_currency="CZK",
+                    base_currency=base_currency,
                     created_at=created_at,
                     updated_at=created_at,
                 )
@@ -57,7 +60,7 @@ async def seed_eur_cash_flow(
             session.add(
                 AccountModel(
                     id=account_id,
-                    name="CNB EUR cash evidence",
+                    name="Direct EUR cash evidence",
                     type=AccountType.broker,
                     currency="EUR",
                     color=None,
@@ -123,6 +126,18 @@ async def seed_eur_cash_flow(
                     created_at=created_at,
                     updated_at=created_at,
                 )
+            )
+            await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=event_at,
+                created_at=created_at,
+                replay=False,
+            )
+            await HoldingRebuildService(session).rebuild(
+                account_id=account_id,
+                rebuilt_at=created_at,
             )
             await session.commit()
     finally:

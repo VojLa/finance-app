@@ -149,5 +149,6 @@ def test_release_roadmap_records_complete_version_0_1_closure() -> None:
         in status
     )
     assert "0.1-R10-E2 — canonical current MONEY serialization: implemented" in status
-    assert "Version 0.1 — COMPLETE / Architecture Locked" in status
-    assert "Version 0.1 is not complete" not in status
+    assert "Version 0.1 core — implemented" in status
+    assert "Strict Architecture Locked boundary — REMEDIATION" in status
+    assert "REOPENED by R11" in status

@@ -52,13 +52,15 @@ def _engine():
     return create_async_engine(normalize_database_url(DATABASE_URL))
 
 
-def _rate(base: str, value: str, *, suffix: str) -> SelectedExchangeRateEvidence:
+def _rate(
+    base: str, value: str, *, suffix: str, quote: str = "CZK"
+) -> SelectedExchangeRateEvidence:
     return SelectedExchangeRateEvidence(
         rate_id=f"{PREFIX}-{suffix}",
         base_currency=base,
-        quote_currency="CZK",
+        quote_currency=quote,
         rate=Decimal(value),
-        source=ExchangeRateSource.cnb,
+        source=ExchangeRateSource.twelve_data,
         timestamp=SNAPSHOT_AT,
     )
 
@@ -249,10 +251,7 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
             "c",
             price_currency="USD",
             cost_currency="EUR",
-            rates=(
-                _rate("USD", "23.00000000", suffix="c-usd-czk"),
-                _rate("EUR", "25.00000000", suffix="c-eur-czk"),
-            ),
+            rates=(_rate("USD", "0.92000000", suffix="c-usd-eur", quote="EUR"),),
             output_currency="EUR",
         ),
         _liability(output_currency="EUR"),
@@ -347,11 +346,10 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
         mixed_rates = mixed_companion.exchange_rates
         assert mixed_rates is not None
         assert {(entry["from"], entry["to"]) for entry in mixed_rates["snapshotRates"]} == {
-            ("EUR", "CZK"),
-            ("USD", "CZK"),
+            ("USD", "EUR"),
         }
         assert mixed_companion.investment_value == Decimal("184.000000")
-        assert all(entry["to"] != "EUR" for entry in mixed_rates["snapshotRates"])
+        assert all(entry["to"] == "EUR" for entry in mixed_rates["snapshotRates"])
         liability_rows = {row.currency: row for row in physical if row.account_id == f"{PREFIX}-d"}
         assert liability_rows["CZK"].liabilities_value == Decimal("2500.000000")
         assert liability_rows["EUR"].liabilities_value == Decimal("100.000000")

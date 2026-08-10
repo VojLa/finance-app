@@ -105,13 +105,13 @@ def _install_market_overrides(
     def service(
         session: AsyncSession = Depends(get_db_session),
     ) -> MarketBackedSnapshotRefreshService:
-        twelve, coingecko, cnb = harness.transports(session)
+        twelve, coingecko, fx = harness.transports(session)
 
         def factory(active_session: AsyncSession, settings: Any):
             return create_production_market_evidence_service(
                 active_session,
                 settings,
-                http_transport=cnb,
+                twelve_data_fx_http_transport=fx,
                 coingecko_http_transport=coingecko,
                 twelve_data_http_transport=twelve,
             )
@@ -299,7 +299,7 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
         if provider == "twelve_data":
             assert not any(name == "coingecko" for name, _ in harness.calls)
         else:
-            assert not any(name in {"twelve_data", "cnb"} for name, _ in harness.calls)
+            assert not any(name in {"twelve_data", "twelve_data_fx"} for name, _ in harness.calls)
 
         after = asyncio.run(refresh_support._database_state(prefix))
         assert len(after["holdings"]) == len(after["prices"]) == 1
@@ -320,7 +320,7 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
         )
     finally:
         asyncio.run(refresh_support._cleanup(prefix))
-        asyncio.run(refresh_support._delete_cnb_rates())
+        asyncio.run(refresh_support._delete_twelve_data_fx_rates())
 
 
 def test_actual_cli_missing_database_url_is_safe_json() -> None:

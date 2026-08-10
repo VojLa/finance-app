@@ -39,7 +39,6 @@ _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
-_FX_PIVOT = "CZK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,21 +284,13 @@ def _add_conversion_requirements(
     target = _currency(target_currency)
     if source == target:
         return
-    bases: tuple[str, ...]
-    if target == _FX_PIVOT:
-        bases = (source,)
-    elif source == _FX_PIVOT:
-        bases = (target,)
-    else:
-        bases = tuple(sorted({source, target}))
-    for base in bases:
-        _add_fx_requirement(
-            requirements,
-            from_currency=base,
-            to_currency=_FX_PIVOT,
-            through=through,
-            provider=provider,
-        )
+    _add_fx_requirement(
+        requirements,
+        from_currency=source,
+        to_currency=target,
+        through=through,
+        provider=provider,
+    )
 
 
 def _add_account_conversion_requirements(

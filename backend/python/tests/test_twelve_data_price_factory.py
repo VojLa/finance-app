@@ -88,4 +88,4 @@ def test_production_registry_contains_exact_price_and_fx_sources() -> None:
     assert service.price_registry.sources == frozenset(
         {PriceSource.coingecko, PriceSource.twelve_data}
     )
-    assert service.fx_registry.sources == frozenset({ExchangeRateSource.cnb})
+    assert service.fx_registry.sources == frozenset({ExchangeRateSource.twelve_data})

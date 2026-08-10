@@ -159,6 +159,7 @@ class PriceSource(StrEnum):
 
 
 class ExchangeRateSource(StrEnum):
+    twelve_data = "twelve_data"
     cnb = "cnb"
     ecb = "ecb"
     manual = "manual"

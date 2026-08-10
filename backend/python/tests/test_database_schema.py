@@ -17,7 +17,7 @@ REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
-CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3i0001d1base" / "schema.sql"
+CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3j0001twfx" / "schema.sql"
 SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
 PRISMA_SCHEMA_PATH = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 
@@ -103,7 +103,7 @@ def test_current_schema_matches_ownership_manifest() -> None:
 def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 10
+    assert manifest["schema_version"] == 11
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
@@ -122,8 +122,8 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "state": "sole_migration_owner",
         "baseline_revision": "3d0001base",
         "cutover_revision": "3e0001cutover",
-        "head_revision": "3i0001d1base",
-        "revision_count": 6,
+        "head_revision": "3j0001twfx",
+        "revision_count": 7,
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
@@ -204,6 +204,7 @@ def test_schema_revision_registry_preserves_inherited_baseline_and_head_snapshot
     assert registry["revisions"]["3g0001liabbal"]["schema_change"] is True
     assert registry["revisions"]["3h0001twdata"]["schema_change"] is True
     assert registry["revisions"]["3i0001d1base"]["schema_change"] is True
+    assert registry["revisions"]["3j0001twfx"]["schema_change"] is True
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:

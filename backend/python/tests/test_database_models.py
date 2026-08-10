@@ -91,6 +91,7 @@ EXPECTED_ENUMS = {
         "other",
     ],
     "ExchangeRateSource": [
+        "twelve_data",
         "cnb",
         "ecb",
         "manual",

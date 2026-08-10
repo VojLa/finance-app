@@ -295,7 +295,7 @@ def _call_with_forbidden_provider_http(prefix: str):
             return create_production_market_evidence_service(
                 active_session,
                 active_settings,
-                http_transport=transport,
+                twelve_data_fx_http_transport=transport,
                 coingecko_http_transport=transport,
                 twelve_data_http_transport=transport,
             )
@@ -341,7 +341,7 @@ class _MarketEvidenceOrderCheckingExecutor:
                 select(func.count())
                 .select_from(ExchangeRateModel)
                 .where(
-                    ExchangeRateModel.source == market_support.ExchangeRateSource.cnb,
+                    ExchangeRateModel.source == market_support.ExchangeRateSource.twelve_data,
                     ExchangeRateModel.from_currency.in_(("EUR", "USD")),
                     ExchangeRateModel.to_currency == "CZK",
                     ExchangeRateModel.date.in_(
@@ -374,7 +374,7 @@ def _mixed_endpoint_call(
     order_checks: list[tuple[int, int]] | None = None,
     twelve_status: int = 200,
     coingecko_stale: bool = False,
-    cnb_status: int = 200,
+    fx_status: int = 200,
     snapshot_conflict: bool = False,
 ):
     settings = Settings(
@@ -395,13 +395,13 @@ def _mixed_endpoint_call(
         session: AsyncSession = Depends(get_db_session),
         request_settings: Settings = Depends(get_request_settings),
     ) -> MarketBackedSnapshotRefreshService:
-        twelve, coingecko, cnb, calls = market_support._transports(
+        twelve, coingecko, fx, calls = market_support._transports(
             session,
             listed_symbol=listed_symbol,
             crypto_alias=crypto_alias,
             twelve_status=twelve_status,
             coingecko_stale=coingecko_stale,
-            cnb_status=cnb_status,
+            fx_status=fx_status,
         )
         provider_call_batches.append(calls)
 
@@ -412,7 +412,7 @@ def _mixed_endpoint_call(
             return create_production_market_evidence_service(
                 active_session,
                 active_settings,
-                http_transport=cnb,
+                twelve_data_fx_http_transport=fx,
                 coingecko_http_transport=coingecko,
                 twelve_data_http_transport=twelve,
             )
@@ -521,10 +521,10 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
     expected_calls = [
         ("twelve_data", listed_symbol),
         ("coingecko", crypto_alias),
-        ("cnb", "01.08.2026"),
-        ("cnb", "06.08.2026"),
-        ("cnb", "01.08.2026"),
-        ("cnb", "06.08.2026"),
+        ("twelve_data_fx", "EUR/CZK@2026-08-01"),
+        ("twelve_data_fx", "EUR/CZK@2026-08-06"),
+        ("twelve_data_fx", "USD/CZK@2026-08-01"),
+        ("twelve_data_fx", "USD/CZK@2026-08-06"),
     ]
     assert _flatten_provider_calls(provider_call_batches) == expected_calls * 2
 
@@ -591,7 +591,7 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
                             market_support.ExchangeRateObservation(
                                 from_currency=currency,
                                 to_currency="CZK",
-                                provider=market_support.ExchangeRateSource.cnb,
+                                provider=market_support.ExchangeRateSource.twelve_data,
                                 rate=rate,
                                 effective_at=through,
                             )
@@ -725,7 +725,7 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
     [
         ("twelve-429", 1),
         ("coingecko-stale", 2),
-        ("cnb-failure", 3),
+        ("fx-failure", 3),
     ],
 )
 def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
@@ -767,7 +767,7 @@ def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
         provider_call_batches=provider_call_batches,
         twelve_status=429 if failure == "twelve-429" else 200,
         coingecko_stale=failure == "coingecko-stale",
-        cnb_status=503 if failure == "cnb-failure" else 200,
+        fx_status=503 if failure == "fx-failure" else 200,
     )
 
     assert response.status_code == 409
@@ -907,7 +907,8 @@ def test_snapshot_conflict_after_market_commit_preserves_market_evidence() -> No
                         select(func.count())
                         .select_from(ExchangeRateModel)
                         .where(
-                            ExchangeRateModel.source == market_support.ExchangeRateSource.cnb,
+                            ExchangeRateModel.source
+                            == market_support.ExchangeRateSource.twelve_data,
                             ExchangeRateModel.from_currency.in_(("EUR", "USD")),
                             ExchangeRateModel.to_currency == "CZK",
                             ExchangeRateModel.date.in_(
@@ -1001,8 +1002,8 @@ def test_missing_viewer_coverage_is_generic_and_writes_nothing() -> None:
         asyncio.run(_cleanup(prefix))
 
 
-def test_unsupported_non_czk_direct_fx_fails_before_snapshot_writes() -> None:
-    prefix = "r5b3b-unsupported-direct-fx"
+def test_unavailable_direct_fx_fails_without_snapshot_or_rate_writes() -> None:
+    prefix = "r11j-unavailable-direct-fx"
     asyncio.run(
         _seed(
             prefix,
@@ -1041,7 +1042,9 @@ def test_unsupported_non_czk_direct_fx_fails_before_snapshot_writes() -> None:
             "Snapshot refresh cannot be completed from the current account data."
         )
         assert "USD" not in first.text
-        assert provider_requests == []
+        assert len(provider_requests) == 1
+        assert "symbol=USD%2FEUR" in provider_requests[0]
+        assert "CZK" not in provider_requests[0]
         assert asyncio.run(_counts(prefix)) == (0, 0)
         assert asyncio.run(matching_rate_count()) == before
     finally:

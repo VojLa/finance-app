@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -9,9 +9,8 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.cnb_fx import cnb_xml
-from support.cnb_fx_integration import (
-    cnb_engine,
+from support.fx_integration import (
+    fx_engine,
     principal,
     seed_eur_cash_flow,
     snapshot_command,
@@ -52,36 +51,41 @@ def _success_transport() -> tuple[httpx.MockTransport, list[str]]:
     requests: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requested = request.url.params["date"]
-        requests.append(requested)
-        publication = datetime.strptime(requested, "%d.%m.%Y").date()
-        rate = "24,000" if publication == EVENT_AT.date() else "25,000"
+        assert request.url.params["symbol"] == "EUR/USD"
+        publication = date.fromisoformat(request.url.params["end_date"]) - timedelta(days=1)
+        requests.append(f"EUR/USD@{publication.isoformat()}")
+        rate = "1.10000000" if publication == EVENT_AT.date() else "1.20000000"
         return httpx.Response(
             200,
-            headers={"content-type": "text/xml"},
-            content=cnb_xml(publication, (("EUR", "1", rate),)),
+            headers={"content-type": "application/json"},
+            content=(
+                f'{{"meta":{{"symbol":"EUR/USD"}},"values":['
+                f'{{"datetime":"{publication.isoformat()}","close":"{rate}"}}],'
+                '"status":"ok"}'
+            ).encode(),
         )
 
     return httpx.MockTransport(handler), requests
 
 
 @pytest.mark.asyncio
-async def test_cnb_evidence_reaches_exact_account_net_worth_and_read_models() -> None:
-    prefix = f"r5b1-cnb-snapshot-{uuid4()}"
+async def test_direct_twelve_data_fx_reaches_snapshots_and_read_models() -> None:
+    prefix = f"r11j-twelve-fx-snapshot-{uuid4()}"
     user_id, _account_id = await seed_eur_cash_flow(
         prefix,
         event_at=EVENT_AT,
         created_at=CREATED_AT,
+        base_currency="USD",
     )
     transport, requests = _success_transport()
-    settings = Settings(environment="test", _env_file=None)
-    engine = cnb_engine()
+    settings = Settings(environment="test", twelve_data_api_key="test-key", _env_file=None)
+    engine = fx_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             market = await create_production_market_evidence_service(
                 session,
                 settings,
-                http_transport=transport,
+                twelve_data_fx_http_transport=transport,
             ).refresh(RefreshMarketEvidenceCommand(user_id, SNAPSHOT_AT, CREATED_AT))
             refreshed = await UserSnapshotRefreshExecutor(session).execute(
                 snapshot_command(
@@ -115,20 +119,20 @@ async def test_cnb_evidence_reaches_exact_account_net_worth_and_read_models() ->
 
             assert market.price_ids == ()
             assert len(market.exchange_rate_ids) == 2
-            assert requests == ["24.07.2026", "03.08.2026"]
+            assert requests == ["EUR/USD@2026-07-24", "EUR/USD@2026-08-03"]
             assert refreshed.selected_account_snapshot_count == 1
             assert portfolio.timestamp == dashboard.timestamp == SNAPSHOT_AT
-            assert portfolio.currency == dashboard.currency == "CZK"
+            assert portfolio.currency == dashboard.currency == "USD"
             assert portfolio.calculation_version == dashboard.calculation_version == 1
             assert (
                 portfolio.summary.cash_value
                 == dashboard.summary.cash_value
-                == Decimal("25000.000000")
+                == Decimal("1200.000000")
             )
             assert (
                 portfolio.summary.total_value
                 == dashboard.summary.total_value
-                == Decimal("25000.000000")
+                == Decimal("1200.000000")
             )
             assert (
                 portfolio.summary.investment_value
@@ -140,7 +144,7 @@ async def test_cnb_evidence_reaches_exact_account_net_worth_and_read_models() ->
                 == dashboard.summary.liabilities_value
                 == Decimal("0.000000")
             )
-            assert portfolio.summary.net_deposits_value == Decimal("24000.000000")
+            assert portfolio.summary.net_deposits_value == Decimal("1100.000000")
             assert portfolio.summary.account_count == dashboard.summary.account_count == 1
             assert portfolio.summary.position_count == dashboard.summary.position_count == 0
 
@@ -151,22 +155,22 @@ async def test_cnb_evidence_reaches_exact_account_net_worth_and_read_models() ->
                 refreshed.net_worth_snapshot_id,
             )
             assert account_snapshot is not None
-            assert account_snapshot.cash_value == Decimal("25000.000000")
-            assert account_snapshot.net_deposits_value == Decimal("24000.000000")
+            assert account_snapshot.cash_value == Decimal("1200.000000")
+            assert account_snapshot.net_deposits_value == Decimal("1100.000000")
             exchange_rates = account_snapshot.exchange_rates
             assert exchange_rates is not None
             assert set(exchange_rates["historicalRateIds"]).issubset(set(market.exchange_rate_ids))
             assert exchange_rates["snapshotRates"][0]["rateId"] in market.exchange_rate_ids
             assert net_worth is not None
-            assert net_worth.cash_value == Decimal("25000.000000")
-            assert net_worth.total_net_worth == Decimal("25000.000000")
+            assert net_worth.cash_value == Decimal("1200.000000")
+            assert net_worth.total_net_worth == Decimal("1200.000000")
 
         transport, replay_requests = _success_transport()
         async with AsyncSession(engine) as session:
             replay_market = await create_production_market_evidence_service(
                 session,
                 settings,
-                http_transport=transport,
+                twelve_data_fx_http_transport=transport,
             ).refresh(
                 RefreshMarketEvidenceCommand(
                     user_id,
@@ -185,19 +189,20 @@ async def test_cnb_evidence_reaches_exact_account_net_worth_and_read_models() ->
             assert replay_market.rates_created == 0
             assert replay_market.rates_replayed == 2
             assert replay_snapshot.replayed_account_snapshot_count == 1
-            assert replay_requests == ["24.07.2026", "03.08.2026"]
+            assert replay_requests == ["EUR/USD@2026-07-24", "EUR/USD@2026-08-03"]
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["stale", "http"])
-async def test_cnb_failure_writes_no_rate_or_partial_snapshot(failure: str) -> None:
-    prefix = f"r5b1-cnb-failure-{failure}-{uuid4()}"
+async def test_twelve_data_fx_failure_writes_no_rate_or_partial_snapshot(failure: str) -> None:
+    prefix = f"r11j-twelve-fx-failure-{failure}-{uuid4()}"
     user_id, account_id = await seed_eur_cash_flow(
         prefix,
         event_at=EVENT_AT,
         created_at=CREATED_AT,
+        base_currency="USD",
     )
     calls = 0
 
@@ -205,15 +210,18 @@ async def test_cnb_failure_writes_no_rate_or_partial_snapshot(failure: str) -> N
         nonlocal calls
         calls += 1
         if failure == "http":
-            return httpx.Response(503, headers={"content-type": "text/xml"}, content=b"down")
+            return httpx.Response(503, headers={"content-type": "application/json"}, content=b"{}")
         return httpx.Response(
             200,
-            headers={"content-type": "text/xml"},
-            content=cnb_xml(datetime(2026, 7, 1).date()),
+            headers={"content-type": "application/json"},
+            content=(
+                b'{"meta":{"symbol":"EUR/USD"},"values":['
+                b'{"datetime":"2026-07-01","close":"1.1"}],"status":"ok"}'
+            ),
         )
 
-    settings = Settings(environment="test", _env_file=None)
-    engine = cnb_engine()
+    settings = Settings(environment="test", twelve_data_api_key="test-key", _env_file=None)
+    engine = fx_engine()
     try:
         async with AsyncSession(engine) as session:
             rates_before = await session.scalar(select(func.count()).select_from(ExchangeRateModel))
@@ -222,7 +230,7 @@ async def test_cnb_failure_writes_no_rate_or_partial_snapshot(failure: str) -> N
                 await create_production_market_evidence_service(
                     session,
                     settings,
-                    http_transport=httpx.MockTransport(handler),
+                    twelve_data_fx_http_transport=httpx.MockTransport(handler),
                 ).refresh(RefreshMarketEvidenceCommand(user_id, SNAPSHOT_AT, CREATED_AT))
             assert calls == 1
             assert not session.in_transaction()

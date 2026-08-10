@@ -74,5 +74,5 @@ def test_production_service_composes_coingecko_and_cnb() -> None:
     assert service.price_registry.sources == frozenset(
         {PriceSource.coingecko, PriceSource.twelve_data}
     )
-    assert service.fx_registry.sources == frozenset({ExchangeRateSource.cnb})
-    assert service.fx_source is ExchangeRateSource.cnb
+    assert service.fx_registry.sources == frozenset({ExchangeRateSource.twelve_data})
+    assert service.fx_source is ExchangeRateSource.twelve_data

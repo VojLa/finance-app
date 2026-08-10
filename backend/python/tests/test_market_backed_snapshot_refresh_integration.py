@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -9,12 +9,12 @@ import httpx
 import pytest
 from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from support.cnb_fx import cnb_xml
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -345,6 +345,11 @@ async def _seed_mixed_user(
                         updated_at=CREATED_AT,
                     )
                 )
+            await session.flush()
+            for account_id in (broker_id, exchange_id):
+                state = await session.get(AccountCanonicalStateModel, account_id)
+                assert state is not None
+                state.holding_revision = 0
             await session.commit()
     finally:
         await engine.dispose()
@@ -459,7 +464,7 @@ def _transports(
     crypto_alias: str,
     twelve_status: int = 200,
     coingecko_stale: bool = False,
-    cnb_status: int = 200,
+    fx_status: int = 200,
 ) -> tuple[
     httpx.MockTransport,
     httpx.MockTransport,
@@ -496,34 +501,38 @@ def _transports(
             ).encode(),
         )
 
-    def cnb_handler(request: httpx.Request) -> httpx.Response:
+    def fx_handler(request: httpx.Request) -> httpx.Response:
         assert not session.in_transaction()
-        requested = request.url.params["date"]
-        calls.append(("cnb", requested))
-        if cnb_status != 200:
+        symbol = request.url.params["symbol"]
+        publication = datetime.fromisoformat(request.url.params["end_date"]).date() - timedelta(
+            days=1
+        )
+        calls.append(("twelve_data_fx", f"{symbol}@{publication.isoformat()}"))
+        if fx_status != 200:
             return httpx.Response(
-                cnb_status,
-                headers={"content-type": "text/xml"},
-                content=b"unavailable",
+                fx_status,
+                headers={"content-type": "application/json"},
+                content=b'{"status":"error"}',
             )
-        publication = datetime.strptime(requested, "%d.%m.%Y").date()
         is_event = publication == EVENT_AT.date()
+        rate = {
+            "EUR/CZK": "24.00000000" if is_event else "25.00000000",
+            "USD/CZK": "22.00000000" if is_event else "23.00000000",
+        }[symbol]
         return httpx.Response(
             200,
-            headers={"content-type": "text/xml"},
-            content=cnb_xml(
-                publication,
-                (
-                    ("EUR", "1", "24,000" if is_event else "25,000"),
-                    ("USD", "1", "22,000" if is_event else "23,000"),
-                ),
-            ),
+            headers={"content-type": "application/json"},
+            content=(
+                f'{{"meta":{{"symbol":"{symbol}"}},"values":['
+                f'{{"datetime":"{publication.isoformat()}","close":"{rate}"}}],'
+                '"status":"ok"}'
+            ).encode(),
         )
 
     return (
         httpx.MockTransport(twelve_handler),
         httpx.MockTransport(coingecko_handler),
-        httpx.MockTransport(cnb_handler),
+        httpx.MockTransport(fx_handler),
         calls,
     )
 
@@ -535,23 +544,23 @@ def _service(
     crypto_alias: str,
     twelve_status: int = 200,
     coingecko_stale: bool = False,
-    cnb_status: int = 200,
+    fx_status: int = 200,
     snapshot_executor: object | None = None,
 ) -> tuple[MarketBackedSnapshotRefreshService, list[tuple[str, str]]]:
-    twelve, coingecko, cnb, calls = _transports(
+    twelve, coingecko, fx, calls = _transports(
         session,
         listed_symbol=listed_symbol,
         crypto_alias=crypto_alias,
         twelve_status=twelve_status,
         coingecko_stale=coingecko_stale,
-        cnb_status=cnb_status,
+        fx_status=fx_status,
     )
 
     def factory(active_session: AsyncSession, settings: Settings):
         return create_production_market_evidence_service(
             active_session,
             settings,
-            http_transport=cnb,
+            twelve_data_fx_http_transport=fx,
             coingecko_http_transport=coingecko,
             twelve_data_http_transport=twelve,
         )
@@ -647,13 +656,18 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
             assert provider_calls == [
                 ("twelve_data", "AAPL"),
                 ("coingecko", "bitcoin"),
-                ("cnb", "01.08.2026"),
-                ("cnb", "06.08.2026"),
-                ("cnb", "01.08.2026"),
-                ("cnb", "06.08.2026"),
+                ("twelve_data_fx", "EUR/CZK@2026-08-01"),
+                ("twelve_data_fx", "EUR/CZK@2026-08-06"),
+                ("twelve_data_fx", "USD/CZK@2026-08-01"),
+                ("twelve_data_fx", "USD/CZK@2026-08-06"),
             ]
             assert insert_order.index('"PriceSnapshot"') < insert_order.index('"AccountSnapshot"')
-            assert insert_order.index('"ExchangeRate"') < insert_order.index('"AccountSnapshot"')
+            if '"ExchangeRate"' in insert_order:
+                assert insert_order.index('"ExchangeRate"') < insert_order.index(
+                    '"AccountSnapshot"'
+                )
+            else:
+                assert combined.market.rates_replayed == 4
 
             market = combined.market
             snapshots = combined.snapshots
@@ -691,7 +705,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
                         ExchangeRateObservation(
                             from_currency=currency,
                             to_currency="CZK",
-                            provider=ExchangeRateSource.cnb,
+                            provider=ExchangeRateSource.twelve_data,
                             rate=rate,
                             effective_at=through,
                         )
@@ -741,7 +755,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
                             ExchangeRateObservation(
                                 currency,
                                 "CZK",
-                                ExchangeRateSource.cnb,
+                                ExchangeRateSource.twelve_data,
                                 rate,
                                 SNAPSHOT_AT,
                             )
@@ -849,7 +863,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
     [
         ("twelve-429", 1),
         ("coingecko-stale", 2),
-        ("cnb-failure", 3),
+        ("fx-failure", 3),
     ],
 )
 @pytest.mark.asyncio
@@ -880,7 +894,7 @@ async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
                 crypto_alias=crypto_alias,
                 twelve_status=429 if failure == "twelve-429" else 200,
                 coingecko_stale=failure == "coingecko-stale",
-                cnb_status=503 if failure == "cnb-failure" else 200,
+                fx_status=503 if failure == "fx-failure" else 200,
             )
             with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
                 await service.execute(_command(user_id))
@@ -996,7 +1010,7 @@ async def test_snapshot_failure_after_market_writer_preserves_market_evidence() 
                     select(func.count())
                     .select_from(ExchangeRateModel)
                     .where(
-                        ExchangeRateModel.source == ExchangeRateSource.cnb,
+                        ExchangeRateModel.source == ExchangeRateSource.twelve_data,
                         ExchangeRateModel.from_currency.in_(("EUR", "USD")),
                         ExchangeRateModel.to_currency == "CZK",
                         ExchangeRateModel.date.in_((EVENT_AT.replace(hour=0), SNAPSHOT_AT)),

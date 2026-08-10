@@ -63,5 +63,6 @@ Superseded by: none
 | [`0005-api-contract-generation.md`](0005-api-contract-generation.md)       | Generovani API kontraktu z OpenAPI                     | Accepted |
 | [`0006-database-schema-migration.md`](0006-database-schema-migration.md)   | Prevod vlastnictvi DB schema z Prisma na Alembic       | Accepted |
 | [`0007-python-credential-boundary.md`](0007-python-credential-boundary.md) | Python credential boundary a NextAuth session          | Accepted |
+| [`0008-direct-twelve-data-fx.md`](0008-direct-twelve-data-fx.md)           | Prime FX z Twelve Data bez pivotu a fallbacku          | Accepted |
 
 Status v tomto indexu se musi aktualizovat spolu se zmenou konkretniho ADR.

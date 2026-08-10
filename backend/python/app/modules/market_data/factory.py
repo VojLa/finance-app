@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import Settings
 from app.db.models.enums import ExchangeRateSource
 from app.modules.fx.providers import (
-    CnbFxTransport,
+    TwelveDataFxTransport,
     create_production_exchange_rate_registry,
 )
 from app.modules.market_data.models import MarketEvidenceRefreshPlan
@@ -37,8 +37,8 @@ def create_production_market_evidence_service(
     settings: Settings,
     *,
     policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
-    cnb_transport: CnbFxTransport | None = None,
-    http_transport: httpx.AsyncBaseTransport | None = None,
+    twelve_data_fx_transport: TwelveDataFxTransport | None = None,
+    twelve_data_fx_http_transport: httpx.AsyncBaseTransport | None = None,
     coingecko_transport: CoinGeckoPriceTransport | None = None,
     coingecko_http_transport: httpx.AsyncBaseTransport | None = None,
     twelve_data_transport: TwelveDataPriceTransport | None = None,
@@ -58,10 +58,10 @@ def create_production_market_evidence_service(
         fx_registry=create_production_exchange_rate_registry(
             settings,
             policy=policy,
-            cnb_transport=cnb_transport,
-            http_transport=http_transport,
+            twelve_data_fx_transport=twelve_data_fx_transport,
+            http_transport=twelve_data_fx_http_transport,
         ),
-        fx_source=ExchangeRateSource.cnb,
+        fx_source=ExchangeRateSource.twelve_data,
         policy=policy,
         planner=planner,
     )

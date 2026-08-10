@@ -545,7 +545,8 @@ async def test_fx_requirements_separate_snapshot_and_event_time() -> None:
     assert ("USD", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert ("GBP", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("CHF", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
-    assert ("EUR", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
+    assert ("GBP", "EUR", EVENT_AT, ExchangeRateSource.ecb) in identities
+    assert ("CHF", "EUR", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("JPY", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert (
         "CAD",
@@ -586,16 +587,14 @@ async def test_direct_fx_requirement_never_inverts_or_derives() -> None:
     plan = await _planner(repository).build(
         BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
     )
-    assert all(
-        item.to_currency == "CZK" and item.from_currency != "CZK" for item in plan.fx_requirements
-    )
-    assert not any(
-        item.from_currency == "CZK" and item.to_currency == "EUR" for item in plan.fx_requirements
-    )
+    assert all(item.from_currency != item.to_currency for item in plan.fx_requirements)
+    assert ("USD", "EUR", SNAPSHOT_AT) in {
+        (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
+    }
 
 
 @pytest.mark.asyncio
-async def test_non_czk_targets_plan_only_direct_czk_pivot_observations() -> None:
+async def test_non_czk_targets_plan_only_direct_output_observations() -> None:
     repository = _Repository()
     repository.user = _user(currency="EUR")
     repository.accounts = (_account(currency="USD"),)
@@ -608,9 +607,10 @@ async def test_non_czk_targets_plan_only_direct_czk_pivot_observations() -> None
     assert {
         (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
     } == {
-        ("EUR", "CZK", SNAPSHOT_AT),
-        ("GBP", "CZK", SNAPSHOT_AT),
-        ("USD", "CZK", SNAPSHOT_AT),
+        ("EUR", "USD", SNAPSHOT_AT),
+        ("GBP", "EUR", SNAPSHOT_AT),
+        ("GBP", "USD", SNAPSHOT_AT),
+        ("USD", "EUR", SNAPSHOT_AT),
     }
 
 
