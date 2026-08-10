@@ -14,14 +14,14 @@ Zkopíruj akceptační kritéria ze STEP a označ splněno/nesplněno. Nesplněn
 
 ## Ověření
 
-| Kontrola | Výsledek |
-|---|---|
-| Relevantní test | PASS/FAIL + příkaz |
-| Ruff | PASS/FAIL/NEBĚŽELO |
-| Formát | PASS/FAIL/NEBĚŽELO |
-| mypy | PASS/FAIL/NEBĚŽELO |
-| pytest/quality gate | PASS/FAIL/NEBĚŽELO |
-| DB/API kontrola | PASS/FAIL/NEAPLIKUJE SE |
+| Kontrola            | Výsledek                |
+| ------------------- | ----------------------- |
+| Relevantní test     | PASS/FAIL + příkaz      |
+| Ruff                | PASS/FAIL/NEBĚŽELO      |
+| Formát              | PASS/FAIL/NEBĚŽELO      |
+| mypy                | PASS/FAIL/NEBĚŽELO      |
+| pytest/quality gate | PASS/FAIL/NEBĚŽELO      |
+| DB/API kontrola     | PASS/FAIL/NEAPLIKUJE SE |
 
 ## Bezpečnost a data
 

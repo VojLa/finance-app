@@ -20,9 +20,9 @@ Bezpečnost/account isolation, ztráta dat, přesnost a měny, historické FX, z
 
 Každý krok zapisuj do tabulky:
 
-| ID | Výsledek | Velikost/skóre | Závislosti | Riziko | Model | Ověření |
-|---|---|---:|---|---|---|---|
-| X.1 | [jedna schopnost] | M/6 | [ID] | střední | střední | [test] |
+| ID  | Výsledek          | Velikost/skóre | Závislosti | Riziko  | Model   | Ověření |
+| --- | ----------------- | -------------: | ---------- | ------- | ------- | ------- |
+| X.1 | [jedna schopnost] |            M/6 | [ID]       | střední | střední | [test]  |
 
 Pravidla pořadí: nejdřív uzavřít rozhodnutí; potom kompatibilní kontrakty; následně malé vertikální řezy; migrace/backfill odděleně; integrační a security testy; teprve nakonec odstranění staré cesty.
 

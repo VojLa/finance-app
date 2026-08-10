@@ -69,10 +69,9 @@ describe("investment client", () => {
 
     const result = await requestSymbolDetail("VWCE", fetcher as typeof fetch)
 
-    expect(fetcher).toHaveBeenCalledWith(
-      "/api/portfolio/transactions?symbol=VWCE",
-      { cache: "no-store" }
-    )
+    expect(fetcher).toHaveBeenCalledWith("/api/portfolio/transactions?symbol=VWCE", {
+      cache: "no-store",
+    })
     expect(result.positions[0].quantity).toBe("2.0000000000")
   })
 })

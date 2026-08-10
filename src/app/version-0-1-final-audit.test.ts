@@ -75,9 +75,7 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(status).toContain(
       "0.1-R10-D1 — persisted daily baseline manifest and canonical cutoff: implemented"
     )
-    expect(status).toContain(
-      "0.1-R10-D2 — strict daily-baseline current-value engine: implemented"
-    )
+    expect(status).toContain("0.1-R10-D2 — strict daily-baseline current-value engine: implemented")
     expect(status).toContain("0.1-R10 final scope re-audit: PASS after E2 remediation")
     expect(status).toContain(
       "0.1-R10-E1 — current-value authenticated session/transaction composition: implemented"

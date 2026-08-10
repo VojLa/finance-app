@@ -107,6 +107,7 @@ not run in a background worker.
 There is currently no background queue: parse, normalize, and duplicate
 detection run synchronously in the request. There is also no raw-data retention
 or purge worker, even though the database model reserves retention fields.
+
 # Import workflow
 
 The persisted pipeline is `register → upload → parse → normalize → deduplicate → classify → post`.

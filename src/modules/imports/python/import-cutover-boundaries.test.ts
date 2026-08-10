@@ -26,10 +26,7 @@ describe("R4 import call-graph boundaries", () => {
     const routes = (await filesBelow("src/app/api/import"))
       .filter((file) => file.endsWith("/route.ts") || file.endsWith("import/route.ts"))
       .sort()
-    expect(routes).toEqual([
-      "src/app/api/import/finalize/route.ts",
-      "src/app/api/import/route.ts",
-    ])
+    expect(routes).toEqual(["src/app/api/import/finalize/route.ts", "src/app/api/import/route.ts"])
 
     for (const route of routes) {
       const content = await source(route)
