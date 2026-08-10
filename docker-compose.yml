@@ -58,6 +58,11 @@ services:
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
       TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}
+      BACKGROUND_JOBS_ENABLED: "true"
+      BACKGROUND_JOB_POLL_SECONDS: "0.75"
+      BACKGROUND_JOB_LEASE_SECONDS: "300"
+      BACKGROUND_JOB_HEARTBEAT_SECONDS: "15"
+      BACKGROUND_JOB_SHUTDOWN_GRACE_SECONDS: "5"
     depends_on:
       db:
         condition: service_healthy

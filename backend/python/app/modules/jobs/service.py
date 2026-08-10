@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.background_jobs import BackgroundJobModel
-from app.db.models.enums import AccountMemberRole, ImportStatus
+from app.db.models.enums import AccountMemberRole, ImportSource, ImportStatus
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.repository import ImportBatchRepository
 from app.modules.jobs.lifecycle import MAX_AUTOMATIC_ATTEMPTS
@@ -104,6 +104,25 @@ class BackgroundJobService:
                 allowed_roles=WRITE_ROLES,
                 for_update=True,
             )
+            key = canonical_import_job_idempotency_key(
+                user_id=command.principal.user_id,
+                account_id=command.account_id,
+                batch_ids=payload.batch_ids,
+            )
+            existing = await self.repository.get_owned_by_key(
+                user_id=command.principal.user_id,
+                account_id=command.account_id,
+                idempotency_key=key,
+            )
+            if existing is not None:
+                if existing.payload != payload.model_dump(mode="json"):
+                    raise RuntimeError(
+                        "The canonical background job payload does not match replay."
+                    )
+                await self.session.commit()
+                return EnqueueImportJobResult(job=existing, created=False)
+
+            source: ImportSource | None = None
             for batch_id in payload.batch_ids:
                 batch = await self.batch_repository.get_for_account(
                     account_id=command.account_id,
@@ -117,12 +136,10 @@ class BackgroundJobService:
                     or batch.completed_at is not None
                 ):
                     raise BackgroundJobEnqueueStateError()
-
-            key = canonical_import_job_idempotency_key(
-                user_id=command.principal.user_id,
-                account_id=command.account_id,
-                batch_ids=payload.batch_ids,
-            )
+                if source is None:
+                    source = batch.source
+                elif batch.source is not source:
+                    raise BackgroundJobEnqueueStateError()
             total_batches = len(payload.batch_ids)
             enqueued: EnqueuedBackgroundJob = await self.repository.enqueue_import_job(
                 user_id=command.principal.user_id,

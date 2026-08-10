@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import AccountMemberRole, ImportRowStatus, ImportSource, ImportStatus
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.anycoin import AnycoinBatchRow, normalize_anycoin_batch
+from app.modules.imports.cooperative import yield_after_rows
 from app.modules.imports.models import ImportNormalizeResponse
 from app.modules.imports.normalizers import normalize_import_row
 from app.modules.imports.repository import ImportBatchRepository
@@ -85,25 +88,28 @@ class ImportNormalizationService:
             rows = await self.repository.list_rows_for_update(batch_id)
             if not rows:
                 raise ImportNormalizeRowsMissingError()
-            if any(
-                row.normalized_data is not None or row.deduplication_key is not None for row in rows
-            ):
-                raise ImportNormalizeStateError()
-            if any(
-                row.status not in {ImportRowStatus.pending, ImportRowStatus.failed} for row in rows
-            ):
-                raise ImportNormalizeStateError()
+            for index, row in enumerate(rows, start=1):
+                if row.normalized_data is not None or row.deduplication_key is not None:
+                    raise ImportNormalizeStateError()
+                if row.status not in {ImportRowStatus.pending, ImportRowStatus.failed}:
+                    raise ImportNormalizeStateError()
+                await yield_after_rows(index)
 
             normalized = 0
             needs_review = 0
             skipped = 0
             parser_failed = 0
-            active_rows = [row for row in rows if row.status is not ImportRowStatus.failed]
+            active_rows = []
+            for index, row in enumerate(rows, start=1):
+                if row.status is not ImportRowStatus.failed:
+                    active_rows.append(row)
+                await yield_after_rows(index)
             parser_failed = len(rows) - len(active_rows)
             if locked.source is ImportSource.anycoin:
                 outcomes = {
                     outcome.row_id: outcome
-                    for outcome in normalize_anycoin_batch(
+                    for outcome in await asyncio.to_thread(
+                        normalize_anycoin_batch,
                         account_id=account_id,
                         rows=[
                             AnycoinBatchRow(row.id, row.row_number, row.raw_data)
@@ -111,7 +117,7 @@ class ImportNormalizationService:
                         ],
                     )
                 }
-                for row in active_rows:
+                for index, row in enumerate(active_rows, start=1):
                     outcome = outcomes[row.id]
                     row.normalized_data = outcome.data
                     row.deduplication_key = outcome.deduplication_key
@@ -123,8 +129,9 @@ class ImportNormalizationService:
                     normalized += outcome.status is ImportRowStatus.pending
                     needs_review += outcome.status is ImportRowStatus.needs_review
                     skipped += outcome.status is ImportRowStatus.skipped
+                    await yield_after_rows(index)
             else:
-                for row in active_rows:
+                for index, row in enumerate(active_rows, start=1):
                     result = normalize_import_row(
                         source=locked.source, account_id=account_id, raw_data=row.raw_data
                     )
@@ -135,6 +142,7 @@ class ImportNormalizationService:
                         row.error_message = "Row requires normalization review."
                         row.status = ImportRowStatus.needs_review
                         needs_review += 1
+                        await yield_after_rows(index)
                         continue
                     row.normalized_data = result.data
                     row.deduplication_key = result.deduplication_key
@@ -142,6 +150,7 @@ class ImportNormalizationService:
                     row.error_message = None
                     row.status = ImportRowStatus.pending
                     normalized += 1
+                    await yield_after_rows(index)
 
             locked.rows_total = len(rows)
             locked.rows_imported = 0

@@ -12,6 +12,7 @@ from app.db.models.enums import AccountMemberRole, ImportRowStatus, ImportStatus
 from app.db.models.imports import ImportRowModel
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.classification import classify_import_row
+from app.modules.imports.cooperative import yield_after_rows
 from app.modules.imports.models import ImportClassifyResponse
 from app.modules.imports.repository import ImportBatchRepository
 from app.shared.errors import ApplicationError
@@ -100,7 +101,7 @@ class ImportClassificationService:
                 raise ImportClassifyRowsMissingError()
             pending_rows: list[ImportRowModel] = []
             classified_review_rows: list[ImportRowModel] = []
-            for row in rows:
+            for index, row in enumerate(rows, start=1):
                 if (
                     row.created_transaction_id
                     or row.created_investment_event_id
@@ -138,6 +139,7 @@ class ImportClassificationService:
                     and row.deduplication_key is None
                 ):
                     # Earlier normalization review: intentionally not classifiable.
+                    await yield_after_rows(index)
                     continue
                 elif row.status is ImportRowStatus.needs_review and not isinstance(
                     row.normalized_data, dict
@@ -155,7 +157,8 @@ class ImportClassificationService:
                     if row.normalized_data[_INTENT].get("target") != "needs_review":
                         raise ImportClassifyStateError()
                     classified_review_rows.append(row)
-            for row in [*pending_rows, *classified_review_rows]:
+                await yield_after_rows(index)
+            for index, row in enumerate([*pending_rows, *classified_review_rows], start=1):
                 assert isinstance(row.normalized_data, dict)
                 intent = classify_import_row(
                     source=batch.source, normalized_data=_canonical(row.normalized_data)
@@ -183,6 +186,7 @@ class ImportClassificationService:
                         )
                     ):
                         raise ImportClassifyStateError()
+                    await yield_after_rows(index)
                     continue
                 updated = deepcopy(row.normalized_data)
                 updated[_INTENT] = intent
@@ -194,16 +198,19 @@ class ImportClassificationService:
                 else:
                     row.validation_errors = None
                     row.error_message = None
-            classified = sum(
-                row.status is ImportRowStatus.pending
-                and isinstance(row.normalized_data, dict)
-                and _INTENT in row.normalized_data
-                for row in rows
-            )
-            review = sum(row.status is ImportRowStatus.needs_review for row in rows)
-            duplicate = sum(row.status is ImportRowStatus.duplicate for row in rows)
-            skipped = sum(row.status is ImportRowStatus.skipped for row in rows)
-            failed = sum(row.status is ImportRowStatus.failed for row in rows)
+                await yield_after_rows(index)
+            classified = review = duplicate = skipped = failed = 0
+            for index, row in enumerate(rows, start=1):
+                classified += (
+                    row.status is ImportRowStatus.pending
+                    and isinstance(row.normalized_data, dict)
+                    and _INTENT in row.normalized_data
+                )
+                review += row.status is ImportRowStatus.needs_review
+                duplicate += row.status is ImportRowStatus.duplicate
+                skipped += row.status is ImportRowStatus.skipped
+                failed += row.status is ImportRowStatus.failed
+                await yield_after_rows(index)
             batch.rows_total = len(rows)
             batch.rows_imported = 0
             batch.rows_skipped = review + duplicate + skipped + failed

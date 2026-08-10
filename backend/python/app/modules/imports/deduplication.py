@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from app.db.models.enums import (
 )
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 from app.modules.accounts.access import require_account_access
+from app.modules.imports.cooperative import yield_after_rows
 from app.modules.imports.models import ImportDeduplicateResponse
 from app.modules.imports.repository import ImportBatchRepository
 from app.shared.errors import ApplicationError
@@ -95,14 +97,39 @@ def _winner_ids(
     for row, _ in candidates:
         if row.deduplication_key is not None:
             by_key[row.deduplication_key].append(row)
+    return _winner_ids_from_groups(by_key.values())
+
+
+def _winner_ids_from_groups(rows_by_key: Iterable[list[ImportRowModel]]) -> set[str]:
+    """Keep the small, pure winner-selection boundary synchronously testable."""
 
     winners: set[str] = set()
-    for rows in by_key.values():
+    for rows in rows_by_key:
         imported = [row for row in rows if row.status is ImportRowStatus.imported]
         if imported:
             winners.update(row.id for row in imported)
         else:
             winners.add(rows[0].id)
+    return winners
+
+
+async def _winner_ids_cooperatively(
+    candidates: list[tuple[ImportRowModel, ImportBatchModel]],
+) -> set[str]:
+    by_key: dict[str, list[ImportRowModel]] = defaultdict(list)
+    for index, (row, _) in enumerate(candidates, start=1):
+        if row.deduplication_key is not None:
+            by_key[row.deduplication_key].append(row)
+        await yield_after_rows(index)
+
+    winners: set[str] = set()
+    for index, rows in enumerate(by_key.values(), start=1):
+        imported = [row for row in rows if row.status is ImportRowStatus.imported]
+        if imported:
+            winners.update(row.id for row in imported)
+        else:
+            winners.add(rows[0].id)
+        await yield_after_rows(index)
     return winners
 
 
@@ -155,24 +182,23 @@ class ImportDeduplicationService:
             rows = await self.repository.list_rows_for_update(batch_id)
             if not rows:
                 raise ImportDeduplicateRowsMissingError()
-            if not all(_is_valid_row_state(row) for row in rows):
-                raise ImportDeduplicateStateError()
-
-            keys = {
-                row.deduplication_key
-                for row in rows
-                if row.status is ImportRowStatus.pending and row.deduplication_key is not None
-            }
+            keys: set[str] = set()
+            for index, row in enumerate(rows, start=1):
+                if not _is_valid_row_state(row):
+                    raise ImportDeduplicateStateError()
+                if row.status is ImportRowStatus.pending and row.deduplication_key is not None:
+                    keys.add(row.deduplication_key)
+                await yield_after_rows(index)
             candidates = await self.repository.list_deduplication_candidates_for_update(
                 account_id=account_id,
                 source=locked.source,
                 deduplication_keys=keys,
             )
-            winner_ids = _winner_ids(candidates)
+            winner_ids = await _winner_ids_cooperatively(candidates)
 
             duplicate_counts: dict[str, int] = defaultdict(int)
             affected_batches: dict[str, ImportBatchModel] = {}
-            for candidate, candidate_batch in candidates:
+            for index, (candidate, candidate_batch) in enumerate(candidates, start=1):
                 if candidate.status is ImportRowStatus.pending and candidate.id not in winner_ids:
                     candidate.status = ImportRowStatus.duplicate
                     if isinstance(candidate.normalized_data, dict):
@@ -187,8 +213,11 @@ class ImportDeduplicationService:
                     candidate.error_message = "Duplicate normalized import row."
                     duplicate_counts[candidate_batch.id] += 1
                     affected_batches[candidate_batch.id] = candidate_batch
+                await yield_after_rows(index)
 
-            for affected_batch_id, newly_duplicate in duplicate_counts.items():
+            for index, (affected_batch_id, newly_duplicate) in enumerate(
+                duplicate_counts.items(), start=1
+            ):
                 affected_batch = affected_batches[affected_batch_id]
                 if affected_batch_id != batch_id:
                     affected_batch.rows_skipped = (
@@ -204,8 +233,9 @@ class ImportDeduplicationService:
                         created_at=_now(),
                     )
                 )
+                await yield_after_rows(index)
 
-            for row in rows:
+            for index, row in enumerate(rows, start=1):
                 if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
                     assert isinstance(row.normalized_data, dict)
                     updated = dict(row.normalized_data)
@@ -218,12 +248,16 @@ class ImportDeduplicationService:
                     if row.status is ImportRowStatus.duplicate:
                         updated.pop("posting_intent", None)
                     row.normalized_data = updated
+                await yield_after_rows(index)
 
-            duplicate_count = sum(row.status is ImportRowStatus.duplicate for row in rows)
-            needs_review = sum(row.status is ImportRowStatus.needs_review for row in rows)
-            failed = sum(row.status is ImportRowStatus.failed for row in rows)
-            skipped = sum(row.status is ImportRowStatus.skipped for row in rows)
-            unique = sum(row.status is ImportRowStatus.pending for row in rows)
+            duplicate_count = needs_review = failed = skipped = unique = 0
+            for index, row in enumerate(rows, start=1):
+                duplicate_count += row.status is ImportRowStatus.duplicate
+                needs_review += row.status is ImportRowStatus.needs_review
+                failed += row.status is ImportRowStatus.failed
+                skipped += row.status is ImportRowStatus.skipped
+                unique += row.status is ImportRowStatus.pending
+                await yield_after_rows(index)
 
             locked.rows_total = len(rows)
             locked.rows_imported = 0

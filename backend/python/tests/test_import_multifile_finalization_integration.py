@@ -9,13 +9,21 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.models import AuthenticatedPrincipal
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
+from app.db.models.users import UserModel
 from app.modules.holdings.orchestration import HoldingRebuildApplicationService
 from app.modules.imports import posting_service as posting_service_module
+from app.modules.imports.job_executor import (
+    ImportExecutionPayload,
+    ImportExecutionStage,
+    ImportJobExecutionRetryableError,
+    ImportJobExecutor,
+)
 from app.modules.imports.multi_file_service import (
     FinalizeImportBatchesCommand,
     ImportMultiFileFinalizationService,
@@ -294,6 +302,85 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
             await post_processing_support._cleanup_holdings(prefix)
             for batch_id in reversed(additional):
                 await post_processing_support._remove_additional_batch(batch_id)
+            await posting_support._cleanup(prefix)
+            await post_processing_support._remove_market_evidence(prefix)
+            await posting_support._remove_asset_identities({symbol})
+
+    asyncio.run(scenario())
+
+
+def test_durable_executor_starts_real_finalizer_with_idle_session() -> None:
+    async def scenario() -> None:
+        prefix = "r12c-idle-finalizer"
+        symbol = "R12CIDLE"
+        batch_id = f"{prefix}-batch"
+        await posting_support._seed(
+            prefix,
+            source=posting_support.ImportSource.trading212,
+            rows=[posting_support._trading_buy(symbol, f"{prefix}-deposit")],
+        )
+        try:
+            await post_processing_support._seed_investment_identity(
+                prefix,
+                symbol,
+                price_at=datetime(2036, 8, 7, 9, 0),
+            )
+            await posting_support._prepare(prefix)
+            engine = posting_support._engine()
+            principal = posting_support._principal(f"{prefix}-owner")
+            async with AsyncSession(engine) as session:
+                await ImportBatchPostingService(session).post_batch(
+                    PostImportBatchCommand(
+                        principal=principal,
+                        account_id=f"{prefix}-account",
+                        batch_id=batch_id,
+                    )
+                )
+                assert session.in_transaction() is False
+
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+            async def resolve_principal(
+                session: AsyncSession,
+                user_id: str,
+            ) -> AuthenticatedPrincipal:
+                persisted = await session.scalar(select(UserModel).where(UserModel.id == user_id))
+                assert persisted is not None
+                assert session.in_transaction() is True
+                return AuthenticatedPrincipal(
+                    user_id=persisted.id,
+                    email=persisted.email,
+                    name=persisted.name,
+                )
+
+            executor = ImportJobExecutor(
+                session_factory,
+                principal_resolver=resolve_principal,
+                finalization_factory=lambda session: ImportMultiFileFinalizationService(
+                    session,
+                    market_backed_service=cast(Any, _UnavailableMarketService()),
+                ),
+            )
+
+            class _UnavailableMarketService:
+                async def execute(self, _: object) -> object:
+                    raise MarketBackedSnapshotRefreshUnavailableError
+
+            with pytest.raises(ImportJobExecutionRetryableError) as raised:
+                await executor.execute(
+                    "r12c-idle-job",
+                    principal.user_id,
+                    f"{prefix}-account",
+                    ImportExecutionPayload((batch_id,)),
+                    ImportExecutionStage.canonical_post,
+                    lambda _checkpoint: asyncio.sleep(0),
+                )
+
+            assert raised.value.status.value == "unavailable"
+            assert (await _physical_counts(prefix))[0] == 1
+            await engine.dispose()
+        finally:
+            await post_processing_support._cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await post_processing_support._remove_market_evidence(prefix)
             await posting_support._remove_asset_identities({symbol})

@@ -1,9 +1,11 @@
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import cast
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +15,7 @@ from app.auth.dependencies import get_current_principal
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
-from app.db.models.enums import ImportSource, ImportStatus
+from app.db.models.enums import ImportRowStatus, ImportSource, ImportStatus
 from app.db.models.imports import ImportBatchModel
 from app.main import create_app
 from app.modules.imports.parsers import ImportParseError, parse_import_file
@@ -165,12 +167,11 @@ def test_parser_rejects_non_pending_batch_before_storage_read(
         AsyncMock(),
     )
     service.repository.get_for_account = AsyncMock(return_value=batch)  # type: ignore[method-assign]
+    service.repository.list_rows_for_update = AsyncMock(return_value=[])  # type: ignore[method-assign]
     load = AsyncMock()
     monkeypatch.setattr(service, "_load_verified_file", load)
 
     with pytest.raises(ImportParseStateError):
-        import asyncio
-
         asyncio.run(
             service.parse_batch(
                 principal=_principal(),
@@ -180,3 +181,170 @@ def test_parser_rejects_non_pending_batch_before_storage_read(
         )
 
     load.assert_not_awaited()
+
+
+async def test_parser_offloads_verified_file_read_hash_and_csv_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"date;amount\n2026-01-01;100\n"
+    batch = _batch(content)
+    batch.source = ImportSource.manual
+    storage = LocalImportStorage(tmp_path)
+    path = storage.path_for(batch.id)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    session_mock = AsyncMock(spec=AsyncSession)
+    session = cast(AsyncSession, session_mock)
+    service = ImportParserService(session, storage=storage)
+    service.repository = cast(
+        Any,
+        SimpleNamespace(
+            get_for_account=AsyncMock(side_effect=(batch, batch)),
+            count_rows=AsyncMock(return_value=0),
+            add_row=Mock(),
+            add_log=Mock(),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.modules.imports.processing.require_account_access",
+        AsyncMock(),
+    )
+    offload = AsyncMock(side_effect=lambda function, *args, **kwargs: function(*args, **kwargs))
+    monkeypatch.setattr("app.modules.imports.processing.asyncio.to_thread", offload)
+
+    result = await service.parse_batch(
+        principal=_principal(),
+        account_id="account-a",
+        batch_id="batch-a",
+    )
+
+    assert result.rows_total == result.rows_pending == 1
+    offload.assert_awaited_once()
+    assert offload.await_args is not None
+    assert offload.await_args.args[0] == service._load_and_parse_verified_file
+    session_mock.commit.assert_awaited_once()
+
+
+async def test_parser_reconciles_exact_processing_replay_without_storage_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = _batch(b"date;amount\n2026-01-01;100\n")
+    batch.status = ImportStatus.processing
+    batch.rows_total = 2
+    batch.rows_imported = 0
+    batch.rows_skipped = 1
+    rows = [
+        SimpleNamespace(status=ImportRowStatus.pending),
+        SimpleNamespace(status=ImportRowStatus.failed),
+    ]
+    session_mock = AsyncMock(spec=AsyncSession)
+    session = cast(AsyncSession, session_mock)
+    service = ImportParserService(session)
+    service.repository = cast(
+        Any,
+        SimpleNamespace(
+            get_for_account=AsyncMock(return_value=batch),
+            list_rows_for_update=AsyncMock(return_value=rows),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.modules.imports.processing.require_account_access",
+        AsyncMock(),
+    )
+    load = Mock()
+    monkeypatch.setattr(service, "_load_and_parse_verified_file", load)
+
+    result = await service.parse_batch(
+        principal=_principal(),
+        account_id="account-a",
+        batch_id="batch-a",
+    )
+
+    assert (result.status, result.rows_total, result.rows_pending, result.rows_failed) == (
+        ImportStatus.processing,
+        2,
+        1,
+        1,
+    )
+    load.assert_not_called()
+    session_mock.rollback.assert_awaited_once()
+
+
+async def test_parser_rejects_inexact_terminal_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = _batch(b"date;amount\n2026-01-01;100\n")
+    batch.status = ImportStatus.completed
+    batch.rows_total = 1
+    batch.rows_imported = 1
+    batch.rows_skipped = 0
+    batch.completed_at = datetime(2026, 7, 20, 13)
+    session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
+    service = ImportParserService(session)
+    service.repository = cast(
+        Any,
+        SimpleNamespace(
+            get_for_account=AsyncMock(return_value=batch),
+            list_rows_for_update=AsyncMock(
+                return_value=[SimpleNamespace(status=ImportRowStatus.failed)]
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.modules.imports.processing.require_account_access",
+        AsyncMock(),
+    )
+
+    with pytest.raises(ImportParseStateError):
+        await service.parse_batch(
+            principal=_principal(),
+            account_id="account-a",
+            batch_id="batch-a",
+        )
+
+
+async def test_parser_reconciles_exact_terminal_replay_without_storage_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = _batch(b"date;amount\n2026-01-01;100\n")
+    batch.status = ImportStatus.partially_completed
+    batch.rows_total = 2
+    batch.rows_imported = 1
+    batch.rows_skipped = 1
+    batch.completed_at = datetime(2026, 7, 20, 13)
+    session_mock = AsyncMock(spec=AsyncSession)
+    service = ImportParserService(cast(AsyncSession, session_mock))
+    service.repository = cast(
+        Any,
+        SimpleNamespace(
+            get_for_account=AsyncMock(return_value=batch),
+            list_rows_for_update=AsyncMock(
+                return_value=[
+                    SimpleNamespace(status=ImportRowStatus.imported),
+                    SimpleNamespace(status=ImportRowStatus.needs_review),
+                ]
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.modules.imports.processing.require_account_access",
+        AsyncMock(),
+    )
+    load = Mock()
+    monkeypatch.setattr(service, "_load_and_parse_verified_file", load)
+
+    result = await service.parse_batch(
+        principal=_principal(),
+        account_id="account-a",
+        batch_id="batch-a",
+    )
+
+    assert (result.status, result.rows_total, result.rows_pending, result.rows_failed) == (
+        ImportStatus.processing,
+        2,
+        2,
+        0,
+    )
+    load.assert_not_called()
+    session_mock.rollback.assert_awaited_once()

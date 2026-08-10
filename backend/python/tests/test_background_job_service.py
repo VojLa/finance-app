@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.auth.models import AuthenticatedPrincipal
-from app.db.models.enums import BackgroundJobStatus, ImportStatus
+from app.db.models.enums import BackgroundJobStatus, ImportSource, ImportStatus
 from app.modules.jobs.models import canonical_import_job_idempotency_key
 from app.modules.jobs.repository import EnqueuedBackgroundJob
 from app.modules.jobs.service import (
@@ -17,12 +17,19 @@ from app.modules.jobs.service import (
 PRINCIPAL = AuthenticatedPrincipal(user_id="user-1", email="user@example.test")
 
 
-def _batch(batch_id: str, *, user_id: str = "user-1", status: ImportStatus = ImportStatus.pending):
+def _batch(
+    batch_id: str,
+    *,
+    user_id: str = "user-1",
+    status: ImportStatus = ImportStatus.pending,
+    source: ImportSource = ImportSource.trading212,
+):
     return SimpleNamespace(
         id=batch_id,
         user_id=user_id,
         account_id="account-1",
         status=status,
+        source=source,
         completed_at=None,
     )
 
@@ -48,6 +55,7 @@ async def test_enqueue_authorizes_and_persists_one_canonical_job(monkeypatch) ->
     batches = MagicMock()
     batches.get_for_account = AsyncMock(side_effect=[_batch("batch-a"), _batch("batch-b")])
     repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=None)
     payload = {"schema_version": 1, "batch_ids": ["batch-a", "batch-b"]}
     repository.enqueue_import_job = AsyncMock(
         return_value=EnqueuedBackgroundJob(job=_job(payload), created=True)
@@ -89,6 +97,7 @@ async def test_enqueue_replays_repository_canonical_job(monkeypatch) -> None:
     payload = {"schema_version": 1, "batch_ids": ["batch-a"]}
     canonical = _job(payload)
     repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=None)
     repository.enqueue_import_job = AsyncMock(
         return_value=EnqueuedBackgroundJob(job=canonical, created=False)
     )
@@ -130,6 +139,7 @@ async def test_enqueue_fails_closed_on_foreign_terminal_or_noncanonical_batches(
     batches = MagicMock()
     batches.get_for_account = AsyncMock(return_value=batch)
     repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=None)
 
     with pytest.raises(BackgroundJobEnqueueStateError):
         await BackgroundJobService(
@@ -143,4 +153,64 @@ async def test_enqueue_fails_closed_on_foreign_terminal_or_noncanonical_batches(
                 batch_ids=batch_ids,
             )
         )
+    repository.enqueue_import_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_replays_running_job_before_revalidating_batch_state(monkeypatch) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
+    payload = {"schema_version": 1, "batch_ids": ["batch-a"]}
+    canonical = _job(payload)
+    canonical.status = BackgroundJobStatus.running
+    repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=canonical)
+    batches = MagicMock()
+    batches.get_for_account = AsyncMock()
+
+    result = await BackgroundJobService(
+        session,
+        repository=repository,
+        batch_repository=batches,
+    ).enqueue_import_job(
+        EnqueueImportJobCommand(
+            principal=PRINCIPAL,
+            account_id="account-1",
+            batch_ids=("batch-a",),
+        )
+    )
+
+    assert result.job is canonical
+    assert result.created is False
+    batches.get_for_account.assert_not_awaited()
+    repository.enqueue_import_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_rejects_mixed_sources_before_creating_job(monkeypatch) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
+    batches = MagicMock()
+    batches.get_for_account = AsyncMock(
+        side_effect=[
+            _batch("batch-a", source=ImportSource.trading212),
+            _batch("batch-b", source=ImportSource.anycoin),
+        ]
+    )
+    repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=None)
+
+    with pytest.raises(BackgroundJobEnqueueStateError):
+        await BackgroundJobService(
+            session,
+            repository=repository,
+            batch_repository=batches,
+        ).enqueue_import_job(
+            EnqueueImportJobCommand(
+                principal=PRINCIPAL,
+                account_id="account-1",
+                batch_ids=("batch-a", "batch-b"),
+            )
+        )
+
     repository.enqueue_import_job.assert_not_called()

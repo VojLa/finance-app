@@ -13,6 +13,8 @@ def test_development_defaults() -> None:
     assert settings.docs_enabled is True
     assert settings.internal_auth_issuer == "finance-app-next"
     assert settings.internal_auth_audience == "finance-app-python"
+    assert settings.background_jobs_enabled is False
+    assert settings.background_job_lease_seconds == 300
 
 
 def test_test_environment_starts_without_auth_secret() -> None:
@@ -29,6 +31,20 @@ def test_negative_auth_clock_skew_is_rejected() -> None:
 def test_unknown_environment_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"environment": "staging"})
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"background_job_poll_seconds": 0},
+        {"background_job_lease_seconds": 29},
+        {"background_job_heartbeat_seconds": 300},
+        {"background_job_shutdown_grace_seconds": 61},
+    ],
+)
+def test_invalid_background_job_timing_is_rejected(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **overrides)
 
 
 def test_production_requires_safe_configuration() -> None:

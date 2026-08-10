@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     twelve_data_max_response_bytes: int = 1_048_576
     twelve_data_user_agent: str = "finance-app/0.1"
     twelve_data_api_key: SecretStr | None = None
+    background_jobs_enabled: bool = False
+    background_job_poll_seconds: float = 0.75
+    background_job_lease_seconds: int = 300
+    background_job_heartbeat_seconds: int = 15
+    background_job_shutdown_grace_seconds: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=("../../.env", ".env"),
@@ -128,6 +133,16 @@ class Settings(BaseSettings):
                 or len(api_key) > 512
             ):
                 raise ValueError("TWELVE_DATA_API_KEY must be a safe non-empty value")
+        if not 0.1 <= self.background_job_poll_seconds <= 60:
+            raise ValueError("BACKGROUND_JOB_POLL_SECONDS must be between 0.1 and 60")
+        if not 30 <= self.background_job_lease_seconds <= 1800:
+            raise ValueError("BACKGROUND_JOB_LEASE_SECONDS must be between 30 and 1800")
+        if not 1 <= self.background_job_heartbeat_seconds < self.background_job_lease_seconds:
+            raise ValueError(
+                "BACKGROUND_JOB_HEARTBEAT_SECONDS must be positive and shorter than the lease"
+            )
+        if not 0 <= self.background_job_shutdown_grace_seconds <= 60:
+            raise ValueError("BACKGROUND_JOB_SHUTDOWN_GRACE_SECONDS must be between zero and 60")
         if self.environment != "production":
             return self
 
@@ -144,6 +159,8 @@ class Settings(BaseSettings):
             errors.append("INTERNAL_AUTH_SECRET must contain at least 32 characters")
         if self.twelve_data_api_key is None:
             errors.append("TWELVE_DATA_API_KEY is required")
+        if self.background_jobs_enabled and self.database_url is None:
+            errors.append("DATABASE_URL is required when background jobs are enabled")
 
         if errors:
             raise ValueError("Invalid production settings: " + "; ".join(errors))

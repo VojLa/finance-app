@@ -1,3 +1,4 @@
+import asyncio
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -330,6 +331,60 @@ async def test_service_normalizes_pending_rows_and_preserves_parser_failures(
     assert batch.rows_imported == 0
     assert batch.rows_skipped == 2
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_large_normalization_loop_yields_to_other_event_loop_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    service = ImportNormalizationService(session)
+    batch = SimpleNamespace(
+        id="batch-a",
+        source=ImportSource.manual,
+        status=ImportStatus.processing,
+        rows_total=0,
+        rows_imported=0,
+        rows_skipped=0,
+        completed_at=None,
+    )
+    rows = [
+        SimpleNamespace(
+            status=ImportRowStatus.pending,
+            raw_data={"Date": "2026-07-20", "Amount": "1", "Currency": "EUR"},
+            normalized_data=None,
+            deduplication_key=None,
+            validation_errors=None,
+            error_message=None,
+        )
+        for _ in range(129)
+    ]
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=batch))
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=rows))
+
+    async def allow_access(**_: object) -> None:
+        return None
+
+    marker_ran = False
+
+    async def marker() -> None:
+        nonlocal marker_ran
+        await asyncio.sleep(0)
+        marker_ran = True
+
+    async def commit() -> None:
+        assert marker_ran
+
+    monkeypatch.setattr("app.modules.imports.normalization.require_account_access", allow_access)
+    session.commit.side_effect = commit
+    marker_task = asyncio.create_task(marker())
+
+    response = await service.normalize_batch(
+        principal=_principal(), account_id="account-a", batch_id="batch-a"
+    )
+    await marker_task
+
+    assert response.rows_normalized == 129
 
 
 @pytest.mark.asyncio
