@@ -112,7 +112,7 @@ def test_real_postgresql_version_and_migration_state() -> None:
     version, database, migration = _run(inspect_database())
     assert version.startswith("PostgreSQL 16.")
     assert database == "finance_app_version_0_1_acceptance"
-    assert migration == "3j0001twfx"
+    assert migration == "3k0001mcost"
 
 
 def test_python_accounts_and_import_batch_registration_use_persisted_membership() -> None:

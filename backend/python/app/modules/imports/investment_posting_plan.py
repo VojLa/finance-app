@@ -271,7 +271,7 @@ def _asset_movement(
     price_per_unit = intent.price.amount if intent.price is not None else None
     if intent.price is not None:
         exact_numeric(intent.price.amount, QUANTITY)
-    if intent.action in {InvestmentAction.buy, InvestmentAction.sell}:
+    if intent.action in {InvestmentAction.buy, InvestmentAction.sell} and price_per_unit is None:
         if intent.total is None:
             raise ImportPostStateError()
         try:

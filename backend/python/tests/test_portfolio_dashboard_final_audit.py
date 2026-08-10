@@ -52,6 +52,7 @@ from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotItemSource,
     PortfolioSnapshotSource,
@@ -194,6 +195,9 @@ def _source(
         native_value_currency="USD",
         native_cost_basis=quantity_cost,
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", quantity_cost),),
+        average_buy_price=quantity_cost,
+        average_buy_price_currency="USD",
     )
     return PortfolioSnapshotSource(
         snapshot_id=f"{account_id}-snapshot",

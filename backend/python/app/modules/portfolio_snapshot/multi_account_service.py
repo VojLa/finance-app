@@ -99,8 +99,9 @@ def _presentation_account(
             position.price_timestamp,
             position.native_value,
             position.native_value_currency,
-            position.native_cost_basis,
-            position.native_cost_currency,
+            position.native_cost_basis_by_currency,
+            position.average_buy_price,
+            position.average_buy_price_currency,
         )
         for position in primary.positions
     )
@@ -114,8 +115,9 @@ def _presentation_account(
             position.price_timestamp,
             position.native_value,
             position.native_value_currency,
-            position.native_cost_basis,
-            position.native_cost_currency,
+            position.native_cost_basis_by_currency,
+            position.average_buy_price,
+            position.average_buy_price_currency,
         )
         for position in presentation.positions
     )

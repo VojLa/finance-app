@@ -133,6 +133,7 @@ class CurrentValueRepository:
                     price_per_unit=movement.price_per_unit,
                     value_amount=movement.value_amount,
                     value_currency=movement.value_currency,
+                    listing_currency=listing.currency if listing is not None else None,
                 )
             )
         return CurrentInvestmentEvent(

@@ -59,6 +59,7 @@ def _holding(
     quantity: Decimal = Decimal("2"),
     average_buy_price: Decimal = Decimal("80"),
     currency: str = "EUR",
+    cost_basis_by_currency: tuple[CurrencyAmount, ...] | None = None,
 ) -> SnapshotHoldingEvidence:
     return SnapshotHoldingEvidence(
         holding_id=holding_id,
@@ -71,6 +72,11 @@ def _holding(
         quantity=quantity,
         average_buy_price=average_buy_price,
         cost_currency=currency,
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else (CurrencyAmount(currency, quantity * average_buy_price),)
+        ),
     )
 
 
@@ -278,7 +284,8 @@ def _mixed_investment_evidence(
                 _holding(
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("10"),
-                    currency="USD",
+                    currency="GBP",
+                    cost_basis_by_currency=(CurrencyAmount("USD", Decimal("20")),),
                 ),
             ),
             prices=(

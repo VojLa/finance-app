@@ -90,6 +90,9 @@ def _item(
         native_value_currency="USD",
         native_cost_basis=cost_value,
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", cost_value),),
+        average_buy_price=cost_value,
+        average_buy_price_currency="USD",
     )
 
 

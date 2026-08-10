@@ -10,6 +10,9 @@ from app.modules.portfolio_snapshot.models import PortfolioCurrencyAmount
 _MONEY_SCALE = 6
 _MONEY_LIMIT = Decimal("1000000000000")
 _CANONICAL_MONEY = re.compile(r"-?(?:0|[1-9][0-9]{0,11})\.[0-9]{6}\Z")
+_QUANTITY_SCALE = 10
+_QUANTITY_LIMIT = Decimal("1000000000000000000")
+_CANONICAL_QUANTITY = re.compile(r"(?:0|[1-9][0-9]{0,17})\.[0-9]{10}\Z")
 
 
 class PortfolioCurrencyBreakdownError(ValueError):
@@ -55,6 +58,23 @@ def _canonical_money(value: object) -> Decimal:
     if format(exact, ".6f") != value:
         raise _fail()
     return exact
+
+
+def _canonical_quantity(value: object) -> Decimal:
+    if not isinstance(value, str) or _CANONICAL_QUANTITY.fullmatch(value) is None:
+        raise _fail()
+    try:
+        parsed = Decimal(value)
+        with localcontext() as context:
+            context.prec = 112
+            scaled = parsed.quantize(Decimal(1).scaleb(-_QUANTITY_SCALE))
+    except InvalidOperation as exc:
+        raise _fail() from exc
+    if parsed != scaled or parsed <= 0 or parsed >= _QUANTITY_LIMIT:
+        raise _fail()
+    if format(parsed, ".10f") != value:
+        raise _fail()
+    return parsed
 
 
 def validate_portfolio_currency_breakdown(
@@ -118,8 +138,52 @@ def decode_portfolio_currency_breakdown(
     )
 
 
+def decode_portfolio_quantity_breakdown(
+    value: object,
+) -> tuple[PortfolioCurrencyAmount, ...]:
+    """Decode a non-empty canonical native QUANTITY currency breakdown."""
+
+    if not isinstance(value, dict) or not value:
+        raise _fail()
+    decoded = tuple(
+        PortfolioCurrencyAmount(
+            currency=_currency(currency),
+            amount=_canonical_quantity(amount),
+        )
+        for currency, amount in sorted(value.items())
+    )
+    if len({item.currency for item in decoded}) != len(decoded):
+        raise _fail()
+    return decoded
+
+
+def validate_portfolio_quantity_breakdown(
+    value: object,
+) -> tuple[PortfolioCurrencyAmount, ...]:
+    """Validate an immutable non-empty native QUANTITY breakdown."""
+
+    if not isinstance(value, tuple) or not value:
+        raise _fail()
+    currencies: list[str] = []
+    result: list[PortfolioCurrencyAmount] = []
+    for item in value:
+        if not isinstance(item, PortfolioCurrencyAmount):
+            raise _fail()
+        currency = _currency(item.currency)
+        amount = _canonical_quantity(format(item.amount, ".10f"))
+        if item.currency != currency or item.amount != amount:
+            raise _fail()
+        currencies.append(currency)
+        result.append(item)
+    if currencies != sorted(currencies) or len(set(currencies)) != len(currencies):
+        raise _fail()
+    return tuple(result)
+
+
 __all__ = [
     "PortfolioCurrencyBreakdownError",
     "decode_portfolio_currency_breakdown",
+    "decode_portfolio_quantity_breakdown",
     "validate_portfolio_currency_breakdown",
+    "validate_portfolio_quantity_breakdown",
 ]

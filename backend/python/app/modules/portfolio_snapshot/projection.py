@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 from app.modules.portfolio_snapshot.currency_breakdown import (
     PortfolioCurrencyBreakdownError,
     validate_portfolio_currency_breakdown,
+    validate_portfolio_quantity_breakdown,
 )
 from app.modules.portfolio_snapshot.models import (
     AccountType,
@@ -265,13 +266,34 @@ def _position(
     native_value_currency = _currency(item.native_value_currency)
     native_cost_basis = _exact(item.native_cost_basis, _QUANTITY, nonnegative=True)
     native_cost_currency = _currency(item.native_cost_currency)
+    average_buy_price = _exact(item.average_buy_price, _QUANTITY, nonnegative=True)
+    average_buy_price_currency = _currency(item.average_buy_price_currency)
+    try:
+        native_cost_basis_by_currency = validate_portfolio_quantity_breakdown(
+            item.native_cost_basis_by_currency
+        )
+    except PortfolioCurrencyBreakdownError as exc:
+        raise _fail() from exc
     if (
         price_timestamp > snapshot_timestamp
         or value_currency != output_currency
         or cost_currency != output_currency
         or native_value_currency != price_currency
+        or average_buy_price <= 0
+        or average_buy_price_currency != price_currency
         or _calculated("multiply", quantity, price_per_unit, _QUANTITY) != native_value
         or _calculated("subtract", value, cost_basis, _QUANTITY) != unrealized_pnl
+        or (
+            len(native_cost_basis_by_currency) == 1
+            and (
+                native_cost_basis_by_currency[0].currency != native_cost_currency
+                or native_cost_basis_by_currency[0].amount != native_cost_basis
+            )
+        )
+        or (
+            len(native_cost_basis_by_currency) > 1
+            and (native_cost_basis != cost_basis or native_cost_currency != cost_currency)
+        )
     ):
         raise _fail()
     return PortfolioPositionView(
@@ -294,6 +316,9 @@ def _position(
         native_value_currency=native_value_currency,
         native_cost_basis=native_cost_basis,
         native_cost_currency=native_cost_currency,
+        native_cost_basis_by_currency=native_cost_basis_by_currency,
+        average_buy_price=average_buy_price,
+        average_buy_price_currency=average_buy_price_currency,
     )
 
 

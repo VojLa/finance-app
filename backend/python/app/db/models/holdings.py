@@ -1,11 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.db.models.common import QUANTITY, TIMESTAMP
+from app.db.models.common import JSONB, QUANTITY, TIMESTAMP
 from app.db.models.enums import ASSET_TYPE_DB, AssetType
 
 
@@ -13,6 +13,11 @@ class HoldingModel(Base):
     __tablename__ = "Holding"
     __table_args__ = (
         UniqueConstraint("accountId", "listingId"),
+        CheckConstraint(
+            "jsonb_typeof(\"costBasisByCurrency\") = 'object' "
+            "AND \"costBasisByCurrency\" <> '{}'::jsonb",
+            name="Holding_costBasisByCurrency_nonempty_object",
+        ),
         Index(None, "accountId"),
         Index(None, "assetId"),
         Index(None, "listingId"),
@@ -51,3 +56,8 @@ class HoldingModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
+    cost_basis_by_currency: Mapped[dict[str, object]] = mapped_column(
+        "costBasisByCurrency",
+        JSONB,
+        nullable=False,
+    )

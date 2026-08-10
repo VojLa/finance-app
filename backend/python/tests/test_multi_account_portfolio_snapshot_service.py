@@ -82,6 +82,9 @@ def _position(account_id: str, value: str, cost: str) -> PortfolioPositionView:
         native_value_currency="USD",
         native_cost_basis=cost_decimal,
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", cost_decimal),),
+        average_buy_price=cost_decimal,
+        average_buy_price_currency="USD",
     )
 
 

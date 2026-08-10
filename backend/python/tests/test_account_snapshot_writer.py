@@ -342,6 +342,9 @@ def _projection() -> ExpectedAccountSnapshotPersistence:
         value_currency="CZK",
         native_cost_basis=Decimal("150"),
         native_cost_currency="CZK",
+        native_cost_basis_by_currency=_json("150.0000000000"),
+        average_buy_price=Decimal("75"),
+        average_buy_price_currency="CZK",
     )
     return ExpectedAccountSnapshotPersistence(
         snapshot=snapshot,

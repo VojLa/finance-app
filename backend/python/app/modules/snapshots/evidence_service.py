@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from typing import Protocol
 
@@ -395,9 +395,33 @@ def _holding_evidence(
             or holding.symbol != asset.symbol
             or holding.asset_type is not asset.asset_type
             or holding.listing_id in listing_ids
+            or canonical_currency(holding.currency) != canonical_currency(listing.currency)
         ):
             raise _fail()
         listing_ids.add(holding.listing_id)
+        raw_breakdown = holding.cost_basis_by_currency
+        if not isinstance(raw_breakdown, dict) or not raw_breakdown:
+            raise _fail()
+        components: list[CurrencyAmount] = []
+        for raw_currency, raw_amount in sorted(raw_breakdown.items()):
+            currency = canonical_currency(raw_currency)
+            if not isinstance(raw_amount, str):
+                raise _fail()
+            try:
+                with localcontext() as context:
+                    context.prec = 112
+                    amount = Decimal(raw_amount)
+                    scaled = amount.quantize(Decimal("0.0000000001"))
+            except InvalidOperation as exc:
+                raise _fail() from exc
+            if (
+                amount != scaled
+                or amount <= 0
+                or amount >= Decimal("1000000000000000000")
+                or format(amount, ".10f") != raw_amount
+            ):
+                raise _fail()
+            components.append(CurrencyAmount(currency=currency, amount=amount))
         result.append(
             SnapshotHoldingEvidence(
                 holding_id=_nonblank(holding.id),
@@ -410,6 +434,7 @@ def _holding_evidence(
                 quantity=holding.quantity,
                 average_buy_price=holding.avg_buy_price,
                 cost_currency=canonical_currency(holding.currency),
+                cost_basis_by_currency=tuple(components),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.listing_id, item.holding_id)))
@@ -851,7 +876,11 @@ class AccountSnapshotEvidenceService:
 
             snapshot_currencies = {
                 *(item.currency for item in prices),
-                *(item.cost_currency for item in holdings),
+                *(
+                    component.currency
+                    for item in holdings
+                    for component in item.cost_basis_by_currency
+                ),
                 *(item.currency for item in cash_balances),
             }
             historical_currencies = {item.currency for item in historical_evidence}

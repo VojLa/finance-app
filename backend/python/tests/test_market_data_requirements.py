@@ -185,7 +185,8 @@ def _holding(
         asset_type=AssetType.etf,
         quantity=Decimal(quantity),
         avg_buy_price=Decimal("10"),
-        currency=cost_currency,
+        currency=listing_currency,
+        cost_basis_by_currency={cost_currency: "10.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
@@ -591,6 +592,24 @@ async def test_direct_fx_requirement_never_inverts_or_derives() -> None:
     assert ("USD", "EUR", SNAPSHOT_AT) in {
         (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
     }
+
+
+@pytest.mark.asyncio
+async def test_multi_settlement_holding_requires_each_direct_snapshot_pair() -> None:
+    repository = _Repository()
+    persisted = _holding(cost_currency="EUR", listing_currency="USD")
+    persisted.holding.cost_basis_by_currency = {
+        "EUR": "100.0000000000",
+        "USD": "110.0000000000",
+    }
+    repository.holdings = (persisted,)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    pairs = {(item.from_currency, item.to_currency) for item in plan.fx_requirements}
+    assert {("EUR", "CZK"), ("USD", "EUR"), ("USD", "CZK")} <= pairs
 
 
 @pytest.mark.asyncio

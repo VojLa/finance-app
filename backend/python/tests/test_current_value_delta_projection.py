@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 
@@ -58,6 +59,9 @@ def _position(quantity: str = "2.0000000000") -> PortfolioPositionView:
         native_value_currency="USD",
         native_cost_basis=Decimal("40.0000000000"),
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", Decimal("40.0000000000")),),
+        average_buy_price=Decimal("20.0000000000"),
+        average_buy_price_currency="USD",
     )
 
 
@@ -85,6 +89,7 @@ def _movement(
         price_per_unit=Decimal("30.0000000000") if asset else None,
         value_amount=(Decimal(quantity) * Decimal("30.0000000000") if asset else Decimal(quantity)),
         value_currency="USD",
+        listing_currency="USD" if asset else None,
     )
 
 
@@ -212,3 +217,56 @@ def test_investment_delta_can_fully_close_a_baseline_position() -> None:
     assert result.holdings.holdings == ()
     assert result.cash_by_currency == (_amount("USD", "60.000000"),)
     assert result.historical_metrics[0].amount == Decimal("20.000000")
+
+
+def test_partial_sell_preserves_every_baseline_settlement_component() -> None:
+    baseline = replace(
+        _position(),
+        cost_basis=Decimal("70.0000000000"),
+        native_cost_basis=Decimal("70.0000000000"),
+        native_cost_currency="CZK",
+        native_cost_basis_by_currency=(
+            _amount("EUR", "100.0000000000"),
+            _amount("USD", "40.0000000000"),
+        ),
+    )
+    event = CurrentInvestmentEvent(
+        event=HoldingPersistenceEvent(
+            event_id="event-1",
+            account_id="account-1",
+            event_type=InvestmentEventType.trade,
+            event_date=AT,
+            external_id="external-1",
+            movements=(
+                _movement(
+                    "asset",
+                    kind=InvestmentMovementKind.asset,
+                    direction=MovementDirection.outgoing,
+                    quantity="1.0000000000",
+                ),
+                _movement(
+                    "cash",
+                    kind=InvestmentMovementKind.cash,
+                    direction=MovementDirection.incoming,
+                    quantity="30.0000000000",
+                ),
+            ),
+        ),
+        realized_pnl=None,
+        realized_pnl_currency=None,
+    )
+
+    result = apply_investment_events(
+        account_id="account-1",
+        baseline_positions=(baseline,),
+        baseline_cash=(),
+        events=(event,),
+    )
+
+    holding = result.holdings.holdings[0]
+    assert holding.quantity == Decimal("1.0000000000")
+    assert holding.avg_buy_price == Decimal("20.0000000000")
+    assert holding.cost_basis_by_currency == (
+        ("EUR", Decimal("50.0000000000")),
+        ("USD", Decimal("20.0000000000")),
+    )

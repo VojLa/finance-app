@@ -44,6 +44,17 @@ class PortfolioCurrencyAmountResponse(BaseModel):
         return serialize_money(value)
 
 
+class PortfolioQuantityCurrencyAmountResponse(BaseModel):
+    model_config = _MODEL_CONFIG
+
+    currency: str
+    amount: Decimal
+
+    @field_serializer("amount")
+    def serialize_amount(self, value: Decimal) -> str:
+        return serialize_quantity(value)
+
+
 class PortfolioSnapshotSummaryResponse(BaseModel):
     model_config = _MODEL_CONFIG
 
@@ -103,6 +114,9 @@ class PortfolioSnapshotPositionResponse(BaseModel):
     native_value_currency: str = Field(serialization_alias="nativeValueCurrency")
     native_cost_basis: Decimal = Field(serialization_alias="nativeCostBasis")
     native_cost_currency: str = Field(serialization_alias="nativeCostCurrency")
+    native_cost_basis_by_currency: tuple[PortfolioQuantityCurrencyAmountResponse, ...] = Field(
+        serialization_alias="nativeCostBasisByCurrency"
+    )
 
     @field_serializer(
         "quantity",

@@ -54,6 +54,33 @@ describe("strict current portfolio workflow", () => {
       runPortfolioSnapshotWorkflow(IDENTITY, api({ ...portfolioSnapshotFixture(), ...mutation }))
     )
   })
+
+  it.each([
+    ["missing cost breakdown", undefined],
+    ["empty cost breakdown", []],
+    [
+      "duplicate cost currency",
+      [
+        { currency: "EUR", amount: "1.0000000000" },
+        { currency: "EUR", amount: "2.0000000000" },
+      ],
+    ],
+    [
+      "unsorted cost currencies",
+      [
+        { currency: "USD", amount: "1.0000000000" },
+        { currency: "EUR", amount: "2.0000000000" },
+      ],
+    ],
+    ["zero cost component", [{ currency: "EUR", amount: "0.0000000000" }]],
+  ])("fails closed on %s", async (_label, nativeCostBasisByCurrency) => {
+    const payload = portfolioSnapshotFixture()
+    payload.accounts[0].positions[0] = {
+      ...payload.accounts[0].positions[0],
+      nativeCostBasisByCurrency,
+    } as never
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
 })
 
 describe("strict current dashboard workflow", () => {

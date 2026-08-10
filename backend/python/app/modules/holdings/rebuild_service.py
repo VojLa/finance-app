@@ -82,6 +82,7 @@ class CurrentHoldingState:
     quantity: Decimal
     avg_buy_price: Decimal
     currency: str
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...]
     current_price: Decimal | None
     current_value: Decimal | None
     unrealized_pnl: Decimal | None
@@ -104,7 +105,7 @@ def _nonblank(value: object) -> str:
 
 def _currency(value: object) -> str:
     result = _nonblank(value)
-    if result != result.upper():
+    if len(result) != 3 or not result.isascii() or not result.isalpha() or result != result.upper():
         raise HoldingRebuildStateError()
     return result
 
@@ -139,6 +140,44 @@ def _exact_timestamp(value: object) -> datetime:
 
 def _optional_numeric(value: object) -> Decimal | None:
     return None if value is None else _exact_numeric(value)
+
+
+def _cost_breakdown(value: object) -> tuple[tuple[str, Decimal], ...]:
+    if not isinstance(value, dict) or not value:
+        raise HoldingRebuildStateError()
+    result: list[tuple[str, Decimal]] = []
+    for raw_currency, raw_amount in value.items():
+        currency = _currency(raw_currency)
+        if not isinstance(raw_amount, str):
+            raise HoldingRebuildStateError()
+        try:
+            amount = _exact_numeric(Decimal(raw_amount))
+        except InvalidOperation as exc:
+            raise HoldingRebuildStateError() from exc
+        if amount <= 0:
+            raise HoldingRebuildStateError()
+        result.append((currency, amount))
+    ordered = tuple(sorted(result))
+    if len({currency for currency, _ in ordered}) != len(ordered):
+        raise HoldingRebuildStateError()
+    return ordered
+
+
+def _cost_breakdown_json(
+    value: tuple[tuple[str, Decimal], ...],
+) -> dict[str, object]:
+    if not value:
+        raise HoldingRebuildStateError()
+    result: dict[str, object] = {}
+    for currency, amount in value:
+        canonical_currency = _currency(currency)
+        canonical_amount = _exact_numeric(amount)
+        if canonical_amount <= 0 or canonical_currency in result:
+            raise HoldingRebuildStateError()
+        result[canonical_currency] = format(canonical_amount, ".10f")
+    if tuple(result) != tuple(sorted(result)):
+        raise HoldingRebuildStateError()
+    return result
 
 
 def _validate_rebuilt_at(value: object) -> datetime:
@@ -233,6 +272,11 @@ def adapt_persisted_history(
                             if movement.listing_id in listings
                             else None
                         ),
+                        listing_currency=(
+                            listings[movement.listing_id].currency
+                            if movement.listing_id in listings
+                            else None
+                        ),
                         source_symbol=movement.source_symbol,
                         source_asset_type=movement.source_asset_type,
                         price_per_unit=movement.price_per_unit,
@@ -274,6 +318,7 @@ def validate_current_holdings(
             or listing.asset_id != asset_id
             or holding.symbol != listing.symbol
             or holding.asset_type is not asset.asset_type
+            or _currency(holding.currency) != _currency(listing.currency)
             or not isinstance(holding.name, (str, type(None)))
             or _exact_numeric(holding.quantity) <= 0
             or _exact_numeric(holding.avg_buy_price) <= 0
@@ -293,6 +338,7 @@ def validate_current_holdings(
                 quantity=holding.quantity,
                 avg_buy_price=holding.avg_buy_price,
                 currency=_currency(holding.currency),
+                cost_basis_by_currency=_cost_breakdown(holding.cost_basis_by_currency),
                 current_price=_optional_numeric(holding.current_price),
                 current_value=_optional_numeric(holding.current_value),
                 unrealized_pnl=_optional_numeric(holding.unrealized_pnl),
@@ -315,6 +361,7 @@ def _matches(current: CurrentHoldingState, expected: ExpectedPersistedHoldingPla
         and current.quantity == expected.quantity
         and current.avg_buy_price == expected.avg_buy_price
         and current.currency == expected.currency
+        and current.cost_basis_by_currency == expected.cost_basis_by_currency
         and current.current_price == expected.current_price
         and current.current_value == expected.current_value
         and current.unrealized_pnl == expected.unrealized_pnl
@@ -493,6 +540,9 @@ class HoldingRebuildService:
                         quantity=expected.quantity,
                         avg_buy_price=expected.avg_buy_price,
                         currency=expected.currency,
+                        cost_basis_by_currency=_cost_breakdown_json(
+                            expected.cost_basis_by_currency
+                        ),
                         current_price=None,
                         current_value=None,
                         unrealized_pnl=None,
@@ -513,6 +563,9 @@ class HoldingRebuildService:
                 holding.quantity = expected.quantity
                 holding.avg_buy_price = expected.avg_buy_price
                 holding.currency = expected.currency
+                holding.cost_basis_by_currency = _cost_breakdown_json(
+                    expected.cost_basis_by_currency
+                )
                 holding.current_price = None
                 holding.current_value = None
                 holding.unrealized_pnl = None

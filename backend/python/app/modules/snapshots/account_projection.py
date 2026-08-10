@@ -63,6 +63,7 @@ class SnapshotHoldingEvidence:
     quantity: Decimal
     average_buy_price: Decimal
     cost_currency: str
+    cost_basis_by_currency: tuple[CurrencyAmount, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,9 @@ class ExpectedAccountSnapshotItem:
     value: Decimal
     native_cost_basis: Decimal
     native_cost_currency: str
+    native_cost_basis_by_currency: tuple[CurrencyAmount, ...]
+    average_buy_price: Decimal
+    average_buy_price_currency: str
     cost_basis: Decimal
     cost_currency: str
     allocation_pct: Decimal
@@ -415,7 +419,20 @@ def _validate_holdings(
         _enum(holding.asset_type, AssetType)
         _exact(holding.quantity, QUANTITY, positive=True)
         _exact(holding.average_buy_price, QUANTITY, positive=True)
-        _currency(holding.cost_currency)
+        quote_currency = _currency(holding.cost_currency)
+        component_currencies: list[str] = []
+        for component in holding.cost_basis_by_currency:
+            if not isinstance(component, CurrencyAmount):
+                raise _fail()
+            component_currencies.append(_currency(component.currency))
+            _exact(component.amount, QUANTITY, positive=True)
+        if (
+            not component_currencies
+            or component_currencies != sorted(component_currencies)
+            or len(set(component_currencies)) != len(component_currencies)
+            or holding.cost_currency != quote_currency
+        ):
+            raise _fail()
         holdings[listing_id] = holding
     return holdings
 
@@ -439,6 +456,7 @@ def _validate_prices(
             or timestamp > evidence.snapshot_timestamp
             or _nonblank(price.asset_id) != holding.asset_id
             or _currency(price.symbol) != holding.symbol
+            or _currency(price.currency) != _currency(holding.cost_currency)
         ):
             raise _fail()
         price_ids.add(price_id)
@@ -516,14 +534,7 @@ def _raw_items(
     for listing_id, holding in sorted(holdings.items()):
         price = prices[listing_id]
         price_currency = _currency(price.currency)
-        cost_currency = _currency(holding.cost_currency)
         native_value = _calculated("multiply", holding.quantity, price.price, QUANTITY)
-        native_cost = _calculated(
-            "multiply",
-            holding.quantity,
-            holding.average_buy_price,
-            QUANTITY,
-        )
         value = _convert(
             native_value,
             base_currency=price_currency,
@@ -532,14 +543,27 @@ def _raw_items(
             consumed=consumed,
             numeric=MONEY,
         )
-        cost_basis = _convert(
-            native_cost,
-            base_currency=cost_currency,
-            output_currency=output_currency,
-            rates=rates,
-            consumed=consumed,
-            numeric=QUANTITY,
-        )
+        converted_costs: list[Decimal] = []
+        for component in holding.cost_basis_by_currency:
+            component_currency = _currency(component.currency)
+            component_amount = _exact(component.amount, QUANTITY, positive=True)
+            converted_costs.append(
+                _convert(
+                    component_amount,
+                    base_currency=component_currency,
+                    output_currency=output_currency,
+                    rates=rates,
+                    consumed=consumed,
+                    numeric=QUANTITY,
+                )
+            )
+            _add_breakdown(
+                costs_by_currency,
+                currency=component_currency,
+                amount=component_amount,
+                numeric=QUANTITY,
+            )
+        cost_basis = _sum(converted_costs, QUANTITY)
         _exact(cost_basis, MONEY)
         _add_breakdown(
             values_by_currency,
@@ -547,12 +571,12 @@ def _raw_items(
             amount=native_value,
             numeric=QUANTITY,
         )
-        _add_breakdown(
-            costs_by_currency,
-            currency=cost_currency,
-            amount=native_cost,
-            numeric=QUANTITY,
-        )
+        if len(holding.cost_basis_by_currency) == 1:
+            native_cost = holding.cost_basis_by_currency[0].amount
+            native_cost_currency = holding.cost_basis_by_currency[0].currency
+        else:
+            native_cost = cost_basis
+            native_cost_currency = output_currency
         items.append(
             ExpectedAccountSnapshotItem(
                 asset_id=holding.asset_id,
@@ -567,7 +591,10 @@ def _raw_items(
                 value_currency=price_currency,
                 value=value,
                 native_cost_basis=native_cost,
-                native_cost_currency=cost_currency,
+                native_cost_currency=native_cost_currency,
+                native_cost_basis_by_currency=holding.cost_basis_by_currency,
+                average_buy_price=holding.average_buy_price,
+                average_buy_price_currency=holding.cost_currency,
                 cost_basis=cost_basis,
                 cost_currency=output_currency,
                 allocation_pct=Decimal(0),

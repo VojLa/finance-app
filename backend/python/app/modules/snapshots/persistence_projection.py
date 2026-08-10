@@ -152,6 +152,9 @@ class ExpectedAccountSnapshotItemRow:
     value_currency: str | None
     native_cost_basis: Decimal | None
     native_cost_currency: str | None
+    native_cost_basis_by_currency: CanonicalJsonObject
+    average_buy_price: Decimal
+    average_buy_price_currency: str
 
     def model_values(self) -> dict[str, object]:
         return {
@@ -174,6 +177,9 @@ class ExpectedAccountSnapshotItemRow:
             "value_currency": self.value_currency,
             "native_cost_basis": self.native_cost_basis,
             "native_cost_currency": self.native_cost_currency,
+            "native_cost_basis_by_currency": self.native_cost_basis_by_currency.to_json(),
+            "average_buy_price": self.average_buy_price,
+            "average_buy_price_currency": self.average_buy_price_currency,
         }
 
 
@@ -532,6 +538,26 @@ def _items(
         native_value = _exact(item.native_value, QUANTITY, positive=True)
         value = _exact(item.value, MONEY, positive=True)
         native_cost_basis = _exact(item.native_cost_basis, QUANTITY, positive=True)
+        average_buy_price = _exact(item.average_buy_price, QUANTITY, positive=True)
+        average_buy_price_currency = _currency(item.average_buy_price_currency)
+        component_entries: list[tuple[str, object]] = []
+        component_currencies: set[str] = set()
+        for component in item.native_cost_basis_by_currency:
+            if not isinstance(component, CurrencyAmount):
+                raise _fail()
+            component_currency = _currency(component.currency)
+            component_amount = _exact(component.amount, QUANTITY, positive=True)
+            if component_currency in component_currencies:
+                raise _fail()
+            component_currencies.add(component_currency)
+            component_entries.append(
+                (component_currency, _decimal_string(component_amount, QUANTITY))
+            )
+        if not component_entries or tuple(currency for currency, _ in component_entries) != tuple(
+            sorted(component_currencies)
+        ):
+            raise _fail()
+        native_cost_breakdown = CanonicalJsonObject(tuple(component_entries))
         cost_basis = _exact(item.cost_basis, QUANTITY, positive=True)
         allocation_pct = _exact(item.allocation_pct, PERCENTAGE, positive=True)
         if (
@@ -539,7 +565,19 @@ def _items(
             or price_timestamp > valuation.timestamp
             or price_currency != value_currency
             or cost_currency != valuation.currency
+            or average_buy_price_currency != price_currency
             or _calculated("multiply", quantity, price_per_unit, QUANTITY) != native_value
+            or (
+                len(component_entries) == 1
+                and (
+                    component_entries[0][0] != native_cost_currency
+                    or item.native_cost_basis_by_currency[0].amount != native_cost_basis
+                )
+            )
+            or (
+                len(component_entries) > 1
+                and (native_cost_currency != cost_currency or native_cost_basis != cost_basis)
+            )
         ):
             raise _fail()
         listing_ids.add(listing_id)
@@ -567,6 +605,9 @@ def _items(
                 value_currency=value_currency,
                 native_cost_basis=native_cost_basis,
                 native_cost_currency=native_cost_currency,
+                native_cost_basis_by_currency=native_cost_breakdown,
+                average_buy_price=average_buy_price,
+                average_buy_price_currency=average_buy_price_currency,
             )
         )
     if rows:

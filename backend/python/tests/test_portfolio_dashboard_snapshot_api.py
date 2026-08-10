@@ -138,6 +138,11 @@ def _view(account_id: str, value: str, cost: str) -> PortfolioSnapshotView:
         native_value_currency="USD",
         native_cost_basis=Decimal(cost).quantize(Decimal("0.0000000001")),
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(
+            PortfolioCurrencyAmount("USD", Decimal(cost).quantize(Decimal("0.0000000001"))),
+        ),
+        average_buy_price=Decimal(cost).quantize(Decimal("0.0000000001")),
+        average_buy_price_currency="USD",
     )
     return PortfolioSnapshotView(
         snapshot_id=f"{account_id}-snapshot",

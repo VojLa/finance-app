@@ -120,6 +120,7 @@ def _transaction(
 def _holding_rows(
     *,
     holding_currency: str = "EUR",
+    listing_currency: str = "EUR",
 ) -> tuple[PersistedHoldingEvidence, ...]:
     asset = AssetModel(
         id="asset-1",
@@ -127,7 +128,7 @@ def _holding_rows(
         isin=None,
         name="ABC",
         asset_type=AssetType.stock,
-        currency="EUR",
+        currency=listing_currency,
         updated_at=NOW,
     )
     listing = AssetListingModel(
@@ -136,7 +137,7 @@ def _holding_rows(
         symbol="ABC",
         exchange="trading212",
         mic=None,
-        currency="EUR",
+        currency=listing_currency,
         country=None,
         provider=PriceSource.broker,
         provider_symbol="ABC",
@@ -153,7 +154,8 @@ def _holding_rows(
         asset_type=AssetType.stock,
         quantity=Decimal("2"),
         avg_buy_price=Decimal("10"),
-        currency=holding_currency,
+        currency=listing.currency,
+        cost_basis_by_currency={holding_currency: "20.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
@@ -575,7 +577,7 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
 async def test_mixed_currency_investment_selects_only_direct_output_pairs() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
-        load_holdings=_holding_rows(holding_currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="GBP"),
         load_active_events=(_event(InvestmentEventType.interest),),
         load_active_movements=(_movement(currency="CHF"),),
         load_price_candidates=(_price("price-gbp", "15", NOW, currency="GBP"),),
@@ -639,7 +641,7 @@ async def test_mixed_currency_investment_selects_only_direct_output_pairs() -> N
 async def test_account_currency_rejects_non_twelve_data_observation() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="EUR"),
-        load_holdings=_holding_rows(holding_currency="EUR"),
+        load_holdings=_holding_rows(holding_currency="EUR", listing_currency="USD"),
         load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),
         load_exchange_rate_candidates=(
             _rate(
@@ -688,7 +690,7 @@ async def test_czk_output_rejects_non_twelve_data_observation() -> None:
 async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_separate() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
-        load_holdings=_holding_rows(holding_currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="USD"),
         load_active_events=(_event(),),
         load_active_movements=(_movement(currency="USD"),),
         load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),

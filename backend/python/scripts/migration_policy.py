@@ -35,7 +35,9 @@ FIRST_SCHEMA_REVISION = "3f0001acctnote"
 LIABILITY_REVISION = "3g0001liabbal"
 TWELVE_DATA_PRICE_REVISION = "3h0001twdata"
 DAILY_BASELINE_REVISION = "3i0001d1base"
-HEAD_REVISION = "3j0001twfx"
+DIRECT_FX_REVISION = "3j0001twfx"
+HEAD_REVISION = "3k0001mcost"
+MULTI_CURRENCY_COST_BASIS_REVISION = HEAD_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -51,6 +53,9 @@ D1_LINEAGE_REVISION_PATH = (
 )
 TWELVE_DATA_FX_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3j0001twfx_add_twelve_data_fx_source.py"
+)
+MULTI_CURRENCY_COST_BASIS_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3k0001mcost_add_multicurrency_holding_cost_basis.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -208,7 +213,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 11,
+        "schema_version": 12,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -247,7 +252,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 7,
+        "revision_count": 8,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -255,8 +260,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3j0001twfx/schema.sql",
-        "checksum_source": "database/revisions/3j0001twfx/schema.sha256",
+        "schema_source": "database/revisions/3k0001mcost/schema.sql",
+        "checksum_source": "database/revisions/3k0001mcost/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -296,8 +301,10 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 7:
-        raise RuntimeError("The direct FX schema requires exactly seven Alembic revisions.")
+    if len(revisions) != 8:
+        raise RuntimeError(
+            "The multi-currency cost basis schema requires exactly eight Alembic revisions."
+        )
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
@@ -306,6 +313,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     liability = by_revision.get(LIABILITY_REVISION)
     provider_identity = by_revision.get(TWELVE_DATA_PRICE_REVISION)
     daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
+    direct_fx = by_revision.get(DIRECT_FX_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
@@ -319,8 +327,10 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError("The Twelve Data identity revision must follow the liability head.")
     if daily_baseline is None or daily_baseline.down_revision != TWELVE_DATA_PRICE_REVISION:
         raise RuntimeError("The D1 lineage revision must follow the provider identity head.")
-    if head is None or head.down_revision != DAILY_BASELINE_REVISION:
+    if direct_fx is None or direct_fx.down_revision != DAILY_BASELINE_REVISION:
         raise RuntimeError("The Twelve Data FX revision must follow the D1 lineage head.")
+    if head is None or head.down_revision != DIRECT_FX_REVISION:
+        raise RuntimeError("The multi-currency cost basis revision must follow the FX head.")
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -431,7 +441,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": False,
     }
     for key, value in expected_fx_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(direct_fx.module, key, None) != value:
             raise RuntimeError(f"Twelve Data FX revision metadata is invalid for {key}.")
     fx_source = TWELVE_DATA_FX_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -441,6 +451,38 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     ):
         if token not in fx_source:
             raise RuntimeError(f"Twelve Data FX revision is missing required token {token}.")
+
+    expected_cost_basis_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_multicurrency_holding_cost_basis",
+        "affected_tables": ("Holding", "AccountSnapshotItem"),
+        "affected_columns": (
+            "Holding.costBasisByCurrency",
+            "AccountSnapshotItem.nativeCostBasisByCurrency",
+            "AccountSnapshotItem.averageBuyPrice",
+            "AccountSnapshotItem.averageBuyPriceCurrency",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_cost_basis_metadata.items():
+        if getattr(head.module, key, None) != value:
+            raise RuntimeError(f"Multi-currency cost basis revision metadata is invalid for {key}.")
+    cost_basis_source = MULTI_CURRENCY_COST_BASIS_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"costBasisByCurrency"',
+        '"nativeCostBasisByCurrency"',
+        '"averageBuyPrice"',
+        '"averageBuyPriceCurrency"',
+        "jsonb_typeof",
+        "mod(floor({scaled_expression}), 2)",
+        "complete native cost pair",
+        "Cannot remove multi-currency",
+    ):
+        if token not in cost_basis_source:
+            raise RuntimeError(
+                f"Multi-currency cost basis revision is missing required token {token}."
+            )
 
 
 def verify_schema_registry(
@@ -549,7 +591,10 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
                 raise RuntimeError(
                     f"Database CI contains removed Prisma tooling: {forbidden_command}."
                 )
-        head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
+        head_schema_check = (
+            "python scripts/database_schema.py --check "
+            f"--revision {MULTI_CURRENCY_COST_BASIS_REVISION}"
+        )
         if source.count(head_schema_check) < 2:
             raise RuntimeError(
                 "Database CI must verify the current head artifact after upgrade and bootstrap."

@@ -236,6 +236,9 @@ _ITEM_ATTRIBUTES = (
     "value_currency",
     "native_cost_basis",
     "native_cost_currency",
+    "native_cost_basis_by_currency",
+    "average_buy_price",
+    "average_buy_price_currency",
 )
 
 

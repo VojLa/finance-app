@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,6 +117,32 @@ def _finite_decimal(value: object) -> Decimal:
     if not isinstance(value, Decimal) or not value.is_finite():
         raise _fail()
     return value
+
+
+def _holding_cost_currencies(holding: HoldingModel) -> tuple[str, ...]:
+    value = holding.cost_basis_by_currency
+    if not isinstance(value, dict) or not value:
+        raise _fail()
+    currencies: list[str] = []
+    for raw_currency, raw_amount in sorted(value.items()):
+        currency = _currency(raw_currency)
+        if not isinstance(raw_amount, str):
+            raise _fail()
+        try:
+            amount = Decimal(raw_amount)
+        except InvalidOperation as exc:
+            raise _fail() from exc
+        if (
+            not amount.is_finite()
+            or amount <= 0
+            or amount >= Decimal("1000000000000000000")
+            or format(amount, ".10f") != raw_amount
+        ):
+            raise _fail()
+        currencies.append(currency)
+    if len(set(currencies)) != len(currencies):
+        raise _fail()
+    return tuple(currencies)
 
 
 def _alias_price_source(provider: AssetAliasProvider) -> PriceSource:
@@ -407,14 +433,15 @@ class MarketEvidenceRequirementsPlanner:
         for persisted in holdings:
             if _finite_decimal(persisted.holding.quantity) == 0:
                 continue
-            _add_account_conversion_requirements(
-                fx,
-                source_currency=persisted.holding.currency,
-                account=accounts[persisted.holding.account_id],
-                output_currency=output_currency,
-                through=snapshot_timestamp,
-                provider=self.fx_source,
-            )
+            for source_currency in _holding_cost_currencies(persisted.holding):
+                _add_account_conversion_requirements(
+                    fx,
+                    source_currency=source_currency,
+                    account=accounts[persisted.holding.account_id],
+                    output_currency=output_currency,
+                    through=snapshot_timestamp,
+                    provider=self.fx_source,
+                )
         liability_ids: set[str] = set()
         for liability in liability_balances:
             liability_id = _nonblank(liability.id)

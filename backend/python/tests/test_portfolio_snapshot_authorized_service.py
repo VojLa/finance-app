@@ -27,6 +27,7 @@ from app.modules.portfolio_snapshot.models import (
     AccountType,
     AssetType,
     PortfolioAccountView,
+    PortfolioCurrencyAmount,
     PortfolioPositionView,
     PortfolioSnapshotView,
     PortfolioSummaryView,
@@ -71,6 +72,9 @@ def _position(listing_id: str = "listing-1") -> PortfolioPositionView:
         native_value_currency="USD",
         native_cost_basis=Decimal("80.0000000000"),
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", Decimal("80.0000000000")),),
+        average_buy_price=Decimal("40.0000000000"),
+        average_buy_price_currency="USD",
     )
 
 

@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -225,6 +225,11 @@ class AccountSnapshotItemModel(Base):
     __tablename__ = "AccountSnapshotItem"
     __table_args__ = (
         UniqueConstraint("snapshotId", "listingId"),
+        CheckConstraint(
+            "jsonb_typeof(\"nativeCostBasisByCurrency\") = 'object' "
+            "AND \"nativeCostBasisByCurrency\" <> '{}'::jsonb",
+            name="AccountSnapshotItem_nativeCostBasisByCurrency_nonempty_object",
+        ),
         Index(None, "assetId"),
         Index(None, "listingId"),
         {"schema": "public"},
@@ -265,3 +270,14 @@ class AccountSnapshotItemModel(Base):
     value_currency: Mapped[str | None] = mapped_column("valueCurrency", Text)
     native_cost_basis: Mapped[Decimal | None] = mapped_column("nativeCostBasis", QUANTITY)
     native_cost_currency: Mapped[str | None] = mapped_column("nativeCostCurrency", Text)
+    native_cost_basis_by_currency: Mapped[dict[str, object]] = mapped_column(
+        "nativeCostBasisByCurrency",
+        JSONB,
+        nullable=False,
+    )
+    average_buy_price: Mapped[Decimal] = mapped_column("averageBuyPrice", QUANTITY, nullable=False)
+    average_buy_price_currency: Mapped[str] = mapped_column(
+        "averageBuyPriceCurrency",
+        Text,
+        nullable=False,
+    )

@@ -86,6 +86,7 @@ from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
+    CurrencyAmount,
     LiabilityBalanceEvidence,
     SnapshotHoldingEvidence,
     build_account_snapshot_projection,
@@ -581,6 +582,10 @@ def _snapshot_holdings(account: _PreparedAccount) -> tuple[SnapshotHoldingEviden
             quantity=item.quantity,
             average_buy_price=item.avg_buy_price,
             cost_currency=item.currency,
+            cost_basis_by_currency=tuple(
+                CurrencyAmount(currency=currency, amount=amount)
+                for currency, amount in item.cost_basis_by_currency
+            ),
         )
         for item in account.holdings
     )
@@ -823,6 +828,12 @@ async def _project_account(
                 native_value_currency=item.value_currency,
                 native_cost_basis=item.native_cost_basis,
                 native_cost_currency=item.native_cost_currency,
+                native_cost_basis_by_currency=tuple(
+                    PortfolioCurrencyAmount(currency=value.currency, amount=value.amount)
+                    for value in item.native_cost_basis_by_currency
+                ),
+                average_buy_price=item.average_buy_price,
+                average_buy_price_currency=item.average_buy_price_currency,
             )
         )
     summary = PortfolioSummaryView(

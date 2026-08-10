@@ -47,7 +47,10 @@ def _expected(
     quantity: str = "2",
     average: str = "100",
     currency: str = "EUR",
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None = None,
 ) -> ExpectedPersistedHoldingPlan:
+    exact_quantity = Decimal(quantity)
+    exact_average = Decimal(average)
     return ExpectedPersistedHoldingPlan(
         account_id="account",
         asset_id=asset_id,
@@ -55,13 +58,18 @@ def _expected(
         symbol="VWCE",
         name=None,
         asset_type=AssetType.etf,
-        quantity=Decimal(quantity),
-        avg_buy_price=Decimal(average),
+        quantity=exact_quantity,
+        avg_buy_price=exact_average,
         currency=currency,
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
         realized_pnl=None,
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else ((currency, exact_quantity * exact_average),)
+        ),
     )
 
 
@@ -73,7 +81,10 @@ def _current(
     quantity: str = "2",
     average: str = "100",
     current_price: Decimal | None = None,
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None = None,
 ) -> CurrentHoldingState:
+    exact_quantity = Decimal(quantity)
+    exact_average = Decimal(average)
     return CurrentHoldingState(
         holding_id=holding_id,
         account_id="account",
@@ -82,9 +93,14 @@ def _current(
         symbol="VWCE",
         name=None,
         asset_type=AssetType.etf,
-        quantity=Decimal(quantity),
-        avg_buy_price=Decimal(average),
+        quantity=exact_quantity,
+        avg_buy_price=exact_average,
         currency="EUR",
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else (("EUR", exact_quantity * exact_average),)
+        ),
         current_price=current_price,
         current_value=None,
         unrealized_pnl=None,
@@ -101,7 +117,7 @@ def _asset_models() -> tuple[AssetModel, AssetListingModel]:
     )
     listing = cast(
         AssetListingModel,
-        SimpleNamespace(id="listing", asset_id="asset", symbol="VWCE"),
+        SimpleNamespace(id="listing", asset_id="asset", symbol="VWCE", currency="USD"),
     )
     return asset, listing
 
@@ -205,6 +221,7 @@ def test_adapter_uses_persisted_join_evidence_and_is_deterministic() -> None:
     ]
     linked = next(item for item in result[0].movements if item.asset_id)
     assert linked.listing_asset_id == "asset"
+    assert linked.listing_currency == "USD"
 
 
 @pytest.mark.parametrize(
@@ -326,6 +343,7 @@ def test_current_holding_corruption_fails_closed(field: str, value: object) -> N
         "quantity": Decimal("2"),
         "avg_buy_price": Decimal("100"),
         "currency": "EUR",
+        "cost_basis_by_currency": {"EUR": "200.0000000000"},
         "current_price": None,
         "current_value": None,
         "unrealized_pnl": None,

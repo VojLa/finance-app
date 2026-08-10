@@ -2064,6 +2064,13 @@ export interface components {
       points: components["schemas"]["PortfolioHistoryPointResponse"][]
       range: components["schemas"]["PortfolioHistoryRange"]
     }
+    /** PortfolioQuantityCurrencyAmountResponse */
+    PortfolioQuantityCurrencyAmountResponse: {
+      /** Amount */
+      amount: string
+      /** Currency */
+      currency: string
+    }
     /** PortfolioSnapshotAccountResponse */
     PortfolioSnapshotAccountResponse: {
       /** Accountid */
@@ -2091,6 +2098,8 @@ export interface components {
       name: string
       /** Nativecostbasis */
       nativeCostBasis: string
+      /** Nativecostbasisbycurrency */
+      nativeCostBasisByCurrency: components["schemas"]["PortfolioQuantityCurrencyAmountResponse"][]
       /** Nativecostcurrency */
       nativeCostCurrency: string
       /** Nativevalue */

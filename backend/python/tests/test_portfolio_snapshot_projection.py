@@ -48,6 +48,9 @@ def _item(
     native_value_currency: str = "USD",
     native_cost_basis: Decimal = Decimal("50"),
     native_cost_currency: str = "USD",
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
+    average_buy_price: Decimal | None = None,
+    average_buy_price_currency: str | None = None,
 ) -> PortfolioSnapshotItemSource:
     return PortfolioSnapshotItemSource(
         item_id=item_id,
@@ -70,6 +73,17 @@ def _item(
         native_value_currency=native_value_currency,
         native_cost_basis=native_cost_basis,
         native_cost_currency=native_cost_currency,
+        native_cost_basis_by_currency=(
+            native_cost_basis_by_currency
+            if native_cost_basis_by_currency is not None
+            else (PortfolioCurrencyAmount(native_cost_currency, native_cost_basis),)
+        ),
+        average_buy_price=(
+            average_buy_price if average_buy_price is not None else native_cost_basis / quantity
+        ),
+        average_buy_price_currency=(
+            average_buy_price_currency if average_buy_price_currency is not None else price_currency
+        ),
     )
 
 
@@ -211,6 +225,9 @@ def test_investment_snapshot_builds_exact_portfolio_view() -> None:
         Decimal("60"),
         "USD",
         Decimal("50"),
+        "USD",
+        (PortfolioCurrencyAmount("USD", Decimal("50")),),
+        Decimal("25"),
         "USD",
     )
 
@@ -536,7 +553,7 @@ def test_invalid_metadata_fails_closed(mutation: dict[str, object]) -> None:
     assert str(raised.value) == "Portfolio snapshot evidence cannot produce a complete view."
 
 
-def test_zero_value_position_requires_zero_allocation() -> None:
+def test_zero_value_position_is_rejected_with_missing_positive_cost_evidence() -> None:
     zero = _item(
         quantity=Decimal("0"),
         price_per_unit=Decimal("30"),
@@ -546,6 +563,8 @@ def test_zero_value_position_requires_zero_allocation() -> None:
         allocation_pct=Decimal("0"),
         native_value=Decimal("0"),
         native_cost_basis=Decimal("0"),
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", Decimal("0")),),
+        average_buy_price=Decimal("30"),
     )
     source = _source(
         cash_value=Decimal("10"),
@@ -560,11 +579,8 @@ def test_zero_value_position_requires_zero_allocation() -> None:
         items=(zero,),
     )
 
-    assert build_portfolio_snapshot_view(source).positions[0].allocation_pct == 0
     with pytest.raises(PortfolioSnapshotProjectionError):
-        build_portfolio_snapshot_view(
-            replace(source, items=(replace(zero, allocation_pct=Decimal("1")),))
-        )
+        build_portfolio_snapshot_view(source)
 
 
 def test_projection_has_a_pure_import_and_call_boundary() -> None:

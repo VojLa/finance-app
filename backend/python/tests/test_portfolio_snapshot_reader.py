@@ -343,6 +343,13 @@ def _item(
         value_currency=native_currency,
         native_cost_basis=cost_basis,
         native_cost_currency=native_cost_currency,
+        native_cost_basis_by_currency=(
+            None
+            if cost_basis is None or native_cost_currency is None
+            else {native_cost_currency: format(cost_basis, ".10f")}
+        ),
+        average_buy_price=(None if cost_basis is None else cost_basis / quantity),
+        average_buy_price_currency=native_currency,
     )
 
 

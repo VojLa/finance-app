@@ -71,6 +71,24 @@ function validateCurrencyAmounts(value: unknown): void {
   }
 }
 
+function validatePositiveQuantityCurrencyAmounts(value: unknown): void {
+  if (!Array.isArray(value) || value.length === 0) throw contractError()
+  let previousCurrency: string | undefined
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      !currency(item.currency) ||
+      !decimal(item.amount, QUANTITY) ||
+      item.amount.startsWith("-") ||
+      item.amount === "0.0000000000" ||
+      (previousCurrency !== undefined && item.currency <= previousCurrency)
+    ) {
+      throw contractError()
+    }
+    previousCurrency = item.currency
+  }
+}
+
 function validateSummary(value: unknown, positionCount: number): void {
   if (!isRecord(value) || value.positionCount !== positionCount) throw contractError()
   for (const field of [
@@ -115,6 +133,7 @@ function validatePosition(value: unknown, outputCurrency: string): void {
   ) {
     throw contractError()
   }
+  validatePositiveQuantityCurrencyAmounts(value.nativeCostBasisByCurrency)
 }
 
 function validatePortfolio(value: unknown): PortfolioSnapshotData {

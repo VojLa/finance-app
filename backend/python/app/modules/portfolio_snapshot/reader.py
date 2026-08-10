@@ -32,6 +32,7 @@ from app.db.models.enums import (
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.modules.portfolio_snapshot.currency_breakdown import (
     decode_portfolio_currency_breakdown,
+    decode_portfolio_quantity_breakdown,
 )
 from app.modules.portfolio_snapshot.models import (
     AccountType,
@@ -356,6 +357,19 @@ def _item(
     created_at = _timestamp(item.created_at)
     native_value = _exact(item.native_value, QUANTITY, positive=True)
     native_cost_basis = _exact(item.native_cost_basis, QUANTITY, positive=True)
+    average_buy_price = _exact(item.average_buy_price, QUANTITY, positive=True)
+    average_buy_price_currency = _currency(item.average_buy_price_currency)
+    if average_buy_price_currency != listing_currency:
+        raise _fail()
+    native_cost_basis_by_currency = decode_portfolio_quantity_breakdown(
+        item.native_cost_basis_by_currency
+    )
+    if len(native_cost_basis_by_currency) == 1:
+        component = native_cost_basis_by_currency[0]
+        if native_cost_basis != component.amount or native_cost_currency != component.currency:
+            raise _fail()
+    elif native_cost_basis != cost_basis or native_cost_currency != cost_currency:
+        raise _fail()
     if price_timestamp > snapshot.timestamp or created_at != snapshot.created_at:
         raise _fail()
     return (
@@ -383,6 +397,9 @@ def _item(
             native_value_currency=physical_value_currency,
             native_cost_basis=native_cost_basis,
             native_cost_currency=native_cost_currency,
+            native_cost_basis_by_currency=native_cost_basis_by_currency,
+            average_buy_price=average_buy_price,
+            average_buy_price_currency=average_buy_price_currency,
         ),
     )
 

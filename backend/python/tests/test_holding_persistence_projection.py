@@ -24,6 +24,7 @@ from app.modules.holdings.persistence_projection import (
     HoldingPersistenceEvent,
     HoldingPersistenceMovement,
     HoldingPersistenceProjection,
+    build_holding_delta_projection,
     build_holding_persistence_projection,
 )
 from app.modules.holdings.projection import HoldingProjectionStateError
@@ -44,6 +45,7 @@ def _asset(
     price: Decimal | None,
     value: Decimal | None,
     value_currency: str | None = "EUR",
+    listing_currency: str | None = "EUR",
     listing_id: str = "listing",
     asset_id: str = "asset",
     symbol: str = "VWCE",
@@ -65,6 +67,7 @@ def _asset(
         price_per_unit=price,
         value_amount=value,
         value_currency=value_currency,
+        listing_currency=listing_currency,
     )
 
 
@@ -139,6 +142,7 @@ def _buy(
     *,
     date: datetime,
     currency: str = "EUR",
+    listing_currency: str = "EUR",
     listing_id: str = "listing",
     asset_id: str = "asset",
     symbol: str = "VWCE",
@@ -152,6 +156,7 @@ def _buy(
         price=unit,
         value=value,
         value_currency=currency,
+        listing_currency=listing_currency,
         listing_id=listing_id,
         asset_id=asset_id,
         symbol=symbol,
@@ -179,6 +184,7 @@ def _sell(
     price: str,
     *,
     date: datetime,
+    listing_currency: str = "EUR",
 ) -> HoldingPersistenceEvent:
     qty, unit = Decimal(quantity), Decimal(price)
     value = qty * unit
@@ -192,6 +198,7 @@ def _sell(
                 quantity=qty,
                 price=unit,
                 value=value,
+                listing_currency=listing_currency,
             ),
             _cash(
                 event_id,
@@ -226,6 +233,7 @@ def test_one_buy_produces_every_non_temporal_holding_field() -> None:
                     current_value=None,
                     unrealized_pnl=None,
                     realized_pnl=None,
+                    cost_basis_by_currency=(("EUR", Decimal("201")),),
                 ),
             ),
         )
@@ -292,6 +300,63 @@ def test_partial_sale_preserves_average_and_sale_price_is_irrelevant() -> None:
     assert result.holdings[0].avg_buy_price == Decimal("175")
 
 
+def test_partial_sale_scales_every_settlement_component_deterministically() -> None:
+    result = _project(
+        _buy(
+            "eur",
+            "1",
+            "100",
+            date=datetime(2026, 7, 20),
+            currency="EUR",
+            listing_currency="USD",
+        ),
+        _buy(
+            "usd",
+            "3",
+            "100",
+            date=datetime(2026, 7, 21),
+            currency="USD",
+            listing_currency="USD",
+        ),
+        _sell("sell", "2", "101", date=datetime(2026, 7, 22), listing_currency="USD"),
+    )
+    holding = result.holdings[0]
+    assert holding.quantity == Decimal("2")
+    assert holding.currency == "USD"
+    assert holding.avg_buy_price == Decimal("100")
+    assert holding.cost_basis_by_currency == (("EUR", Decimal("50")), ("USD", Decimal("150")))
+
+
+def test_fractional_partial_sale_uses_explicit_half_even_cost_component_rounding() -> None:
+    buy = _event(
+        "buy",
+        InvestmentEventType.trade,
+        (
+            _asset(
+                "buy",
+                direction=MovementDirection.incoming,
+                quantity=Decimal("3"),
+                price=Decimal("100"),
+                value=Decimal("100"),
+                value_currency="EUR",
+                listing_currency="USD",
+            ),
+            _cash(
+                "buy",
+                direction=MovementDirection.outgoing,
+                amount=Decimal("100"),
+                currency="EUR",
+            ),
+        ),
+        date=datetime(2026, 7, 20),
+    )
+    result = _project(
+        buy,
+        _sell("sell", "1", "100", date=datetime(2026, 7, 21), listing_currency="USD"),
+    )
+    assert result.holdings[0].cost_basis_by_currency == (("EUR", Decimal("66.6666666667")),)
+
+
 def test_full_sale_removes_holding() -> None:
     assert (
         _project(
@@ -300,6 +365,22 @@ def test_full_sale_removes_holding() -> None:
         ).holdings
         == ()
     )
+
+
+def test_disposal_rejects_an_incompatible_listing_currency() -> None:
+    buy = _buy(
+        "buy",
+        "1",
+        "100",
+        date=datetime(2026, 7, 20),
+        currency="EUR",
+        listing_currency="USD",
+    )
+    with pytest.raises(HoldingProjectionStateError):
+        _project(
+            buy,
+            _sell("sell", "1", "100", date=datetime(2026, 7, 21), listing_currency="EUR"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -453,6 +534,18 @@ def test_dividend_fee_and_cash_events_do_not_change_basis() -> None:
     assert result.holdings[0].currency == "EUR"
 
 
+def test_trade_fee_must_share_the_settlement_currency() -> None:
+    event = _buy("buy", "1", "100", date=datetime(2026, 7, 20))
+    asset, cash = event.movements
+    with pytest.raises(HoldingProjectionStateError):
+        _project(
+            replace(
+                event,
+                movements=(asset, cash, replace(_fee("buy"), currency="USD", value_currency="USD")),
+            )
+        )
+
+
 def test_supported_cash_only_events_create_no_holding() -> None:
     events = (
         _event(
@@ -502,19 +595,108 @@ def test_exact_numeric_boundary_is_accepted() -> None:
     assert result.holdings[0].avg_buy_price == maximum
 
 
-def test_cost_currency_is_value_currency_and_mixed_acquisitions_fail() -> None:
-    first = _buy("eur", "1", "100", date=datetime(2026, 7, 20))
+def test_mixed_settlement_acquisitions_keep_quote_average_and_cost_breakdown() -> None:
+    first = _buy(
+        "eur",
+        "1",
+        "100",
+        date=datetime(2026, 7, 20),
+        currency="EUR",
+        listing_currency="USD",
+    )
     second = _buy(
         "usd",
         "1",
         "110",
         date=datetime(2026, 7, 21),
         currency="USD",
+        listing_currency="USD",
     )
-    assert _project(first).holdings[0].currency == "EUR"
-    assert _project(first).holdings[0].currency != "VWCE"
+    holding = _project(first, second).holdings[0]
+    assert holding.currency == "USD"
+    assert holding.avg_buy_price == Decimal("105")
+    assert holding.cost_basis_by_currency == (("EUR", Decimal("100")), ("USD", Decimal("110")))
+
+
+def test_delta_replay_preserves_mixed_settlement_cost_components() -> None:
+    baseline = _project(
+        _buy(
+            "eur",
+            "1",
+            "100",
+            date=datetime(2026, 7, 20),
+            currency="EUR",
+            listing_currency="USD",
+        ),
+        _buy(
+            "usd",
+            "1",
+            "110",
+            date=datetime(2026, 7, 21),
+            currency="USD",
+            listing_currency="USD",
+        ),
+    )
+    sell = _sell("sell", "1", "120", date=datetime(2026, 7, 22), listing_currency="USD")
+
+    result = build_holding_delta_projection(
+        account_id="account",
+        baseline_holdings=baseline.holdings,
+        events=(sell,),
+    )
+
+    assert result.holdings[0].quantity == Decimal("1")
+    assert result.holdings[0].currency == "USD"
+    assert result.holdings[0].avg_buy_price == Decimal("105")
+    assert result.holdings[0].cost_basis_by_currency == (
+        ("EUR", Decimal("50")),
+        ("USD", Decimal("55")),
+    )
+
+
+def test_delta_replay_rejects_duplicate_or_unsorted_cost_components() -> None:
+    baseline = _project(_buy("buy", "1", "100", date=datetime(2026, 7, 20))).holdings[0]
+    duplicate = replace(
+        baseline,
+        cost_basis_by_currency=(("EUR", Decimal("50")), ("EUR", Decimal("50"))),
+    )
+    unsorted = replace(
+        baseline,
+        cost_basis_by_currency=(("USD", Decimal("1")), ("EUR", Decimal("99"))),
+    )
+    for corrupted in (duplicate, unsorted):
+        with pytest.raises(HoldingProjectionStateError):
+            build_holding_delta_projection(
+                account_id="account",
+                baseline_holdings=(corrupted,),
+                events=(),
+            )
+
+
+def test_partial_disposal_rejects_cost_component_that_underflows_storage() -> None:
+    buy = _event(
+        "buy",
+        InvestmentEventType.trade,
+        (
+            _asset(
+                "buy",
+                direction=MovementDirection.incoming,
+                quantity=Decimal("2"),
+                price=Decimal("1"),
+                value=Decimal("0.0000000001"),
+                value_currency="EUR",
+            ),
+            _cash(
+                "buy",
+                direction=MovementDirection.outgoing,
+                amount=Decimal("0.0000000001"),
+                currency="EUR",
+            ),
+        ),
+        date=datetime(2026, 7, 20),
+    )
     with pytest.raises(HoldingProjectionStateError):
-        _project(first, second)
+        _project(buy, _sell("sell", "1", "1", date=datetime(2026, 7, 21)))
 
 
 def test_input_order_does_not_change_output_and_inputs_are_immutable() -> None:
@@ -562,7 +744,7 @@ def test_repeating_weighted_average_uses_explicit_half_even_storage_rounding() -
         "value_overflow",
         "cash_value_mismatch",
         "fee_value_mismatch",
-        "price_value_mismatch",
+        "missing_listing_currency",
         "multiplication_overflow",
     ],
 )
@@ -621,8 +803,8 @@ def test_corrupt_event_evidence_fails_complete_projection(corruption: str) -> No
                 replace(_fee(event.event_id), value_amount=Decimal("2")),
             ),
         )
-    elif corruption == "price_value_mismatch":
-        event = replace(event, movements=(replace(asset, value_amount=Decimal("201")), cash))
+    elif corruption == "missing_listing_currency":
+        event = replace(event, movements=(replace(asset, listing_currency=None), cash))
     else:
         huge = Decimal("999999999999999999.9999999999")
         event = replace(
@@ -721,6 +903,11 @@ def _from_plan(
             price_per_unit=movement.price_per_unit,
             value_amount=movement.value_amount,
             value_currency=movement.value_currency,
+            listing_currency=(
+                plan.asset_resolution.listing_currency_hint
+                if movement.requires_asset and plan.asset_resolution is not None
+                else None
+            ),
         )
         for index, movement in enumerate(plan.movements)
     )
@@ -816,8 +1003,9 @@ def test_actual_cross_currency_trading212_buy_projects_executed_cost() -> None:
     assert plan.asset_resolution is not None
     assert plan.asset_resolution.listing_currency_hint == "USD"
     assert result.holdings[0].quantity == Decimal("0.206659")
-    assert result.holdings[0].avg_buy_price == Decimal("86.8580608635")
-    assert result.holdings[0].currency == "EUR"
+    assert result.holdings[0].avg_buy_price == Decimal("93.92")
+    assert result.holdings[0].currency == "USD"
+    assert result.holdings[0].cost_basis_by_currency == (("EUR", Decimal("17.95")),)
 
 
 def test_actual_anycoin_grouped_trade_and_outgoing_transfer_project_exactly() -> None:

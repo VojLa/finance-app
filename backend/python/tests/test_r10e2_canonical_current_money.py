@@ -143,6 +143,7 @@ def test_position_serialization_preserves_money_quantity_and_percentage_contract
         native_value_currency="USD",
         native_cost_basis=Decimal("80"),
         native_cost_currency="USD",
+        native_cost_basis_by_currency=({"currency": "USD", "amount": Decimal("80")},),
     ).model_dump(mode="json", by_alias=True)
 
     assert payload["value"] == "100.000000"

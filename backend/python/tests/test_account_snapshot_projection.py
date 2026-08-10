@@ -42,6 +42,7 @@ def _holding(
     quantity: Decimal = Decimal("2"),
     average_buy_price: Decimal = Decimal("80"),
     cost_currency: str = "EUR",
+    cost_basis_by_currency: tuple[CurrencyAmount, ...] | None = None,
 ) -> SnapshotHoldingEvidence:
     return SnapshotHoldingEvidence(
         holding_id=holding_id,
@@ -54,6 +55,11 @@ def _holding(
         quantity=quantity,
         average_buy_price=average_buy_price,
         cost_currency=cost_currency,
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else (CurrencyAmount(cost_currency, quantity * average_buy_price),)
+        ),
     )
 
 
@@ -207,9 +213,58 @@ def test_one_holding_projects_exact_physical_item_and_totals() -> None:
     )
 
 
+def test_multi_settlement_cost_components_are_converted_directly_and_preserved() -> None:
+    result = _one_holding(
+        holding=_holding(
+            average_buy_price=Decimal("100"),
+            cost_currency="USD",
+            cost_basis_by_currency=(
+                CurrencyAmount("EUR", Decimal("100")),
+                CurrencyAmount("USD", Decimal("110")),
+            ),
+        ),
+        price=_price(price=Decimal("120"), currency="USD"),
+        exchange_rates=(
+            _rate("EUR", value=Decimal("25")),
+            _rate("USD", value=Decimal("23")),
+        ),
+    )
+
+    assert result.investment_cost_basis == Decimal("5030")
+    assert result.investment_cost_basis_by_currency == (
+        CurrencyAmount("EUR", Decimal("100")),
+        CurrencyAmount("USD", Decimal("110")),
+    )
+    item = result.items[0]
+    assert item.native_cost_basis_by_currency == result.investment_cost_basis_by_currency
+    assert item.native_cost_basis == Decimal("5030")
+    assert item.native_cost_currency == "CZK"
+    assert item.average_buy_price == Decimal("100")
+    assert item.average_buy_price_currency == "USD"
+
+
+def test_multi_settlement_cost_fails_if_one_direct_rate_is_missing() -> None:
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        _one_holding(
+            holding=_holding(
+                cost_currency="USD",
+                cost_basis_by_currency=(
+                    CurrencyAmount("EUR", Decimal("100")),
+                    CurrencyAmount("USD", Decimal("110")),
+                ),
+            ),
+            price=_price(currency="USD"),
+            exchange_rates=(_rate("USD", value=Decimal("23")),),
+        )
+
+
 def test_foreign_price_and_cost_currencies_use_only_direct_rates() -> None:
     result = _one_holding(
-        holding=_holding(cost_currency="USD", average_buy_price=Decimal("50")),
+        holding=_holding(
+            cost_currency="EUR",
+            average_buy_price=Decimal("50"),
+            cost_basis_by_currency=(CurrencyAmount("USD", Decimal("100")),),
+        ),
         price=_price(currency="EUR", price=Decimal("100")),
         exchange_rates=(
             _rate("USD", value=Decimal("23")),
@@ -634,7 +689,12 @@ def test_mixed_currency_broker_requires_each_actual_native_pair_in_sorted_order(
         _input(
             account_currency="USD",
             output_currency="EUR",
-            holdings=(_holding(cost_currency="USD"),),
+            holdings=(
+                _holding(
+                    cost_currency="GBP",
+                    cost_basis_by_currency=(CurrencyAmount("USD", Decimal("160")),),
+                ),
+            ),
             prices=(_price(currency="GBP"),),
             cash_balances=(_cash("CHF", Decimal("10")),),
             exchange_rates=(

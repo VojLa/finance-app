@@ -11,7 +11,9 @@ from scripts.alembic_baseline import (
     BASELINE_REVISION,
     CUTOVER_REVISION,
     DAILY_BASELINE_REVISION,
+    DIRECT_FX_REVISION,
     HEAD_REVISION,
+    MULTI_CURRENCY_COST_BASIS_REVISION,
     PREVIOUS_HEAD_REVISION,
     DatabaseState,
     verify_database_state,
@@ -30,6 +32,9 @@ TWELVE_DATA_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3h0001twdata_add_twelve_data_provider_identity.py"
 )
 HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3i0001d1base_add_daily_baseline_lineage.py"
+MULTI_CURRENCY_COST_BASIS_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3k0001mcost_add_multicurrency_holding_cost_basis.py"
+)
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
 
@@ -138,18 +143,34 @@ def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> Non
     assert 'DROP TABLE "public"."DailySnapshotBaseline"' not in source
 
 
+def test_multicurrency_cost_basis_revision_metadata_and_data_loss_guards() -> None:
+    revision = load_revision(MULTI_CURRENCY_COST_BASIS_PATH, "multicurrency_cost_basis")
+    source = MULTI_CURRENCY_COST_BASIS_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == MULTI_CURRENCY_COST_BASIS_REVISION
+    assert revision.down_revision == DIRECT_FX_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_multicurrency_holding_cost_basis"
+    assert revision.affected_tables == ("Holding", "AccountSnapshotItem")
+    assert revision.data_migration is True
+    assert "jsonb_typeof" in source
+    assert "complete native cost pair" in source
+    assert '"averageBuyPriceCurrency" <> "nativeCostCurrency"' in source
+    assert "Cannot remove multi-currency or quote-average" in source
+
+
 def test_manifest_records_first_alembic_schema_head() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 11
+    assert manifest["schema_version"] == 12
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 7
-    assert baseline["head_revision"] == HEAD_REVISION
-    assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 7
+    assert baseline["revision_count"] == 8
+    assert baseline["head_revision"] == MULTI_CURRENCY_COST_BASIS_REVISION
+    assert alembic["head_revision"] == MULTI_CURRENCY_COST_BASIS_REVISION
+    assert alembic["revision_count"] == 8
 
     verify_manifest()
     verify_revision_graph()
@@ -162,6 +183,7 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(30, 27, ("3f0001acctnote",)))
     verify_database_state(DatabaseState(31, 28, (PREVIOUS_HEAD_REVISION,)))
     verify_database_state(DatabaseState(36, 28, (HEAD_REVISION,)))
+    verify_database_state(DatabaseState(36, 28, (MULTI_CURRENCY_COST_BASIS_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:

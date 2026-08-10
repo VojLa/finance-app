@@ -478,7 +478,7 @@ def test_buy_plan_has_asset_cash_fee_in_binding_order() -> None:
     assert all(movement.note == "provider note" for movement in plan.movements)
 
 
-def test_cross_currency_buy_uses_settled_principal_as_exact_cost_evidence() -> None:
+def test_cross_currency_buy_preserves_quote_price_and_settled_principal_evidence() -> None:
     payload = _canonical()
     payload["quantity"] = "0.206659"
     payload["price"] = {"amount": "93.92", "currency": "USD"}
@@ -490,7 +490,7 @@ def test_cross_currency_buy_uses_settled_principal_as_exact_cost_evidence() -> N
     assert plan.asset_resolution is not None
     assert plan.asset_resolution.listing_currency_hint == "USD"
     asset, cash, fee = plan.movements
-    assert asset.price_per_unit == Decimal("86.8580608635")
+    assert asset.price_per_unit == Decimal("93.92")
     assert asset.value_amount == Decimal("17.95")
     assert asset.value_currency == "EUR"
     assert cash.quantity == Decimal("17.95")
@@ -594,12 +594,12 @@ def test_exact_timestamp_boundary_is_accepted() -> None:
     assert plan.date == datetime(2026, 7, 25, 10, 0, 0, 123000)
 
 
-def test_trade_unit_cost_below_canonical_precision_is_rejected() -> None:
+def test_trade_quote_price_does_not_divide_settlement_principal() -> None:
     payload = _canonical()
     payload["quantity"] = "999999999999999999.9999999999"
 
-    with pytest.raises(ImportPostStateError):
-        _plan(payload)
+    plan = _plan(payload)
+    assert plan.movements[0].price_per_unit == Decimal("100.5")
 
 
 @pytest.mark.parametrize("quantity", ["0.00000000001", "1000000000000000000"])

@@ -23,6 +23,7 @@ from app.db.url import normalize_database_url
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     CashBalanceEvidence,
+    CurrencyAmount,
     LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
@@ -132,7 +133,8 @@ def _investment(
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("80"),
-                    cost_currency=cost_currency,
+                    cost_currency=price_currency,
+                    cost_basis_by_currency=(CurrencyAmount(cost_currency, Decimal("160")),),
                 ),
             ),
             prices=(

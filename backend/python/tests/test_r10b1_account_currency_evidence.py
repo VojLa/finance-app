@@ -18,6 +18,7 @@ from app.db.models.enums import (
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
+    CurrencyAmount,
     ExchangeRateConsumptionRole,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
@@ -84,7 +85,8 @@ def _mixed_valuation():
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("80"),
-                    cost_currency="EUR",
+                    cost_currency="USD",
+                    cost_basis_by_currency=(CurrencyAmount("EUR", Decimal("160")),),
                 ),
             ),
             prices=(

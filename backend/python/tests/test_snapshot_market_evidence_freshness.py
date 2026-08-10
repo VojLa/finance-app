@@ -82,6 +82,7 @@ def _holding() -> tuple[PersistedHoldingEvidence, ...]:
         quantity=Decimal("2"),
         avg_buy_price=Decimal("100"),
         currency="EUR",
+        cost_basis_by_currency={"EUR": "200.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,

@@ -181,13 +181,24 @@ def baseline_holding_seeds(
         listings.add(position.listing_id)
         quantity = _exact(position.quantity, quantity=True, positive=True)
         native_cost = _exact(position.native_cost_basis, quantity=True, positive=True)
-        try:
-            with localcontext() as context:
-                context.prec = 112
-                average = _exact(native_cost / quantity, quantity=True, positive=True)
-        except (InvalidOperation, ZeroDivisionError) as exc:
-            raise _fail() from exc
-        if _exact(average * quantity, quantity=True, positive=True) != native_cost:
+        average = _exact(position.average_buy_price, quantity=True, positive=True)
+        quote_currency = _currency(position.average_buy_price_currency)
+        components = tuple(
+            (_currency(item.currency), _exact(item.amount, quantity=True, positive=True))
+            for item in position.native_cost_basis_by_currency
+        )
+        if not components or len({currency for currency, _ in components}) != len(components):
+            raise _fail()
+        if tuple(currency for currency, _ in components) != tuple(
+            sorted(currency for currency, _ in components)
+        ):
+            raise _fail()
+        if len(components) == 1:
+            if components[0] != (_currency(position.native_cost_currency), native_cost):
+                raise _fail()
+        elif _currency(position.native_cost_currency) != _currency(
+            position.cost_currency
+        ) or native_cost != _exact(position.cost_basis, quantity=True, positive=True):
             raise _fail()
         seeds.append(
             ExpectedPersistedHoldingPlan(
@@ -199,11 +210,12 @@ def baseline_holding_seeds(
                 asset_type=AssetType(position.asset_type.value),
                 quantity=quantity,
                 avg_buy_price=average,
-                currency=_currency(position.native_cost_currency),
+                currency=quote_currency,
                 current_price=None,
                 current_value=None,
                 unrealized_pnl=None,
                 realized_pnl=None,
+                cost_basis_by_currency=components,
             )
         )
     return tuple(sorted(seeds, key=lambda item: item.listing_id))

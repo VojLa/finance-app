@@ -59,6 +59,7 @@ def _holding(
     account_id: str,
     *,
     cost_currency: str,
+    quote_currency: str,
 ) -> SnapshotHoldingEvidence:
     return SnapshotHoldingEvidence(
         holding_id=f"{account_id}-holding",
@@ -70,7 +71,8 @@ def _holding(
         asset_type=AssetType.stock,
         quantity=Decimal("2"),
         average_buy_price=Decimal("80"),
-        cost_currency=cost_currency,
+        cost_currency=quote_currency,
+        cost_basis_by_currency=(CurrencyAmount(cost_currency, Decimal("160")),),
     )
 
 
@@ -108,7 +110,13 @@ def _investment_input(
         granularity=SnapshotGranularity.minute,
         source=SnapshotSource.manual_recalculation,
         calculation_version=1,
-        holdings=(_holding(account_id, cost_currency=cost_currency),),
+        holdings=(
+            _holding(
+                account_id,
+                cost_currency=cost_currency,
+                quote_currency=price_currency,
+            ),
+        ),
         prices=(_price(account_id, currency=price_currency),),
         exchange_rates=rates,
         cash_balances=(),

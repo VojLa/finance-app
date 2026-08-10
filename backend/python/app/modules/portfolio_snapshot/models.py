@@ -84,6 +84,9 @@ class PortfolioSnapshotItemSource:
     native_value_currency: str
     native_cost_basis: Decimal
     native_cost_currency: str
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...]
+    average_buy_price: Decimal
+    average_buy_price_currency: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +172,9 @@ class PortfolioPositionView:
     native_value_currency: str
     native_cost_basis: Decimal
     native_cost_currency: str
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...]
+    average_buy_price: Decimal
+    average_buy_price_currency: str
 
 
 @dataclass(frozen=True, slots=True)
