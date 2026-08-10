@@ -24,8 +24,10 @@ without changing financial arithmetic. Real authenticated mixed-currency
 portfolio and dashboard responses now pass the strict browser validator.
 
 The Python core, runtime cutover, enforceable boundary, and final R10/R11
-regression audit of version 0.1 are complete. Version 0.1 is Architecture
-Locked. This status is not a declaration of public-production readiness.
+regression audit are complete. R12 crash-safe asynchronous import and portfolio
+completion is now in implementation; its executable scope is limited to
+R12-A through R12-F. This status is not a declaration of public-production
+readiness.
 
 ## Reading guide
 

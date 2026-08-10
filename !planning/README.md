@@ -1,8 +1,8 @@
 # Planning
 
 Status: `0.0 - Planning` completed on 2026-07-16
-Current phase: `0.1 - Architecture Locked` vcetne R11-L finalniho auditu je
-dokoncena s verdiktem PASS; `0.2` nezacala
+Current phase: `0.1-R12` crash-safe asynchronous import and portfolio completion
+je v implementaci; R11-L zustava uzavreny s verdiktem PASS a `0.2` nezacala
 
 Tato slozka obsahuje kompletni navrh produktu, architektury, bezpecnosti a vyvojovych pravidel projektu.
 
