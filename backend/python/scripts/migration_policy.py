@@ -36,8 +36,9 @@ LIABILITY_REVISION = "3g0001liabbal"
 TWELVE_DATA_PRICE_REVISION = "3h0001twdata"
 DAILY_BASELINE_REVISION = "3i0001d1base"
 DIRECT_FX_REVISION = "3j0001twfx"
-HEAD_REVISION = "3k0001mcost"
-MULTI_CURRENCY_COST_BASIS_REVISION = HEAD_REVISION
+MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
+BACKGROUND_JOB_REVISION = "3l0001bgjob"
+HEAD_REVISION = BACKGROUND_JOB_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -56,6 +57,9 @@ TWELVE_DATA_FX_REVISION_PATH = (
 )
 MULTI_CURRENCY_COST_BASIS_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3k0001mcost_add_multicurrency_holding_cost_basis.py"
+)
+BACKGROUND_JOB_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3l0001bgjob_add_persisted_background_jobs.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -213,7 +217,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 12,
+        "schema_version": 13,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -252,7 +256,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 8,
+        "revision_count": 9,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -260,8 +264,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3k0001mcost/schema.sql",
-        "checksum_source": "database/revisions/3k0001mcost/schema.sha256",
+        "schema_source": "database/revisions/3l0001bgjob/schema.sql",
+        "checksum_source": "database/revisions/3l0001bgjob/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -301,10 +305,8 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 8:
-        raise RuntimeError(
-            "The multi-currency cost basis schema requires exactly eight Alembic revisions."
-        )
+    if len(revisions) != 9:
+        raise RuntimeError("The background-job schema requires exactly nine Alembic revisions.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
@@ -314,6 +316,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     provider_identity = by_revision.get(TWELVE_DATA_PRICE_REVISION)
     daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
+    multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
@@ -329,8 +332,12 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError("The D1 lineage revision must follow the provider identity head.")
     if direct_fx is None or direct_fx.down_revision != DAILY_BASELINE_REVISION:
         raise RuntimeError("The Twelve Data FX revision must follow the D1 lineage head.")
-    if head is None or head.down_revision != DIRECT_FX_REVISION:
+    if multi_currency_cost is None or multi_currency_cost.down_revision != DIRECT_FX_REVISION:
         raise RuntimeError("The multi-currency cost basis revision must follow the FX head.")
+    if head is None or head.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
+        raise RuntimeError(
+            "The background-job revision must follow the multi-currency cost basis head."
+        )
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -466,7 +473,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": True,
     }
     for key, value in expected_cost_basis_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(multi_currency_cost.module, key, None) != value:
             raise RuntimeError(f"Multi-currency cost basis revision metadata is invalid for {key}.")
     cost_basis_source = MULTI_CURRENCY_COST_BASIS_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -483,6 +490,34 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
             raise RuntimeError(
                 f"Multi-currency cost basis revision is missing required token {token}."
             )
+
+    expected_background_job_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_persisted_background_job_lifecycle",
+        "affected_tables": ("BackgroundJob",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_background_job_metadata.items():
+        if getattr(head.module, key, None) != value:
+            raise RuntimeError(f"Background-job revision metadata is invalid for {key}.")
+    background_job_source = BACKGROUND_JOB_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"BackgroundJob"',
+        '"BackgroundJobStatus"',
+        '"BackgroundJobKind"',
+        '"BackgroundJob_one_running_per_account_key"',
+        '"BackgroundJob_claim_idx"',
+        '"BackgroundJob_expiredLease_idx"',
+        '"BackgroundJob_running_has_lease"',
+        '"BackgroundJob_completed_has_result"',
+        '"maxAttempts" BETWEEN 1 AND 20',
+        '"attemptCount" <= "maxAttempts"',
+        "BackgroundJob_userId_accountId_kind_idempotencyKey_key",
+        "Cannot remove BackgroundJob while durable job evidence exists.",
+    ):
+        if token not in background_job_source:
+            raise RuntimeError(f"Background-job revision is missing required token {token}.")
 
 
 def verify_schema_registry(
@@ -591,10 +626,7 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
                 raise RuntimeError(
                     f"Database CI contains removed Prisma tooling: {forbidden_command}."
                 )
-        head_schema_check = (
-            "python scripts/database_schema.py --check "
-            f"--revision {MULTI_CURRENCY_COST_BASIS_REVISION}"
-        )
+        head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
         if source.count(head_schema_check) < 2:
             raise RuntimeError(
                 "Database CI must verify the current head artifact after upgrade and bootstrap."

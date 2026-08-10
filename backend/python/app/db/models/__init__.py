@@ -4,6 +4,7 @@ from app.db.models.accounts import (
     AccountModel,
 )
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.budgets import (
     BudgetAccountModel,
     BudgetAlertModel,
@@ -28,6 +29,8 @@ from app.db.models.enums import (
     AliasMatchType,
     AssetAliasProvider,
     AssetType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     BudgetAlertType,
     BudgetPeriodType,
     CategoryType,
@@ -86,6 +89,9 @@ __all__ = [
     "AssetListingModel",
     "AssetModel",
     "AssetType",
+    "BackgroundJobKind",
+    "BackgroundJobModel",
+    "BackgroundJobStatus",
     "BudgetAccountModel",
     "BudgetAlertModel",
     "BudgetAlertType",

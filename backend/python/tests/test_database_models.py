@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "Asset",
     "AssetAlias",
     "AssetListing",
+    "BackgroundJob",
     "Budget",
     "BudgetAccount",
     "BudgetAlert",
@@ -75,6 +76,8 @@ EXPECTED_ENUMS = {
         "exchange",
     ],
     "AssetType": ["stock", "etf", "crypto", "commodity", "cash", "bond", "other"],
+    "BackgroundJobKind": ["import_workflow"],
+    "BackgroundJobStatus": ["queued", "running", "retry_wait", "completed", "failed"],
     "BudgetAlertType": ["approaching_limit", "exceeded", "reset"],
     "BudgetPeriodType": ["monthly", "weekly", "yearly", "custom"],
     "CategoryType": ["expense", "income", "both"],
@@ -201,7 +204,7 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 36
+    assert len(tables) == 37
     assert all(table.schema == "public" for table in tables.values())
     expected_nonstandard_primary_keys = {
         "AccountCanonicalState": ["accountId"],
@@ -234,7 +237,7 @@ def test_all_foreign_keys_target_mapped_tables() -> None:
 def test_complete_schema_mirror_reuses_all_postgresql_enums() -> None:
     enums = mapped_enums()
 
-    assert len(enums) == 28
+    assert len(enums) == 30
     assert {name: enum.enums for name, enum in enums.items()} == EXPECTED_ENUMS
     assert all(enum.create_type is False for enum in enums.values())
 

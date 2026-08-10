@@ -16,7 +16,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
-CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3k0001mcost" / "schema.sql"
+CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3l0001bgjob" / "schema.sql"
 SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
 BASELINE_TABLE_PATTERN = re.compile(r'CREATE TABLE "public"\."([^"]+)"')
 BASELINE_ENUM_PATTERN = re.compile(r'CREATE TYPE "public"\."([^"]+)" AS ENUM')
@@ -74,7 +74,7 @@ def test_current_schema_matches_ownership_manifest() -> None:
 def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 12
+    assert manifest["schema_version"] == 13
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
@@ -93,8 +93,8 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "state": "sole_migration_owner",
         "baseline_revision": "3d0001base",
         "cutover_revision": "3e0001cutover",
-        "head_revision": "3k0001mcost",
-        "revision_count": 8,
+        "head_revision": "3l0001bgjob",
+        "revision_count": 9,
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
@@ -151,6 +151,7 @@ def test_schema_revision_registry_preserves_inherited_baseline_and_head_snapshot
     assert registry["revisions"]["3i0001d1base"]["schema_change"] is True
     assert registry["revisions"]["3j0001twfx"]["schema_change"] is True
     assert registry["revisions"]["3k0001mcost"]["schema_change"] is True
+    assert registry["revisions"]["3l0001bgjob"]["schema_change"] is True
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:

@@ -1,4 +1,4 @@
-schema_version = 12
+schema_version = 13
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -24,6 +24,7 @@ prices_fx = ["PriceSnapshot", "ExchangeRate"]
 ledger = ["InvestmentEvent", "InvestmentMovement"]
 holdings = ["Holding"]
 imports = ["ImportBatch", "ImportRow", "ImportLog"]
+jobs = ["BackgroundJob"]
 snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
 canonical_lineage = ["AccountCanonicalState", "AccountCanonicalChange", "AccountSnapshotCanonicalBoundary", "DailySnapshotBaseline", "DailySnapshotBaselineAccount"]
 
@@ -38,6 +39,7 @@ assets = ["AssetAliasProvider", "AssetType"]
 prices_fx = ["PriceSource", "ExchangeRateSource"]
 ledger = ["InvestmentEventType", "InvestmentMovementKind", "MovementDirection"]
 imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", "ImportLogEvent"]
+jobs = ["BackgroundJobStatus", "BackgroundJobKind"]
 snapshots = ["SnapshotGranularity", "SnapshotSource"]
 
 [sqlalchemy_mirror]
@@ -72,6 +74,7 @@ tables = [
   "ImportBatch",
   "ImportRow",
   "ImportLog",
+  "BackgroundJob",
   "NetWorthSnapshot",
   "AccountSnapshot",
   "AccountSnapshotItem",
@@ -108,6 +111,8 @@ enums = [
   "ImportRowStatus",
   "ImportLogLevel",
   "ImportLogEvent",
+  "BackgroundJobStatus",
+  "BackgroundJobKind",
   "SnapshotGranularity",
   "SnapshotSource",
 ]
@@ -125,9 +130,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 8
+revision_count = 9
 head_count = 1
-head_revision = "3k0001mcost"
+head_revision = "3l0001bgjob"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -147,14 +152,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3k0001mcost"
-revision_count = 8
+head_revision = "3l0001bgjob"
+revision_count = 9
 head_count = 1
 
 [current_schema]
-revision = "3k0001mcost"
-schema_source = "database/revisions/3k0001mcost/schema.sql"
-checksum_source = "database/revisions/3k0001mcost/schema.sha256"
+revision = "3l0001bgjob"
+schema_source = "database/revisions/3l0001bgjob/schema.sql"
+checksum_source = "database/revisions/3l0001bgjob/schema.sha256"
 
 [cutover]
 phase = "completed"

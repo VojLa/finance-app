@@ -38,3 +38,8 @@ schema_change = true
 schema_source = "database/revisions/3k0001mcost/schema.sql"
 checksum_source = "database/revisions/3k0001mcost/schema.sha256"
 schema_change = true
+
+[revisions."3l0001bgjob"]
+schema_source = "database/revisions/3l0001bgjob/schema.sql"
+checksum_source = "database/revisions/3l0001bgjob/schema.sha256"
+schema_change = true

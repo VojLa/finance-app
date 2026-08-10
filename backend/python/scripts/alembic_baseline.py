@@ -30,11 +30,15 @@ LIABILITY_REVISION = "3g0001liabbal"
 PREVIOUS_HEAD_REVISION = "3h0001twdata"
 DAILY_BASELINE_REVISION = "3i0001d1base"
 DIRECT_FX_REVISION = "3j0001twfx"
-HEAD_REVISION = "3k0001mcost"
-MULTI_CURRENCY_COST_BASIS_REVISION = HEAD_REVISION
-EXPECTED_TABLE_COUNT = 36
-EXPECTED_ENUM_COUNT = 28
+MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
+BACKGROUND_JOB_REVISION = "3l0001bgjob"
+HEAD_REVISION = BACKGROUND_JOB_REVISION
+EXPECTED_TABLE_COUNT = 37
+EXPECTED_ENUM_COUNT = 30
+PREVIOUS_HEAD_TABLE_COUNT = 36
+PREVIOUS_HEAD_ENUM_COUNT = 28
 PREVIOUS_TABLE_COUNT = 31
+PREVIOUS_ENUM_COUNT = 28
 INHERITED_TABLE_COUNT = 30
 INHERITED_ENUM_COUNT = 27
 
@@ -56,8 +60,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 8:
-        raise RuntimeError(f"Expected exactly eight Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 9:
+        raise RuntimeError(f"Expected exactly nine Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -71,6 +75,7 @@ def verify_revision_graph() -> None:
     previous_head = by_revision.get(PREVIOUS_HEAD_REVISION)
     daily_baseline = by_revision.get(DAILY_BASELINE_REVISION)
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
+    multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
@@ -86,15 +91,19 @@ def verify_revision_graph() -> None:
         raise RuntimeError("The D1 lineage revision must follow the provider identity head.")
     if direct_fx is None or direct_fx.down_revision != DAILY_BASELINE_REVISION:
         raise RuntimeError("The direct FX revision must follow the D1 lineage head.")
-    if head is None or head.down_revision != DIRECT_FX_REVISION:
+    if multi_currency_cost is None or multi_currency_cost.down_revision != DIRECT_FX_REVISION:
         raise RuntimeError("The multi-currency cost basis revision must follow the direct FX head.")
+    if head is None or head.down_revision != MULTI_CURRENCY_COST_BASIS_REVISION:
+        raise RuntimeError(
+            "The background-job revision must follow the multi-currency cost basis head."
+        )
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 12:
+    if manifest.get("schema_version") != 13:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 12 after the multi-currency cost basis change."
+            "Ownership manifest schema_version must be 13 after the background-job change."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -124,7 +133,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 8,
+        "revision_count": 9,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -193,12 +202,19 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 def verify_database_state(state: DatabaseState) -> None:
     revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
-    if revision in {DAILY_BASELINE_REVISION, DIRECT_FX_REVISION, HEAD_REVISION}:
+    if revision == HEAD_REVISION:
         expected_tables = EXPECTED_TABLE_COUNT
         expected_enums = EXPECTED_ENUM_COUNT
+    elif revision in {
+        DAILY_BASELINE_REVISION,
+        DIRECT_FX_REVISION,
+        MULTI_CURRENCY_COST_BASIS_REVISION,
+    }:
+        expected_tables = PREVIOUS_HEAD_TABLE_COUNT
+        expected_enums = PREVIOUS_HEAD_ENUM_COUNT
     elif revision in {LIABILITY_REVISION, PREVIOUS_HEAD_REVISION}:
         expected_tables = PREVIOUS_TABLE_COUNT
-        expected_enums = EXPECTED_ENUM_COUNT
+        expected_enums = PREVIOUS_ENUM_COUNT
     else:
         expected_tables = INHERITED_TABLE_COUNT
         expected_enums = INHERITED_ENUM_COUNT

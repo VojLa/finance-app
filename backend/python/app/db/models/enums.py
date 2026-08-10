@@ -237,6 +237,18 @@ class ImportLogEvent(StrEnum):
     failed = "failed"
 
 
+class BackgroundJobStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    retry_wait = "retry_wait"
+    completed = "completed"
+    failed = "failed"
+
+
+class BackgroundJobKind(StrEnum):
+    import_workflow = "import_workflow"
+
+
 class SnapshotGranularity(StrEnum):
     minute = "minute"
     hour = "hour"
@@ -288,5 +300,7 @@ IMPORT_STATUS_DB = postgres_enum(ImportStatus, name="ImportStatus")
 IMPORT_ROW_STATUS_DB = postgres_enum(ImportRowStatus, name="ImportRowStatus")
 IMPORT_LOG_LEVEL_DB = postgres_enum(ImportLogLevel, name="ImportLogLevel")
 IMPORT_LOG_EVENT_DB = postgres_enum(ImportLogEvent, name="ImportLogEvent")
+BACKGROUND_JOB_STATUS_DB = postgres_enum(BackgroundJobStatus, name="BackgroundJobStatus")
+BACKGROUND_JOB_KIND_DB = postgres_enum(BackgroundJobKind, name="BackgroundJobKind")
 SNAPSHOT_GRANULARITY_DB = postgres_enum(SnapshotGranularity, name="SnapshotGranularity")
 SNAPSHOT_SOURCE_DB = postgres_enum(SnapshotSource, name="SnapshotSource")
