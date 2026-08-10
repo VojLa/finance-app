@@ -15,7 +15,7 @@ The governing decision is ADR 0006 in `!planning/decisions`.
   `3e0001cutover`
 - active deployment runner: `scripts/database_migrate.py`
 - Prisma migration history: frozen read-only archive
-- Prisma Client: enabled as a Next.js runtime compatibility layer
+- Prisma runtime, schema, and generator: removed
 - persistent staging or production databases: none at the time of cutover
 
 ## Files
@@ -89,17 +89,16 @@ verifies the result. It refuses a non-empty `public` schema.
 
 ## Frozen Prisma archive
 
-The Prisma migration archive exists only for historical CI verification. Its restricted wrapper is:
+The Prisma migration archive is historical SQL evidence only. It has no deploy,
+generate, validate, studio, schema, or client path. Verify its immutable manifest
+and aggregate SHA-256 through:
 
 ```bash
-CI=true ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY=1 npm run db:prisma:archive:verify
+npm run db:archive:verify
 ```
 
-The wrapper checks that the target schema is empty before calling Prisma Migrate. No normal
-production or developer deployment command may invoke Prisma Migrate.
-
-Prisma Client, `prisma validate`, `prisma generate`, and Prisma Studio remain available. The Prisma
-schema is a runtime compatibility mirror, not the migration source of truth.
+CI reconstructs databases from the canonical baseline and Alembic graph, never
+by executing the archived Prisma migrations.
 
 ## SQLAlchemy metadata parity
 
@@ -140,9 +139,9 @@ It must then be explicitly stamped at `3d0001base` and upgraded through
 
 ## Future schema changes
 
-Every production schema change after this cutover must be an Alembic revision. A revision must
-update SQLAlchemy metadata and must update `schema.prisma` when Prisma Client-visible objects are
-affected. The frozen Prisma migration directory and canonical inherited baseline must not be
+Every production schema change after this cutover must be an Alembic revision. A
+revision must update SQLAlchemy metadata and its revision-specific schema artifact.
+The frozen Prisma migration directory and canonical inherited baseline must not be
 rewritten to represent later changes.
 
 The first post-cutover schema change was Step 3F. New changes continue as
@@ -175,3 +174,6 @@ journal backfill does not claim to reproduce pre-D1 commit order, leaves
 Holding watermarks unproven until rebuild, and does not promote existing
 historical snapshots to D1 baselines. The schema advances to 36 application
 tables and remains at 28 enum types.
+
+Revision `3j0001twfx` adds the `twelve_data` direct-FX source identity. It is
+the current single Alembic head.

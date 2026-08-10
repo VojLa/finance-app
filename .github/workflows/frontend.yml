@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - "src/**"
-      - "prisma/**"
       - "scripts/**"
       - "package.json"
       - "package-lock.json"
@@ -20,7 +19,6 @@ on:
       - main
     paths:
       - "src/**"
-      - "prisma/**"
       - "scripts/**"
       - "package.json"
       - "package-lock.json"
@@ -69,9 +67,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Generate Prisma client
-        run: npm run db:generate
-
       - name: Check Python API generated contract
         run: npm run api:python:check
 
@@ -83,11 +78,6 @@ jobs:
 
       - name: Check TypeScript
         run: npx tsc --noEmit --incremental false
-
-      - name: Validate Prisma schema
-        run: npm run db:validate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app
 
       - name: Check whitespace and generated cleanliness
         shell: bash

@@ -29,11 +29,12 @@ Komunikace mezi moduly probiha pouze pres definovane kontrakty. Pokud dva moduly
 Source of truth se deli podle vrstvy:
 
 - `Python API` je source of truth pro backendovou business logiku a use-cases,
-- `Prisma schema` je aktualni source of truth pro fyzicky DB model,
+- `SQLAlchemy` je runtime mapa fyzickeho DB modelu a `Alembic` je jediny vlastnik migraci,
 - databazove tabulky jednotlivych domen jsou source of truth pro konkretni ulozena data,
 - read modely a snapshoty jsou odvozene vrstvy, ne primarni pravda o historii.
 
-To znamena, ze prechod backendu do Pythonu neni v rozporu s tim, ze schema databaze je zatim rizena pres `Prisma`. Kazda vec jen vlastni jinou vrstvu systemu.
+Historicke SQL v `prisma/migrations/` je pouze nemenny auditni archiv. Prisma
+runtime, schema ani generator uz nejsou soucasti aplikace.
 
 ---
 
@@ -42,7 +43,7 @@ To znamena, ze prechod backendu do Pythonu neni v rozporu s tim, ze schema datab
 - `Next.js` frontend nevlastni domenovou logiku. Patri do nej UI, routing, formulare a klientsky stav.
 - `Python API` je hlavni backendova vrstva a misto, kde zije obchodni logika.
 - `PostgreSQL` je centralni persistence vrstva.
-- `Prisma schema` je source of truth pro fyzicky DB model, ne pro business logiku.
+- `Alembic` a revizni schema artefakty jsou source of truth pro fyzicky DB model.
 - `Rust` patri jen do vypocetne tezkych deterministickych enginu, ne do orchestrace nebo API.
 - Kazdy modul ma mit jasnou odpovednost a nemel by zapisovat data, ktera patri jinymu modulu.
 - Read modely nejsou source of truth. Jsou odvozene z primarnich dat a slouzi pro rychle cteni.

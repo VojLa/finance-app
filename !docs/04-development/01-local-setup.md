@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js and npm for Next.js, Prisma Client tooling, and repository scripts.
+- Node.js and npm for the Next.js presentation layer and repository scripts.
 - Python 3.12.10 and `uv` for `backend/python`.
 - Docker Desktop for PostgreSQL 16 and the optional full local stack.
 - Rust only when working on `backend/rust`.
@@ -32,12 +32,14 @@ settings to both services and makes Next.js wait for the healthy API.
 ```powershell
 docker compose up db -d
 npm run db:bootstrap
+npm run seed
 ```
 
 `db:bootstrap` is for a new, empty database. For an existing database already
 on the Alembic revision graph, use `npm run db:migrate` or `npm run db:check`.
-Do not run Prisma Migrate for ordinary development; the Prisma archive is frozen
-and Alembic owns schema changes.
+The seed is a Python-owned, atomic, idempotent command for application-wide
+default categories. Alembic owns schema changes. Files under
+`prisma/migrations/` are immutable history and have no executable deployment path.
 
 ## Run services
 

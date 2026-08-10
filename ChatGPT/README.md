@@ -28,4 +28,4 @@ Tato složka je praktický rozcestník pro návrh, implementaci a kontrolu malý
 
 ## Povinný kontext finance-app
 
-Před prací vždy přečti `AGENTS.md`. Podle oblasti načti jen relevantní dokumenty z `memory/` a `!planning/`. U Python backendu respektuj `backend/python/README.md`. Databázový ownership se nesmí domýšlet: aktuálně PostgreSQL schéma vlastní Prisma, SQLAlchemy je runtime/verifikační zrcadlo a Alembic je připravený na budoucí explicitní cutover.
+Před prací vždy přečti `AGENTS.md`. Podle oblasti načti jen relevantní dokumenty z `memory/` a `!planning/`. U Python backendu respektuj `backend/python/README.md`. Databázový ownership se nesmí domýšlet: SQLAlchemy je kompletní runtime mapování a Alembic jediný vlastník migrací. `prisma/migrations/` je pouze neměnný historický SQL archiv bez runtime nástrojů.

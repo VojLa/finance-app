@@ -29,7 +29,7 @@ Pravidla:
 
 ## 4. Databázové pravidlo
 
-Než vznikne změna schématu, ověř `backend/python/database/schema_ownership.toml` a aktuální plán migrace. V současném hybridním stavu vlastní aplikační migrace Prisma. Nevytvářej aktivní Alembic revizi ani nepřeváděj ownership bez explicitně schváleného cutoveru. Neupravuj staré Prisma migrace a nespouštěj schema create/stamp/upgrade při startu aplikace.
+Než vznikne změna schématu, ověř `backend/python/database/schema_ownership.toml` a aktuální plán migrace. Alembic je jediný vlastník aplikačních migrací; každá změna potřebuje SQLAlchemy parity a revizní schema artefakt. Neupravuj staré Prisma migrace a nespouštěj schema create/stamp/upgrade při startu aplikace.
 
 ## 5. Testy a automatické kontroly
 
@@ -37,13 +37,13 @@ Začni nejmenší relevantní sadou testů, potom spusť přiměřenou quality g
 
 Python backend (z `backend/python`):
 
-~~~bash
+```bash
 uv run pytest <relevantní-test>
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app scripts tests
 uv run pytest
-~~~
+```
 
 Úplná backendová brána: `uv run python scripts/check.py`. Pro TypeScript podle rozsahu použij `npm.cmd test`, `npm.cmd run lint` a `npx.cmd tsc --noEmit`. `npm run build` nespouštěj, pokud běží `next dev`.
 

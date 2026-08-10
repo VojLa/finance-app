@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from datetime import datetime
@@ -27,22 +26,13 @@ from app.db.models import (
 from app.db.url import normalize_database_url
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 PREVIOUS_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "3g0001liabbal" / "schema.sql"
 ASSET_ID = "twelve-data-identity-asset"
 LISTING_ID = "twelve-data-identity-listing"
 ALIAS_ID = "twelve-data-identity-alias"
 PRICE_ID = "twelve-data-identity-price"
 NOW = datetime(2026, 8, 5, 12, 0, 0)
-
-
-def _prisma_enum_values(name: str) -> tuple[str, ...]:
-    source = PRISMA_SCHEMA.read_text(encoding="utf-8")
-    match = re.search(rf"enum {re.escape(name)} \{{(?P<body>.*?)\n\}}", source, re.DOTALL)
-    assert match is not None
-    return tuple(line.strip() for line in match.group("body").splitlines() if line.strip())
 
 
 async def _postgres_enum_values(connection: AsyncConnection, name: str) -> tuple[str, ...]:
@@ -182,9 +172,6 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
 
         assert postgres_alias_values == tuple(item.value for item in AssetAliasProvider)
         assert postgres_price_values == tuple(item.value for item in PriceSource)
-        assert postgres_alias_values == _prisma_enum_values("AssetAliasProvider")
-        assert postgres_price_values == _prisma_enum_values("PriceSource")
-
         async with sessions.begin() as session:
             await session.execute(delete(AssetModel).where(AssetModel.id == ASSET_ID))
             asset = AssetModel(

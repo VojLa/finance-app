@@ -171,14 +171,6 @@ async def public_schema_is_empty(database_url: str) -> bool:
         await engine.dispose()
 
 
-def run_archive_target_check(database_url: str) -> None:
-    if os.getenv("CI") != "true" or os.getenv("ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY") != "1":
-        raise RuntimeError("Frozen Prisma archive deployment is restricted to explicit CI use.")
-    migration_policy.verify_policy()
-    if not asyncio.run(public_schema_is_empty(database_url)):
-        raise RuntimeError("Frozen Prisma archive verification requires an empty public schema.")
-
-
 def load_canonical_baseline(database_url: str, psql: str) -> None:
     normalized_url = normalize_libpq_url(database_url)
     source = CANONICAL_BASELINE.read_text(encoding="utf-8")
@@ -222,7 +214,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "command",
-        choices=("check", "upgrade", "bootstrap", "archive-target-check"),
+        choices=("check", "upgrade", "bootstrap"),
     )
     parser.add_argument(
         "--database-url",
@@ -261,8 +253,6 @@ def main() -> int:
             run_upgrade(args.database_url, args.pg_dump, args.lock_key)
         elif args.command == "bootstrap":
             run_bootstrap(args.database_url, args.pg_dump, args.psql, args.lock_key)
-        else:
-            run_archive_target_check(args.database_url)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"Database migration {args.command} failed: {error}", file=sys.stderr)
         return 1

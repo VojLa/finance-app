@@ -106,7 +106,7 @@ def test_repository_migration_policy_is_completed() -> None:
     assert ARCHIVE_MANIFEST.is_file()
 
 
-def test_package_scripts_use_alembic_and_restrict_prisma_archive(tmp_path: Path) -> None:
+def test_package_scripts_use_only_alembic_and_python_seed(tmp_path: Path) -> None:
     package = tmp_path / "package.json"
     upgrade = "cd backend/python && uv run python scripts/database_migrate.py upgrade"
     check = "cd backend/python && uv run python scripts/database_migrate.py check"
@@ -122,8 +122,13 @@ def test_package_scripts_use_alembic_and_restrict_prisma_archive(tmp_path: Path)
                     "db:alembic:check": check,
                     "db:alembic:upgrade": upgrade,
                     "db:alembic:bootstrap": bootstrap,
-                    "db:prisma:archive:verify": "node scripts/prisma-archive-verify.mjs",
-                }
+                    "db:archive:verify": (
+                        "cd backend/python && uv run python scripts/migration_policy.py --check"
+                    ),
+                    "seed": "cd backend/python && uv run python scripts/seed_defaults.py",
+                },
+                "dependencies": {},
+                "devDependencies": {},
             }
         ),
         encoding="utf-8",
@@ -153,7 +158,7 @@ def test_runtime_ddl_policy_rejects_automatic_migrations(
         verify_runtime_ddl(app)
 
 
-def test_workflow_policy_requires_restricted_archive_wrapper(
+def test_workflow_policy_rejects_removed_prisma_tooling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,7 +167,6 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
     workflows.mkdir()
     workflow = workflows / "database-schema.yml"
     workflow.write_text(
-        "run: npm run db:prisma:archive:verify\n"
         "run: python scripts/database_schema.py --check --revision 3j0001twfx\n"
         "run: python scripts/database_schema.py --check --revision 3j0001twfx\n",
         encoding="utf-8",

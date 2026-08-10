@@ -52,7 +52,6 @@ D1_LINEAGE_REVISION_PATH = (
 TWELVE_DATA_FX_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3j0001twfx_add_twelve_data_fx_source.py"
 )
-PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
     "metadata.create_all",
@@ -274,9 +273,9 @@ def verify_ownership_manifest(
         raise RuntimeError("Frozen Prisma migration ownership policy is invalid.")
 
     if manifest.get("prisma_runtime") != {
-        "state": "compatibility_mirror",
-        "client_enabled": True,
-        "schema_is_migration_source": False,
+        "state": "removed",
+        "client_enabled": False,
+        "schema_present": False,
     }:
         raise RuntimeError("Prisma runtime compatibility policy is invalid.")
 
@@ -475,44 +474,10 @@ def verify_schema_registry(
     if "inherits_schema_from" in head_entry:
         raise RuntimeError("A schema-changing revision cannot inherit an older schema artifact.")
 
-    prisma_source = PRISMA_SCHEMA.read_text(encoding="utf-8")
-    account_start = prisma_source.index("model Account {")
-    account_end = prisma_source.index("\n}", account_start)
-    if "notes" not in prisma_source[account_start:account_end]:
-        raise RuntimeError("Prisma Account model must expose the notes compatibility field.")
-    liability_start = prisma_source.index("model LiabilityBalance {")
-    liability_end = prisma_source.index("\n}", liability_start)
-    liability_model = prisma_source[liability_start:liability_end]
-    for field in (
-        "accountId",
-        "effectiveAt",
-        "outstandingPrincipal",
-        "accruedInterest",
-        "feesOutstanding",
-        "totalOutstanding",
-        "source",
-        "externalId",
-        "createdAt",
-    ):
-        if field not in liability_model:
-            raise RuntimeError(
-                f"Prisma LiabilityBalance model is missing compatibility field {field}."
-            )
-    if "enum LiabilityBalanceSource {" not in prisma_source:
-        raise RuntimeError("Prisma must mirror the LiabilityBalanceSource enum.")
-    for enum_name in ("AssetAliasProvider", "PriceSource"):
-        enum_start = prisma_source.index(f"enum {enum_name} {{")
-        enum_end = prisma_source.index("\n}", enum_start)
-        if "twelve_data" not in prisma_source[enum_start:enum_end]:
-            raise RuntimeError(f"Prisma must mirror Twelve Data in {enum_name}.")
-    exchange_rate_start = prisma_source.index("enum ExchangeRateSource {")
-    exchange_rate_end = prisma_source.index("\n}", exchange_rate_start)
-    if "twelve_data" not in prisma_source[exchange_rate_start:exchange_rate_end]:
-        raise RuntimeError("Prisma must mirror Twelve Data in ExchangeRateSource.")
-
 
 def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
-    scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+    package = json.loads(package_json.read_text(encoding="utf-8"))
+    scripts = package.get("scripts", {})
     upgrade = "cd backend/python && uv run python scripts/database_migrate.py upgrade"
     check = "cd backend/python && uv run python scripts/database_migrate.py check"
     bootstrap = "cd backend/python && uv run python scripts/database_migrate.py bootstrap"
@@ -524,13 +489,30 @@ def verify_package_scripts(package_json: Path = PACKAGE_JSON) -> None:
         "db:alembic:check": check,
         "db:alembic:upgrade": upgrade,
         "db:alembic:bootstrap": bootstrap,
-        "db:prisma:archive:verify": "node scripts/prisma-archive-verify.mjs",
+        "db:archive:verify": (
+            "cd backend/python && uv run python scripts/migration_policy.py --check"
+        ),
+        "seed": "cd backend/python && uv run python scripts/seed_defaults.py",
     }
     for name, command in expected.items():
         if scripts.get(name) != command:
             raise RuntimeError(f"Invalid post-cutover database script: {name}.")
-    if "db:prisma:deploy:legacy" in scripts:
-        raise RuntimeError("The unrestricted legacy Prisma deploy script must be removed.")
+    forbidden_scripts = {name for name in scripts if "prisma" in name.lower()}
+    if forbidden_scripts:
+        raise RuntimeError(f"Prisma package scripts must be removed: {sorted(forbidden_scripts)}")
+    dependencies = {
+        **package.get("dependencies", {}),
+        **package.get("devDependencies", {}),
+    }
+    forbidden_dependencies = {
+        "@prisma/client",
+        "prisma",
+        "bcryptjs",
+        "@types/bcryptjs",
+    }
+    present = sorted(forbidden_dependencies.intersection(dependencies))
+    if present:
+        raise RuntimeError(f"Removed runtime dependencies are still declared: {present}")
 
 
 def verify_runtime_ddl(app_root: Path | None = None) -> None:
@@ -562,8 +544,11 @@ def verify_workflow_policy(workflows_root: Path | None = None) -> None:
     database_workflow = root / "database-schema.yml"
     if database_workflow.is_file():
         source = database_workflow.read_text(encoding="utf-8")
-        if "npm run db:prisma:archive:verify" not in source:
-            raise RuntimeError("Database CI must use the restricted Prisma archive wrapper.")
+        for forbidden_command in ("prisma generate", "prisma validate", "npm run db:prisma"):
+            if forbidden_command in source:
+                raise RuntimeError(
+                    f"Database CI contains removed Prisma tooling: {forbidden_command}."
+                )
         head_schema_check = f"python scripts/database_schema.py --check --revision {HEAD_REVISION}"
         if source.count(head_schema_check) != 2:
             raise RuntimeError(

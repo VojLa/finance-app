@@ -21,7 +21,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: finance-app-web
-    command: sh -c "npm run db:generate && npm run dev"
+    command: npm run dev
     ports:
       - "3000:3000"
     volumes:
@@ -29,7 +29,6 @@ services:
       - node_modules:/app/node_modules
       - next_cache:/app/.next
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: development-secret-change-me
       PYTHON_BACKEND_URL: http://api:8010
@@ -39,8 +38,6 @@ services:
       INTERNAL_AUTH_TOKEN_TTL_SECONDS: "60"
       PYTHON_API_TIMEOUT_MS: "30000"
     depends_on:
-      db:
-        condition: service_healthy
       api:
         condition: service_healthy
 

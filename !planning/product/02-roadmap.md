@@ -102,9 +102,9 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
-Status: BOUNDARY REMEDIATION OPEN. Python core internal architecture MVP je
-implementovane, ale aktivni TypeScript/Prisma business cesty jeste porusuji prisnou
-exit podminku teto faze. Plan dokonceni je v
+Status: FINAL BOUNDARY AUDIT OPEN. Python core i odstraneni aktivniho
+TypeScript/Prisma business runtime jsou implementovane; zbyva R11-L enforcement,
+regresni audit a uzavreni exit podminky. Plan dokonceni je v
 [`../architecture/12-python-backend-completion.md`](../architecture/12-python-backend-completion.md).
 Toto neni public-production readiness a prace `0.2` v tomto milniku nezacala.
 

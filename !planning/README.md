@@ -1,8 +1,8 @@
 # Planning
 
 Status: `0.0 - Planning` completed on 2026-07-16
-Current phase: jadro `0.1 - Architecture Locked` je implementovane, ale boundary
-remediation pro uplne odstraneni TS/Prisma business runtime je otevrena; `0.2` nezacala
+Current phase: jadro `0.1 - Architecture Locked` i odstraneni TS/Prisma runtime
+jsou implementovane; otevreny je zaverecny R11-L boundary audit a `0.2` nezacala
 
 Tato slozka obsahuje kompletni navrh produktu, architektury, bezpecnosti a vyvojovych pravidel projektu.
 

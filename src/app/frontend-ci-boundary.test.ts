@@ -21,23 +21,19 @@ describe("Frontend GitHub Actions boundary", () => {
     expect(source).toContain("actions/setup-node@v4")
     expect(source).toContain("actions/setup-python@v5")
     expect(source).toContain("astral-sh/setup-uv@v6")
-    expect(source).toContain(
-      "DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app"
-    )
     for (const command of [
       "uv sync --frozen --extra dev",
       "npm ci",
-      "npm run db:generate",
       "npm run api:python:check",
       "npm test",
       "npm run lint",
       "npx tsc --noEmit --incremental false",
-      "npm run db:validate",
       "git diff --check",
       'test -z "$(git status --porcelain)"',
     ]) {
       expect(source).toContain(command)
     }
+    expect(source).not.toMatch(/prisma|DATABASE_URL/i)
   })
 
   it("has ref-scoped cancellation and no weakened or stateful gate", async () => {

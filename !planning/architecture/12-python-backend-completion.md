@@ -1,6 +1,6 @@
 # Epic: Dokonceni Python backendu a odstraneni legacy business kodu
 
-Status: navrzeno
+Status: implementace R11-A az R11-K dokoncena; R11-L audit otevren
 
 Execution status: in progress; exact commit-sized sequence is maintained in
 `../../ChatGPT/steps/0.1-r11.md`.
@@ -30,19 +30,10 @@ vertikalnich rezech; nema vzniknout jeden nevratny big-bang prepis.
 
 ## Proc je epic nutny
 
-Zakladni Python workflow uz existuji, ale runtime hranice jeste neni dokoncena:
-
-- dashboard soucasne vola Python snapshot a legacy `/api/dashboard`;
-- legacy dashboard cte financni data pres Prisma a muze zapisovat Yahoo FX;
-- transakce, kategorie a rozpocty jsou stale plne v TypeScriptu/Prisma;
-- rucni investicni udalosti stale spousti TS ledger, prepocet holdings a TS snapshot;
-- cast sdileni uctu a prihlaseni pristupuje k databazi primo z Next.js;
-- TS importni parsery, ledger, rates a snapshot service zustavaji v repozitari;
-- Alembic je aktualni vlastnik schematu, ale Prisma stale funguje jako runtime
-  compatibility mirror.
-
-Proto nelze povazovat hranici „Python je source of truth“ za uplne uzavrenou, dokud
-neprojde zaverecny audit tohoto epicu.
+Runtime cutover je po R11-K dokoncen: aktivni business schopnosti vlastni Python,
+FX pouziva prime Twelve Data pary, Alembic je jediny vlastnik migraci a Prisma
+runtime/schema/generator byly odstraneny. Hranice bude formalne uzavrena az po
+zaverecnem R11-L enforcement a regresnim auditu.
 
 ## Cilova architektura
 
@@ -111,7 +102,7 @@ soucasti TypeScript vrstvy.
 | Rucni investicni operace | TS ledger + holdings + snapshot                                 | Python command API                            | jeden idempotentni Python use-case                     |
 | Snapshoty/historie       | Python hlavni cesta, TS snapshot service zustava                | pouze Python                                  | prepojit posledni route a smazat TS service            |
 | Ceny a FX                | Python provideri + TS Yahoo rates                               | pouze Python provider registry                | okamzite zastavit TS zapis a sjednotit evidence policy |
-| DB/migrace               | Alembic owner, Prisma runtime mirror                            | pouze SQLAlchemy/Alembic                      | nahradit seed/backfill a odebrat Prisma runtime        |
+| DB/migrace               | pouze SQLAlchemy/Alembic; Prisma je nemenny SQL archiv          | beze zmeny                                    | R11-K dokonceno                                        |
 
 ## Zavazna rozhodnuti
 
@@ -156,7 +147,7 @@ Kazde dlouhodobe rozhodnuti se zapise jako ADR pred kodem, ktery na nem zavisi.
 | Castecny manualni posting           | jedna Python transakce, idempotency key a koordinovany refresh                       |
 | Rozbiti UI pri zmene kontraktu      | OpenAPI generate/check, tenky compatibility adapter, contract testy                  |
 | Predcasne smazani legacy            | deletion gate vyzaduje nulove runtime konzumenty a uspesny E2E                       |
-| Prisma schema drift                 | Alembic check v CI; Prisma mirror se po finalnim cutoveru odstrani                   |
+| Poskozeni historickeho SQL archivu  | agregatni SHA-256 kontrola; zadna runtime nebo deploy cesta                          |
 | Provider limit/licence              | explicitni provider policy, quota observabilita, fail-closed bez ticheho fallbacku   |
 
 ## Rozpad na milestone a kroky

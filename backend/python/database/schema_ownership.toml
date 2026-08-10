@@ -40,12 +40,6 @@ ledger = ["InvestmentEventType", "InvestmentMovementKind", "MovementDirection"]
 imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", "ImportLogEvent"]
 snapshots = ["SnapshotGranularity", "SnapshotSource"]
 
-[python_usage]
-read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate", "LiabilityBalance"]
-read_enums = ["LiabilityBalanceSource"]
-transitive_read_tables = ["User", "Asset", "AssetListing"]
-transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "PriceSource", "AssetType", "ExchangeRateSource"]
-
 [sqlalchemy_mirror]
 state = "mirrored_in_sqlalchemy"
 coverage = "complete"
@@ -184,9 +178,9 @@ archive_manifest = "database/prisma_migration_archive.toml"
 archive_sha256 = "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
 
 [prisma_runtime]
-state = "compatibility_mirror"
-client_enabled = true
-schema_is_migration_source = false
+state = "removed"
+client_enabled = false
+schema_present = false
 
 [cutover_evidence]
 environment_inventory = "database/cutover/environments.toml"

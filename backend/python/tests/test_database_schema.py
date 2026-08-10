@@ -13,15 +13,11 @@ from app.db.base import Base
 from scripts.database_schema import normalize_database_url, normalize_schema_dump
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
 CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3j0001twfx" / "schema.sql"
 SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
-PRISMA_SCHEMA_PATH = REPOSITORY_ROOT / "prisma" / "schema.prisma"
-
-PRISMA_OBJECT_PATTERN = re.compile(r"^\s*(model|enum)\s+(\w+)\s+\{", re.MULTILINE)
 BASELINE_TABLE_PATTERN = re.compile(r'CREATE TABLE "public"\."([^"]+)"')
 BASELINE_ENUM_PATTERN = re.compile(r'CREATE TYPE "public"\."([^"]+)" AS ENUM')
 
@@ -40,27 +36,10 @@ def flatten_domains(domains: dict[str, list[str]]) -> dict[str, str]:
     return flattened
 
 
-def prisma_objects() -> tuple[set[str], set[str]]:
-    schema = PRISMA_SCHEMA_PATH.read_text(encoding="utf-8")
-    models: set[str] = set()
-    enums: set[str] = set()
-    for object_kind, name in PRISMA_OBJECT_PATTERN.findall(schema):
-        target = models if object_kind == "model" else enums
-        target.add(name)
-    return models, enums
-
-
 def manifest_objects() -> tuple[dict[str, str], dict[str, str]]:
     manifest = load_manifest()
     objects = manifest["objects"]
     return flatten_domains(objects["tables"]), flatten_domains(objects["enums"])
-
-
-def baseline_objects() -> tuple[set[str], set[str]]:
-    baseline = BASELINE_PATH.read_text(encoding="utf-8")
-    tables = set(BASELINE_TABLE_PATTERN.findall(baseline))
-    enums = set(BASELINE_ENUM_PATTERN.findall(baseline))
-    return tables, enums
 
 
 def current_objects() -> tuple[set[str], set[str]]:
@@ -80,14 +59,6 @@ def sqlalchemy_objects() -> tuple[set[str], set[str]]:
         if isinstance(column.type, ENUM) and column.type.name is not None
     }
     return tables, enums
-
-
-def test_ownership_manifest_matches_prisma_models_and_enums() -> None:
-    prisma_models, prisma_enums = prisma_objects()
-    manifest_tables, manifest_enums = manifest_objects()
-
-    assert set(manifest_tables) == prisma_models
-    assert set(manifest_enums) == prisma_enums
 
 
 def test_current_schema_matches_ownership_manifest() -> None:
@@ -127,35 +98,9 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
-        "state": "compatibility_mirror",
-        "client_enabled": True,
-        "schema_is_migration_source": False,
-    }
-
-
-def test_python_persistence_slice_is_explicit() -> None:
-    usage = load_manifest()["python_usage"]
-
-    assert set(usage["read_tables"]) == {
-        "Account",
-        "AccountMember",
-        "ExchangeRate",
-        "Holding",
-        "LiabilityBalance",
-    }
-    assert set(usage["read_enums"]) == {"LiabilityBalanceSource"}
-    assert set(usage["transitive_read_tables"]) == {
-        "Asset",
-        "AssetListing",
-        "User",
-    }
-    assert set(usage["transitive_read_enums"]) == {
-        "AccountMemberRole",
-        "AccountRelationType",
-        "AccountType",
-        "AssetType",
-        "ExchangeRateSource",
-        "PriceSource",
+        "state": "removed",
+        "client_enabled": False,
+        "schema_present": False,
     }
 
 

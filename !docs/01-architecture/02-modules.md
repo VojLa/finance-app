@@ -80,8 +80,8 @@ deterministic ID collision fails closed. Only SQLSTATE `40001`, `40P01`, or
 `23505` retries, for at most three complete attempts.
 
 R5-B2B0 adds `AssetAliasProvider.twelve_data` and
-`PriceSource.twelve_data` across PostgreSQL, SQLAlchemy, and the Prisma
-compatibility mirror. R5-B2B1 narrows that opaque value to byte-exact canonical
+`PriceSource.twelve_data` across PostgreSQL and SQLAlchemy. R5-B2B1 narrows that
+opaque value to byte-exact canonical
 JSON `{"symbol":"AAPL","mic_code":"XNAS"}` and registers the production
 provider. The planner still projects only persisted identity; it never derives
 symbol or MIC from Trading212, Listing, Asset, ISIN, name, exchange, or country.
@@ -753,17 +753,15 @@ canonical-baseline/Alembic path and proves the active production chain:
 Holdings -> exact alias CLI -> production market providers -> coordinated
 snapshots -> portfolio/dashboard/history adapters`.
 
-The representative user base currency is CZK because the approved production
-ČNB adapter owns only direct foreign-currency-to-CZK observations.
-Raiffeisenbank stays CZK; Trading212 and Anycoin stay EUR and therefore
-exercise direct `EUR -> CZK` evidence. This fixture does not make snapshot
-planning CZK-specific: persisted `User.baseCurrency` remains the target
-currency owner, original-currency breakdowns remain unchanged, and reverse or
-foreign-to-foreign ČNB capability is not claimed.
+The representative user base currency is CZK. Raiffeisenbank stays CZK;
+Trading212 and Anycoin stay EUR and therefore exercise direct `EUR -> CZK`
+Twelve Data evidence. Persisted `User.baseCurrency` remains the target currency
+owner, original-currency breakdowns remain unchanged, and any other output
+currency requests its own direct pair without inverse or pivot derivation.
 
 The Frontend workflow is a database-free remote gate for generated-contract
-drift, Vitest, lint, TypeScript, and Prisma validation. The existing Backend
-Python and Database Schema workflows remain separate authoritative gates.
+drift, Vitest, lint, and TypeScript. The existing Backend Python and Database
+Schema workflows remain separate authoritative gates.
 
 Valid dashboard allocation ratios are projected as deterministic exact
 four-decimal presentation percentages using largest-remainder distribution.

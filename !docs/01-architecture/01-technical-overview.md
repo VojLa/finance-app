@@ -24,8 +24,8 @@ Browser -> Next.js UI -> thin authenticated adapter -> FastAPI /api/v1
   the D2 current-value engine, portfolio, dashboard, and history.
 - **PostgreSQL 16** is the central persistence store.
 - **SQLAlchemy** provides the async runtime mappings for all application tables.
-- **Alembic** is the sole owner of schema migrations. Prisma Client remains a
-  Next.js compatibility layer; its migration history is frozen.
+- **Alembic** is the sole owner of schema migrations. Prisma runtime, schema,
+  and generator are removed; only hash-verified historical SQL remains.
 - **Rust** currently contains only a prototype calculation crate. It is not
   called by Python and must not be used as a source of financial truth yet.
 

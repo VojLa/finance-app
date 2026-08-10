@@ -17,8 +17,9 @@
 - SQLAlchemy metadata is runtime representation; Alembic is the only migration
   owner. Do not call `create_all`, alter historical Prisma migrations, or run
   migrations from application startup.
-- Update `schema.prisma` as a compatibility mirror when an Alembic migration
-  changes Prisma Client-visible objects. Do not create a new Prisma migration.
+- Do not add a Prisma schema, client, generator, runtime dependency, or executable
+  migration command. The frozen historical SQL archive is verified only by its
+  Python-owned manifest and hash policy.
 - Keep Rust engines pure, explicit, and behind a Python-owned interface. The
   current crate is experimental and does not authorize float arithmetic in the
   production finance path.
