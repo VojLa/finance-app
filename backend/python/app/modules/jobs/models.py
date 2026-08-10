@@ -7,6 +7,8 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.db.models.enums import BackgroundJobKind, BackgroundJobStatus
+
 JOB_SCHEMA_VERSION: Final[Literal[1]] = 1
 MAX_IMPORT_JOB_BATCHES = 10
 
@@ -98,6 +100,44 @@ class ImportJobResult(BaseModel):
         if self.completed_at.tzinfo is not None:
             raise ValueError("Persisted job timestamps must be timezone-naive UTC.")
         return self
+
+
+class ImportJobStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    batch_ids: tuple[str, ...] = Field(min_length=1, max_length=MAX_IMPORT_JOB_BATCHES)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def validate_batch_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return ImportJobPayload(batch_ids=value).batch_ids
+
+
+class ImportJobError(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    code: str = Field(min_length=1, max_length=100, pattern=r"^[^\r\n]+$")
+    message: str = Field(min_length=1, max_length=1000, pattern=r"^[^\r\n]+$")
+
+
+class ImportJobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    account_id: str
+    kind: BackgroundJobKind
+    status: BackgroundJobStatus
+    progress: ImportJobProgress
+    result: ImportJobResult | None
+    error: ImportJobError | None
+    attempt_count: int = Field(ge=0)
+    max_attempts: int = Field(ge=1)
+    manual_retry_count: int = Field(ge=0)
+    run_after: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def canonical_import_job_idempotency_key(

@@ -8,14 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.enums import AccountMemberRole, ImportSource, ImportStatus
-from app.modules.accounts.access import require_account_access
+from app.modules.accounts.access import AccountNotFoundError, require_account_access
 from app.modules.imports.repository import ImportBatchRepository
 from app.modules.jobs.lifecycle import MAX_AUTOMATIC_ATTEMPTS
 from app.modules.jobs.models import (
     ImportJobCheckpoint,
+    ImportJobError,
     ImportJobPayload,
     ImportJobPhase,
     ImportJobProgress,
+    ImportJobResponse,
+    ImportJobResult,
     canonical_import_job_idempotency_key,
 )
 from app.modules.jobs.repository import BackgroundJobRepository, EnqueuedBackgroundJob
@@ -42,6 +45,15 @@ class BackgroundJobEnqueueStateError(ApplicationError):
         super().__init__(
             code="background_job_enqueue_state_invalid",
             message="The import batches are not available for background processing.",
+            status_code=409,
+        )
+
+
+class BackgroundJobRetryStateError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="background_job_retry_state_invalid",
+            message="The background job cannot be retried in its current state.",
             status_code=409,
         )
 
@@ -164,3 +176,71 @@ class BackgroundJobService:
             await self.session.rollback()
             raise
         return EnqueueImportJobResult(job=enqueued.job, created=enqueued.created)
+
+    @staticmethod
+    def public_response(job: BackgroundJobModel) -> ImportJobResponse:
+        if (job.error_code is None) is not (job.error_message is None):
+            raise RuntimeError("The persisted background job error is inconsistent.")
+        error = None
+        if job.error_code is not None and job.error_message is not None:
+            error = ImportJobError(code=job.error_code, message=job.error_message)
+        return ImportJobResponse(
+            id=job.id,
+            account_id=job.account_id,
+            kind=job.kind,
+            status=job.status,
+            progress=ImportJobProgress.model_validate(job.progress),
+            result=ImportJobResult.model_validate(job.result) if job.result is not None else None,
+            error=error,
+            attempt_count=job.attempt_count,
+            max_attempts=job.max_attempts,
+            manual_retry_count=job.manual_retry_count,
+            run_after=job.run_after,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+        )
+
+    async def get_import_job(
+        self, *, principal: AuthenticatedPrincipal, account_id: str, job_id: str
+    ) -> ImportJobResponse:
+        try:
+            await require_account_access(
+                session=self.session, principal=principal, account_id=account_id
+            )
+        except AccountNotFoundError as exc:
+            raise BackgroundJobNotFoundError() from exc
+        job = await self.repository.get_owned(
+            user_id=principal.user_id, account_id=account_id, job_id=job_id
+        )
+        if job is None:
+            raise BackgroundJobNotFoundError()
+        return self.public_response(job)
+
+    async def retry_import_job(
+        self, *, principal: AuthenticatedPrincipal, account_id: str, job_id: str
+    ) -> ImportJobResponse:
+        try:
+            try:
+                await require_account_access(
+                    session=self.session,
+                    principal=principal,
+                    account_id=account_id,
+                    allowed_roles=WRITE_ROLES,
+                    for_update=True,
+                )
+            except AccountNotFoundError as exc:
+                raise BackgroundJobNotFoundError() from exc
+            retry = await self.repository.retry_failed(
+                user_id=principal.user_id, account_id=account_id, job_id=job_id, now=_now()
+            )
+            if retry is None:
+                raise BackgroundJobNotFoundError()
+            if not retry.retried:
+                raise BackgroundJobRetryStateError()
+            await self.session.commit()
+            return self.public_response(retry.job)
+        except Exception:
+            await self.session.rollback()
+            raise

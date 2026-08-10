@@ -221,6 +221,9 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     assert sorted(path for path in schema["paths"] if "import" in path) == [
         "/api/v1/accounts/{account_id}/imports",
         "/api/v1/accounts/{account_id}/imports/finalize",
+        "/api/v1/accounts/{account_id}/imports/jobs",
+        "/api/v1/accounts/{account_id}/imports/jobs/{job_id}",
+        "/api/v1/accounts/{account_id}/imports/jobs/{job_id}/retry",
         "/api/v1/accounts/{account_id}/imports/{batch_id}",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/classify",

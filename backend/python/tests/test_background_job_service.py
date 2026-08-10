@@ -5,11 +5,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.auth.models import AuthenticatedPrincipal
-from app.db.models.enums import BackgroundJobStatus, ImportSource, ImportStatus
+from app.db.models.enums import AccountMemberRole, BackgroundJobStatus, ImportSource, ImportStatus
+from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
+from app.modules.jobs.lifecycle import MAX_MANUAL_RETRIES
 from app.modules.jobs.models import canonical_import_job_idempotency_key
-from app.modules.jobs.repository import EnqueuedBackgroundJob
+from app.modules.jobs.repository import (
+    BackgroundJobRepository,
+    EnqueuedBackgroundJob,
+    ManualRetryBackgroundJob,
+)
 from app.modules.jobs.service import (
     BackgroundJobEnqueueStateError,
+    BackgroundJobNotFoundError,
+    BackgroundJobRetryStateError,
     BackgroundJobService,
     EnqueueImportJobCommand,
 )
@@ -42,6 +50,28 @@ def _job(payload: dict[str, object]):
         status=BackgroundJobStatus.queued,
         payload=payload,
         created_at=datetime(2030, 1, 1),
+    )
+
+
+def _retry_job(*, status: BackgroundJobStatus = BackgroundJobStatus.failed, retries: int = 0):
+    now = datetime(2030, 1, 1)
+    return SimpleNamespace(
+        id="job-1",
+        user_id="user-1",
+        account_id="account-1",
+        status=status,
+        manual_retry_count=retries,
+        attempt_count=3,
+        run_after=now,
+        result={"private": "old"},
+        error_code="failed",
+        error_message="failed safely",
+        lease_owner="worker-a",
+        lease_expires_at=now,
+        lease_heartbeat_at=now,
+        started_at=now,
+        finished_at=now,
+        updated_at=now,
     )
 
 
@@ -214,3 +244,168 @@ async def test_enqueue_rejects_mixed_sources_before_creating_job(monkeypatch) ->
         )
 
     repository.enqueue_import_job.assert_not_called()
+
+
+async def test_repository_manual_retry_resets_the_same_failed_job_and_increments_counter(
+    monkeypatch,
+) -> None:
+    session = MagicMock(flush=AsyncMock())
+    job = _retry_job()
+    repository = BackgroundJobRepository(session)
+    monkeypatch.setattr(repository, "get_owned", AsyncMock(return_value=job))
+    now = datetime(2030, 1, 2)
+
+    result = await repository.retry_failed(
+        user_id="user-1", account_id="account-1", job_id="job-1", now=now
+    )
+
+    assert result == ManualRetryBackgroundJob(job=job, retried=True)
+    assert job.id == "job-1"
+    assert job.status is BackgroundJobStatus.queued
+    assert job.attempt_count == 0
+    assert job.manual_retry_count == 1
+    assert job.result is job.error_code is job.error_message is None
+    assert job.lease_owner is job.lease_expires_at is job.lease_heartbeat_at is None
+    assert job.started_at is job.finished_at is None
+    assert job.run_after == now
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "retries"),
+    [
+        (BackgroundJobStatus.queued, 0),
+        (BackgroundJobStatus.completed, 0),
+        (BackgroundJobStatus.running, 0),
+        (BackgroundJobStatus.failed, MAX_MANUAL_RETRIES),
+    ],
+)
+async def test_repository_manual_retry_rejects_nonfailed_or_limited_jobs(
+    monkeypatch,
+    status: BackgroundJobStatus,
+    retries: int,
+) -> None:
+    session = MagicMock(flush=AsyncMock())
+    job = _retry_job(status=status, retries=retries)
+    repository = BackgroundJobRepository(session)
+    monkeypatch.setattr(repository, "get_owned", AsyncMock(return_value=job))
+
+    result = await repository.retry_failed(
+        user_id="user-1",
+        account_id="account-1",
+        job_id="job-1",
+        now=datetime(2030, 1, 2),
+    )
+
+    assert result == ManualRetryBackgroundJob(job=job, retried=False)
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "role",
+    [AccountMemberRole.owner, AccountMemberRole.admin, AccountMemberRole.editor],
+)
+async def test_retry_permits_all_write_roles(monkeypatch, role: AccountMemberRole) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+    repository = MagicMock()
+    job = _retry_job()
+    repository.retry_failed = AsyncMock(
+        return_value=ManualRetryBackgroundJob(job=job, retried=True)
+    )
+
+    async def authorize(**kwargs: object) -> None:
+        assert role in kwargs["allowed_roles"]  # type: ignore[operator]
+
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", authorize)
+    monkeypatch.setattr(
+        BackgroundJobService, "public_response", staticmethod(lambda _job: object())
+    )
+
+    result = await BackgroundJobService(session, repository=repository).retry_import_job(
+        principal=PRINCIPAL, account_id="account-1", job_id="job-1"
+    )
+
+    assert result is not None
+    session.commit.assert_awaited_once()
+
+
+async def test_retry_denies_viewer(monkeypatch) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+
+    async def deny(**_: object) -> None:
+        raise AccountAccessDeniedError()
+
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", deny)
+
+    with pytest.raises(AccountAccessDeniedError) as raised:
+        await BackgroundJobService(session, repository=MagicMock()).retry_import_job(
+            principal=PRINCIPAL, account_id="account-1", job_id="job-1"
+        )
+
+    assert raised.value.status_code == 403
+
+
+async def test_get_hides_foreign_account_and_missing_or_foreign_job_identically(
+    monkeypatch,
+) -> None:
+    session = MagicMock()
+    repository = MagicMock(get_owned=AsyncMock(return_value=None))
+
+    async def missing_account(**_: object) -> None:
+        raise AccountNotFoundError()
+
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", missing_account)
+    with pytest.raises(BackgroundJobNotFoundError) as foreign_account:
+        await BackgroundJobService(session, repository=repository).get_import_job(
+            principal=PRINCIPAL, account_id="foreign-account", job_id="job-foreign"
+        )
+
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
+    with pytest.raises(BackgroundJobNotFoundError) as absent_or_foreign_job:
+        await BackgroundJobService(session, repository=repository).get_import_job(
+            principal=PRINCIPAL, account_id="account-1", job_id="job-foreign"
+        )
+
+    assert (
+        (
+            foreign_account.value.status_code,
+            foreign_account.value.code,
+            foreign_account.value.message,
+        )
+        == (
+            absent_or_foreign_job.value.status_code,
+            absent_or_foreign_job.value.code,
+            absent_or_foreign_job.value.message,
+        )
+        == (404, "background_job_not_found", "The background job was not found.")
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "retries"),
+    [
+        (BackgroundJobStatus.queued, 0),
+        (BackgroundJobStatus.completed, 0),
+        (BackgroundJobStatus.running, 0),
+        (BackgroundJobStatus.failed, MAX_MANUAL_RETRIES),
+    ],
+)
+async def test_retry_service_returns_409_for_nonretryable_job(
+    monkeypatch, status: BackgroundJobStatus, retries: int
+) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
+    repository = MagicMock(
+        retry_failed=AsyncMock(
+            return_value=ManualRetryBackgroundJob(
+                job=_retry_job(status=status, retries=retries), retried=False
+            )
+        )
+    )
+
+    with pytest.raises(BackgroundJobRetryStateError) as raised:
+        await BackgroundJobService(session, repository=repository).retry_import_job(
+            principal=PRINCIPAL, account_id="account-1", job_id="job-1"
+        )
+
+    assert raised.value.status_code == 409

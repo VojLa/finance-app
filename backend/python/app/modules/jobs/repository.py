@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.enums import BackgroundJobKind, BackgroundJobStatus
-from app.modules.jobs.lifecycle import LeaseIdentity
+from app.modules.jobs.lifecycle import MAX_MANUAL_RETRIES, LeaseIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +26,12 @@ class EnqueuedBackgroundJob:
 class ClaimedBackgroundJob:
     job: BackgroundJobModel
     lease: LeaseIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class ManualRetryBackgroundJob:
+    job: BackgroundJobModel
+    retried: bool
 
 
 class BackgroundJobLeaseLostError(RuntimeError):
@@ -127,6 +133,40 @@ class BackgroundJobRepository:
         if for_update:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return await self.session.scalar(statement)
+
+    async def retry_failed(
+        self,
+        *,
+        user_id: str,
+        account_id: str,
+        job_id: str,
+        now: datetime,
+    ) -> ManualRetryBackgroundJob | None:
+        job = await self.get_owned(
+            user_id=user_id, account_id=account_id, job_id=job_id, for_update=True
+        )
+        if job is None:
+            return None
+        if (
+            job.status is not BackgroundJobStatus.failed
+            or job.manual_retry_count >= MAX_MANUAL_RETRIES
+        ):
+            return ManualRetryBackgroundJob(job=job, retried=False)
+        job.status = BackgroundJobStatus.queued
+        job.attempt_count = 0
+        job.manual_retry_count += 1
+        job.run_after = now
+        job.result = None
+        job.error_code = None
+        job.error_message = None
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.lease_heartbeat_at = None
+        job.started_at = None
+        job.finished_at = None
+        job.updated_at = now
+        await self.session.flush()
+        return ManualRetryBackgroundJob(job=job, retried=True)
 
     async def claim_next(
         self,

@@ -139,6 +139,57 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/accounts/{account_id}/imports/jobs": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Start Import Job */
+    post: operations["start_import_job_api_v1_accounts__account_id__imports_jobs_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/accounts/{account_id}/imports/jobs/{job_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Import Job */
+    get: operations["get_import_job_api_v1_accounts__account_id__imports_jobs__job_id__get"]
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/accounts/{account_id}/imports/jobs/{job_id}/retry": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Retry Import Job */
+    post: operations["retry_import_job_api_v1_accounts__account_id__imports_jobs__job_id__retry_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/accounts/{account_id}/imports/{batch_id}": {
     parameters: {
       query?: never
@@ -1030,6 +1081,16 @@ export interface components {
       /** Name */
       name?: string | null
     }
+    /**
+     * BackgroundJobKind
+     * @enum {string}
+     */
+    BackgroundJobKind: "import_workflow"
+    /**
+     * BackgroundJobStatus
+     * @enum {string}
+     */
+    BackgroundJobStatus: "queued" | "running" | "retry_wait" | "completed" | "failed"
     /** BudgetAlertResponse */
     BudgetAlertResponse: {
       /** Acknowledgedat */
@@ -1628,6 +1689,114 @@ export interface components {
       /** Rows Unique */
       rows_unique: number
       status: components["schemas"]["ImportStatus"]
+    }
+    /** ImportJobError */
+    ImportJobError: {
+      /** Code */
+      code: string
+      /** Message */
+      message: string
+    }
+    /**
+     * ImportJobPhase
+     * @enum {string}
+     */
+    ImportJobPhase:
+      | "queued"
+      | "parsing"
+      | "normalizing"
+      | "deduplicating"
+      | "classifying"
+      | "posting"
+      | "rebuilding_holdings"
+      | "refreshing_snapshot"
+      | "completed"
+    /** ImportJobProgress */
+    ImportJobProgress: {
+      /** Completed Batches */
+      completed_batches: number
+      /** Completed Units */
+      completed_units: number
+      phase: components["schemas"]["ImportJobPhase"]
+      /**
+       * Schema Version
+       * @default 1
+       * @constant
+       */
+      schema_version: 1
+      /** Total Batches */
+      total_batches: number
+      /** Total Units */
+      total_units: number
+    }
+    /** ImportJobResponse */
+    ImportJobResponse: {
+      /** Account Id */
+      account_id: string
+      /** Attempt Count */
+      attempt_count: number
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      error: components["schemas"]["ImportJobError"] | null
+      /** Finished At */
+      finished_at: string | null
+      /** Id */
+      id: string
+      kind: components["schemas"]["BackgroundJobKind"]
+      /** Manual Retry Count */
+      manual_retry_count: number
+      /** Max Attempts */
+      max_attempts: number
+      progress: components["schemas"]["ImportJobProgress"]
+      result: components["schemas"]["ImportJobResult"] | null
+      /**
+       * Run After
+       * Format: date-time
+       */
+      run_after: string
+      /** Started At */
+      started_at: string | null
+      status: components["schemas"]["BackgroundJobStatus"]
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string
+    }
+    /** ImportJobResult */
+    ImportJobResult: {
+      /** Batch Ids */
+      batch_ids: string[]
+      /**
+       * Completed At
+       * Format: date-time
+       */
+      completed_at: string
+      /** Rows Imported */
+      rows_imported: number
+      /** Rows Skipped */
+      rows_skipped: number
+      /** Rows Total */
+      rows_total: number
+      /**
+       * Schema Version
+       * @default 1
+       * @constant
+       */
+      schema_version: 1
+      /**
+       * Snapshot Refresh Status
+       * @enum {string}
+       */
+      snapshot_refresh_status: "created" | "replayed" | "not_required"
+    }
+    /** ImportJobStartRequest */
+    ImportJobStartRequest: {
+      /** Batch Ids */
+      batch_ids: string[]
     }
     /** ImportNormalizeResponse */
     ImportNormalizeResponse: {
@@ -2845,6 +3014,105 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["FinalizeImportBatchesResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  start_import_job_api_v1_accounts__account_id__imports_jobs_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ImportJobStartRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportJobResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  get_import_job_api_v1_accounts__account_id__imports_jobs__job_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+        job_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportJobResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  retry_import_job_api_v1_accounts__account_id__imports_jobs__job_id__retry_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+        job_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportJobResponse"]
         }
       }
       /** @description Validation Error */
