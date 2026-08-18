@@ -38,9 +38,10 @@ function parseAcceptance(value: unknown): ImportJobAcceptance {
   }
   const record = value as Record<string, unknown>
   if (
-    Object.keys(record).sort().join("|") !== "acceptedBatchIds|job|rejectedFiles" ||
+    Object.keys(record).sort().join("|") !== "acceptedBatchIds|job|outcome|rejectedFiles" ||
+    !["started", "resumed"].includes(record.outcome as string) ||
     !Array.isArray(record.acceptedBatchIds) ||
-    record.acceptedBatchIds.length < 1 ||
+    (record.outcome === "started" && record.acceptedBatchIds.length < 1) ||
     record.acceptedBatchIds.length > 10 ||
     !Array.isArray(record.rejectedFiles) ||
     record.acceptedBatchIds.some(
@@ -77,7 +78,11 @@ function parseAcceptance(value: unknown): ImportJobAcceptance {
     )
   }
   const job = parseJob(record.job)
-  if (job.progress.total_batches !== record.acceptedBatchIds.length) {
+  const outcome = record.outcome as ImportJobAcceptance["outcome"]
+  if (
+    (outcome === "started" && job.progress.total_batches !== record.acceptedBatchIds.length) ||
+    (outcome === "resumed" && record.acceptedBatchIds.length !== 0)
+  ) {
     throw new ImportClientError(
       502,
       "python_api_contract_error",
@@ -85,6 +90,7 @@ function parseAcceptance(value: unknown): ImportJobAcceptance {
     )
   }
   return {
+    outcome,
     job,
     acceptedBatchIds: record.acceptedBatchIds,
     rejectedFiles: record.rejectedFiles as ImportJobAcceptance["rejectedFiles"],

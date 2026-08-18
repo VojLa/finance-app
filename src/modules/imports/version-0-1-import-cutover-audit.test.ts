@@ -70,20 +70,24 @@ describe("version 0.1 durable browser import acceptance", () => {
     }
     const pythonResponses = [
       {
-        id: "batch-r12",
-        account_id: "account-r12",
-        source: "raiffeisenbank",
-        filename: "fixture.csv",
-        file_size: bytes.byteLength,
-        file_encoding: null,
-        checksum,
-        status: "pending",
-        rows_total: null,
-        rows_imported: null,
-        rows_skipped: null,
-        created_at: "2036-08-03T10:00:00",
-        completed_at: null,
-        internal_metadata: "must-not-leak",
+        status: "upload_required",
+        batch: {
+          id: "batch-r12",
+          account_id: "account-r12",
+          source: "raiffeisenbank",
+          filename: "fixture.csv",
+          file_size: bytes.byteLength,
+          file_encoding: null,
+          checksum,
+          status: "pending",
+          rows_total: null,
+          rows_imported: null,
+          rows_skipped: null,
+          created_at: "2036-08-03T10:00:00",
+          completed_at: null,
+          internal_metadata: "must-not-leak",
+        },
+        job: null,
       },
       {
         batch_id: "batch-r12",
@@ -139,7 +143,12 @@ describe("version 0.1 durable browser import acceptance", () => {
     ])
     expect(pythonRequests.every((request) => !request.headers.has("Cookie"))).toBe(true)
     expect(new Uint8Array(await pythonRequests[1].arrayBuffer())).toEqual(bytes)
-    expect(result).toEqual({ job, acceptedBatchIds: ["batch-r12"], rejectedFiles: [] })
+    expect(result).toEqual({
+      outcome: "started",
+      job,
+      acceptedBatchIds: ["batch-r12"],
+      rejectedFiles: [],
+    })
     expect(JSON.stringify(result)).not.toMatch(
       /internal_metadata|user-r12@example|Authorization|Cookie/
     )

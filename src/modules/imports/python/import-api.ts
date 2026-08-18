@@ -14,12 +14,12 @@ import {
   type PythonApiClientOptions,
 } from "@/modules/python-api/server/transport"
 import type {
-  PythonImportBatch,
   PythonImportBatchCreateRequest,
   PythonImportJob,
+  PythonImportRegistration,
   PythonImportUploadResponse,
 } from "./import-contract"
-import { parseImportBatch, parseImportJob, parseImportUpload } from "./import-contract"
+import { parseImportJob, parseImportRegistration, parseImportUpload } from "./import-contract"
 
 type ImportUploadPath = keyof paths & "/api/v1/accounts/{account_id}/imports/{batch_id}/file"
 
@@ -61,7 +61,7 @@ export function createPythonImportApi(
     async createImportBatch(
       accountId: string,
       payload: PythonImportBatchCreateRequest
-    ): Promise<PythonImportBatch> {
+    ): Promise<PythonImportRegistration> {
       const value = await responseData(
         client.POST("/api/v1/accounts/{account_id}/imports", {
           params: { path: { account_id: accountId } },
@@ -69,7 +69,7 @@ export function createPythonImportApi(
         }),
         mapImportPythonError
       )
-      return requireParsed(parseImportBatch, value)
+      return requireParsed(parseImportRegistration, value)
     },
 
     async uploadImportFile(

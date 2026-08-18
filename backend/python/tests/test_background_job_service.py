@@ -1,12 +1,22 @@
 from datetime import datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.auth.models import AuthenticatedPrincipal
-from app.db.models.enums import AccountMemberRole, BackgroundJobStatus, ImportSource, ImportStatus
+from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.enums import (
+    AccountMemberRole,
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    ImportSource,
+    ImportStatus,
+)
+from app.db.models.imports import ImportBatchModel
 from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
+from app.modules.imports.service import ImportBatchAlreadyImportedError, ImportBatchNotReusableError
 from app.modules.jobs.lifecycle import MAX_MANUAL_RETRIES
 from app.modules.jobs.models import canonical_import_job_idempotency_key
 from app.modules.jobs.repository import (
@@ -72,6 +82,71 @@ def _retry_job(*, status: BackgroundJobStatus = BackgroundJobStatus.failed, retr
         started_at=now,
         finished_at=now,
         updated_at=now,
+    )
+
+
+def _registration_batch(status: ImportStatus) -> ImportBatchModel:
+    return cast(
+        ImportBatchModel,
+        SimpleNamespace(
+            id="batch-a",
+            user_id="user-1",
+            account_id="account-1",
+            source=ImportSource.trading212,
+            filename="history.csv",
+            file_size=100,
+            file_encoding="utf-8",
+            checksum="a" * 64,
+            status=status,
+            rows_total=1,
+            rows_imported=1,
+            rows_skipped=0,
+            created_at=datetime(2030, 1, 1),
+            completed_at=datetime(2030, 1, 2) if status is ImportStatus.completed else None,
+        ),
+    )
+
+
+def _registration_job(
+    status: BackgroundJobStatus,
+    *,
+    payload: dict[str, object] | None = None,
+    user_id: str = "user-1",
+) -> BackgroundJobModel:
+    now = datetime(2030, 1, 1)
+    return cast(
+        BackgroundJobModel,
+        SimpleNamespace(
+            id="job-1",
+            user_id=user_id,
+            account_id="account-1",
+            kind=BackgroundJobKind.import_workflow,
+            status=status,
+            payload=payload or {"schema_version": 1, "batch_ids": ["batch-a"]},
+            progress={
+                "schema_version": 1,
+                "phase": "queued",
+                "completed_units": 0,
+                "total_units": 7,
+                "completed_batches": 0,
+                "total_batches": 1,
+            },
+            result=None,
+            error_code="import_failed" if status is BackgroundJobStatus.failed else None,
+            error_message="Import processing failed safely."
+            if status is BackgroundJobStatus.failed
+            else None,
+            attempt_count=1,
+            max_attempts=5,
+            manual_retry_count=0,
+            run_after=now,
+            started_at=now if status is not BackgroundJobStatus.queued else None,
+            finished_at=now
+            if status in {BackgroundJobStatus.completed, BackgroundJobStatus.failed}
+            else None,
+            created_at=now,
+            updated_at=now,
+        ),
     )
 
 
@@ -217,6 +292,36 @@ async def test_enqueue_replays_running_job_before_revalidating_batch_state(monke
 
 
 @pytest.mark.asyncio
+async def test_enqueue_rejects_processing_batch_without_matching_canonical_job(monkeypatch) -> None:
+    session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+    monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
+    batches = MagicMock()
+    batches.get_for_account = AsyncMock(
+        return_value=_batch("batch-a", status=ImportStatus.processing)
+    )
+    repository = MagicMock()
+    repository.get_owned_by_key = AsyncMock(return_value=None)
+
+    with pytest.raises(BackgroundJobEnqueueStateError) as raised:
+        await BackgroundJobService(
+            session,
+            repository=repository,
+            batch_repository=batches,
+        ).enqueue_import_job(
+            EnqueueImportJobCommand(
+                principal=PRINCIPAL,
+                account_id="account-1",
+                batch_ids=("batch-a",),
+            )
+        )
+
+    assert raised.value.status_code == 409
+    repository.enqueue_import_job.assert_not_called()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rejects_mixed_sources_before_creating_job(monkeypatch) -> None:
     session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
     monkeypatch.setattr("app.modules.jobs.service.require_account_access", AsyncMock())
@@ -244,6 +349,92 @@ async def test_enqueue_rejects_mixed_sources_before_creating_job(monkeypatch) ->
         )
 
     repository.enqueue_import_job.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("batch_status", "job_status"),
+    [
+        (ImportStatus.processing, BackgroundJobStatus.queued),
+        (ImportStatus.processing, BackgroundJobStatus.running),
+        (ImportStatus.processing, BackgroundJobStatus.retry_wait),
+        # A failed publication leaves the canonical batch terminal, but the
+        # failed durable job is the only safe recovery identity.
+        (ImportStatus.completed, BackgroundJobStatus.failed),
+    ],
+)
+def test_registration_resumes_one_safe_canonical_job(
+    batch_status: ImportStatus, job_status: BackgroundJobStatus
+) -> None:
+    response = BackgroundJobService._registration_response(
+        principal=PRINCIPAL,
+        batch=_registration_batch(batch_status),
+        matches=[_registration_job(job_status)],
+    )
+
+    assert response.status == "resume_job"
+    assert response.batch is None
+    assert response.job.id == "job-1"
+    assert not hasattr(response.job, "payload")
+
+
+def test_registration_reports_completed_workflow_as_already_imported() -> None:
+    with pytest.raises(ImportBatchAlreadyImportedError) as raised:
+        BackgroundJobService._registration_response(
+            principal=PRINCIPAL,
+            batch=_registration_batch(ImportStatus.completed),
+            matches=[_registration_job(BackgroundJobStatus.completed)],
+        )
+
+    assert raised.value.code == "import_batch_already_imported"
+
+
+def test_registration_reports_legacy_terminal_batch_as_already_imported() -> None:
+    with pytest.raises(ImportBatchAlreadyImportedError) as raised:
+        BackgroundJobService._registration_response(
+            principal=PRINCIPAL,
+            batch=_registration_batch(ImportStatus.partially_completed),
+            matches=[],
+        )
+
+    assert raised.value.code == "import_batch_already_imported"
+
+
+@pytest.mark.parametrize(
+    "status", [ImportStatus.processing, ImportStatus.failed, ImportStatus.cancelled]
+)
+def test_registration_rejects_nonreusable_batch_without_canonical_job(status: ImportStatus) -> None:
+    with pytest.raises(ImportBatchNotReusableError) as raised:
+        BackgroundJobService._registration_response(
+            principal=PRINCIPAL,
+            batch=_registration_batch(status),
+            matches=[],
+        )
+
+    assert raised.value.code == "import_batch_not_reusable"
+
+
+@pytest.mark.parametrize(
+    "matches",
+    [
+        [
+            _registration_job(BackgroundJobStatus.queued),
+            _registration_job(BackgroundJobStatus.failed),
+        ],
+        [_registration_job(BackgroundJobStatus.queued, payload={"batch_ids": ["batch-a"]})],
+        [_registration_job(BackgroundJobStatus.queued, user_id="user-foreign")],
+    ],
+)
+def test_registration_fails_closed_for_multiple_corrupt_or_foreign_job_matches(
+    matches: list[BackgroundJobModel],
+) -> None:
+    with pytest.raises(ImportBatchNotReusableError) as raised:
+        BackgroundJobService._registration_response(
+            principal=PRINCIPAL,
+            batch=_registration_batch(ImportStatus.processing),
+            matches=matches,
+        )
+
+    assert raised.value.code == "import_batch_not_reusable"
 
 
 async def test_repository_manual_retry_resets_the_same_failed_job_and_increments_counter(

@@ -1817,6 +1817,34 @@ export interface components {
       status: components["schemas"]["ImportStatus"]
     }
     /**
+     * ImportRegistrationResumeJobResponse
+     * @description A safe registration result for an already durable import workflow.
+     */
+    ImportRegistrationResumeJobResponse: {
+      /** Batch */
+      batch?: null
+      job: components["schemas"]["ImportJobResponse"]
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      status: "resume_job"
+    }
+    /**
+     * ImportRegistrationUploadRequiredResponse
+     * @description A safe registration result that still requires the raw-file upload.
+     */
+    ImportRegistrationUploadRequiredResponse: {
+      batch: components["schemas"]["ImportBatchResponse"]
+      /** Job */
+      job?: null
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      status: "upload_required"
+    }
+    /**
      * ImportSnapshotRefreshStatus
      * @enum {string}
      */
@@ -2950,7 +2978,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          "application/json": components["schemas"]["ImportBatchResponse"]
+          "application/json":
+            | components["schemas"]["ImportRegistrationUploadRequiredResponse"]
+            | components["schemas"]["ImportRegistrationResumeJobResponse"]
         }
       }
       /** @description Validation Error */

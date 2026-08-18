@@ -17,9 +17,32 @@ atomically posts classified batches into canonical history.
 
 Registration requires source metadata and a lower-case SHA-256 hexadecimal digest.
 An authenticated retry by the same user for the same account, source, checksum, filename,
-declared size, and encoding returns the canonical existing batch identity. A
-metadata mismatch is rejected without revealing or reconciling a batch outside
-that exact authenticated registration scope.
+declared size, and encoding follows this exact matrix:
+
+| Existing durable evidence                                                | Registration result                                                                              |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `pending` batch without a matching job                                   | `upload_required`: public batch metadata and no job; the raw file must be uploaded               |
+| Matching canonical job in `queued`, `running`, `retry_wait`, or `failed` | `resume_job`: safe public job and no batch identity; the browser polls it or offers its retry UI |
+| Terminal batch with its completed job, or a legacy terminal batch        | Stable `409 import_batch_already_imported`; the file is not reused                               |
+| `processing`, `failed`, or `cancelled` without a matching job            | Stable non-reusable conflict; no file, job, or canonical data is created                         |
+
+An exact registration replay never reopens, replaces, or mutates immutable
+import evidence. A metadata mismatch is rejected without revealing or
+reconciling a batch outside that exact authenticated registration scope. Raw
+file upload remains pending-only: terminal batches return
+`import_batch_already_imported`, while other non-pending states return the
+upload-state conflict. Registration is jobs-owned and its response is a strict
+XOR: `upload_required` contains public batch metadata with `job: null`, while
+`resume_job` contains a safe public job with `batch: null`. It never exposes a
+job payload, checkpoint, lease, or a resumable batch ID. If a batch advances
+from `pending` to `processing` or terminal posting between registration and
+upload, Next.js may hand off that exact batch ID only after either precise
+`409 import_upload_state_invalid` or `409 import_batch_already_imported`
+response. Python then replays its matching canonical durable job. A completed
+replay is presented as the localized already-imported result; an active,
+retrying, or failed job is returned for normal polling or retry. A missing
+matching job remains the safe backend enqueue conflict, and nothing is created
+or reopened.
 The body upload must be `application/octet-stream`; it is streamed, checked
 against declared metadata, and is safe to repeat after a successful identical
 write. A file may be up to 1 GiB, while worker-side parsing intentionally has a
@@ -127,6 +150,16 @@ post, one coordinated Holding rebuild, and atomic snapshot refresh. It claims
 jobs with a fenced lease, persists safe progress and retry state, and can resume
 after process or browser interruption. Next.js contains only authenticated
 transport, response validation, persisted job identity, and presentation.
+
+Next.js registers every selected file before it uploads any bytes. It reports a
+true terminal duplicate as `import_batch_already_imported`, so a selection of a
+duplicate plus new pending files still starts the new job. A resume-only
+selection returns HTTP 202 with one safe existing job and no accepted batch IDs;
+the UI polls that job and offers its normal retry state when it has failed.
+Repeated copies of the same resume job collapse to one response. Distinct resume
+jobs, or a resume job mixed with new upload-required data, fail closed before
+any new raw data is uploaded. The user-facing message is presented in Czech,
+while the API error code remains the canonical English contract.
 
 Raw files remain on local storage in R12, so the embedded worker is intentionally
 single-instance unless that directory is mounted as shared storage. Automated

@@ -3,13 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
+from app.db.models.accounts import AccountModel
 from app.db.models.background_jobs import BackgroundJobModel
-from app.db.models.enums import AccountMemberRole, ImportSource, ImportStatus
+from app.db.models.enums import (
+    AccountMemberRole,
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    ImportSource,
+    ImportStatus,
+)
+from app.db.models.imports import ImportBatchModel
 from app.modules.accounts.access import AccountNotFoundError, require_account_access
+from app.modules.imports.models import (
+    ImportBatchCreateRequest,
+    ImportRegistrationResponse,
+    ImportRegistrationResumeJobResponse,
+    ImportRegistrationUploadRequiredResponse,
+)
 from app.modules.imports.repository import ImportBatchRepository
+from app.modules.imports.service import (
+    ImportBatchAlreadyImportedError,
+    ImportBatchNotReusableError,
+    ImportBatchService,
+)
 from app.modules.jobs.lifecycle import MAX_AUTOMATIC_ATTEMPTS
 from app.modules.jobs.models import (
     ImportJobCheckpoint,
@@ -58,6 +79,10 @@ class BackgroundJobRetryStateError(ApplicationError):
         )
 
 
+class ImportRegistrationStateError(ImportBatchNotReusableError):
+    """Fail closed when durable registration evidence is inconsistent."""
+
+
 @dataclass(frozen=True, slots=True)
 class EnqueueImportJobCommand:
     principal: AuthenticatedPrincipal
@@ -102,6 +127,123 @@ class BackgroundJobService:
         self.session = session
         self.repository = repository or BackgroundJobRepository(session)
         self.batch_repository = batch_repository or ImportBatchRepository(session)
+
+    async def register_import_batch(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        payload: ImportBatchCreateRequest,
+    ) -> ImportRegistrationResponse:
+        """Register one exact file and safely recover its canonical workflow.
+
+        This is intentionally jobs-owned: a batch state alone cannot prove that
+        it may be resumed.  The account and exact batch rows are locked until
+        the response decision is committed.  The job lookup remains an MVCC
+        read so it cannot invert the completion lock order; a concurrent status
+        transition safely resolves as either resume-now or already-completed.
+        """
+
+        try:
+            await require_account_access(
+                session=self.session,
+                principal=principal,
+                account_id=account_id,
+                allowed_roles=WRITE_ROLES,
+                for_update=True,
+            )
+            account = await self.session.scalar(
+                select(AccountModel.id).where(AccountModel.id == account_id).with_for_update()
+            )
+            if account is None:
+                # Authorization already hides foreign accounts.  This only
+                # protects a concurrent account deletion from creating state.
+                raise ImportRegistrationStateError()
+
+            registered = await ImportBatchService(self.session).register_exact_batch(
+                principal=principal,
+                account_id=account_id,
+                payload=payload,
+            )
+            batch = registered.batch
+            matches = await self.repository.find_owned_import_jobs_for_batch(
+                user_id=principal.user_id,
+                account_id=account_id,
+                batch_id=batch.id,
+            )
+            response = self._registration_response(
+                principal=principal,
+                batch=batch,
+                matches=matches,
+            )
+            await self.session.commit()
+            return response
+        except Exception:
+            await self.session.rollback()
+            raise
+
+    @classmethod
+    def _registration_response(
+        cls,
+        *,
+        principal: AuthenticatedPrincipal,
+        batch: ImportBatchModel,
+        matches: list[BackgroundJobModel],
+    ) -> ImportRegistrationResponse:
+        if len(matches) > 1:
+            raise ImportRegistrationStateError()
+        if len(matches) == 1:
+            job = matches[0]
+            try:
+                if (
+                    job.user_id != principal.user_id
+                    or job.account_id != batch.account_id
+                    or job.kind is not BackgroundJobKind.import_workflow
+                ):
+                    raise ValueError("The matched job ownership is inconsistent.")
+                parsed_payload = ImportJobPayload.model_validate(job.payload)
+                if (
+                    parsed_payload.model_dump(mode="json") != job.payload
+                    or batch.id not in parsed_payload.batch_ids
+                ):
+                    raise ValueError("The matched job payload is not canonical.")
+            except (AttributeError, TypeError, ValidationError, ValueError):
+                raise ImportRegistrationStateError() from None
+
+            if job.status in {
+                BackgroundJobStatus.queued,
+                BackgroundJobStatus.running,
+                BackgroundJobStatus.retry_wait,
+                BackgroundJobStatus.failed,
+            }:
+                try:
+                    return ImportRegistrationResumeJobResponse(
+                        status="resume_job",
+                        job=cls.public_response(job),
+                    )
+                except (AttributeError, TypeError, ValidationError, ValueError):
+                    raise ImportRegistrationStateError() from None
+            if job.status is BackgroundJobStatus.completed and batch.status in {
+                ImportStatus.completed,
+                ImportStatus.partially_completed,
+            }:
+                raise ImportBatchAlreadyImportedError()
+            raise ImportRegistrationStateError()
+
+        if batch.status is ImportStatus.pending:
+            try:
+                return ImportRegistrationUploadRequiredResponse(
+                    status="upload_required",
+                    batch=ImportBatchService._response(batch),
+                )
+            except (AttributeError, TypeError, ValidationError, ValueError):
+                raise ImportRegistrationStateError() from None
+        if batch.status in {
+            ImportStatus.completed,
+            ImportStatus.partially_completed,
+        }:
+            raise ImportBatchAlreadyImportedError()
+        raise ImportBatchNotReusableError()
 
     async def enqueue_import_job(
         self,

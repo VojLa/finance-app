@@ -9,6 +9,8 @@ describe("durable import page", () => {
     expect(source).toContain("importPollDelayMs")
     expect(source).toContain("requestImportJob")
     expect(source).toContain("retryImportJob")
+    expect(source).toContain("acceptJob(acceptance.job)")
+    expect(source).toContain("Některé soubory nebyly zařazeny do nového importu")
     expect(source).toContain("beginImportPoll")
     expect(source).toContain("finishImportPoll")
     expect(source).toContain("BACKGROUND_NOTICE_MS = 5_000")

@@ -150,6 +150,39 @@ class BackgroundJobRepository:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return await self.session.scalar(statement)
 
+    async def find_owned_import_jobs_for_batch(
+        self,
+        *,
+        user_id: str,
+        account_id: str,
+        batch_id: str,
+    ) -> list[BackgroundJobModel]:
+        """Return at most two scoped workflows containing one exact batch ID.
+
+        The JSONB containment predicate deliberately targets the `batch_ids`
+        array rather than text-searching an opaque payload.  Two rows are
+        enough to distinguish the only valid cardinality (zero or one) from a
+        corrupt duplicate state without loading an unbounded result.
+        """
+
+        # Registration already holds the account writer lock and exact batch
+        # lock.  Do not lock BackgroundJob here: completion owns the inverse
+        # Job -> publication targets -> Account order, and this is a
+        # read-only recovery decision where a concurrent status transition may
+        # safely resolve to either a safe resume or a safe conflict.
+        result = await self.session.scalars(
+            select(BackgroundJobModel)
+            .where(
+                BackgroundJobModel.user_id == user_id,
+                BackgroundJobModel.account_id == account_id,
+                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                BackgroundJobModel.payload["batch_ids"].contains([batch_id]),
+            )
+            .order_by(BackgroundJobModel.created_at, BackgroundJobModel.id)
+            .limit(2)
+        )
+        return list(result.all())
+
     async def retry_failed(
         self,
         *,

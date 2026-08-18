@@ -2,10 +2,14 @@ import type { components } from "@/generated/python-api"
 
 export type PythonImportBatchCreateRequest = components["schemas"]["ImportBatchCreateRequest"]
 export type PythonImportBatch = components["schemas"]["ImportBatchResponse"]
+export type PythonImportRegistration =
+  | components["schemas"]["ImportRegistrationUploadRequiredResponse"]
+  | components["schemas"]["ImportRegistrationResumeJobResponse"]
 export type PythonImportUploadResponse = components["schemas"]["ImportUploadResponse"]
 export type PythonImportJob = components["schemas"]["ImportJobResponse"]
 export type PythonImportJobStatus = components["schemas"]["BackgroundJobStatus"]
 export type ImportJobAcceptance = {
+  outcome: "started" | "resumed"
   job: PythonImportJob
   acceptedBatchIds: readonly string[]
   rejectedFiles: readonly { filename: string; code: string; message: string }[]
@@ -305,6 +309,28 @@ export function parseImportJob(value: unknown): PythonImportJob {
     created_at: createdAt,
     updated_at: updatedAt,
   }
+}
+
+/** Reject any registration shape that could leak non-public durable-job internals. */
+export function parseImportRegistration(value: unknown): PythonImportRegistration {
+  if (!isPlainObject(value) || !exactKeys(value, ["status", "batch", "job"])) {
+    throw new TypeError("Invalid import registration")
+  }
+  if (value.status === "upload_required" && value.job === null) {
+    return {
+      status: "upload_required",
+      batch: parseImportBatch(value.batch),
+      job: null,
+    }
+  }
+  if (value.status === "resume_job" && value.batch === null) {
+    return {
+      status: "resume_job",
+      batch: null,
+      job: parseImportJob(value.job),
+    }
+  }
+  throw new TypeError("Invalid import registration")
 }
 
 export function parseImportBatch(value: unknown): PythonImportBatch {

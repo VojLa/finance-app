@@ -390,7 +390,7 @@ export default function ImportPage() {
         )}
         {rejectedFiles.length > 0 && (
           <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            <p>Některé soubory nebyly přijaty, ostatní se zpracují na pozadí:</p>
+            <p>Některé soubory nebyly zařazeny do nového importu, ostatní se zpracují na pozadí:</p>
             <ul className="mt-1 list-disc pl-5">
               {rejectedFiles.map((file) => (
                 <li key={`${file.filename}:${file.code}`}>

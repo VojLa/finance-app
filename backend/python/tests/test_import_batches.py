@@ -23,6 +23,7 @@ from app.modules.imports.models import (
     ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportPostResponse,
+    ImportRegistrationUploadRequiredResponse,
     ImportSnapshotRefreshStatus,
 )
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
@@ -32,10 +33,14 @@ from app.modules.imports.posting_service import (
     PostImportBatchResult,
 )
 from app.modules.imports.service import (
+    ImportBatchAlreadyImportedError,
     ImportBatchExistsError,
     ImportBatchNotFoundError,
+    ImportBatchNotReusableError,
     ImportBatchService,
 )
+from app.modules.jobs.service import BackgroundJobService
+from app.shared.errors import ApplicationError
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -160,8 +165,12 @@ def test_create_import_batch_uses_authenticated_principal(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_batch = AsyncMock(return_value=_batch())
-    monkeypatch.setattr(ImportBatchService, "create_batch", create_batch)
+    register = AsyncMock(
+        return_value=ImportRegistrationUploadRequiredResponse(
+            status="upload_required", batch=_batch()
+        )
+    )
+    monkeypatch.setattr(BackgroundJobService, "register_import_batch", register)
 
     with _client(test_settings) as client:
         response = client.post(
@@ -175,10 +184,10 @@ def test_create_import_batch_uses_authenticated_principal(
         )
 
     assert response.status_code == 201
-    assert create_batch.await_args is not None
-    assert create_batch.await_args.kwargs["principal"].user_id == "user-a"
-    assert create_batch.await_args.kwargs["account_id"] == "account-a"
-    payload = create_batch.await_args.kwargs["payload"]
+    assert register.await_args is not None
+    assert register.await_args.kwargs["principal"].user_id == "user-a"
+    assert register.await_args.kwargs["account_id"] == "account-a"
+    payload = register.await_args.kwargs["payload"]
     assert payload.filename == "history.csv"
     assert payload.file_encoding == "utf-8"
     assert payload.checksum == "a" * 64
@@ -242,6 +251,76 @@ async def test_create_batch_reuses_only_an_exact_authenticated_registration_repl
             )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (ImportStatus.processing, None),
+        (ImportStatus.completed, ImportBatchAlreadyImportedError),
+        (ImportStatus.partially_completed, ImportBatchAlreadyImportedError),
+        (ImportStatus.failed, ImportBatchNotReusableError),
+        (ImportStatus.cancelled, ImportBatchNotReusableError),
+    ],
+)
+async def test_exact_registration_replay_has_a_stable_status_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    status: ImportStatus,
+    error_type: type[ApplicationError] | None,
+) -> None:
+    session = MagicMock()
+    service = ImportBatchService(session)
+    existing = SimpleNamespace(
+        id="batch-a",
+        account_id="account-a",
+        source=ImportSource.raiffeisenbank,
+        filename="history.csv",
+        file_size=1200,
+        file_encoding="utf-8",
+        checksum="a" * 64,
+        status=status,
+        rows_total=2 if status is not ImportStatus.processing else 0,
+        rows_imported=1 if status is not ImportStatus.processing else 0,
+        rows_skipped=1 if status is not ImportStatus.processing else 0,
+        created_at=datetime(2026, 7, 19, 18),
+        completed_at=datetime(2026, 7, 19, 19) if status not in {ImportStatus.processing} else None,
+    )
+    repository = MagicMock()
+    repository.get_by_checksum = AsyncMock(return_value=existing)
+    service.repository = repository
+    monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
+    payload = ImportBatchCreateRequest.model_validate(
+        {
+            "source": "raiffeisenbank",
+            "filename": "history.csv",
+            "file_size": 1200,
+            "file_encoding": "utf-8",
+            "checksum": "a" * 64,
+        }
+    )
+
+    if error_type is None:
+        replay = await service.create_batch(
+            principal=_principal(), account_id="account-a", payload=payload
+        )
+        assert replay.id == "batch-a"
+        assert replay.status is ImportStatus.processing
+    else:
+        with pytest.raises(error_type) as raised:
+            await service.create_batch(
+                principal=_principal(), account_id="account-a", payload=payload
+            )
+        assert raised.value.status_code == 409
+        assert raised.value.code == (
+            "import_batch_already_imported"
+            if error_type is ImportBatchAlreadyImportedError
+            else "import_batch_not_reusable"
+        )
+
+    repository.add_batch.assert_not_called()
+    repository.add_log.assert_not_called()
+    session.commit.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -275,6 +354,12 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     for operation in operations:
         assert operation["security"] == [{"InternalSessionToken": []}]
     assert "201" in operations[0]["responses"]
+    registration_schema = operations[0]["responses"]["201"]["content"]["application/json"]["schema"]
+    assert registration_schema["discriminator"]["propertyName"] == "status"
+    assert set(registration_schema["discriminator"]["mapping"]) == {
+        "upload_required",
+        "resume_job",
+    }
     assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None
     assert sorted(path for path in schema["paths"] if "import" in path) == [
         "/api/v1/accounts/{account_id}/imports",

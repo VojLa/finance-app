@@ -88,6 +88,7 @@ async def _seed() -> dict[str, bytes]:
         "batch-foreign": b"foreign raw import\n",
         "batch-archived": b"archived raw import\n",
         "batch-completed": b"completed raw import\n",
+        "batch-partially-completed": b"partially completed raw import\n",
         "batch-wrong": b"registered bytes",
         "batch-short": b"registered longer bytes",
         "batch-long": b"abc",
@@ -181,13 +182,21 @@ async def _seed() -> dict[str, bytes]:
                     status=(
                         ImportStatus.completed
                         if batch_id == "batch-completed"
-                        else ImportStatus.pending
+                        else (
+                            ImportStatus.partially_completed
+                            if batch_id == "batch-partially-completed"
+                            else ImportStatus.pending
+                        )
                     ),
                     rows_total=None,
                     rows_imported=None,
                     rows_skipped=None,
                     created_at=now,
-                    completed_at=now if batch_id == "batch-completed" else None,
+                    completed_at=(
+                        now
+                        if batch_id in {"batch-completed", "batch-partially-completed"}
+                        else None
+                    ),
                     retain_until=None,
                     raw_data_purged_at=None,
                 )
@@ -320,7 +329,18 @@ def test_raw_upload_workflow_against_postgresql(
             ("batch-wrong", b"incorrect bytes!", 422, "import_upload_mismatch"),
             ("batch-short", b"short", 422, "import_upload_mismatch"),
             ("batch-long", b"abcd", 413, "import_upload_too_large"),
-            ("batch-completed", batches["batch-completed"], 409, "import_upload_state_invalid"),
+            (
+                "batch-completed",
+                batches["batch-completed"],
+                409,
+                "import_batch_already_imported",
+            ),
+            (
+                "batch-partially-completed",
+                batches["batch-partially-completed"],
+                409,
+                "import_batch_already_imported",
+            ),
             ("missing-batch", b"missing", 404, "import_batch_not_found"),
         ]
         for batch_id, content, expected_status, code in mismatch_cases:

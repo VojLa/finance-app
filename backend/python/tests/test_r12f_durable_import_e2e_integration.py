@@ -1157,8 +1157,8 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                 {"amount": "200.0000000000", "currency": "USD"},
             ]
 
-            # Exact repeated registration/upload/enqueue replays the same completed job and creates nothing.
-            replay_batch_ids: list[str] = []
+            # A terminal exact replay is reported as already imported.  It must not expose a
+            # reusable batch identity, upload raw data, or enqueue a second workflow.
             for filename, content in (("r12f-eur.csv", EUR_FILE), ("r12f-usd.csv", USD_FILE)):
                 replay = polling_client.post(
                     f"/api/v1/accounts/{account_id}/imports",
@@ -1171,17 +1171,15 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                         "checksum": hashlib.sha256(content).hexdigest(),
                     },
                 )
-                assert replay.status_code == 201, replay.text
-                replay_batch_ids.append(str(replay.json()["id"]))
-            # Terminal exact-replay batches deliberately skip raw-file upload and reuse the job.
-            replay_job = polling_client.post(
-                f"/api/v1/accounts/{account_id}/imports/jobs",
-                headers=_headers(user_id),
-                json={"batch_ids": sorted(replay_batch_ids)},
-            )
-            assert replay_job.status_code == 202, replay_job.text
-            assert replay_job.json()["id"] == job_id
-            assert replay_job.json()["status"] == "completed"
+                assert replay.status_code == 409, replay.text
+                assert {
+                    key: value
+                    for key, value in replay.json()["error"].items()
+                    if key != "request_id"
+                } == {
+                    "code": "import_batch_already_imported",
+                    "message": "This import file has already been processed.",
+                }
 
         replayed = asyncio.run(
             _state(account_id=account_id, user_id=user_id, job_id=job_id, listing_id=listing_id)

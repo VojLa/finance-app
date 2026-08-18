@@ -74,7 +74,7 @@ function job(status: "queued" | "running" | "retry_wait" | "completed" | "failed
     manual_retry_count: 0,
     run_after: "2036-08-03T10:00:00Z",
     started_at: null,
-    finished_at: null,
+    finished_at: status === "completed" || status === "failed" ? "2036-08-03T10:01:00Z" : null,
     created_at: "2036-08-03T10:00:00Z",
     updated_at: "2036-08-03T10:00:00Z",
   }
@@ -83,7 +83,11 @@ function job(status: "queued" | "running" | "retry_wait" | "completed" | "failed
 describe("durable Python import transport", () => {
   it("registers/uploads then starts, reads, and retries a job with fresh server tokens", async () => {
     const responses: unknown[] = [
-      { ...batch(), raw_import_row: "must-not-leak" },
+      {
+        status: "upload_required",
+        batch: { ...batch(), raw_import_row: "must-not-leak" },
+        job: null,
+      },
       {
         batch_id: "batch-r12",
         stored: true,
@@ -109,19 +113,21 @@ describe("durable Python import transport", () => {
       tokenIssuer,
     })
 
-    const created = await api.createImportBatch("account-r12", {
+    const registration = await api.createImportBatch("account-r12", {
       source: "trading212",
       filename: "fixture.csv",
       file_size: BYTES.byteLength,
       file_encoding: null,
       checksum: "checksum-r12",
     })
-    await api.uploadImportFile("account-r12", created.id, BYTES)
-    await api.startImportJob("account-r12", [created.id])
+    expect(registration.status).toBe("upload_required")
+    if (registration.status !== "upload_required") throw new Error("Expected upload registration")
+    await api.uploadImportFile("account-r12", registration.batch.id, BYTES)
+    await api.startImportJob("account-r12", [registration.batch.id])
     await api.getImportJob("account-r12", "job-r12")
     await api.retryImportJob("account-r12", "job-r12")
 
-    expect(created).not.toHaveProperty("raw_import_row")
+    expect(registration).not.toHaveProperty("raw_import_row")
     const requests = fetchImplementation.mock.calls.map(([input, init]) => new Request(input, init))
     expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual(
       [
@@ -176,5 +182,47 @@ describe("durable Python import transport", () => {
       status: 502,
       code: "python_api_contract_error",
     })
+  })
+
+  it("accepts only the strict resume registration branch without batch or durable internals", async () => {
+    const resumeApi = createPythonImportApi(IDENTITY, {
+      config: CONFIG,
+      fetchImplementation: vi.fn<typeof fetch>(async () =>
+        jsonResponse({ status: "resume_job", batch: null, job: job("failed") }, 201)
+      ),
+      tokenIssuer: vi.fn(async () => "token"),
+    })
+
+    await expect(
+      resumeApi.createImportBatch("account-r12", {
+        source: "trading212",
+        filename: "fixture.csv",
+        file_size: BYTES.byteLength,
+        file_encoding: null,
+        checksum: "checksum-r12",
+      })
+    ).resolves.toMatchObject({ status: "resume_job", batch: null, job: { id: "job-r12" } })
+
+    const leakingResumeApi = createPythonImportApi(IDENTITY, {
+      config: CONFIG,
+      fetchImplementation: vi.fn<typeof fetch>(async () =>
+        jsonResponse({
+          status: "resume_job",
+          batch: null,
+          job: { ...job(), payload: { batch_ids: ["batch-private"] } },
+        })
+      ),
+      tokenIssuer: vi.fn(async () => "token"),
+    })
+
+    await expect(
+      leakingResumeApi.createImportBatch("account-r12", {
+        source: "trading212",
+        filename: "fixture.csv",
+        file_size: BYTES.byteLength,
+        file_encoding: null,
+        checksum: "checksum-r12",
+      })
+    ).rejects.toMatchObject({ status: 502, code: "python_api_contract_error" })
   })
 })

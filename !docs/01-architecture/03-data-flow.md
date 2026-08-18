@@ -15,12 +15,23 @@ worker claim -> parse -> normalize -> deduplicate -> classify -> canonical post
 1. A writer submits one account, one supported source, and CSV files. Next.js
    verifies the session, validates an aggregate 64 MiB boundary, preserves exact
    bytes, and does no parsing or finance calculation.
-2. Python registers each batch using source, immutable metadata, and SHA-256.
-   An exact replay returns the same scoped batch; mismatched or foreign metadata
-   fails closed. The raw body is verified and atomically published to local
-   storage.
+2. Python registers every batch using source, immutable metadata, and SHA-256.
+   Jobs own the registration decision: `upload_required` returns public batch
+   metadata only, while `resume_job` returns one safe public canonical job only.
+   The browser never receives the resumable batch ID or job internals. It first
+   collects every registration result, rejects distinct resumed jobs or a resumed
+   job mixed with new bytes, and only then uploads the pending files. An exact
+   terminal duplicate remains a non-fatal per-file result. If a batch advances
+   to `processing` or terminal posting during raw upload, Next.js accepts only
+   `409 import_upload_state_invalid` or `409 import_batch_already_imported` as
+   a handoff race and submits that existing ID to canonical job enqueue. Python
+   replays it only when the exact canonical job already exists; a completed
+   replay becomes the localized duplicate result, while a missing job fails
+   closed without a new job or any canonical mutation.
 3. Next.js enqueues one durable job for all successfully uploaded batch IDs and
-   returns HTTP 202. A partial safe file rejection does not orphan the other
+   returns HTTP 202 with outcome `started`; a resume-only registration returns
+   HTTP 202 with outcome `resumed` and the existing safe job for UI polling and
+   failed-job retry. A partial safe file rejection does not orphan other newly
    accepted batches.
 4. The Python worker claims a fenced lease. Parsing runs off the API event loop
    and persists every physical row. Normalize, deduplicate, classify, and

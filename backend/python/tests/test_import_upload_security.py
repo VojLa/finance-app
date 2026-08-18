@@ -13,6 +13,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import ImportStatus
 from app.modules.accounts.access import AccountAccessDeniedError
 from app.modules.imports.service import (
+    ImportBatchAlreadyImportedError,
     ImportBatchNotFoundError,
     ImportBatchService,
     ImportUploadContentTypeError,
@@ -21,6 +22,7 @@ from app.modules.imports.service import (
     ImportUploadTooLargeError,
 )
 from app.modules.imports.storage import ImportFileMismatchError, LocalImportStorage
+from app.shared.errors import ApplicationError
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -326,19 +328,25 @@ async def test_invalid_content_type_does_not_consume_stream(
 
 
 @pytest.mark.parametrize(
-    "status",
+    ("status", "error_type", "code"),
     [
-        ImportStatus.processing,
-        ImportStatus.completed,
-        ImportStatus.failed,
-        ImportStatus.partially_completed,
-        ImportStatus.cancelled,
+        (ImportStatus.processing, ImportUploadStateError, "import_upload_state_invalid"),
+        (ImportStatus.completed, ImportBatchAlreadyImportedError, "import_batch_already_imported"),
+        (
+            ImportStatus.partially_completed,
+            ImportBatchAlreadyImportedError,
+            "import_batch_already_imported",
+        ),
+        (ImportStatus.failed, ImportUploadStateError, "import_upload_state_invalid"),
+        (ImportStatus.cancelled, ImportUploadStateError, "import_upload_state_invalid"),
     ],
 )
 @pytest.mark.asyncio
 async def test_non_pending_state_does_not_consume_stream(
     tmp_path: Path,
     status: ImportStatus,
+    error_type: type[ApplicationError],
+    code: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, _session = _service(tmp_path)
@@ -349,7 +357,7 @@ async def test_non_pending_state_does_not_consume_stream(
     )
     monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
 
-    with pytest.raises(ImportUploadStateError):
+    with pytest.raises(error_type) as raised:
         await service.upload_file(
             principal=_principal(),
             account_id="account-a",
@@ -357,6 +365,8 @@ async def test_non_pending_state_does_not_consume_stream(
             content_type="application/octet-stream",
             chunks=_ForbiddenStream(),
         )
+    assert raised.value.code == code
+    assert not service.storage.path_for("batch-a").exists()
 
 
 @pytest.mark.asyncio

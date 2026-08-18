@@ -35,7 +35,12 @@ describe("durable import browser client", () => {
       expect(init?.method).toBe("POST")
       expect(init?.signal).toBeUndefined()
       return new Response(
-        JSON.stringify({ job, acceptedBatchIds: ["batch-x"], rejectedFiles: [] }),
+        JSON.stringify({
+          outcome: "started",
+          job,
+          acceptedBatchIds: ["batch-x"],
+          rejectedFiles: [],
+        }),
         { status: 202, headers: { "content-type": "application/json" } }
       )
     })
@@ -95,11 +100,88 @@ describe("durable import browser client", () => {
     } satisfies Partial<ImportClientError>)
   })
 
+  it("preserves the stable already-imported envelope for the import page", async () => {
+    const duplicate = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "import_batch_already_imported",
+              message: "Soubor už byl pro tento účet importován. Nebude importován znovu.",
+            },
+          }),
+          { status: 409, headers: { "content-type": "application/json" } }
+        )
+    )
+
+    await expect(
+      requestImport("account-a", "trading212", [new File(["csv"], "already.csv")], duplicate)
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "import_batch_already_imported",
+      message: "Soubor už byl pro tento účet importován. Nebude importován znovu.",
+    } satisfies Partial<ImportClientError>)
+  })
+
+  it("accepts a resume-only response without returning a batch identity", async () => {
+    const resume = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ outcome: "resumed", job, acceptedBatchIds: [], rejectedFiles: [] }),
+          {
+            status: 202,
+            headers: { "content-type": "application/json" },
+          }
+        )
+    )
+
+    await expect(
+      requestImport("account-a", "trading212", [new File(["csv"], "resume.csv")], resume)
+    ).resolves.toMatchObject({ outcome: "resumed", job, acceptedBatchIds: [] })
+  })
+
+  it("accepts a failed resumed job so the UI can use its normal retry flow", async () => {
+    const failedJob = {
+      ...job,
+      status: "failed",
+      error: { code: "import_failed", message: "Import failed." },
+      finished_at: "2026-01-01T00:01:00Z",
+    }
+    const resume = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            outcome: "resumed",
+            job: failedJob,
+            acceptedBatchIds: [],
+            rejectedFiles: [],
+          }),
+          {
+            status: 202,
+            headers: { "content-type": "application/json" },
+          }
+        )
+    )
+
+    await expect(
+      requestImport("account-a", "trading212", [new File(["csv"], "failed.csv")], resume)
+    ).resolves.toMatchObject({
+      outcome: "resumed",
+      job: { status: "failed" },
+      acceptedBatchIds: [],
+    })
+  })
+
   it("requires the exact durable acceptance shape", async () => {
     const invalidAcceptance = vi.fn<typeof globalThis.fetch>(
       async () =>
         new Response(
-          JSON.stringify({ job, acceptedBatchIds: ["batch-b", "batch-a"], rejectedFiles: [] }),
+          JSON.stringify({
+            outcome: "started",
+            job,
+            acceptedBatchIds: ["batch-b", "batch-a"],
+            rejectedFiles: [],
+          }),
           {
             status: 202,
             headers: { "content-type": "application/json" },
@@ -108,6 +190,28 @@ describe("durable import browser client", () => {
     )
     await expect(
       requestImport("account-a", "trading212", [new File(["csv"], "x.csv")], invalidAcceptance)
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "python_api_contract_error",
+    } satisfies Partial<ImportClientError>)
+  })
+
+  it("rejects a resume outcome that returns batch identities", async () => {
+    const invalidResume = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            outcome: "resumed",
+            job,
+            acceptedBatchIds: ["batch-private"],
+            rejectedFiles: [],
+          }),
+          { status: 202, headers: { "content-type": "application/json" } }
+        )
+    )
+
+    await expect(
+      requestImport("account-a", "trading212", [new File(["csv"], "resume.csv")], invalidResume)
     ).rejects.toMatchObject({
       status: 502,
       code: "python_api_contract_error",

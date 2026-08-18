@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -11,6 +12,7 @@ import pytest
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.canonical_lineage import (
@@ -25,14 +27,19 @@ from app.db.models.enums import (
     AccountType,
     BackgroundJobKind,
     BackgroundJobStatus,
+    ImportSource,
+    ImportStatus,
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.imports import ImportBatchModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.modules.canonical_state.service import CanonicalChangeKind, CanonicalStateService
+from app.modules.imports.models import ImportBatchCreateRequest, ImportRegistrationResponse
+from app.modules.imports.service import ImportBatchAlreadyImportedError
 from app.modules.jobs.publication_service import ImportJobPublicationService
 from app.modules.jobs.repository import (
     BackgroundJobLeaseLostError,
@@ -40,6 +47,7 @@ from app.modules.jobs.repository import (
     BackgroundJobRepository,
     ClaimedBackgroundJob,
 )
+from app.modules.jobs.service import BackgroundJobService
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 NOW = datetime(2034, 2, 3, 10, 15)
@@ -331,6 +339,137 @@ async def _seed_single_publication(
         await connection.execute(
             insert(BackgroundJobModel).values(**_job(job_id, user_id, account_id))
         )
+
+
+@pytest.mark.integration
+async def test_registration_does_not_deadlock_with_completion_lock_boundary() -> None:
+    """The recovery read may race completion without taking the job row lock.
+
+    Completion owns Job -> targets -> Account.  Registration owns Account ->
+    Batch, then performs only a scoped, bounded job read, so PostgreSQL can
+    resolve the status race as either safe resume or terminal conflict without
+    forming the inverse Account -> Batch -> Job wait cycle.
+    """
+
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"registration-owner-{suffix}"
+    account_id = f"registration-account-{suffix}"
+    job_id = f"registration-job-{suffix}"
+    batch_id = f"batch-{job_id}"
+    try:
+        await _seed_single_publication(
+            engine, user_id=user_id, account_id=account_id, job_id=job_id
+        )
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert(ImportBatchModel).values(
+                    id=batch_id,
+                    user_id=user_id,
+                    account_id=account_id,
+                    source=ImportSource.trading212,
+                    filename="completion-race.csv",
+                    file_size=100,
+                    file_encoding="utf-8",
+                    checksum="a" * 64,
+                    status=ImportStatus.completed,
+                    rows_total=1,
+                    rows_imported=1,
+                    rows_skipped=0,
+                    created_at=NOW,
+                    completed_at=NOW,
+                    retain_until=None,
+                    raw_data_purged_at=None,
+                )
+            )
+            await connection.execute(
+                insert(ImportJobPublicationTargetModel).values(
+                    job_id=job_id,
+                    user_id=user_id,
+                    bucket=NOW,
+                    published_at=None,
+                )
+            )
+        await _insert_import_anchor(
+            engine,
+            job_id=job_id,
+            user_id=user_id,
+            account_id=account_id,
+            bucket=NOW,
+            suffix=f"registration-{suffix}",
+        )
+        claimed = await _claim(sessions, job_id=job_id, worker_id="registration-race", now=NOW)
+
+        async def complete() -> None:
+            async with sessions() as session:
+                await BackgroundJobRepository(session).complete(
+                    lease=claimed.lease,
+                    result={"published": True},
+                    progress=_complete_progress(),
+                    now=NOW + timedelta(seconds=1),
+                )
+                await session.commit()
+
+        async def register() -> ImportRegistrationResponse | ImportBatchAlreadyImportedError:
+            async with sessions() as session:
+                try:
+                    return await BackgroundJobService(session).register_import_batch(
+                        principal=AuthenticatedPrincipal(
+                            user_id=user_id, email=f"{user_id}@example.test"
+                        ),
+                        account_id=account_id,
+                        payload=ImportBatchCreateRequest(
+                            source=ImportSource.trading212,
+                            filename="completion-race.csv",
+                            file_size=100,
+                            file_encoding="utf-8",
+                            checksum="a" * 64,
+                        ),
+                    )
+                except ImportBatchAlreadyImportedError as exc:
+                    return exc
+
+        _, registration = await asyncio.wait_for(asyncio.gather(complete(), register()), timeout=5)
+        assert isinstance(registration, ImportBatchAlreadyImportedError) or (
+            registration.status == "resume_job"
+            and registration.batch is None
+            and registration.job.id == job_id
+        )
+        if isinstance(registration, ImportBatchAlreadyImportedError):
+            assert registration.code == "import_batch_already_imported"
+        async with sessions() as session:
+            job = await session.get(BackgroundJobModel, job_id)
+            assert job is not None and job.status is BackgroundJobStatus.completed
+        async with sessions() as session:
+            with pytest.raises(ImportBatchAlreadyImportedError) as terminal:
+                await BackgroundJobService(session).register_import_batch(
+                    principal=AuthenticatedPrincipal(
+                        user_id=user_id, email=f"{user_id}@example.test"
+                    ),
+                    account_id=account_id,
+                    payload=ImportBatchCreateRequest(
+                        source=ImportSource.trading212,
+                        filename="completion-race.csv",
+                        file_size=100,
+                        file_encoding="utf-8",
+                        checksum="a" * 64,
+                    ),
+                )
+            assert terminal.value.code == "import_batch_already_imported"
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                delete(ImportBatchModel).where(ImportBatchModel.id == batch_id)
+            )
+        await _cleanup(
+            engine,
+            job_ids=(job_id,),
+            account_ids=(account_id,),
+            user_ids=(user_id,),
+        )
+        await engine.dispose()
 
 
 @pytest.mark.integration

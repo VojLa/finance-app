@@ -15,6 +15,7 @@ from app.modules.imports.models import (
     ImportNormalizeResponse,
     ImportParseResponse,
     ImportPostResponse,
+    ImportRegistrationResponse,
     ImportUploadResponse,
 )
 from app.modules.imports.normalization import ImportNormalizationService
@@ -22,6 +23,7 @@ from app.modules.imports.post_processing_service import ImportBatchPostProcessin
 from app.modules.imports.posting_service import ImportBatchPostingService, PostImportBatchCommand
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
+from app.modules.jobs.service import BackgroundJobService
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
@@ -48,14 +50,14 @@ def get_import_batch_post_processing_service(
     )
 
 
-@router.post("", response_model=ImportBatchResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ImportRegistrationResponse, status_code=status.HTTP_201_CREATED)
 async def create_import_batch(
     account_id: str,
     payload: ImportBatchCreateRequest,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
-) -> ImportBatchResponse:
-    return await ImportBatchService(session).create_batch(
+) -> ImportRegistrationResponse:
+    return await BackgroundJobService(session).register_import_batch(
         principal=principal,
         account_id=account_id,
         payload=payload,

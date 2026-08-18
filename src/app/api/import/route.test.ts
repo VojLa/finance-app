@@ -3,6 +3,7 @@ import { NextRequest } from "next/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createPythonImportApi } from "@/modules/imports/python/import-api"
+import { forwardedPythonError } from "@/modules/python-api/server/errors"
 import * as route from "./route"
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }))
@@ -33,14 +34,18 @@ beforeEach(() => {
     createImportBatch: vi.fn(async (_account, payload) => {
       checksum = payload.checksum
       return {
-        id: `batch-${payload.filename}`,
-        account_id: "account-a",
-        source: payload.source,
-        filename: payload.filename,
-        file_size: payload.file_size,
-        file_encoding: null,
-        checksum,
-        status: "pending",
+        status: "upload_required",
+        batch: {
+          id: `batch-${payload.filename}`,
+          account_id: "account-a",
+          source: payload.source,
+          filename: payload.filename,
+          file_size: payload.file_size,
+          file_encoding: null,
+          checksum,
+          status: "pending",
+        },
+        job: null,
       }
     }),
     uploadImportFile: vi.fn(async (_account, batchId, bytes) => ({
@@ -110,14 +115,18 @@ describe("POST /api/import durable job handoff", () => {
       const batchId = payload.filename === "z.csv" ? "batch-z" : "batch-a"
       checksums.set(batchId, payload.checksum)
       return {
-        id: batchId,
-        account_id: "account-a",
-        source: payload.source,
-        filename: payload.filename,
-        file_size: payload.file_size,
-        file_encoding: null,
-        checksum: payload.checksum,
-        status: "pending",
+        status: "upload_required",
+        batch: {
+          id: batchId,
+          account_id: "account-a",
+          source: payload.source,
+          filename: payload.filename,
+          file_size: payload.file_size,
+          file_encoding: null,
+          checksum: payload.checksum,
+          status: "pending",
+        },
+        job: null,
       }
     })
     client.uploadImportFile.mockImplementation(async (_account, batchId, bytes) => ({
@@ -142,35 +151,313 @@ describe("POST /api/import durable job handoff", () => {
     })
   })
 
-  it("re-enqueues an exact registration replay after the worker already advanced the batch", async () => {
-    client.createImportBatch.mockImplementation(async (_account, payload) => ({
-      id: "batch-existing",
-      account_id: "account-a",
-      source: payload.source,
-      filename: payload.filename,
-      file_size: payload.file_size,
-      file_encoding: null,
-      checksum: payload.checksum,
-      status: "processing",
+  it("returns the existing resumable job without uploading or enqueuing it again", async () => {
+    client.createImportBatch.mockImplementation(async (_account, _payload) => ({
+      status: "resume_job",
+      batch: null,
+      job: {
+        id: "job-existing",
+        account_id: "account-a",
+        status: "running",
+      },
     }))
 
     const response = await route.POST(request())
 
     expect(response.status).toBe(202)
     expect(client.uploadImportFile).not.toHaveBeenCalled()
-    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-existing"])
+    expect(client.startImportJob).not.toHaveBeenCalled()
+    expect(await response.json()).toMatchObject({
+      outcome: "resumed",
+      acceptedBatchIds: [],
+      job: { id: "job-existing", status: "running" },
+    })
   })
 
-  it("collapses repeated copies of the same canonical batch into one job input", async () => {
+  it("fails closed before uploading when registration mixes a resumable job with a new file", async () => {
+    client.createImportBatch.mockImplementation(async (_account, payload) => {
+      if (payload.filename === "resume.csv") {
+        return {
+          status: "resume_job",
+          batch: null,
+          job: { id: "job-existing", account_id: "account-a", status: "failed" },
+        }
+      }
+      return {
+        status: "upload_required",
+        batch: {
+          id: "batch-new",
+          account_id: "account-a",
+          source: payload.source,
+          filename: payload.filename,
+          file_size: payload.file_size,
+          file_encoding: null,
+          checksum: payload.checksum,
+          status: "pending",
+        },
+        job: null,
+      }
+    })
+
+    const response = await route.POST(
+      request([new File(["resume"], "resume.csv"), new File(["new"], "new.csv")])
+    )
+
+    expect(response.status).toBe(502)
+    expect(client.uploadImportFile).not.toHaveBeenCalled()
+    expect(client.startImportJob).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when registration returns distinct resumable jobs", async () => {
     client.createImportBatch.mockImplementation(async (_account, payload) => ({
-      id: "batch-same",
+      status: "resume_job",
+      batch: null,
+      job: {
+        id: payload.filename === "first.csv" ? "job-first" : "job-second",
+        account_id: "account-a",
+        status: "running",
+      },
+    }))
+
+    const response = await route.POST(
+      request([new File(["first"], "first.csv"), new File(["second"], "second.csv")])
+    )
+
+    expect(response.status).toBe(502)
+    expect(client.uploadImportFile).not.toHaveBeenCalled()
+    expect(client.startImportJob).not.toHaveBeenCalled()
+  })
+
+  it("uploads and enqueues an exact pending registration replay", async () => {
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(202)
+    expect(client.uploadImportFile).toHaveBeenCalledWith(
+      "account-a",
+      "batch-one.csv",
+      expect.any(Uint8Array)
+    )
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-one.csv"])
+  })
+
+  it("hands a pending-to-processing upload race to the canonical durable job", async () => {
+    client.uploadImportFile.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "import_upload_state_invalid",
+        "The import batch does not accept a raw file upload in its current state."
+      )
+    )
+    client.startImportJob.mockResolvedValue({
+      id: "job-existing",
       account_id: "account-a",
-      source: payload.source,
-      filename: payload.filename,
-      file_size: payload.file_size,
-      file_encoding: null,
-      checksum: payload.checksum,
-      status: "processing",
+      status: "running",
+    })
+
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(202)
+    expect(client.uploadImportFile).toHaveBeenCalledWith(
+      "account-a",
+      "batch-one.csv",
+      expect.any(Uint8Array)
+    )
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-one.csv"])
+    expect(await response.json()).toMatchObject({
+      outcome: "resumed",
+      acceptedBatchIds: [],
+      job: { id: "job-existing", status: "running" },
+    })
+  })
+
+  it("hands a pending-to-terminal upload race to the failed canonical job", async () => {
+    client.uploadImportFile.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "import_batch_already_imported",
+        "This import file has already been processed."
+      )
+    )
+    client.startImportJob.mockResolvedValue({
+      id: "job-failed",
+      account_id: "account-a",
+      status: "failed",
+    })
+
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(202)
+    expect(client.startImportJob).toHaveBeenCalledTimes(1)
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-one.csv"])
+    expect(await response.json()).toMatchObject({
+      outcome: "resumed",
+      acceptedBatchIds: [],
+      job: { id: "job-failed", status: "failed" },
+    })
+  })
+
+  it("maps a completed job found through the terminal upload race to the localized duplicate outcome", async () => {
+    client.uploadImportFile.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "import_batch_already_imported",
+        "This import file has already been processed."
+      )
+    )
+    client.startImportJob.mockResolvedValue({
+      id: "job-completed",
+      account_id: "account-a",
+      status: "completed",
+    })
+
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "import_batch_already_imported",
+        message: "Soubor už byl pro tento účet importován. Nebude importován znovu.",
+      },
+    })
+  })
+
+  it("keeps a terminal upload race without a canonical job as the safe backend conflict", async () => {
+    client.uploadImportFile.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "import_batch_already_imported",
+        "This import file has already been processed."
+      )
+    )
+    client.startImportJob.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "background_job_enqueue_state_invalid",
+        "The import batches are not available for background processing."
+      )
+    )
+
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "background_job_enqueue_state_invalid",
+        message: "The import batches are not available for background processing.",
+      },
+    })
+    expect(client.startImportJob).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [
+      "a different conflict code",
+      forwardedPythonError(409, "import_upload_mismatch", "The uploaded file does not match."),
+      409,
+    ],
+    [
+      "the upload-state code with a different status",
+      forwardedPythonError(
+        422,
+        "import_upload_state_invalid",
+        "The import batch does not accept this upload."
+      ),
+      422,
+    ],
+  ])("does not treat %s as a processing replay", async (_description, uploadError, status) => {
+    client.uploadImportFile.mockRejectedValue(uploadError)
+
+    const response = await route.POST(request())
+
+    expect(response.status).toBe(status)
+    expect(client.startImportJob).not.toHaveBeenCalled()
+  })
+
+  it("does not upload or enqueue a completed or partially completed import", async () => {
+    client.createImportBatch.mockRejectedValue(
+      forwardedPythonError(
+        409,
+        "import_batch_already_imported",
+        "The import batch was already imported."
+      )
+    )
+
+    const response = await route.POST(
+      request([new File(["completed"], "completed.csv"), new File(["partial"], "partial.csv")])
+    )
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "import_batch_already_imported",
+        message: "Soubor už byl pro tento účet importován. Nebude importován znovu.",
+      },
+    })
+    expect(client.uploadImportFile).not.toHaveBeenCalled()
+    expect(client.startImportJob).not.toHaveBeenCalled()
+  })
+
+  it("reports an already imported file but enqueues the remaining accepted files once", async () => {
+    let newChecksum = ""
+    client.createImportBatch.mockImplementation(async (_account, payload) => {
+      if (payload.filename === "old.csv") {
+        throw forwardedPythonError(
+          409,
+          "import_batch_already_imported",
+          "The import batch was already imported."
+        )
+      }
+      newChecksum = payload.checksum
+      return {
+        status: "upload_required",
+        batch: {
+          id: "batch-new",
+          account_id: "account-a",
+          source: payload.source,
+          filename: payload.filename,
+          file_size: payload.file_size,
+          file_encoding: null,
+          checksum: payload.checksum,
+          status: "pending",
+        },
+        job: null,
+      }
+    })
+    client.uploadImportFile.mockImplementation(async (_account, batchId, bytes) => ({
+      batch_id: batchId,
+      size: bytes.byteLength,
+      checksum: newChecksum,
+    }))
+
+    const response = await route.POST(
+      request([new File(["old"], "old.csv"), new File(["new"], "new.csv")])
+    )
+
+    expect(response.status).toBe(202)
+    expect(await response.json()).toMatchObject({
+      acceptedBatchIds: ["batch-new"],
+      rejectedFiles: [
+        {
+          filename: "old.csv",
+          code: "import_batch_already_imported",
+          message: "Soubor už byl pro tento účet importován. Nebude importován znovu.",
+        },
+      ],
+    })
+    expect(client.uploadImportFile).toHaveBeenCalledTimes(1)
+    expect(client.uploadImportFile).toHaveBeenCalledWith(
+      "account-a",
+      "batch-new",
+      expect.any(Uint8Array)
+    )
+    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-new"])
+  })
+
+  it("collapses repeated copies of the same resumable job without batch identity leakage", async () => {
+    client.createImportBatch.mockImplementation(async (_account, _payload) => ({
+      status: "resume_job",
+      batch: null,
+      job: { id: "job-same", account_id: "account-a", status: "queued" },
     }))
 
     const response = await route.POST(
@@ -178,8 +465,12 @@ describe("POST /api/import durable job handoff", () => {
     )
 
     expect(response.status).toBe(202)
-    expect(client.startImportJob).toHaveBeenCalledWith("account-a", ["batch-same"])
-    expect(await response.json()).toMatchObject({ acceptedBatchIds: ["batch-same"] })
+    expect(client.startImportJob).not.toHaveBeenCalled()
+    expect(await response.json()).toMatchObject({
+      outcome: "resumed",
+      acceptedBatchIds: [],
+      job: { id: "job-same" },
+    })
   })
 
   it("does not enqueue a job when no file reached the durable upload boundary", async () => {
