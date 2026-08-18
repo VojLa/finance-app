@@ -9,11 +9,11 @@ Accepted and implemented.
 SQLAlchemy and Alembic are the sole owners of PostgreSQL schema changes. The
 cutover completed with inherited baseline revision `3d0001base`, ownership
 marker `3e0001cutover`, first Alembic-owned schema change `3f0001acctnote`,
-and current head `3j0001twfx`.
+and current head `3m0001importanchor`.
 
 ## Consequences
 
-- The complete SQLAlchemy metadata mirrors 36 application tables and 28
+- The complete SQLAlchemy metadata mirrors 38 application tables and 30
   PostgreSQL enum types.
 - The canonical Prisma-created baseline is immutable verification evidence.
 - Prisma Client, `schema.prisma`, its generator, and executable migration tooling

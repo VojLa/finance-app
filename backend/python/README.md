@@ -132,7 +132,7 @@ the ownership of their table.
 To verify the current revision artifact:
 
 ```bash
-uv run python scripts/database_schema.py --check --revision 3j0001twfx
+uv run python scripts/database_schema.py --check --revision 3m0001importanchor
 ```
 
 To compare a migrated PostgreSQL database with the committed baseline:

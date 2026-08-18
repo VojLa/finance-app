@@ -2,9 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app/backend/python
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/python/pyproject.toml ./pyproject.toml
 RUN pip install --no-cache-dir -e .[dev]
 
+COPY package.json /app/package.json
+COPY prisma/migrations /app/prisma/migrations
+COPY .github/workflows /app/.github/workflows
 COPY backend/python ./ 
 
 EXPOSE 8010

@@ -10,7 +10,7 @@ The governing decision is ADR 0006 in `!planning/decisions`.
 - current migration owner: Alembic
 - target migration owner: Alembic
 - cutover status: completed
-- SQLAlchemy mirror: complete for all 36 application tables and 28 PostgreSQL enum types
+- SQLAlchemy mirror: complete for all 38 application tables and 30 PostgreSQL enum types
 - Alembic revision graph: inherited baseline `3d0001base` followed by ownership marker
   `3e0001cutover`
 - active deployment runner: `scripts/database_migrate.py`
@@ -104,8 +104,8 @@ by executing the archived Prisma migrations.
 
 The complete SQLAlchemy mirror covers:
 
-- 36 application tables,
-- 28 PostgreSQL enum types,
+- 38 application tables,
+- 30 PostgreSQL enum types,
 - columns, names, types, nullability, and server defaults,
 - primary keys, foreign keys, and delete behavior,
 - unique constraints and indexes,
@@ -176,4 +176,9 @@ historical snapshots to D1 baselines. The schema advances to 36 application
 tables and remains at 28 enum types.
 
 Revision `3j0001twfx` adds the `twelve_data` direct-FX source identity. It is
-the current single Alembic head.
+historical rather than the current head.
+
+Revision `3k0001mcost` adds multi-currency holding cost-basis storage.
+Revision `3l0001bgjob` adds durable background-job lifecycle storage. Revision
+`3m0001importanchor` adds the durable import-publication anchor and is the
+current single Alembic head.

@@ -22,11 +22,11 @@ historical boundaries rather than reversible application schema operations.
 ## Current policy
 
 - Alembic owns all future production schema changes.
-- All 31 application tables and 28 PostgreSQL enums are tracked as `alembic_owned`.
+- All 38 application tables and 30 PostgreSQL enums are tracked as `alembic_owned`.
 - Prisma migration creation and deployment are disabled.
 - The frozen Prisma history is retained only for a restricted historical CI bootstrap.
-- Prisma Client remains a runtime compatibility layer.
-- `schema.prisma` must be updated when an Alembic revision affects Prisma-visible objects.
+- Prisma runtime schema and migration tooling remain removed; the frozen archive is verification
+  evidence only.
 - Upgrades are executed by `scripts/database_migrate.py` under a PostgreSQL advisory lock.
 - Migrations and stamps are never executed by application startup.
 

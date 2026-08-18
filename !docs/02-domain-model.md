@@ -1,6 +1,6 @@
 # Domain Model
 
-The PostgreSQL schema contains 36 application tables. SQLAlchemy has a complete
+The PostgreSQL schema contains 38 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 

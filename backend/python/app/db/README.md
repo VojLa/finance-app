@@ -14,7 +14,7 @@ FastAPI startup never runs Alembic commands, stamps revisions, or changes the ph
 
 ## Schema metadata
 
-The metadata contains all 36 application tables and all 28 PostgreSQL enum types. Models are split
+The metadata contains all 38 application tables and all 30 PostgreSQL enum types. Models are split
 by domain under `models/` and preserve:
 
 - physical table and column names,
@@ -73,4 +73,7 @@ Revision `3h0001twdata` adds the explicit `twelve_data` identity to the
 without registering an HTTP adapter.
 
 Revisions `3i0001d1base` and `3j0001twfx` add daily lineage tables and the
-direct Twelve Data FX source identity. `3j0001twfx` is the current head.
+direct Twelve Data FX source identity. Revision `3j0001twfx` is historical;
+the current head is `3m0001importanchor`, after the multi-currency holding
+cost-basis (`3k0001mcost`), durable background-job (`3l0001bgjob`), and import
+publication-anchor (`3m0001importanchor`) revisions.
