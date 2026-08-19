@@ -63,15 +63,15 @@ class PortfolioSnapshotSummaryResponse(BaseModel):
         serialization_alias="cashByCurrency"
     )
     investment_value: Decimal = Field(serialization_alias="investmentValue")
-    investment_cost_basis: Decimal = Field(serialization_alias="investmentCostBasis")
+    investment_cost_basis: Decimal | None = Field(serialization_alias="investmentCostBasis")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
     total_value: Decimal = Field(serialization_alias="totalValue")
-    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
-    net_deposits_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] = Field(
+    net_deposits_value: Decimal | None = Field(serialization_alias="netDepositsValue")
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] | None = Field(
         serialization_alias="netDepositsByCurrency"
     )
-    realized_pnl_value: Decimal = Field(serialization_alias="realizedPnlValue")
-    unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
+    realized_pnl_value: Decimal | None = Field(serialization_alias="realizedPnlValue")
+    unrealized_pnl_value: Decimal | None = Field(serialization_alias="unrealizedPnlValue")
     fees_value: Decimal = Field(serialization_alias="feesValue")
     taxes_value: Decimal = Field(serialization_alias="taxesValue")
     position_count: int = Field(serialization_alias="positionCount")
@@ -88,8 +88,8 @@ class PortfolioSnapshotSummaryResponse(BaseModel):
         "fees_value",
         "taxes_value",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return serialize_money(value)
+    def serialize_decimal(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_money(value)
 
 
 class PortfolioSnapshotPositionResponse(BaseModel):
@@ -106,16 +106,16 @@ class PortfolioSnapshotPositionResponse(BaseModel):
     price_timestamp: datetime = Field(serialization_alias="priceTimestamp")
     value: Decimal
     value_currency: str = Field(serialization_alias="valueCurrency")
-    cost_basis: Decimal = Field(serialization_alias="costBasis")
-    cost_currency: str = Field(serialization_alias="costCurrency")
-    unrealized_pnl: Decimal = Field(serialization_alias="unrealizedPnl")
+    cost_basis: Decimal | None = Field(serialization_alias="costBasis")
+    cost_currency: str | None = Field(serialization_alias="costCurrency")
+    unrealized_pnl: Decimal | None = Field(serialization_alias="unrealizedPnl")
     allocation_pct: Decimal = Field(serialization_alias="allocationPct")
     native_value: Decimal = Field(serialization_alias="nativeValue")
     native_value_currency: str = Field(serialization_alias="nativeValueCurrency")
-    native_cost_basis: Decimal = Field(serialization_alias="nativeCostBasis")
-    native_cost_currency: str = Field(serialization_alias="nativeCostCurrency")
-    native_cost_basis_by_currency: tuple[PortfolioQuantityCurrencyAmountResponse, ...] = Field(
-        serialization_alias="nativeCostBasisByCurrency"
+    native_cost_basis: Decimal | None = Field(serialization_alias="nativeCostBasis")
+    native_cost_currency: str | None = Field(serialization_alias="nativeCostCurrency")
+    native_cost_basis_by_currency: tuple[PortfolioQuantityCurrencyAmountResponse, ...] | None = (
+        Field(serialization_alias="nativeCostBasisByCurrency")
     )
 
     @field_serializer(
@@ -126,8 +126,8 @@ class PortfolioSnapshotPositionResponse(BaseModel):
         "native_value",
         "native_cost_basis",
     )
-    def serialize_quantity(self, value: Decimal) -> str:
-        return serialize_quantity(value)
+    def serialize_quantity(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_quantity(value)
 
     @field_serializer("value")
     def serialize_money(self, value: Decimal) -> str:

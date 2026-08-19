@@ -22,6 +22,7 @@ from app.modules.jobs.repository import (
 )
 from app.modules.jobs.worker import (
     BackgroundJobWorker,
+    DeferredBackgroundJobError,
     RetryableBackgroundJobError,
     WorkerRunner,
 )
@@ -108,6 +109,16 @@ class _RetryExecutor:
         )
 
 
+class _AwaitingLiabilityExecutor:
+    async def execute(self, claimed, *, checkpoint):
+        del claimed, checkpoint
+        raise DeferredBackgroundJobError(
+            run_after=datetime(2030, 1, 1, 0, 5),
+            code="import_liability_balance_required",
+            message="An explicit liability balance is required before portfolio publication.",
+        )
+
+
 class _BlockingExecutor:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -182,6 +193,37 @@ async def test_retryable_failure_is_rescheduled_without_public_exception_detail(
     assert retry_call is not None
     assert retry_call.kwargs["error_code"] == "snapshot_temporarily_unavailable"
     fail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_liability_waits_with_actionable_error_without_attempt_spend(
+    monkeypatch,
+) -> None:
+    factory = _SessionFactory()
+    monkeypatch.setattr(
+        BackgroundJobRepository,
+        "claim_next",
+        AsyncMock(return_value=_claimed(attempt_count=1)),
+    )
+    defer = AsyncMock()
+    monkeypatch.setattr(BackgroundJobRepository, "defer", defer)
+    monkeypatch.setattr(BackgroundJobRepository, "heartbeat", AsyncMock())
+
+    worker = BackgroundJobWorker(
+        cast(Any, factory),
+        _AwaitingLiabilityExecutor(),
+        worker_id="worker-1",
+        lease_duration=timedelta(minutes=5),
+        heartbeat_interval=timedelta(minutes=1),
+    )
+
+    assert await worker.run_once() is True
+    defer.assert_awaited_once()
+    call = defer.await_args
+    assert call is not None
+    assert call.kwargs["error_code"] == "import_liability_balance_required"
+    assert "explicit liability balance" in call.kwargs["error_message"]
+    assert call.kwargs["run_after"] == datetime(2030, 1, 1, 0, 5)
 
 
 @pytest.mark.asyncio

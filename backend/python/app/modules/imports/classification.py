@@ -125,6 +125,7 @@ class InvestmentEventPostingIntent(_PostingIntentBase):
     note: str | None
     order_id: str | None = None
     asset_direction: Literal["in", "out"] | None = None
+    quote_currency: str | None = None
 
 
 class NeedsReviewPostingIntent(_PostingIntentBase):
@@ -427,6 +428,8 @@ def _classify_investment(
     note = normalized_data.get("note")
     order_id = normalized_data.get("order_id")
     asset_direction = normalized_data.get("asset_direction")
+    quote_currency_raw = normalized_data.get("quote_currency")
+    quote_currency = None if quote_currency_raw is None else _validated_currency(quote_currency_raw)
     promotional = normalized_data.get("is_promotional")
     if (
         (external_id is not None and not isinstance(external_id, str))
@@ -434,10 +437,13 @@ def _classify_investment(
         or (note is not None and not isinstance(note, str))
         or (order_id is not None and not isinstance(order_id, str))
         or asset_direction not in {None, "in", "out"}
+        or (quote_currency_raw is not None and quote_currency is None)
         or type(promotional) is not bool
     ):
         return _investment_review()
-    if source is ImportSource.trading212 and (order_id is not None or asset_direction is not None):
+    if source is ImportSource.trading212 and (
+        order_id is not None or asset_direction is not None or quote_currency is not None
+    ):
         return _investment_review()
     if source is ImportSource.anycoin:
         grouped_trade = action in {InvestmentAction.buy, InvestmentAction.sell}
@@ -446,7 +452,8 @@ def _classify_investment(
             isinstance(order_id, str) and bool(order_id.strip()) and len(order_id) <= 256
         )
         if (
-            (grouped_trade and (not valid_order_id or asset_direction is not None))
+            quote_currency is None
+            or (grouped_trade and (not valid_order_id or asset_direction is not None))
             or (transfer and (order_id is not None or asset_direction not in {"in", "out"}))
             or (
                 not grouped_trade
@@ -454,6 +461,8 @@ def _classify_investment(
                 and (order_id is not None or asset_direction is not None)
             )
         ):
+            return _investment_review()
+        if price is not None or (total is not None and total.currency != quote_currency):
             return _investment_review()
     asset = InvestmentAssetPostingIntent(
         symbol=asset_values[0],
@@ -608,6 +617,7 @@ def _classify_investment(
         note=note,
         order_id=order_id,
         asset_direction=asset_direction,
+        quote_currency=quote_currency,
     )
 
 

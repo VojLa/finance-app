@@ -1,4 +1,4 @@
-schema_version = 14
+schema_version = 17
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -15,7 +15,7 @@ cutover_status = "alembic_owned"
 users = ["User"]
 accounts = ["Account", "AccountMember", "AccountInvite"]
 liabilities = ["LiabilityBalance"]
-transactions = ["Transaction", "TransactionPair", "TransactionSplit"]
+transactions = ["Transaction", "TransactionPair", "TransactionSplit", "TransactionReportingEvidence"]
 counterparties = ["Counterparty", "CounterpartyAlias"]
 categories = ["Category", "CategoryRule"]
 budgets = ["Budget", "BudgetItem", "BudgetItemCategory", "BudgetAccount", "BudgetAlert"]
@@ -23,8 +23,8 @@ assets = ["Asset", "AssetListing", "AssetAlias"]
 prices_fx = ["PriceSnapshot", "ExchangeRate"]
 ledger = ["InvestmentEvent", "InvestmentMovement"]
 holdings = ["Holding"]
-imports = ["ImportBatch", "ImportRow", "ImportLog"]
-jobs = ["BackgroundJob", "ImportJobPublicationTarget"]
+imports = ["ImportBatch", "ImportRow", "ImportLog", "ImportSourceOccurrence"]
+jobs = ["BackgroundJob", "ImportJobPublicationTarget", "ImportJobBatch", "ImportJobAffectedAccount"]
 snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
 canonical_lineage = ["AccountCanonicalState", "AccountCanonicalChange", "AccountSnapshotCanonicalBoundary", "DailySnapshotBaseline", "DailySnapshotBaselineAccount"]
 
@@ -53,6 +53,7 @@ tables = [
   "LiabilityBalance",
   "Transaction",
   "TransactionPair",
+  "TransactionReportingEvidence",
   "TransactionSplit",
   "Counterparty",
   "CounterpartyAlias",
@@ -74,8 +75,11 @@ tables = [
   "ImportBatch",
   "ImportRow",
   "ImportLog",
+  "ImportSourceOccurrence",
   "BackgroundJob",
   "ImportJobPublicationTarget",
+  "ImportJobBatch",
+  "ImportJobAffectedAccount",
   "NetWorthSnapshot",
   "AccountSnapshot",
   "AccountSnapshotItem",
@@ -131,9 +135,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 10
+revision_count = 13
 head_count = 1
-head_revision = "3m0001importanchor"
+head_revision = "3p0001rbfoundation"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -153,14 +157,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3m0001importanchor"
-revision_count = 10
+head_revision = "3p0001rbfoundation"
+revision_count = 13
 head_count = 1
 
 [current_schema]
-revision = "3m0001importanchor"
-schema_source = "database/revisions/3m0001importanchor/schema.sql"
-checksum_source = "database/revisions/3m0001importanchor/schema.sha256"
+revision = "3p0001rbfoundation"
+schema_source = "database/revisions/3p0001rbfoundation/schema.sql"
+checksum_source = "database/revisions/3p0001rbfoundation/schema.sha256"
 
 [cutover]
 phase = "completed"

@@ -141,7 +141,7 @@ describe("in-process portfolio browser flow", () => {
     expect(model.aggregate.summary).toBe(state.data.summary)
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
     expect(state.data.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
-    expect(state.data.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
+    expect(state.data.summary.netDepositsByCurrency?.[1]?.amount).toBe("500.000000")
     expect(model.aggregate.summary.cashByCurrency).toBe(state.data.summary.cashByCurrency)
     expect(model.accounts[0]?.summary).toBe(state.data.accounts[0]?.summary)
     expect(model.accounts[0]?.positions[0]?.position.value).toBe("123.456789")

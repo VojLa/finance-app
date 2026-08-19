@@ -74,10 +74,12 @@ def test_valid_production_configuration() -> None:
             "docs_enabled": False,
             "internal_auth_secret": "production-secret-with-at-least-32-characters",
             "twelve_data_api_key": "production-twelve-data-server-key",
+            "market_evidence_source_mode": "canonical",
         }
     )
 
     assert settings.environment == "production"
     assert settings.log_json is True
     assert settings.docs_enabled is False
+    assert settings.market_evidence_source_mode == "canonical"
     assert "production-twelve-data-server-key" not in repr(settings)

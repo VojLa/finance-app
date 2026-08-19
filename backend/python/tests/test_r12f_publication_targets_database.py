@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
-from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
 from app.db.models.canonical_lineage import (
     AccountCanonicalStateModel,
     AccountSnapshotCanonicalBoundaryModel,
@@ -38,9 +42,13 @@ from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.modules.canonical_state.service import CanonicalChangeKind, CanonicalStateService
+from app.modules.current_value.repository import CurrentValueRepository
 from app.modules.imports.models import ImportBatchCreateRequest, ImportRegistrationResponse
 from app.modules.imports.service import ImportBatchAlreadyImportedError
-from app.modules.jobs.publication_service import ImportJobPublicationService
+from app.modules.jobs.publication_service import (
+    ImportJobPublicationService,
+    ImportPublicationTarget,
+)
 from app.modules.jobs.repository import (
     BackgroundJobLeaseLostError,
     BackgroundJobPublicationStaleError,
@@ -111,6 +119,42 @@ async def _claim(
     now: datetime,
 ) -> ClaimedBackgroundJob:
     async with sessions() as session:
+        job = await session.get(BackgroundJobModel, job_id)
+        assert job is not None
+        batch_id = job.payload["batch_ids"][0]
+        if await session.get(ImportBatchModel, batch_id) is None:
+            session.add(
+                ImportBatchModel(
+                    id=batch_id,
+                    user_id=job.user_id,
+                    account_id=job.account_id,
+                    source=ImportSource.trading212,
+                    filename=f"{batch_id}.csv",
+                    file_size=1,
+                    file_encoding="utf-8",
+                    checksum=f"checksum-{job_id}",
+                    status=ImportStatus.completed,
+                    rows_total=0,
+                    rows_imported=0,
+                    rows_skipped=0,
+                    created_at=NOW,
+                    completed_at=NOW,
+                    retain_until=None,
+                    raw_data_purged_at=None,
+                )
+            )
+            await session.flush()
+        if await session.get(ImportJobBatchModel, (job_id, batch_id)) is None:
+            session.add(
+                ImportJobBatchModel(
+                    job_id=job_id,
+                    batch_id=batch_id,
+                    user_id=job.user_id,
+                    account_id=job.account_id,
+                    created_at=NOW,
+                )
+            )
+            await session.flush()
         claimed = await BackgroundJobRepository(session).claim_next(
             worker_id=worker_id,
             now=now,
@@ -282,6 +326,14 @@ async def _cleanup(
             delete(ImportJobPublicationTargetModel).where(
                 ImportJobPublicationTargetModel.job_id.in_(job_ids)
             )
+        )
+        await connection.execute(
+            delete(ImportJobAffectedAccountModel).where(
+                ImportJobAffectedAccountModel.job_id.in_(job_ids)
+            )
+        )
+        await connection.execute(
+            delete(ImportJobBatchModel).where(ImportJobBatchModel.job_id.in_(job_ids))
         )
         await connection.execute(
             delete(BackgroundJobModel).where(BackgroundJobModel.id.in_(job_ids))
@@ -459,10 +511,75 @@ async def test_registration_does_not_deadlock_with_completion_lock_boundary() ->
                 )
             assert terminal.value.code == "import_batch_already_imported"
     finally:
-        async with engine.begin() as connection:
-            await connection.execute(
-                delete(ImportBatchModel).where(ImportBatchModel.id == batch_id)
+        await _cleanup(
+            engine,
+            job_ids=(job_id,),
+            account_ids=(account_id,),
+            user_ids=(user_id,),
+        )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_concurrent_reservation_and_completion_share_one_lock_order() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"lock-owner-{suffix}"
+    account_id = f"lock-account-{suffix}"
+    job_id = f"lock-job-{suffix}"
+    try:
+        await _seed_single_publication(
+            engine, user_id=user_id, account_id=account_id, job_id=job_id
+        )
+        claimed = await _claim(sessions, job_id=job_id, worker_id="lock-worker", now=NOW)
+        async with sessions() as session:
+            targets = await ImportJobPublicationService(session).reserve(
+                job_id=job_id, account_id=account_id, requested_bucket=NOW
             )
+        assert targets == (ImportPublicationTarget(user_id=user_id, bucket=NOW),)
+        await _insert_import_anchor(
+            engine,
+            job_id=job_id,
+            user_id=user_id,
+            account_id=account_id,
+            bucket=NOW,
+            suffix=f"lock-{suffix}",
+        )
+
+        async def reserve_again() -> str:
+            async with sessions() as session:
+                try:
+                    await ImportJobPublicationService(session).reserve(
+                        job_id=job_id,
+                        account_id=account_id,
+                        requested_bucket=NOW,
+                    )
+                except RuntimeError:
+                    return "completed-first"
+                return "reserved-first"
+
+        async def complete() -> None:
+            async with sessions() as session:
+                await BackgroundJobRepository(session).complete(
+                    lease=claimed.lease,
+                    result={"published": True},
+                    progress=_complete_progress(),
+                    now=NOW,
+                )
+                await session.commit()
+
+        reservation_result, _ = await asyncio.wait_for(
+            asyncio.gather(reserve_again(), complete()), timeout=5
+        )
+        assert reservation_result in {"completed-first", "reserved-first"}
+        async with sessions() as session:
+            job = await session.get(BackgroundJobModel, job_id)
+            target = await session.get(ImportJobPublicationTargetModel, (job_id, user_id))
+            assert job is not None and job.status is BackgroundJobStatus.completed
+            assert target is not None and target.published_at == NOW
+    finally:
         await _cleanup(
             engine,
             job_ids=(job_id,),
@@ -842,6 +959,67 @@ async def test_same_user_distinct_jobs_defer_to_immutable_future_bucket_without_
 
 
 @pytest.mark.integration
+async def test_unanchored_target_retargets_in_place_with_production_autoflush_disabled() -> None:
+    """A retry moves one unused target without replacing its composite identity."""
+
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    suffix = uuid4().hex
+    user_id, account_id, job_id = (
+        f"retarget-user-{suffix}",
+        f"retarget-account-{suffix}",
+        f"retarget-job-{suffix}",
+    )
+    advanced = NOW + timedelta(minutes=5)
+    try:
+        await _seed_single_publication(
+            engine,
+            user_id=user_id,
+            account_id=account_id,
+            job_id=job_id,
+        )
+        await _claim(sessions, job_id=job_id, worker_id="retarget-worker", now=NOW)
+
+        async with sessions() as session:
+            first = await ImportJobPublicationService(session).reserve(
+                job_id=job_id,
+                account_id=account_id,
+                requested_bucket=NOW,
+            )
+            second = await ImportJobPublicationService(session).reserve(
+                job_id=job_id,
+                account_id=account_id,
+                requested_bucket=advanced,
+            )
+
+        assert first == (ImportPublicationTarget(user_id=user_id, bucket=NOW),)
+        assert second == (ImportPublicationTarget(user_id=user_id, bucket=advanced),)
+        async with engine.connect() as connection:
+            targets = tuple(
+                (
+                    await connection.execute(
+                        select(
+                            ImportJobPublicationTargetModel.job_id,
+                            ImportJobPublicationTargetModel.user_id,
+                            ImportJobPublicationTargetModel.bucket,
+                            ImportJobPublicationTargetModel.published_at,
+                        ).where(ImportJobPublicationTargetModel.job_id == job_id)
+                    )
+                ).all()
+            )
+        assert targets == ((job_id, user_id, advanced, None),)
+    finally:
+        await _cleanup(
+            engine,
+            job_ids=(job_id,),
+            account_ids=(account_id,),
+            user_ids=(user_id,),
+        )
+        await engine.dispose()
+
+
+@pytest.mark.integration
 async def test_canonical_change_after_anchor_defers_then_retires_stale_anchor_for_republish() -> (
     None
 ):
@@ -1078,6 +1256,109 @@ async def test_manual_snapshot_after_unused_target_retargets_without_deleting_ma
             engine,
             job_ids=(job_id,),
             account_ids=(account_id,),
+            user_ids=(user_id,),
+        )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_current_value_fence_covers_exact_affected_union_until_completion() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"affected-reader-{suffix}"
+    account_a = f"affected-a-{suffix}"
+    account_b = f"affected-b-{suffix}"
+    job_id = f"affected-job-{suffix}"
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert(UserModel).values(
+                    id=user_id,
+                    email=f"{user_id}@example.test",
+                    name="Affected fence",
+                    password_hash=None,
+                    base_currency="CZK",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            for account_id in (account_a, account_b):
+                await connection.execute(
+                    insert(AccountModel).values(
+                        id=account_id,
+                        name="Affected fence",
+                        type=AccountType.bank,
+                        currency="CZK",
+                        color=None,
+                        is_archived=False,
+                        archived_at=None,
+                        created_at=NOW,
+                        updated_at=NOW,
+                        notes=None,
+                    )
+                )
+                await connection.execute(
+                    insert(AccountMemberModel).values(
+                        id=f"member-{account_id}",
+                        account_id=account_id,
+                        user_id=user_id,
+                        role=AccountMemberRole.owner,
+                        relation_type=AccountRelationType.owner,
+                        invited_by_id=None,
+                        accepted_at=NOW,
+                        created_at=NOW,
+                        updated_at=NOW,
+                    )
+                )
+            failed_job = _job(job_id, user_id, account_a)
+            failed_job["status"] = BackgroundJobStatus.failed
+            failed_job["error_code"] = "safe_failure"
+            failed_job["error_message"] = "Import awaits a safe retry."
+            failed_job["finished_at"] = NOW
+            await connection.execute(insert(BackgroundJobModel).values(**failed_job))
+            for account_id in (account_a, account_b):
+                await connection.execute(
+                    insert(ImportJobAffectedAccountModel).values(
+                        job_id=job_id,
+                        account_id=account_id,
+                        user_id=user_id,
+                        created_at=NOW,
+                    )
+                )
+
+        async with sessions() as session:
+            repository = CurrentValueRepository(session)
+            assert await repository.load_active_import_account_ids(reader_user_id=user_id) == (
+                account_a,
+                account_b,
+            )
+            assert await repository.load_active_import_account_ids(
+                reader_user_id=user_id, account_ids=(account_b,)
+            ) == (account_b,)
+
+        async with sessions() as session:
+            job = await session.get(BackgroundJobModel, job_id)
+            assert job is not None
+            job.status = BackgroundJobStatus.completed
+            job.result = {"completed": True}
+            job.error_code = None
+            job.error_message = None
+            job.finished_at = NOW
+            await session.commit()
+        async with sessions() as session:
+            assert (
+                await CurrentValueRepository(session).load_active_import_account_ids(
+                    reader_user_id=user_id
+                )
+                == ()
+            )
+    finally:
+        await _cleanup(
+            engine,
+            job_ids=(job_id,),
+            account_ids=(account_a, account_b),
             user_ids=(user_id,),
         )
         await engine.dispose()

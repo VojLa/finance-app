@@ -10,12 +10,21 @@ import {
   requestCreateAccount,
   requestUpdateAccount,
 } from "@/modules/accounts/account-client"
+import {
+  LiabilityBalanceClientError,
+  requestCreateManualLiabilityBalance,
+} from "@/modules/accounts/liability-balance-client"
 import type {
   AccountPageModel,
   CreateAccountRequest,
   UpdateAccountRequest,
 } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import type { CreateManualLiabilityBalanceRequest } from "@/modules/accounts/liability-balance-contract"
+import {
+  defaultLiabilityEffectiveAt,
+  toNaiveUtcLiabilityTimestamp,
+} from "@/modules/accounts/liability-balance-time"
 import {
   type AccountActionState,
   isActionErrorForAccount,
@@ -38,8 +47,34 @@ type EditForm = {
   currency: string
 }
 
+type LiabilityForm = {
+  effectiveAt: string
+  currency: string
+  outstandingPrincipal: string
+  accruedInterest: string
+  feesOutstanding: string
+}
+
+type LiabilityActionState =
+  | { status: "idle" }
+  | { status: "submitting"; accountId: string }
+  | { status: "error"; accountId: string; message: string }
+  | { status: "success"; accountId: string; message: string }
+
+const LIABILITY_ACCOUNT_TYPES = new Set<AccountPageModel["type"]>([
+  "credit_card",
+  "loan",
+  "mortgage",
+])
+
 function safeActionMessage(error: unknown): string {
   return error instanceof AccountClientError ? error.message : "Operaci se nepodařilo dokončit."
+}
+
+function safeLiabilityActionMessage(error: unknown): string {
+  return error instanceof LiabilityBalanceClientError
+    ? error.message
+    : "Zůstatek dluhu se nepodařilo uložit."
 }
 
 export default function AccountsPage() {
@@ -51,6 +86,17 @@ export default function AccountsPage() {
   const [currency, setCurrency] = useState("EUR")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<EditForm>({ name: "", currency: "" })
+  const [liabilityAccountId, setLiabilityAccountId] = useState<string | null>(null)
+  const [liabilityForm, setLiabilityForm] = useState<LiabilityForm>({
+    effectiveAt: "",
+    currency: "",
+    outstandingPrincipal: "",
+    accruedInterest: "",
+    feesOutstanding: "",
+  })
+  const [liabilityActionState, setLiabilityActionState] = useState<LiabilityActionState>({
+    status: "idle",
+  })
   const requestController = useRef<ReturnType<typeof createAccountRequestController> | null>(null)
   if (requestController.current === null) {
     requestController.current = createAccountRequestController(requestAccounts)
@@ -158,6 +204,47 @@ export default function AccountsPage() {
         action: "archive",
         accountId: account.id,
         message: safeActionMessage(error),
+      })
+    }
+  }
+
+  function startLiabilityEntry(account: AccountPageModel) {
+    setLiabilityAccountId(account.id)
+    setLiabilityForm({
+      effectiveAt: defaultLiabilityEffectiveAt(),
+      currency: account.currency,
+      outstandingPrincipal: "",
+      accruedInterest: "",
+      feesOutstanding: "",
+    })
+    setLiabilityActionState({ status: "idle" })
+  }
+
+  async function handleLiabilityEntry(event: React.FormEvent, accountId: string) {
+    event.preventDefault()
+    setLiabilityActionState({ status: "submitting", accountId })
+    const payload: CreateManualLiabilityBalanceRequest = {
+      effectiveAt: toNaiveUtcLiabilityTimestamp(liabilityForm.effectiveAt),
+      currency: liabilityForm.currency,
+      outstandingPrincipal: liabilityForm.outstandingPrincipal,
+      accruedInterest: liabilityForm.accruedInterest,
+      feesOutstanding: liabilityForm.feesOutstanding,
+    }
+    try {
+      const result = await requestCreateManualLiabilityBalance(accountId, payload)
+      setLiabilityAccountId(null)
+      setLiabilityActionState({
+        status: "success",
+        accountId,
+        message:
+          result.status === "replayed" ? "Záznam už byl uložen." : "Zůstatek dluhu byl uložen.",
+      })
+      await loadAccounts("reload")
+    } catch (error) {
+      setLiabilityActionState({
+        status: "error",
+        accountId,
+        message: safeLiabilityActionMessage(error),
       })
     }
   }
@@ -271,6 +358,10 @@ export default function AccountsPage() {
               actionState.status === "submitting" &&
               actionState.action === "archive" &&
               actionState.accountId === account.id
+            const liabilityPending =
+              liabilityActionState.status === "submitting" &&
+              liabilityActionState.accountId === account.id
+            const isLiabilityAccount = LIABILITY_ACCOUNT_TYPES.has(account.type)
 
             return (
               <article key={account.id} className="bg-white border border-gray-200 rounded-xl p-5">
@@ -351,6 +442,150 @@ export default function AccountsPage() {
                     </div>
                     {isActionErrorForAccount(actionState, "archive", account.id) && (
                       <p className="text-sm text-red-600 mt-3">{actionState.message}</p>
+                    )}
+                    {liabilityActionState.status === "success" &&
+                      liabilityActionState.accountId === account.id && (
+                        <p className="text-sm text-emerald-700 mt-3">
+                          {liabilityActionState.message}
+                        </p>
+                      )}
+                    {isLiabilityAccount && canEditAccount(account.role) && (
+                      <div className="mt-5 pt-4 border-t border-gray-100">
+                        {liabilityAccountId === account.id ? (
+                          <form
+                            onSubmit={(event) => void handleLiabilityEntry(event, account.id)}
+                            className="space-y-3"
+                          >
+                            <div>
+                              <h3 className="text-sm font-medium text-gray-900">
+                                Zadat zůstatek dluhu
+                              </h3>
+                              <p className="text-xs text-gray-500 mt-1">
+                                Import transakcí dluh neodvozuje. Zadejte úplný stav k danému času.
+                              </p>
+                            </div>
+                            <label className="block text-sm text-gray-700">
+                              Platnost k
+                              <input
+                                type="datetime-local"
+                                step="1"
+                                value={liabilityForm.effectiveAt}
+                                onChange={(event) =>
+                                  setLiabilityForm((current) => ({
+                                    ...current,
+                                    effectiveAt: event.target.value,
+                                  }))
+                                }
+                                required
+                                className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2"
+                              />
+                            </label>
+                            <label className="block text-sm text-gray-700">
+                              Měna
+                              <input
+                                value={liabilityForm.currency}
+                                onChange={(event) =>
+                                  setLiabilityForm((current) => ({
+                                    ...current,
+                                    currency: event.target.value,
+                                  }))
+                                }
+                                required
+                                maxLength={3}
+                                className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2 uppercase"
+                              />
+                            </label>
+                            <label className="block text-sm text-gray-700">
+                              Jistina
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="0.000001"
+                                value={liabilityForm.outstandingPrincipal}
+                                onChange={(event) =>
+                                  setLiabilityForm((current) => ({
+                                    ...current,
+                                    outstandingPrincipal: event.target.value,
+                                  }))
+                                }
+                                required
+                                className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2"
+                              />
+                            </label>
+                            <label className="block text-sm text-gray-700">
+                              Naběhlý úrok
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="0.000001"
+                                value={liabilityForm.accruedInterest}
+                                onChange={(event) =>
+                                  setLiabilityForm((current) => ({
+                                    ...current,
+                                    accruedInterest: event.target.value,
+                                  }))
+                                }
+                                required
+                                className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2"
+                              />
+                            </label>
+                            <label className="block text-sm text-gray-700">
+                              Neuhrazené poplatky
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="0.000001"
+                                value={liabilityForm.feesOutstanding}
+                                onChange={(event) =>
+                                  setLiabilityForm((current) => ({
+                                    ...current,
+                                    feesOutstanding: event.target.value,
+                                  }))
+                                }
+                                required
+                                className="mt-1 w-full border border-gray-300 rounded-lg px-3 py-2"
+                              />
+                            </label>
+                            <p className="text-xs text-gray-500">Všechny tři částky mohou být 0.</p>
+                            {liabilityActionState.status === "error" &&
+                              liabilityActionState.accountId === account.id && (
+                                <p className="text-sm text-red-600">
+                                  {liabilityActionState.message}
+                                </p>
+                              )}
+                            <div className="flex gap-2">
+                              <button
+                                type="submit"
+                                disabled={liabilityPending}
+                                className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm disabled:opacity-50"
+                              >
+                                {liabilityPending ? "Ukládám…" : "Uložit zůstatek"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLiabilityAccountId(null)
+                                  setLiabilityActionState({ status: "idle" })
+                                }}
+                                className="px-3 py-2 rounded-lg text-sm text-gray-600"
+                              >
+                                Zrušit
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => startLiabilityEntry(account)}
+                            className="text-sm text-blue-600 hover:text-blue-800"
+                          >
+                            Zadat zůstatek dluhu
+                          </button>
+                        )}
+                      </div>
                     )}
                     {(canEditAccount(account.role) || canArchiveAccount(account.role)) && (
                       <div className="flex gap-3 mt-5 pt-4 border-t border-gray-100">

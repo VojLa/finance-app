@@ -344,6 +344,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/accounts/{account_id}/liability-balances": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Create Manual Liability Balance */
+    post: operations["create_manual_liability_balance_api_v1_accounts__account_id__liability_balances_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/accounts/{account_id}/members": {
     parameters: {
       query?: never
@@ -1281,15 +1298,15 @@ export interface components {
       /** Baselinesnapshotid */
       baselineSnapshotId: string
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Name */
       name: string
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Outputcurrency */
       outputCurrency: string
       /** Positioncount */
@@ -1297,9 +1314,9 @@ export interface components {
       /** Primarybaselinesnapshotid */
       primaryBaselineSnapshotId: string
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** CurrentDashboardResponse */
     CurrentDashboardResponse: {
@@ -1369,15 +1386,15 @@ export interface components {
       accountId: string
       accountType: components["schemas"]["app__modules__portfolio_snapshot__models__AccountType"]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Name */
       name: string
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Outputcurrency */
       outputCurrency: string
       /** Positioncount */
@@ -1387,9 +1404,9 @@ export interface components {
       /** Snapshotid */
       snapshotId: string
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** DashboardAssetTypeAllocationResponse */
     DashboardAssetTypeAllocationResponse: {
@@ -1425,33 +1442,33 @@ export interface components {
       /** Accountcount */
       accountCount: number
       /** Assetsvalue */
-      assetsValue: string
+      assetsValue: string | null
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentaccountcount */
       investmentAccountCount: number
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Liabilityaccountcount */
       liabilityAccountCount: number
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** DashboardTopPositionResponse */
     DashboardTopPositionResponse: {
@@ -1469,7 +1486,7 @@ export interface components {
       /** Symbol */
       symbol: string
       /** Unrealizedpnl */
-      unrealizedPnl: string
+      unrealizedPnl: string | null
       /** Value */
       value: string
       /** Valuecurrency */
@@ -1680,6 +1697,9 @@ export interface components {
       | "deduplicating"
       | "classifying"
       | "posting"
+      | "reconciling"
+      | "acquiring_reporting_fx"
+      | "validating_liability"
       | "rebuilding_holdings"
       | "refreshing_snapshot"
       | "completed"
@@ -1979,6 +1999,45 @@ export interface components {
       /** Timestamp */
       timestamp?: string | null
     }
+    /** ManualLiabilityBalanceCreateRequest */
+    ManualLiabilityBalanceCreateRequest: {
+      /** Accruedinterest */
+      accruedInterest: number | string
+      /** Currency */
+      currency: string
+      /**
+       * Effectiveat
+       * Format: date-time
+       */
+      effectiveAt: string
+      /** Feesoutstanding */
+      feesOutstanding: number | string
+      /** Outstandingprincipal */
+      outstandingPrincipal: number | string
+    }
+    /** ManualLiabilityBalanceCreateResponse */
+    ManualLiabilityBalanceCreateResponse: {
+      /** Accountid */
+      accountId: string
+      /** Balanceid */
+      balanceId: string
+      /** Currency */
+      currency: string
+      /** Effectiveat */
+      effectiveAt: string
+      /**
+       * Source
+       * @constant
+       */
+      source: "manual"
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "created" | "replayed"
+      /** Totaloutstanding */
+      totalOutstanding: string
+    }
     /** MultiAccountPortfolioAccountResponse */
     MultiAccountPortfolioAccountResponse: {
       account: components["schemas"]["PortfolioSnapshotAccountResponse"]
@@ -2028,29 +2087,29 @@ export interface components {
       /** Cashbycurrency */
       cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Netdepositsbycurrency */
-      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][] | null
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** NetWorthSnapshotRecalculateResponse */
     NetWorthSnapshotRecalculateResponse: {
@@ -2258,35 +2317,37 @@ export interface components {
       assetId: string
       assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Costbasis */
-      costBasis: string
+      costBasis: string | null
       /** Costcurrency */
-      costCurrency: string
+      costCurrency: string | null
       /** Listingid */
       listingId: string
       /** Name */
       name: string
       /** Nativecostbasis */
-      nativeCostBasis: string
+      nativeCostBasis: string | null
       /** Nativecostbasisbycurrency */
-      nativeCostBasisByCurrency: components["schemas"]["PortfolioQuantityCurrencyAmountResponse"][]
+      nativeCostBasisByCurrency:
+        | components["schemas"]["PortfolioQuantityCurrencyAmountResponse"][]
+        | null
       /** Nativecostcurrency */
-      nativeCostCurrency: string
+      nativeCostCurrency: string | null
       /** Nativevalue */
-      nativeValue: string
+      nativeValue: string | null
       /** Nativevaluecurrency */
       nativeValueCurrency: string
       /** Pricecurrency */
       priceCurrency: string
       /** Priceperunit */
-      pricePerUnit: string
+      pricePerUnit: string | null
       /** Pricetimestamp */
       priceTimestamp: string
       /** Quantity */
-      quantity: string
+      quantity: string | null
       /** Symbol */
       symbol: string
       /** Unrealizedpnl */
-      unrealizedPnl: string
+      unrealizedPnl: string | null
       /** Value */
       value: string
       /** Valuecurrency */
@@ -2314,29 +2375,29 @@ export interface components {
       /** Cashbycurrency */
       cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Netdepositsbycurrency */
-      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][] | null
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** PortfolioSummary */
     PortfolioSummary: {
@@ -3437,6 +3498,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  create_manual_liability_balance_api_v1_accounts__account_id__liability_balances_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ManualLiabilityBalanceCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ManualLiabilityBalanceCreateResponse"]
+        }
       }
       /** @description Validation Error */
       422: {

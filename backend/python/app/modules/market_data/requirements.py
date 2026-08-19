@@ -33,6 +33,10 @@ from app.modules.market_data.requirements_repository import (
     MarketEvidenceRequirementsRepository,
     PersistedMarketHolding,
 )
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
+)
 
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
@@ -120,8 +124,13 @@ def _finite_decimal(value: object) -> Decimal:
 
 
 def _holding_cost_currencies(holding: HoldingModel) -> tuple[str, ...]:
+    average = holding.avg_buy_price
     value = holding.cost_basis_by_currency
-    if not isinstance(value, dict) or not value:
+    if average is None and value is None:
+        return ()
+    if average is None or value is None:
+        raise _fail()
+    if _finite_decimal(average) <= 0 or not isinstance(value, dict) or not value:
         raise _fail()
     currencies: list[str] = []
     for raw_currency, raw_amount in sorted(value.items()):
@@ -160,6 +169,7 @@ def build_price_requirement(
     aliases: tuple[AssetAliasModel, ...],
     supported_sources: frozenset[PriceSource],
     through: datetime,
+    source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> PriceRequirement:
     """Resolve one trusted persisted listing identity without consulting Holdings."""
 
@@ -167,7 +177,15 @@ def build_price_requirement(
         raise _fail()
     if listing.asset_id != asset.id:
         raise _fail()
-    if listing.provider in supported_sources:
+    expected_source: PriceSource | None = None
+    if source_policy is not None:
+        policy = validate_market_evidence_source_policy(source_policy)
+        if policy.price_sources != supported_sources:
+            raise _fail()
+        expected_source = policy.price_source_for(asset.asset_type)
+    if listing.provider in supported_sources and (
+        expected_source is None or listing.provider is expected_source
+    ):
         if listing.provider is None:
             raise _fail()
         provider, symbol = listing.provider, _nonblank(listing.provider_symbol)
@@ -181,7 +199,9 @@ def build_price_requirement(
             ):
                 raise _fail()
             source = _alias_price_source(alias.provider)
-            if source in supported_sources:
+            if source in supported_sources and (
+                expected_source is None or source is expected_source
+            ):
                 identities.append((source, _nonblank(alias.external_id)))
         if len(identities) != 1:
             raise _fail()
@@ -203,6 +223,7 @@ def _price_requirements(
     accounts: dict[str, AccountModel],
     supported_sources: frozenset[PriceSource],
     through: datetime,
+    source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> tuple[PriceRequirement, ...]:
     by_identity: dict[tuple[str, PriceSource, datetime], PriceRequirement] = {}
     holding_ids: set[str] = set()
@@ -237,6 +258,7 @@ def _price_requirements(
             aliases=persisted.aliases,
             supported_sources=supported_sources,
             through=through,
+            source_policy=source_policy,
         )
         key = (requirement.listing_id, requirement.provider, requirement.through)
         existing = by_identity.get(key)
@@ -351,12 +373,18 @@ class MarketEvidenceRequirementsPlanner:
         price_sources: frozenset[PriceSource],
         fx_source: ExchangeRateSource | None,
         repository: _Repository | None = None,
+        source_policy: MarketEvidenceSourcePolicy | None = None,
     ) -> None:
         if PriceSource.manual in price_sources or fx_source is ExchangeRateSource.manual:
             raise _fail()
         self.session = session
         self.price_sources = price_sources
         self.fx_source = fx_source
+        if source_policy is not None:
+            policy = validate_market_evidence_source_policy(source_policy)
+            if policy.price_sources != price_sources or policy.fx_source is not fx_source:
+                raise _fail()
+        self.source_policy = source_policy
         self.repository = repository or MarketEvidenceRequirementsRepository(session)
 
     async def build(
@@ -407,6 +435,7 @@ class MarketEvidenceRequirementsPlanner:
             accounts=accounts,
             supported_sources=self.price_sources,
             through=snapshot_timestamp,
+            source_policy=self.source_policy,
         )
 
         fx: dict[

@@ -589,6 +589,7 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
                         account_id=account_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"USD": f"{quantity:.10f}"},
                     )
                 )
             session.add(

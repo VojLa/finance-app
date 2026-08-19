@@ -17,6 +17,13 @@ from app.db.models.transactions import (
     TransactionPairModel,
     TransactionSplitModel,
 )
+from app.modules.transactions.operational_visibility import (
+    OperationalTransaction,
+    operational_effective_type_expression,
+    operational_projection_columns,
+    operational_transaction_from_values,
+    operational_visibility_predicate,
+)
 
 WRITE_ROLES = {
     AccountMemberRole.owner,
@@ -58,7 +65,7 @@ class TransactionRepository:
         category_id: str | None,
         account_id: str | None,
         search: str | None,
-    ) -> Select[tuple[TransactionModel]]:
+    ) -> Select:
         selected_ids = (
             (account_id,) if account_id is not None and account_id in account_ids else account_ids
         )
@@ -66,11 +73,12 @@ class TransactionRepository:
             TransactionModel.account_id.in_(selected_ids),
             TransactionModel.archived_at.is_(None),
             TransactionModel.deleted_at.is_(None),
+            operational_visibility_predicate(),
         )
         if account_id is not None and account_id not in account_ids:
             statement = statement.where(text("false"))
         if transaction_type is not None:
-            statement = statement.where(TransactionModel.type == transaction_type)
+            statement = statement.where(operational_effective_type_expression() == transaction_type)
         if category_id is not None:
             statement = statement.where(TransactionModel.category_id == category_id)
         if search is not None:
@@ -114,7 +122,7 @@ class TransactionRepository:
         search: str | None,
         offset: int,
         limit: int,
-    ) -> list[TransactionModel]:
+    ) -> list[OperationalTransaction]:
         statement = self._list_statement(
             account_ids=account_ids,
             transaction_type=transaction_type,
@@ -122,15 +130,18 @@ class TransactionRepository:
             account_id=account_id,
             search=search,
         )
-        return list(
-            (
-                await self.session.scalars(
-                    statement.order_by(TransactionModel.date.desc(), TransactionModel.id.desc())
-                    .offset(offset)
-                    .limit(limit)
-                )
-            ).all()
-        )
+        rows = (
+            await self.session.execute(
+                statement.add_columns(*operational_projection_columns())
+                .order_by(TransactionModel.date.desc(), TransactionModel.id.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+        ).all()
+        return [
+            operational_transaction_from_values(transaction, classification, amount, currency)
+            for transaction, classification, amount, currency in rows
+        ]
 
     async def load_for_user(
         self,
@@ -155,6 +166,7 @@ class TransactionRepository:
             statement = statement.where(
                 TransactionModel.archived_at.is_(None),
                 TransactionModel.deleted_at.is_(None),
+                operational_visibility_predicate(),
             )
         if for_update:
             statement = statement.with_for_update(of=TransactionModel)

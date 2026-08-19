@@ -26,7 +26,7 @@ from app.modules.net_worth.writer import (
 )
 from app.shared.errors import ApplicationError
 
-CURRENT_NET_WORTH_CALCULATION_VERSION = 1
+CURRENT_NET_WORTH_CALCULATION_VERSION = 3
 MANUAL_NET_WORTH_GRANULARITY = SnapshotGranularity.minute
 MANUAL_NET_WORTH_SOURCE = SnapshotSource.manual_recalculation
 Clock = Callable[[], datetime]

@@ -10,11 +10,15 @@ const USED_ACCOUNT_FILES = [
   "src/app/api/accounts/route.ts",
   "src/app/api/accounts/[id]/route.ts",
   "src/app/api/accounts/[id]/archive/route.ts",
+  "src/app/api/accounts/[id]/liability-balances/route.ts",
   "src/modules/accounts/account-client.ts",
   "src/modules/accounts/account-contract.ts",
   "src/modules/accounts/account-request-parser.ts",
   "src/modules/accounts/account-permissions.ts",
+  "src/modules/accounts/liability-balance-client.ts",
+  "src/modules/accounts/liability-balance-contract.ts",
   "src/modules/accounts/server/account-api.ts",
+  "src/modules/accounts/server/liability-balance-api.ts",
 ]
 
 async function source(file: string): Promise<string> {
@@ -95,6 +99,7 @@ describe("account cutover static boundaries", () => {
       if (
         contents.includes("/api/accounts") &&
         file !== "src/modules/accounts/account-client.ts" &&
+        file !== "src/modules/accounts/liability-balance-client.ts" &&
         !file.startsWith("src/app/api/accounts/")
       ) {
         offenders.push(file)

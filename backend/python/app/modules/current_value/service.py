@@ -51,12 +51,19 @@ from app.modules.market_data.models import (
     MarketEvidenceRefreshResult,
     MarketEvidenceStateError,
 )
-from app.modules.market_data.policy import MarketEvidencePolicy
+from app.modules.market_data.policy import (
+    DEFAULT_MARKET_EVIDENCE_POLICY,
+    MarketEvidencePolicy,
+)
 from app.modules.market_data.requirements import (
     BuildMarketEvidenceRefreshPlanCommand,
     build_price_requirement,
 )
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    market_evidence_source_policy_from_settings,
+)
 from app.modules.portfolio_snapshot.aggregate_models import AccountPortfolioPresentationView
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.currency_breakdown import (
@@ -110,7 +117,6 @@ from app.shared.errors import ApplicationError
 _CASH_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings}
 _INVESTMENT_TYPES = {AccountType.broker, AccountType.exchange, AccountType.crypto_wallet}
 _LIABILITY_TYPES = {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
-_PRICE_SOURCES = frozenset((PriceSource.coingecko, PriceSource.twelve_data))
 
 
 class CurrentValueUnavailableError(ApplicationError):
@@ -142,6 +148,7 @@ class _PreparedAccount:
     holdings: tuple[ExpectedPersistedHoldingPlan, ...]
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     forward_metrics: tuple[HistoricalMetricEvidence, ...]
+    forward_asset_transfer: bool
     liability: LiabilityBalanceModel | None
 
 
@@ -242,6 +249,12 @@ def _add_money(left: Decimal, right: Decimal) -> Decimal:
         raise _fail() from exc
 
 
+def _add_optional_money(left: Decimal | None, right: Decimal | None) -> Decimal | None:
+    if left is None or right is None:
+        return None
+    return _add_money(left, right)
+
+
 def _subtract_quantity(left: Decimal, right: Decimal) -> Decimal:
     try:
         with localcontext() as context:
@@ -279,6 +292,132 @@ def _account_view(
         or baseline.timestamp.tzinfo is not None
         or baseline.granularity.value != granularity.value
     ):
+        raise _fail()
+
+
+def _baseline_snapshot_rate_ids(
+    snapshot: AccountSnapshotModel,
+    *,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> tuple[str, ...]:
+    """Validate the immutable FX audit before reusing a baseline scalar.
+
+    The snapshot's JSON is an audit index, not a valuation input.  Its exact
+    rate IDs are reloaded below so historical entries (which intentionally do
+    not duplicate a source field in v1) are checked against the active source
+    policy as well.
+    """
+
+    audit = snapshot.exchange_rates
+    if not isinstance(audit, dict):
+        raise _fail()
+    version = audit.get("version")
+    snapshot_rates = audit.get("snapshotRates")
+    historical_ids = audit.get("historicalRateIds")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in {1, 2}
+        or not isinstance(snapshot_rates, list)
+        or not isinstance(historical_ids, list)
+    ):
+        raise _fail()
+
+    snapshot_ids: list[str] = []
+    for entry in snapshot_rates:
+        if not isinstance(entry, dict):
+            raise _fail()
+        rate_id = _text(entry.get("rateId"))
+        if entry.get("source") != source_policy.fx_source.value:
+            raise _fail()
+        snapshot_ids.append(rate_id)
+
+    historical: list[str] = []
+    for rate_id in historical_ids:
+        historical.append(_text(rate_id))
+
+    if version == 2:
+        historical_rates = audit.get("historicalRates")
+        if not isinstance(historical_rates, list):
+            raise _fail()
+        parsed_historical_ids: list[str] = []
+        for entry in historical_rates:
+            if not isinstance(entry, dict):
+                raise _fail()
+            parsed_historical_ids.append(_text(entry.get("rateId")))
+        if set(parsed_historical_ids) != set(historical):
+            raise _fail()
+    elif "historicalRates" in audit:
+        raise _fail()
+
+    if len(set(snapshot_ids)) != len(snapshot_ids) or len(set(historical)) != len(historical):
+        raise _fail()
+    return tuple(sorted({*snapshot_ids, *historical}))
+
+
+async def _validate_baseline_market_evidence(
+    repository: CurrentValueRepository,
+    *,
+    primary: PortfolioSnapshotView,
+    presentation: PortfolioSnapshotView,
+    primary_snapshot: AccountSnapshotModel,
+    presentation_snapshot: AccountSnapshotModel,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> None:
+    """Do not combine an old policy's persisted baseline with new evidence."""
+
+    expected_item_counts: dict[str, int] = {}
+    snapshots_by_id: dict[str, AccountSnapshotModel] = {}
+    for view, snapshot in (
+        (primary, primary_snapshot),
+        (presentation, presentation_snapshot),
+    ):
+        if view.snapshot_id != snapshot.id:
+            raise _fail()
+        prior_count = expected_item_counts.setdefault(snapshot.id, len(view.positions))
+        if prior_count != len(view.positions):
+            raise _fail()
+        snapshots_by_id.setdefault(snapshot.id, snapshot)
+
+    snapshot_ids = tuple(sorted(snapshots_by_id))
+    items = await repository.load_snapshot_items_with_assets(snapshot_ids)
+    if len(items) != sum(expected_item_counts.values()):
+        raise _fail()
+    observed_item_counts = {snapshot_id: 0 for snapshot_id in snapshot_ids}
+    for item, asset in items:
+        if (
+            item.snapshot_id not in observed_item_counts
+            or item.asset_id != asset.id
+            or not isinstance(asset.asset_type, AssetType)
+            or not isinstance(item.price_source, PriceSource)
+        ):
+            raise _fail()
+        try:
+            expected_source = source_policy.price_source_for(asset.asset_type)
+        except ValueError as exc:
+            raise _fail() from exc
+        if item.price_source is not expected_source:
+            raise _fail()
+        observed_item_counts[item.snapshot_id] += 1
+    if observed_item_counts != expected_item_counts:
+        raise _fail()
+
+    rate_ids = tuple(
+        sorted(
+            {
+                rate_id
+                for snapshot in snapshots_by_id.values()
+                for rate_id in _baseline_snapshot_rate_ids(
+                    snapshot,
+                    source_policy=source_policy,
+                )
+            }
+        )
+    )
+    rates = await repository.load_exchange_rates_by_ids(rate_ids)
+    if {rate.id for rate in rates} != set(rate_ids):
+        raise _fail()
+    if any(rate.source is not source_policy.fx_source for rate in rates):
         raise _fail()
 
 
@@ -324,6 +463,7 @@ async def _prepare_account(
     baseline: DailySnapshotBaseline,
     lineage: DailyBaselineAccount,
     changes: tuple[DailyBaselineChange, ...],
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> _PreparedAccount:
     portfolio_granularity = PortfolioGranularity(baseline.granularity.value)
     primary = await repository.load_baseline_view(
@@ -348,6 +488,14 @@ async def _prepare_account(
     presentation_snapshot = await repository.load_snapshot(lineage.presentation_snapshot_id)
     if primary_snapshot is None or presentation_snapshot is None:
         raise _fail()
+    await _validate_baseline_market_evidence(
+        repository,
+        primary=primary,
+        presentation=presentation,
+        primary_snapshot=primary_snapshot,
+        presentation_snapshot=presentation_snapshot,
+        source_policy=source_policy,
+    )
     if lineage.account_type in _CASH_TYPES:
         if (
             primary.positions
@@ -372,6 +520,7 @@ async def _prepare_account(
         )
         holdings: tuple[ExpectedPersistedHoldingPlan, ...] = ()
         metrics: tuple[HistoricalMetricEvidence, ...] = ()
+        forward_asset_transfer = False
         liability = None
     elif lineage.account_type in _INVESTMENT_TYPES:
         if any(change.kind != "investment_event" for change in changes):
@@ -398,6 +547,7 @@ async def _prepare_account(
         holdings = delta.holdings.holdings
         cash = delta.cash_by_currency
         metrics = delta.historical_metrics
+        forward_asset_transfer = delta.has_asset_transfer
         liability = None
     elif lineage.account_type in _LIABILITY_TYPES:
         if (
@@ -433,6 +583,7 @@ async def _prepare_account(
         cash = ()
         holdings = ()
         metrics = ()
+        forward_asset_transfer = False
     else:
         raise _fail()
     return _PreparedAccount(
@@ -445,6 +596,7 @@ async def _prepare_account(
         holdings=holdings,
         cash_by_currency=cash,
         forward_metrics=metrics,
+        forward_asset_transfer=forward_asset_transfer,
         liability=liability,
     )
 
@@ -452,6 +604,8 @@ async def _prepare_account(
 async def _prepare_state(
     repository: CurrentValueRepository,
     baseline: DailySnapshotBaseline,
+    *,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> _PreparedState:
     by_account: dict[str, list[DailyBaselineChange]] = {
         account.account_id: [] for account in baseline.accounts
@@ -468,6 +622,7 @@ async def _prepare_state(
                 baseline=baseline,
                 lineage=lineage,
                 changes=tuple(by_account[lineage.account_id]),
+                source_policy=source_policy,
             )
         )
     accounts = tuple(account_list)
@@ -478,9 +633,10 @@ def _fx_keys(
     source: str,
     target: str,
     through: datetime,
+    provider: ExchangeRateSource,
 ) -> set[tuple[str, str, datetime, ExchangeRateSource]]:
     return {
-        (base, quote, through, ExchangeRateSource.twelve_data)
+        (base, quote, through, provider)
         for base, quote in required_conversion_pairs(source, target)
     }
 
@@ -490,6 +646,7 @@ async def _build_market_plan(
     state: _PreparedState,
     *,
     as_of: datetime,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> MarketEvidenceRefreshPlan:
     holding_accounts: dict[str, str] = {}
     for account in state.accounts:
@@ -508,8 +665,9 @@ async def _build_market_plan(
                     listing=listing,
                     asset=asset,
                     aliases=aliases,
-                    supported_sources=_PRICE_SOURCES,
+                    supported_sources=source_policy.price_sources,
                     through=as_of,
+                    source_policy=source_policy,
                 )
                 for listing, asset, aliases in identities
             ),
@@ -536,10 +694,17 @@ async def _build_market_plan(
             current_currencies.update((requirement.listing_currency, holding.currency))
         for source in current_currencies:
             for target in targets:
-                required_fx.update(_fx_keys(source, target, as_of))
+                required_fx.update(_fx_keys(source, target, as_of, source_policy.fx_source))
         for metric in account.forward_metrics:
             for target in targets:
-                required_fx.update(_fx_keys(metric.currency, target, metric.timestamp))
+                required_fx.update(
+                    _fx_keys(
+                        metric.currency,
+                        target,
+                        metric.timestamp,
+                        source_policy.fx_source,
+                    )
+                )
     fx = tuple(
         ExchangeRateRequirement(
             from_currency=base,
@@ -594,9 +759,13 @@ def _snapshot_holdings(account: _PreparedAccount) -> tuple[SnapshotHoldingEviden
             quantity=item.quantity,
             average_buy_price=item.avg_buy_price,
             cost_currency=item.currency,
-            cost_basis_by_currency=tuple(
-                CurrencyAmount(currency=currency, amount=amount)
-                for currency, amount in item.cost_basis_by_currency
+            cost_basis_by_currency=(
+                None
+                if item.cost_basis_by_currency is None
+                else tuple(
+                    CurrencyAmount(currency=currency, amount=amount)
+                    for currency, amount in item.cost_basis_by_currency
+                )
             ),
         )
         for item in account.holdings
@@ -641,6 +810,7 @@ def _historical_rates(
     output_currency: str,
     candidates: tuple[ExchangeRateModel, ...],
     policy: MarketEvidencePolicy,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> tuple[SelectedHistoricalRate, ...]:
     result: list[SelectedHistoricalRate] = []
     for metric in metrics:
@@ -649,7 +819,7 @@ def _historical_rates(
                 candidates,
                 base_currency=base,
                 quote_currency=quote,
-                source=ExchangeRateSource.twelve_data,
+                source=source_policy.fx_source,
                 through=metric.timestamp,
                 policy=policy,
             )
@@ -681,6 +851,7 @@ async def _project_account(
     output_currency: str,
     as_of: datetime,
     policy: MarketEvidencePolicy,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> PortfolioSnapshotView:
     holdings = _snapshot_holdings(account)
     price_candidates = await repository.load_price_candidates(
@@ -691,6 +862,7 @@ async def _project_account(
         select_latest_price_evidence(
             price_candidates,
             holding=holding,
+            source=source_policy.price_source_for(holding.asset_type),
             through=as_of,
             policy=policy,
         )
@@ -721,21 +893,21 @@ async def _project_account(
     candidates = await repository.load_exchange_rate_candidates(
         tuple(sorted(required_bases)),
         output_currency,
-        source=ExchangeRateSource.twelve_data,
+        source=source_policy.fx_source,
         through=as_of,
     )
     validated = validate_exchange_rate_candidates(
         candidates,
         base_currencies=tuple(sorted(required_bases)),
         quote_currency=output_currency,
-        source=ExchangeRateSource.twelve_data,
+        source=source_policy.fx_source,
         through=as_of,
     )
     snapshot_rates = select_snapshot_exchange_rates(
         validated,
         source_currencies=source_currencies,
         output_currency=output_currency,
-        source=ExchangeRateSource.twelve_data,
+        source=source_policy.fx_source,
         through=as_of,
         policy=policy,
     )
@@ -764,6 +936,7 @@ async def _project_account(
             output_currency=output_currency,
             candidates=validated,
             policy=policy,
+            source_policy=source_policy,
         ),
     )
     baseline = (
@@ -776,22 +949,34 @@ async def _project_account(
         if output_currency == account.primary_snapshot.currency
         else account.presentation_snapshot
     )
-    net_deposits = _add_money(
-        baseline.summary.net_deposits_value,
-        forward_metrics.net_deposits_value,
+    net_deposits = (
+        None
+        if account.forward_asset_transfer
+        else _add_optional_money(
+            baseline.summary.net_deposits_value,
+            forward_metrics.net_deposits_value,
+        )
     )
-    realized = _add_money(
-        baseline.summary.realized_pnl_value,
-        forward_metrics.realized_pnl_value,
+    realized = (
+        None
+        if account.forward_asset_transfer or valuation.investment_cost_basis is None
+        else _add_optional_money(
+            baseline.summary.realized_pnl_value,
+            forward_metrics.realized_pnl_value,
+        )
     )
     fees = _add_money(baseline.summary.fees_value, forward_metrics.fees_value)
     taxes = _add_money(baseline.summary.taxes_value, forward_metrics.taxes_value)
-    net_deposits_breakdown = add_currency_breakdowns(
-        baseline.summary.net_deposits_by_currency,
-        tuple(
-            PortfolioCurrencyAmount(currency=item.currency, amount=item.amount)
-            for item in forward_metrics.net_deposits_by_currency
-        ),
+    net_deposits_breakdown = (
+        None
+        if baseline.summary.net_deposits_by_currency is None or net_deposits is None
+        else add_currency_breakdowns(
+            baseline.summary.net_deposits_by_currency,
+            tuple(
+                PortfolioCurrencyAmount(currency=item.currency, amount=item.amount)
+                for item in forward_metrics.net_deposits_by_currency
+            ),
+        )
     )
     # Validate hidden cumulative native breakdowns before carrying their
     # scalar authorities forward. They remain server-only in the 0.1 API.
@@ -800,7 +985,8 @@ async def _project_account(
         ("fees_by_currency", baseline.summary.fees_value),
         ("taxes_by_currency", baseline.summary.taxes_value),
     ):
-        _baseline_breakdown(baseline_snapshot, field=field, scalar=scalar)
+        if scalar is not None:
+            _baseline_breakdown(baseline_snapshot, field=field, scalar=scalar)
 
     metadata_rows = await repository.load_listing_metadata(
         tuple(item.listing_id for item in valuation.items)
@@ -833,16 +1019,24 @@ async def _project_account(
                 value=item.value,
                 value_currency=output_currency,
                 cost_basis=item.cost_basis,
-                cost_currency=output_currency,
-                unrealized_pnl=_subtract_quantity(item.value, item.cost_basis),
+                cost_currency=item.cost_currency,
+                unrealized_pnl=(
+                    None
+                    if item.cost_basis is None
+                    else _subtract_quantity(item.value, item.cost_basis)
+                ),
                 allocation_pct=item.allocation_pct,
                 native_value=item.native_value,
                 native_value_currency=item.value_currency,
                 native_cost_basis=item.native_cost_basis,
                 native_cost_currency=item.native_cost_currency,
-                native_cost_basis_by_currency=tuple(
-                    PortfolioCurrencyAmount(currency=value.currency, amount=value.amount)
-                    for value in item.native_cost_basis_by_currency
+                native_cost_basis_by_currency=(
+                    None
+                    if item.native_cost_basis_by_currency is None
+                    else tuple(
+                        PortfolioCurrencyAmount(currency=value.currency, amount=value.amount)
+                        for value in item.native_cost_basis_by_currency
+                    )
                 ),
                 average_buy_price=item.average_buy_price,
                 average_buy_price_currency=item.average_buy_price_currency,
@@ -899,6 +1093,7 @@ class CurrentValueService:
         self.settings = settings
         self.clock = clock
         self.market_service_factory = market_service_factory
+        self.source_policy = market_evidence_source_policy_from_settings(settings)
 
     async def read_portfolio(
         self,
@@ -993,11 +1188,16 @@ class CurrentValueService:
             )
             if exact != baseline:
                 raise _fail()
-            state = await _prepare_state(repository, exact)
+            state = await _prepare_state(
+                repository,
+                exact,
+                source_policy=self.source_policy,
+            )
             market_plan = await _build_market_plan(
                 repository,
                 state,
                 as_of=as_of,
+                source_policy=self.source_policy,
             )
         await self._require_idle()
         return CurrentValuePlan(
@@ -1010,8 +1210,6 @@ class CurrentValueService:
     async def _project(self, plan: CurrentValuePlan) -> CurrentPortfolioResult:
         if self.session.in_transaction():
             raise _fail()
-        from app.modules.market_data.policy import DEFAULT_MARKET_EVIDENCE_POLICY
-
         async with self.session.begin():
             repository = CurrentValueRepository(self.session)
             await repository.set_repeatable_read_only()
@@ -1031,12 +1229,17 @@ class CurrentValueService:
             )
             if baseline != plan.baseline:
                 raise _fail()
-            state = await _prepare_state(repository, baseline)
+            state = await _prepare_state(
+                repository,
+                baseline,
+                source_policy=self.source_policy,
+            )
             if (
                 await _build_market_plan(
                     repository,
                     state,
                     as_of=plan.as_of,
+                    source_policy=self.source_policy,
                 )
                 != plan.market_plan
             ):
@@ -1050,6 +1253,7 @@ class CurrentValueService:
                     output_currency=baseline.currency,
                     as_of=plan.as_of,
                     policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+                    source_policy=self.source_policy,
                 )
                 presentation = primary
                 if account.lineage.account_currency != baseline.currency:
@@ -1059,6 +1263,7 @@ class CurrentValueService:
                         output_currency=account.lineage.account_currency,
                         as_of=plan.as_of,
                         policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+                        source_policy=self.source_policy,
                     )
                 primary_views.append(primary)
                 presentations.append(

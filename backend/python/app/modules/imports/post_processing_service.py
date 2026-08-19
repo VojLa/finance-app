@@ -401,6 +401,7 @@ class ImportBatchPostProcessingService:
         postings: tuple[PostImportBatchResult, ...],
         background_job_id: str | None = None,
         publication_bucket: datetime | None = None,
+        publication_account_ids: tuple[str, ...] = (),
     ) -> ImportSnapshotRefreshStatus:
         _validate_principal_account(principal, account_id)
         if not postings:
@@ -504,7 +505,7 @@ class ImportBatchPostProcessingService:
             created_at=bucket,
             is_recalculated=False,
             publication_job_id=background_job_id,
-            publication_account_ids=(account_id,) if background_job_id is not None else (),
+            publication_account_ids=publication_account_ids,
         )
         try:
             combined_result = await self.market_backed_service.execute(market_backed_command)

@@ -1,14 +1,14 @@
 import { createElement, useId } from "react"
 
 import type { PortfolioPageSummary } from "./snapshot-page-model"
-import { formatSnapshotDecimal } from "./snapshot-page-format"
+import { formatSnapshotDecimal, UNAVAILABLE_COST_BASIS_LABEL } from "./snapshot-page-format"
 
 type CurrencyAmount = PortfolioPageSummary["cashByCurrency"][number]
 
 type SnapshotCurrencyBreakdownProps = Readonly<{
   title: string
   emptyMessage: string
-  items: readonly CurrencyAmount[]
+  items: readonly CurrencyAmount[] | null
 }>
 
 export function SnapshotCurrencyBreakdown({
@@ -19,29 +19,35 @@ export function SnapshotCurrencyBreakdown({
   const headingId = useId()
 
   const content =
-    items.length === 0
-      ? createElement("p", { className: "mt-3 text-sm text-gray-500" }, emptyMessage)
-      : createElement(
-          "dl",
-          { className: "mt-3 divide-y divide-gray-100" },
-          items.map((item) =>
-            createElement(
-              "div",
-              {
-                key: item.currency,
-                className: "flex items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0",
-              },
-              createElement("dt", { className: "font-medium text-gray-700" }, item.currency),
+    items === null
+      ? createElement(
+          "p",
+          { className: "mt-3 text-sm text-amber-700" },
+          UNAVAILABLE_COST_BASIS_LABEL
+        )
+      : items.length === 0
+        ? createElement("p", { className: "mt-3 text-sm text-gray-500" }, emptyMessage)
+        : createElement(
+            "dl",
+            { className: "mt-3 divide-y divide-gray-100" },
+            items.map((item) =>
               createElement(
-                "dd",
+                "div",
                 {
-                  className: "break-all text-right font-mono text-sm tabular-nums text-gray-900",
+                  key: item.currency,
+                  className: "flex items-baseline justify-between gap-4 py-2 first:pt-0 last:pb-0",
                 },
-                formatSnapshotDecimal(item.amount)
+                createElement("dt", { className: "font-medium text-gray-700" }, item.currency),
+                createElement(
+                  "dd",
+                  {
+                    className: "break-all text-right font-mono text-sm tabular-nums text-gray-900",
+                  },
+                  formatSnapshotDecimal(item.amount)
+                )
               )
             )
           )
-        )
 
   return createElement(
     "section",

@@ -14,7 +14,14 @@ from app.db.models.budgets import (
     BudgetModel,
 )
 from app.db.models.categories import CategoryModel
+from app.db.models.enums import TransactionType
 from app.db.models.transactions import TransactionModel
+from app.modules.transactions.operational_visibility import (
+    OperationalTransaction,
+    operational_projection_columns,
+    operational_transaction_from_values,
+    operational_visibility_predicate,
+)
 
 
 class BudgetRepository:
@@ -113,24 +120,30 @@ class BudgetRepository:
         category_ids: tuple[str, ...],
         start: datetime,
         end: datetime,
-    ) -> list[TransactionModel]:
+    ) -> list[OperationalTransaction]:
         if not account_ids or not category_ids:
             return []
-        return list(
-            (
-                await self.session.scalars(
-                    select(TransactionModel).where(
-                        TransactionModel.account_id.in_(account_ids),
-                        TransactionModel.category_id.in_(category_ids),
-                        TransactionModel.type == "expense",
-                        TransactionModel.date >= start,
-                        TransactionModel.date < end,
-                        TransactionModel.archived_at.is_(None),
-                        TransactionModel.deleted_at.is_(None),
-                    )
+        rows = (
+            await self.session.execute(
+                select(TransactionModel, *operational_projection_columns()).where(
+                    TransactionModel.account_id.in_(account_ids),
+                    TransactionModel.category_id.in_(category_ids),
+                    TransactionModel.date >= start,
+                    TransactionModel.date < end,
+                    TransactionModel.archived_at.is_(None),
+                    TransactionModel.deleted_at.is_(None),
+                    operational_visibility_predicate(),
                 )
-            ).all()
-        )
+            )
+        ).all()
+        result: list[OperationalTransaction] = []
+        for transaction, classification, amount, currency in rows:
+            value = operational_transaction_from_values(
+                transaction, classification, amount, currency
+            )
+            if value.effective_type is TransactionType.expense:
+                result.append(value)
+        return result
 
     async def replace_children(self, budget_id: str) -> None:
         item_ids = select(BudgetItemModel.id).where(BudgetItemModel.budget_id == budget_id)

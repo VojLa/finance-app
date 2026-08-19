@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,8 @@ from app.db.models.enums import (
     TransactionType,
 )
 from app.db.models.imports import ImportBatchModel, ImportRowModel
-from app.db.models.transactions import TransactionModel
+from app.db.models.prices import ExchangeRateModel
+from app.db.models.transactions import TransactionModel, TransactionReportingEvidenceModel
 from app.modules.imports.classification import classify_import_row
 from app.modules.imports.transaction_posting import (
     ImportPostStateError,
@@ -120,6 +121,7 @@ def _row(
 def _session() -> MagicMock:
     session = MagicMock(spec=AsyncSession)
     session.get = AsyncMock()
+    session.scalar = AsyncMock()
     return session
 
 
@@ -148,6 +150,38 @@ def _existing(
         archived_at=None,
         deleted_at=None,
         updated_at=datetime(2026, 7, 25, 9, 0),
+    )
+
+
+def _reporting_evidence(
+    plan: TransactionPostingPlan,
+    existing: TransactionModel,
+    *,
+    reporting_amount: Decimal = Decimal("258.037500"),
+    reporting_currency: str = "CZK",
+    rate: Decimal = Decimal("24.57500000"),
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    existing.reporting_amount = reporting_amount
+    existing.reporting_currency = reporting_currency
+    return (
+        SimpleNamespace(
+            transaction_id=existing.id,
+            source_amount=plan.amount,
+            source_currency=plan.currency,
+            source_event_time=plan.date,
+            reporting_amount=reporting_amount,
+            reporting_currency=reporting_currency,
+            exchange_rate_id="rate",
+            calculation_version=1,
+            background_job_id="job",
+        ),
+        SimpleNamespace(
+            id="rate",
+            from_currency=plan.currency,
+            to_currency=reporting_currency,
+            date=plan.date,
+            rate=rate,
+        ),
     )
 
 
@@ -479,6 +513,88 @@ async def test_exact_replay_accepts_money_and_timestamp_boundary_values() -> Non
     session.add.assert_not_called()
     session.commit.assert_not_called()
     session.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exact_replay_accepts_only_complete_reporting_fx_lineage() -> None:
+    batch = _batch(ImportSource.raiffeisenbank)
+    row = _row(source=ImportSource.raiffeisenbank, status=ImportRowStatus.imported)
+    row.created_transaction_id = "transaction"
+    plan = build_transaction_posting_plan(account_id="account", batch=batch, row=row)
+    existing = _existing(plan)
+    evidence, rate = _reporting_evidence(plan, existing)
+    session = _session()
+    session.get.side_effect = (existing, evidence, rate)
+    session.scalar.return_value = "job"
+
+    returned = await _writer(session).post_row(
+        account_id="account",
+        batch=batch,
+        row=row,
+    )
+
+    assert returned is existing
+    assert session.get.await_args_list == [
+        call(TransactionModel, "transaction"),
+        call(TransactionReportingEvidenceModel, "transaction"),
+        call(ExchangeRateModel, "rate"),
+    ]
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exact_replay_rejects_reporting_fx_job_without_exact_batch_membership() -> None:
+    batch = _batch(ImportSource.raiffeisenbank)
+    row = _row(source=ImportSource.raiffeisenbank, status=ImportRowStatus.imported)
+    row.created_transaction_id = "transaction"
+    plan = build_transaction_posting_plan(account_id="account", batch=batch, row=row)
+    existing = _existing(plan)
+    evidence, rate = _reporting_evidence(plan, existing)
+    evidence.background_job_id = "foreign-job"
+    session = _session()
+    session.get.side_effect = (existing, evidence, rate)
+    session.scalar.return_value = None
+
+    with pytest.raises(ImportPostStateError):
+        await _writer(session).post_row(
+            account_id="account",
+            batch=batch,
+            row=row,
+        )
+
+    session.scalar.assert_awaited_once()
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ("missing_evidence", "wrong_rate", "partial"))
+async def test_exact_replay_rejects_incomplete_or_corrupt_reporting_fx_lineage(
+    corruption: str,
+) -> None:
+    batch = _batch(ImportSource.raiffeisenbank)
+    row = _row(source=ImportSource.raiffeisenbank, status=ImportRowStatus.imported)
+    row.created_transaction_id = "transaction"
+    plan = build_transaction_posting_plan(account_id="account", batch=batch, row=row)
+    existing = _existing(plan)
+    evidence, rate = _reporting_evidence(plan, existing)
+    session = _session()
+    if corruption == "missing_evidence":
+        session.get.side_effect = (existing, None)
+    elif corruption == "wrong_rate":
+        rate.rate = Decimal("24.57")
+        session.get.side_effect = (existing, evidence, rate)
+    else:
+        existing.reporting_currency = None
+        session.get.side_effect = (existing,)
+
+    with pytest.raises(ImportPostStateError):
+        await _writer(session).post_row(
+            account_id="account",
+            batch=batch,
+            row=row,
+        )
+
+    session.add.assert_not_called()
 
 
 def _invalid_boundary(case: str) -> tuple[str, ImportBatchModel, ImportRowModel]:

@@ -66,7 +66,7 @@ describe("snapshot portfolio page model", () => {
     expect(model.aggregate.summary.investmentValue).toBe("999999999999.999999")
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
     expect(model.aggregate.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
-    expect(model.aggregate.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
+    expect(model.aggregate.summary.netDepositsByCurrency?.[1]?.amount).toBe("500.000000")
     expect(model.accounts[1]?.summary.totalValue).toBe("-57.660000")
     expect(model.accounts[1]?.currency).toBe("USD")
     expect(model.accounts[1]?.positions[0]?.position.valueCurrency).toBe("USD")

@@ -772,6 +772,41 @@ async def test_sql_null_breakdowns_remain_unavailable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unknown_investment_cost_metrics_do_not_hide_numeric_net_worth() -> None:
+    account = _account()
+    snapshot = _snapshot(account)
+    snapshot.investment_cost_basis = None
+    snapshot.investment_cost_basis_by_currency = None
+    snapshot.net_deposits_value = None
+    snapshot.net_deposits_by_currency = None
+    snapshot.realized_pnl_value = None
+    snapshot.realized_pnl_by_currency = None
+    snapshot.unrealized_pnl_value = None
+    snapshot.unrealized_pnl_by_currency = None
+    repository = FakeRepository(accesses=(_access(account),), snapshots=(snapshot,))
+    service, _ = _service(repository)
+
+    result = await service.build(_command())
+
+    assert result.projection.net_worth_value == Decimal("500.000000")
+    assert result.projection.portfolio_value == Decimal("400.000000")
+
+
+@pytest.mark.asyncio
+async def test_unknown_metric_scalar_rejects_nonnull_breakdown() -> None:
+    account = _account()
+    snapshot = _snapshot(account)
+    snapshot.investment_cost_basis = None
+    snapshot.unrealized_pnl_value = None
+    snapshot.unrealized_pnl_by_currency = None
+    repository = FakeRepository(accesses=(_access(account),), snapshots=(snapshot,))
+    service, _ = _service(repository)
+
+    with pytest.raises(NetWorthEvidenceStateError):
+        await service.build(_command())
+
+
+@pytest.mark.asyncio
 async def test_empty_json_objects_map_to_exact_empty_tuples_for_zero_values() -> None:
     account = _account()
     snapshot = _snapshot(account)

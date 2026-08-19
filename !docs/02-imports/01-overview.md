@@ -140,8 +140,19 @@ records, and the original `completed_at` remain unchanged. Missing or corrupt
 rows, counters, transactions, events, movements, assets, or listings fail
 closed without repair. The posting operation itself does not update Holdings or
 snapshots. The durable worker invokes that same idempotent operation and then
-runs one coordinated Holding rebuild and snapshot finalization for the complete
-logical batch set.
+runs one coordinated finalization for the complete logical batch set. After all
+canonical posting replays and before Holdings or market acquisition, that
+durable boundary applies exactly one source-owned identity allowlist:
+Anycoin + crypto + normalized `BTC` receives CoinGecko external ID `bitcoin`
+through the existing immutable alias writer. Every other symbol is untouched;
+wrong or multiple BTC identities and alias conflicts fail closed.
+
+The same exact source tuple owns the display name `Bitcoin`, because the
+Anycoin export itself contains no name while portfolio readers require one.
+Normalization supplies it for new BTC rows; posting replay enriches only an
+existing exact Anycoin BTC `Asset.name = NULL` under the resolver's existing
+locks. `Bitcoin` replays unchanged, while a conflicting non-NULL name fails
+without rename or repoint. Non-BTC Anycoin symbols receive no guessed name.
 
 The browser registers and uploads every accepted file, then enqueues one
 PostgreSQL-backed `import_workflow` job for the sorted logical batch set. The
@@ -150,6 +161,18 @@ post, one coordinated Holding rebuild, and atomic snapshot refresh. It claims
 jobs with a fenced lease, persists safe progress and retry state, and can resume
 after process or browser interruption. Next.js contains only authenticated
 transport, response validation, persisted job identity, and presentation.
+
+Revision `3p0001rbfoundation` also restores durable manifests for pre-3p
+noncompleted `import_workflow` jobs. The migration accepts only the exact
+canonical payload (`schema_version: 1` and sorted unique `batch_ids`), batches
+scoped to the job's user and account, one source, and a current initiator
+membership; a malformed or ambiguous active job aborts the upgrade rather than
+guessing financial ownership. It writes the immutable batch membership and the
+initiator affected-account row. Completed pre-3p jobs remain intentionally
+unmanifested legacy evidence because their missing reconciliation and reporting
+provenance cannot be recreated safely. A legacy Raiffeisenbank job already past
+posting is resumed at `posting`, so reconciliation, direct reporting FX, and
+liability validation cannot be skipped.
 
 Next.js registers every selected file before it uploads any bytes. It reports a
 true terminal duplicate as `import_batch_already_imported`, so a selection of a

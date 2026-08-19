@@ -161,6 +161,7 @@ async def test_enqueue_authorizes_and_persists_one_canonical_job(monkeypatch) ->
     batches.get_for_account = AsyncMock(side_effect=[_batch("batch-a"), _batch("batch-b")])
     repository = MagicMock()
     repository.get_owned_by_key = AsyncMock(return_value=None)
+    repository.reconcile_import_job_manifest = AsyncMock()
     payload = {"schema_version": 1, "batch_ids": ["batch-a", "batch-b"]}
     repository.enqueue_import_job = AsyncMock(
         return_value=EnqueuedBackgroundJob(job=_job(payload), created=True)
@@ -188,6 +189,8 @@ async def test_enqueue_authorizes_and_persists_one_canonical_job(monkeypatch) ->
         )
     )
     assert repository.enqueue_import_job.await_args.kwargs["max_attempts"] == 5
+    repository.reconcile_import_job_manifest.assert_awaited_once()
+    assert repository.reconcile_import_job_manifest.await_args.kwargs["create_if_missing"] is True
     session.commit.assert_awaited_once()
 
 
@@ -203,6 +206,7 @@ async def test_enqueue_replays_repository_canonical_job(monkeypatch) -> None:
     canonical = _job(payload)
     repository = MagicMock()
     repository.get_owned_by_key = AsyncMock(return_value=None)
+    repository.reconcile_import_job_manifest = AsyncMock()
     repository.enqueue_import_job = AsyncMock(
         return_value=EnqueuedBackgroundJob(job=canonical, created=False)
     )
@@ -270,6 +274,7 @@ async def test_enqueue_replays_running_job_before_revalidating_batch_state(monke
     canonical.status = BackgroundJobStatus.running
     repository = MagicMock()
     repository.get_owned_by_key = AsyncMock(return_value=canonical)
+    repository.reconcile_import_job_manifest = AsyncMock()
     batches = MagicMock()
     batches.get_for_account = AsyncMock()
 
@@ -289,6 +294,8 @@ async def test_enqueue_replays_running_job_before_revalidating_batch_state(monke
     assert result.created is False
     batches.get_for_account.assert_not_awaited()
     repository.enqueue_import_job.assert_not_called()
+    repository.reconcile_import_job_manifest.assert_awaited_once()
+    assert repository.reconcile_import_job_manifest.await_args.kwargs["create_if_missing"] is False
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
-from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.background_jobs import BackgroundJobModel, ImportJobAffectedAccountModel
 from app.db.models.enums import (
     BackgroundJobKind,
     BackgroundJobStatus,
@@ -18,7 +18,7 @@ from app.db.models.enums import (
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
-from app.db.models.snapshots import AccountSnapshotModel
+from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.modules.current_value.delta_projection import CurrentInvestmentEvent
 from app.modules.holdings.persistence_projection import (
@@ -59,30 +59,44 @@ class CurrentValueRepository:
 
         if account_ids == ():
             return ()
+        active_statuses = (
+            BackgroundJobStatus.queued,
+            BackgroundJobStatus.running,
+            BackgroundJobStatus.retry_wait,
+            BackgroundJobStatus.failed,
+        )
+        active_accounts = union_all(
+            # The initiator branch is also the explicit legacy fallback for
+            # jobs created before ImportJobAffectedAccount existed.
+            select(BackgroundJobModel.account_id.label("account_id")).where(
+                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                BackgroundJobModel.status.in_(active_statuses),
+            ),
+            select(ImportJobAffectedAccountModel.account_id.label("account_id"))
+            .join(
+                BackgroundJobModel,
+                BackgroundJobModel.id == ImportJobAffectedAccountModel.job_id,
+            )
+            .where(
+                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                BackgroundJobModel.status.in_(active_statuses),
+            ),
+        ).subquery()
         statement = (
-            select(BackgroundJobModel.account_id)
+            select(active_accounts.c.account_id)
             .join(
                 AccountMemberModel,
-                AccountMemberModel.account_id == BackgroundJobModel.account_id,
+                AccountMemberModel.account_id == active_accounts.c.account_id,
             )
             .where(
                 AccountMemberModel.user_id == reader_user_id,
-                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
-                BackgroundJobModel.status.in_(
-                    (
-                        BackgroundJobStatus.queued,
-                        BackgroundJobStatus.running,
-                        BackgroundJobStatus.retry_wait,
-                        BackgroundJobStatus.failed,
-                    )
-                ),
             )
             .distinct()
-            .order_by(BackgroundJobModel.account_id)
+            .order_by(active_accounts.c.account_id)
             .execution_options(populate_existing=True, autoflush=False)
         )
         if account_ids is not None:
-            statement = statement.where(BackgroundJobModel.account_id.in_(account_ids))
+            statement = statement.where(active_accounts.c.account_id.in_(account_ids))
         rows = await self.session.scalars(statement)
         return tuple(rows.all())
 
@@ -114,6 +128,39 @@ class CurrentValueRepository:
             snapshot_id,
             populate_existing=True,
         )
+
+    async def load_snapshot_items_with_assets(
+        self,
+        snapshot_ids: tuple[str, ...],
+    ) -> tuple[tuple[AccountSnapshotItemModel, AssetModel], ...]:
+        """Return the persisted price provenance for exact baseline snapshots."""
+
+        if not snapshot_ids:
+            return ()
+        rows = await self.session.execute(
+            select(AccountSnapshotItemModel, AssetModel)
+            .join(AssetModel, AssetModel.id == AccountSnapshotItemModel.asset_id)
+            .where(AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids))
+            .order_by(AccountSnapshotItemModel.snapshot_id, AccountSnapshotItemModel.id)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        return tuple((item, asset) for item, asset in rows.all())
+
+    async def load_exchange_rates_by_ids(
+        self,
+        rate_ids: tuple[str, ...],
+    ) -> tuple[ExchangeRateModel, ...]:
+        """Return exact persisted FX rows named by immutable snapshot audit JSON."""
+
+        if not rate_ids:
+            return ()
+        rows = await self.session.scalars(
+            select(ExchangeRateModel)
+            .where(ExchangeRateModel.id.in_(rate_ids))
+            .order_by(ExchangeRateModel.id)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        return tuple(rows.all())
 
     async def load_transaction(self, transaction_id: str) -> TransactionModel | None:
         return await self.session.get(

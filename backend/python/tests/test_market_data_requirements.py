@@ -527,6 +527,52 @@ async def test_zero_holding_is_not_a_price_requirement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unknown_holding_basis_keeps_price_and_omits_only_cost_fx() -> None:
+    repository = _Repository()
+    persisted = _holding(cost_currency="USD", listing_currency="EUR")
+    persisted.holding.avg_buy_price = None
+    persisted.holding.cost_basis_by_currency = None
+    repository.holdings = (persisted,)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert len(plan.price_requirements) == 1
+    assert plan.price_requirements[0].listing_id == "listing-1"
+    assert {
+        (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
+    } == {
+        ("EUR", "CZK", SNAPSHOT_AT),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("average", "costs"),
+    [
+        (None, {"USD": "10.0000000000"}),
+        (Decimal("10"), None),
+        (Decimal("0"), {"USD": "10.0000000000"}),
+    ],
+)
+async def test_incomplete_or_invalid_holding_basis_pair_fails_closed(
+    average: Decimal | None,
+    costs: dict[str, str] | None,
+) -> None:
+    repository = _Repository()
+    persisted = _holding()
+    persisted.holding.avg_buy_price = average
+    persisted.holding.cost_basis_by_currency = cast(dict[str, object] | None, costs)
+    repository.holdings = (persisted,)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await _planner(repository).build(
+            BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+        )
+
+
+@pytest.mark.asyncio
 async def test_fx_requirements_separate_snapshot_and_event_time() -> None:
     repository = _Repository()
     repository.events = (_event(),)

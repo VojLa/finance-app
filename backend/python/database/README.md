@@ -180,5 +180,18 @@ historical rather than the current head.
 
 Revision `3k0001mcost` adds multi-currency holding cost-basis storage.
 Revision `3l0001bgjob` adds durable background-job lifecycle storage. Revision
-`3m0001importanchor` adds the durable import-publication anchor and is the
-current single Alembic head.
+`3m0001importanchor` adds the durable import-publication anchor. Revision
+`3n0001emptyhold` initializes the exact empty Holding watermark for investment
+accounts. Its backfill is limited to accounts whose empty canonical and Holding
+state can be proven. Revision `3o0001unkbasis` permits a paired `NULL` average
+price and cost-basis breakdown for Holdings and paired nullable cost evidence in
+snapshot items, while keeping quantity, market value, fees, taxes, and net-worth
+values exact and numeric.
+
+Revision `3p0001rbfoundation` is the current single Alembic head. It adds
+immutable import-source occurrence evidence, exact transaction reporting-FX
+evidence, normalized job-to-batch and job-to-affected-account membership, and
+nullable reconciliation provenance on legacy-compatible transaction pairs.
+The revision creates no reconciliation or posting service; its composite foreign
+keys make account, source, batch, job, member, and FX direction ownership
+verifiable before those services are introduced.

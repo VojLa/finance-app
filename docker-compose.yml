@@ -36,7 +36,7 @@ services:
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
       INTERNAL_AUTH_TOKEN_TTL_SECONDS: "60"
-      PYTHON_API_TIMEOUT_MS: "30000"
+      PYTHON_API_TIMEOUT_MS: "60000"
     depends_on:
       api:
         condition: service_healthy
@@ -58,6 +58,7 @@ services:
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
       TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}
+      MARKET_EVIDENCE_SOURCE_MODE: "${MARKET_EVIDENCE_SOURCE_MODE:-canonical}"
       BACKGROUND_JOBS_ENABLED: "true"
       BACKGROUND_JOB_POLL_SECONDS: "0.75"
       BACKGROUND_JOB_LEASE_SECONDS: "300"

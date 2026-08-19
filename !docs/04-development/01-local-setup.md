@@ -19,7 +19,7 @@ Next.js additionally uses:
 | --------------------------------- | ----------------------- |
 | `PYTHON_BACKEND_URL`              | `http://localhost:8010` |
 | `INTERNAL_AUTH_TOKEN_TTL_SECONDS` | `60`                    |
-| `PYTHON_API_TIMEOUT_MS`           | `30000`                 |
+| `PYTHON_API_TIMEOUT_MS`           | `60000`                 |
 
 The backend URL must be absolute HTTP(S) without credentials, the secret must
 contain at least 32 characters, token TTL must be 10–300 seconds, and timeout

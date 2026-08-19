@@ -31,6 +31,10 @@ function decimal(value: unknown, pattern: RegExp): value is string {
   return typeof value === "string" && pattern.test(value)
 }
 
+function nullableDecimal(value: unknown, pattern: RegExp): value is string | null {
+  return value === null || decimal(value, pattern)
+}
+
 function count(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
 }
@@ -89,24 +93,38 @@ function validatePositiveQuantityCurrencyAmounts(value: unknown): void {
   }
 }
 
+function validateNullableSummaryBranch(value: Record<string, unknown>): void {
+  const fields = [
+    value.investmentCostBasis,
+    value.netDepositsValue,
+    value.realizedPnlValue,
+    value.unrealizedPnlValue,
+    value.netDepositsByCurrency,
+  ]
+  const incomplete = fields.every((field) => field === null)
+  if (incomplete) return
+  if (fields.some((field) => field === null)) throw contractError()
+
+  for (const field of fields.slice(0, 4)) {
+    if (!decimal(field, MONEY)) throw contractError()
+  }
+  validateCurrencyAmounts(value.netDepositsByCurrency)
+}
+
 function validateSummary(value: unknown, positionCount: number): void {
   if (!isRecord(value) || value.positionCount !== positionCount) throw contractError()
   for (const field of [
     "cashValue",
     "investmentValue",
-    "investmentCostBasis",
     "liabilitiesValue",
     "totalValue",
-    "netDepositsValue",
-    "realizedPnlValue",
-    "unrealizedPnlValue",
     "feesValue",
     "taxesValue",
   ]) {
     if (!decimal(value[field], MONEY)) throw contractError()
   }
   validateCurrencyAmounts(value.cashByCurrency)
-  validateCurrencyAmounts(value.netDepositsByCurrency)
+  validateNullableSummaryBranch(value)
 }
 
 function validatePosition(value: unknown, outputCurrency: string): void {
@@ -122,12 +140,28 @@ function validatePosition(value: unknown, outputCurrency: string): void {
     !text(value.priceTimestamp) ||
     !decimal(value.value, MONEY) ||
     value.valueCurrency !== outputCurrency ||
+    !decimal(value.allocationPct, PERCENTAGE) ||
+    !decimal(value.nativeValue, QUANTITY) ||
+    !currency(value.nativeValueCurrency)
+  ) {
+    throw contractError()
+  }
+
+  const costFields = [
+    value.costBasis,
+    value.costCurrency,
+    value.unrealizedPnl,
+    value.nativeCostBasis,
+    value.nativeCostCurrency,
+    value.nativeCostBasisByCurrency,
+  ]
+  const incomplete = costFields.every((field) => field === null)
+  if (incomplete) return
+  if (
+    costFields.some((field) => field === null) ||
     !decimal(value.costBasis, QUANTITY) ||
     value.costCurrency !== outputCurrency ||
     !decimal(value.unrealizedPnl, QUANTITY) ||
-    !decimal(value.allocationPct, PERCENTAGE) ||
-    !decimal(value.nativeValue, QUANTITY) ||
-    !currency(value.nativeValueCurrency) ||
     !decimal(value.nativeCostBasis, QUANTITY) ||
     !currency(value.nativeCostCurrency)
   ) {
@@ -208,15 +242,15 @@ function validateDashboard(value: unknown): DashboardSnapshotData {
     ) {
       throw contractError()
     }
-    for (const field of [
-      "totalValue",
-      "cashValue",
-      "investmentValue",
-      "liabilitiesValue",
-      "netDepositsValue",
-      "unrealizedPnlValue",
-    ]) {
+    for (const field of ["totalValue", "cashValue", "investmentValue", "liabilitiesValue"]) {
       if (!decimal(account[field], MONEY)) throw contractError()
+    }
+    if (
+      !nullableDecimal(account.netDepositsValue, MONEY) ||
+      !nullableDecimal(account.unrealizedPnlValue, MONEY) ||
+      (account.netDepositsValue === null) !== (account.unrealizedPnlValue === null)
+    ) {
+      throw contractError()
     }
     accountIds.add(account.accountId)
   }
@@ -227,14 +261,23 @@ function validateDashboard(value: unknown): DashboardSnapshotData {
     "liabilitiesValue",
     "cashValue",
     "investmentValue",
-    "investmentCostBasis",
-    "netDepositsValue",
-    "realizedPnlValue",
-    "unrealizedPnlValue",
     "feesValue",
     "taxesValue",
   ]) {
     if (!decimal(value.summary[field], MONEY)) throw contractError()
+  }
+  const dashboardEvidence = [
+    value.summary.investmentCostBasis,
+    value.summary.netDepositsValue,
+    value.summary.realizedPnlValue,
+    value.summary.unrealizedPnlValue,
+  ]
+  if (
+    !dashboardEvidence.every((field) => field === null) &&
+    (dashboardEvidence.some((field) => field === null) ||
+      dashboardEvidence.some((field) => !decimal(field, MONEY)))
+  ) {
+    throw contractError()
   }
   for (const field of [
     "accountCount",
@@ -261,7 +304,7 @@ function validateDashboard(value: unknown): DashboardSnapshotData {
       !accountIds.has(String(position.accountId)) ||
       !decimal(position.value, MONEY) ||
       position.valueCurrency !== current.currency ||
-      !decimal(position.unrealizedPnl, QUANTITY) ||
+      !nullableDecimal(position.unrealizedPnl, QUANTITY) ||
       !decimal(position.allocationPct, PERCENTAGE)
     ) {
       throw contractError()

@@ -193,6 +193,7 @@ async def _seed_investment_identity(
     price_currency: str = "EUR",
     price_at: datetime | None = None,
     with_price: bool = True,
+    price_source: PriceSource = PriceSource.broker,
 ) -> None:
     engine = posting_support._engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
@@ -236,7 +237,7 @@ async def _seed_investment_identity(
                     listing_id=f"{prefix}-listing",
                     price=Decimal("100"),
                     currency=price_currency,
-                    source=PriceSource.broker,
+                    source=price_source,
                     timestamp=observed_at,
                     created_at=now,
                 )

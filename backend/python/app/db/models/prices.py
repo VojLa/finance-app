@@ -51,6 +51,13 @@ class ExchangeRateModel(Base):
     __tablename__ = "ExchangeRate"
     __table_args__ = (
         UniqueConstraint("fromCurrency", "toCurrency", "date", "source"),
+        Index(
+            "ExchangeRate_id_fromCurrency_toCurrency_key",
+            "id",
+            "fromCurrency",
+            "toCurrency",
+            unique=True,
+        ),
         Index(None, "fromCurrency", "toCurrency", "date"),
         Index(None, "source", "date"),
         {"schema": "public"},

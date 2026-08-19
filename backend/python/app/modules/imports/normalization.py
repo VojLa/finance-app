@@ -11,6 +11,7 @@ from app.modules.imports.anycoin import AnycoinBatchRow, normalize_anycoin_batch
 from app.modules.imports.cooperative import yield_after_rows
 from app.modules.imports.models import ImportNormalizeResponse
 from app.modules.imports.normalizers import normalize_import_row
+from app.modules.imports.raiffeisenbank import raiffeisenbank_account_currency_matches
 from app.modules.imports.repository import ImportBatchRepository
 from app.shared.errors import ApplicationError
 
@@ -36,6 +37,15 @@ class ImportNormalizeRowsMissingError(ApplicationError):
             code="import_normalize_rows_missing",
             message="The import batch has no parsed rows to normalize.",
             status_code=409,
+        )
+
+
+class ImportNormalizeAccountCurrencyMismatchError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_account_currency_mismatch",
+            message="The import file currency does not match the selected account.",
+            status_code=422,
         )
 
 
@@ -95,6 +105,20 @@ class ImportNormalizationService:
                     raise ImportNormalizeStateError()
                 await yield_after_rows(index)
 
+            if locked.source is ImportSource.raiffeisenbank:
+                account_currency = await self.repository.get_account_currency_for_update(account_id)
+                if account_currency is None:
+                    raise ImportNormalizeStateError()
+                if any(
+                    row.status is not ImportRowStatus.failed
+                    and not raiffeisenbank_account_currency_matches(
+                        raw_data=row.raw_data,
+                        account_currency=account_currency,
+                    )
+                    for row in rows
+                ):
+                    raise ImportNormalizeAccountCurrencyMismatchError()
+
             normalized = 0
             needs_review = 0
             skipped = 0
@@ -106,11 +130,15 @@ class ImportNormalizationService:
                 await yield_after_rows(index)
             parser_failed = len(rows) - len(active_rows)
             if locked.source is ImportSource.anycoin:
+                account_currency = await self.repository.get_account_currency_for_update(account_id)
+                if account_currency is None:
+                    raise ImportNormalizeStateError()
                 outcomes = {
                     outcome.row_id: outcome
                     for outcome in await asyncio.to_thread(
                         normalize_anycoin_batch,
                         account_id=account_id,
+                        account_currency=account_currency,
                         rows=[
                             AnycoinBatchRow(row.id, row.row_number, row.raw_data)
                             for row in active_rows

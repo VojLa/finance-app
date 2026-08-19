@@ -1,7 +1,17 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    PrimaryKeyConstraint,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -31,6 +41,8 @@ class BackgroundJobModel(Base):
     __tablename__ = "BackgroundJob"
     __table_args__ = (
         UniqueConstraint("userId", "accountId", "kind", "idempotencyKey"),
+        Index("BackgroundJob_id_userId_accountId_key", "id", "userId", "accountId", unique=True),
+        Index("BackgroundJob_id_userId_key", "id", "userId", unique=True),
         *(CheckConstraint(expression, name=name) for expression, name in _JSON_OBJECT_CHECKS),
         CheckConstraint(
             'octet_length("payload"::text) <= 65536',
@@ -209,6 +221,77 @@ class BackgroundJobModel(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt",
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
+class ImportJobBatchModel(Base):
+    __tablename__ = "ImportJobBatch"
+    __table_args__ = (
+        PrimaryKeyConstraint("jobId", "batchId"),
+        ForeignKeyConstraint(
+            ["jobId", "userId", "accountId"],
+            [
+                "public.BackgroundJob.id",
+                "public.BackgroundJob.userId",
+                "public.BackgroundJob.accountId",
+            ],
+            name="ImportJobBatch_job_scope_fkey",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["batchId", "userId", "accountId"],
+            [
+                "public.ImportBatch.id",
+                "public.ImportBatch.userId",
+                "public.ImportBatch.accountId",
+            ],
+            name="ImportJobBatch_batch_scope_fkey",
+            ondelete="RESTRICT",
+        ),
+        Index(None, "batchId"),
+        {"schema": "public"},
+    )
+
+    job_id: Mapped[str] = mapped_column("jobId", Text, nullable=False)
+    batch_id: Mapped[str] = mapped_column("batchId", Text, nullable=False)
+    user_id: Mapped[str] = mapped_column("userId", Text, nullable=False)
+    account_id: Mapped[str] = mapped_column("accountId", Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        "createdAt",
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+
+class ImportJobAffectedAccountModel(Base):
+    __tablename__ = "ImportJobAffectedAccount"
+    __table_args__ = (
+        PrimaryKeyConstraint("jobId", "accountId"),
+        ForeignKeyConstraint(
+            ["jobId", "userId"],
+            ["public.BackgroundJob.id", "public.BackgroundJob.userId"],
+            name="ImportJobAffectedAccount_job_user_fkey",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["accountId", "userId"],
+            ["public.AccountMember.accountId", "public.AccountMember.userId"],
+            name="ImportJobAffectedAccount_member_fkey",
+            ondelete="RESTRICT",
+        ),
+        Index(None, "accountId"),
+        {"schema": "public"},
+    )
+
+    job_id: Mapped[str] = mapped_column("jobId", Text, nullable=False)
+    account_id: Mapped[str] = mapped_column("accountId", Text, nullable=False)
+    user_id: Mapped[str] = mapped_column("userId", Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        "createdAt",
         TIMESTAMP,
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),

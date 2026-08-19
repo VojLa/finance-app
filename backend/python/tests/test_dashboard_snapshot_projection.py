@@ -140,7 +140,11 @@ def _source(
             )
         )
     investment = sum((item.value for item in items), Decimal(0))
-    investment_cost = sum((item.cost_basis for item in items), Decimal(0))
+    investment_costs: list[Decimal] = []
+    for item in items:
+        assert item.cost_basis is not None
+        investment_costs.append(item.cost_basis)
+    investment_cost = sum(investment_costs, Decimal(0))
     cash_value = _money("0" if liability else cash)
     liabilities = _money("25" if liability else "0")
     structural_zero = liability or cash_only

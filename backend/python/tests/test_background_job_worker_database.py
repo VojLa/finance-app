@@ -7,9 +7,11 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from app.auth.models import AuthenticatedPrincipal
+from app.config.settings import Settings
 from app.db.models import (
     AccountMemberModel,
     AccountModel,
@@ -19,6 +21,7 @@ from app.db.models import (
     BackgroundJobStatus,
     UserModel,
 )
+from app.db.models.background_jobs import ImportJobAffectedAccountModel, ImportJobBatchModel
 from app.db.models.canonical_lineage import (
     AccountCanonicalStateModel,
     AccountSnapshotCanonicalBoundaryModel,
@@ -28,13 +31,22 @@ from app.db.models.canonical_lineage import (
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
+    ImportSource,
+    ImportStatus,
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.imports import ImportBatchModel
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.url import normalize_database_url
+from app.modules.imports.job_executor import ImportExecutionStage
 from app.modules.jobs import worker as worker_module
+from app.modules.jobs.import_executor import (
+    DurableImportJobExecutor,
+    ImportLiabilityBalanceRequiredError,
+)
 from app.modules.jobs.models import (
     ImportJobCheckpoint,
     ImportJobPhase,
@@ -50,6 +62,10 @@ from app.modules.jobs.worker import (
     BackgroundJobWorker,
     CheckpointCallback,
     RetryableBackgroundJobError,
+)
+from app.modules.liabilities.manual_service import (
+    CreateManualLiabilityBalanceCommand,
+    ManualLiabilityBalanceService,
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -162,6 +178,36 @@ async def _seed_completion_publication_contract(
                 accepted_at=NOW,
                 created_at=NOW,
                 updated_at=NOW,
+            )
+        )
+        batch_id = f"batch-{job_id}"
+        await connection.execute(
+            insert(ImportBatchModel).values(
+                id=batch_id,
+                user_id=user_id,
+                account_id=account_id,
+                source=ImportSource.trading212,
+                filename=f"{batch_id}.csv",
+                file_size=1,
+                file_encoding="utf-8",
+                checksum=f"checksum-{job_id}",
+                status=ImportStatus.completed,
+                rows_total=0,
+                rows_imported=0,
+                rows_skipped=0,
+                created_at=NOW,
+                completed_at=NOW,
+                retain_until=None,
+                raw_data_purged_at=None,
+            )
+        )
+        await connection.execute(
+            insert(ImportJobBatchModel).values(
+                job_id=job_id,
+                batch_id=batch_id,
+                user_id=user_id,
+                account_id=account_id,
+                created_at=NOW,
             )
         )
         await connection.execute(
@@ -292,6 +338,18 @@ async def _cleanup_completion_publication_contract(
             delete(ImportJobPublicationTargetModel).where(
                 ImportJobPublicationTargetModel.job_id == job_id
             )
+        )
+        await connection.execute(
+            delete(ImportJobAffectedAccountModel).where(
+                ImportJobAffectedAccountModel.job_id == job_id
+            )
+        )
+        await connection.execute(
+            delete(ImportJobBatchModel).where(ImportJobBatchModel.job_id == job_id)
+        )
+        await connection.execute(delete(BackgroundJobModel).where(BackgroundJobModel.id == job_id))
+        await connection.execute(
+            delete(ImportBatchModel).where(ImportBatchModel.id == f"batch-{job_id}")
         )
         await connection.execute(delete(AccountModel).where(AccountModel.id == account_id))
         await connection.execute(delete(UserModel).where(UserModel.id == user_id))
@@ -715,6 +773,85 @@ async def test_one_live_job_has_one_claim_and_completion_requires_publication_ta
 
 @pytest.mark.integration
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
+async def test_completion_rejects_manifest_that_no_longer_matches_exact_job_payload() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"manifest-user-{suffix}"
+    account_id = f"manifest-account-{suffix}"
+    job_id = f"manifest-job-{suffix}"
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert(UserModel).values(
+                    id=user_id,
+                    email=f"{user_id}@example.test",
+                    name="Manifest fence",
+                    password_hash=None,
+                    base_currency="CZK",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            await connection.execute(
+                insert(AccountModel).values(
+                    id=account_id,
+                    name="Manifest fence",
+                    type=AccountType.bank,
+                    currency="CZK",
+                    color=None,
+                    is_archived=False,
+                    archived_at=None,
+                    created_at=NOW,
+                    updated_at=NOW,
+                    notes=None,
+                )
+            )
+            await connection.execute(
+                insert(BackgroundJobModel).values(
+                    **_job(job_id, user_id, account_id, run_after=NOW)
+                )
+            )
+        await _seed_completion_publication_contract(
+            engine, user_id=user_id, account_id=account_id, job_id=job_id
+        )
+        async with sessions() as session:
+            claimed = await BackgroundJobRepository(session).claim_next(
+                worker_id="manifest-worker", now=NOW, lease_duration=LEASE
+            )
+            assert claimed is not None and claimed.job.id == job_id
+            await session.commit()
+        async with engine.begin() as connection:
+            await connection.execute(
+                update(BackgroundJobModel)
+                .where(BackgroundJobModel.id == job_id)
+                .values(payload={"schema_version": 1, "batch_ids": ["extra-corrupt-batch"]})
+            )
+        async with sessions() as session:
+            with pytest.raises(BackgroundJobLeaseLostError, match="batch manifest is invalid"):
+                await BackgroundJobRepository(session).complete(
+                    lease=claimed.lease,
+                    result=_result(job_id).model_dump(mode="json"),
+                    progress=ImportJobProgress(
+                        phase=ImportJobPhase.completed,
+                        completed_units=7,
+                        total_units=7,
+                        completed_batches=1,
+                        total_batches=1,
+                    ).model_dump(mode="json"),
+                    now=NOW + timedelta(seconds=1),
+                )
+            await session.rollback()
+    finally:
+        await _cleanup_completion_publication_contract(
+            engine, user_id=user_id, account_id=account_id, job_id=job_id
+        )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
 async def test_retry_wait_exhaustion_and_manual_retry_keep_one_canonical_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -868,4 +1005,167 @@ async def test_retry_wait_exhaustion_and_manual_retry_keep_one_canonical_job(
             account_id=account_id,
             job_id=job_id,
         )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
+async def test_missing_liability_then_manual_zero_resumes_same_rb_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"liability-user-{suffix}"
+    account_id = f"liability-card-{suffix}"
+    job_id = f"liability-job-{suffix}"
+    batch_id = f"batch-{job_id}"
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert(UserModel).values(
+                    id=user_id,
+                    email=f"{user_id}@example.test",
+                    name="Liability readiness",
+                    password_hash=None,
+                    base_currency="CZK",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            await connection.execute(
+                insert(AccountModel).values(
+                    id=account_id,
+                    name="Credit card",
+                    type=AccountType.credit_card,
+                    currency="CZK",
+                    color=None,
+                    is_archived=False,
+                    archived_at=None,
+                    created_at=NOW,
+                    updated_at=NOW,
+                    notes=None,
+                )
+            )
+            await connection.execute(
+                insert(AccountMemberModel).values(
+                    id=f"liability-member-{suffix}",
+                    account_id=account_id,
+                    user_id=user_id,
+                    role=AccountMemberRole.owner,
+                    relation_type=AccountRelationType.owner,
+                    invited_by_id=None,
+                    accepted_at=NOW,
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            job = _job(job_id, user_id, account_id, run_after=NOW)
+            job["status"] = BackgroundJobStatus.running
+            job["lease_owner"] = "liability-worker"
+            job["lease_version"] = 1
+            job["lease_expires_at"] = NOW + LEASE
+            job["lease_heartbeat_at"] = NOW
+            job["attempt_count"] = 1
+            job["started_at"] = NOW
+            await connection.execute(insert(BackgroundJobModel).values(**job))
+            await connection.execute(
+                insert(ImportBatchModel).values(
+                    id=batch_id,
+                    user_id=user_id,
+                    account_id=account_id,
+                    source=ImportSource.raiffeisenbank,
+                    filename="credit.csv",
+                    file_size=1,
+                    file_encoding="utf-8",
+                    checksum=f"checksum-{job_id}",
+                    status=ImportStatus.completed,
+                    rows_total=0,
+                    rows_imported=0,
+                    rows_skipped=0,
+                    created_at=NOW,
+                    completed_at=NOW,
+                    retain_until=None,
+                    raw_data_purged_at=None,
+                )
+            )
+            await connection.execute(
+                insert(ImportJobBatchModel).values(
+                    job_id=job_id,
+                    batch_id=batch_id,
+                    user_id=user_id,
+                    account_id=account_id,
+                    created_at=NOW,
+                )
+            )
+            await connection.execute(
+                insert(ImportJobAffectedAccountModel).values(
+                    job_id=job_id,
+                    account_id=account_id,
+                    user_id=user_id,
+                    created_at=NOW,
+                )
+            )
+
+        monkeypatch.setattr("app.modules.jobs.import_executor._now", lambda: NOW)
+        executor = DurableImportJobExecutor(sessions, Settings(environment="test", _env_file=None))
+        with pytest.raises(ImportLiabilityBalanceRequiredError):
+            await executor._run_job_wide_stage(
+                ImportExecutionStage.validate_liability_readiness,
+                job_id,
+                user_id,
+                account_id,
+                (batch_id,),
+            )
+        async with sessions() as session:
+            assert await session.scalar(select(LiabilityBalanceModel.id)) is None
+            current_job = await session.get(BackgroundJobModel, job_id)
+            assert current_job is not None and current_job.status is BackgroundJobStatus.running
+
+        async with sessions() as session:
+            created = await ManualLiabilityBalanceService(session, clock=lambda: NOW).create(
+                CreateManualLiabilityBalanceCommand(
+                    principal=AuthenticatedPrincipal(
+                        user_id=user_id, email=f"{user_id}@example.test"
+                    ),
+                    account_id=account_id,
+                    effective_at=NOW,
+                    currency="CZK",
+                    outstanding_principal=Decimal("0"),
+                    accrued_interest=Decimal("0"),
+                    fees_outstanding=Decimal("0"),
+                )
+            )
+        assert created.status == "created" and created.total_outstanding == Decimal("0")
+
+        resumed = await executor._run_job_wide_stage(
+            ImportExecutionStage.validate_liability_readiness,
+            job_id,
+            user_id,
+            account_id,
+            (batch_id,),
+        )
+        assert resumed.applied is True and resumed.job_id == job_id
+        async with sessions() as session:
+            current_job = await session.get(BackgroundJobModel, job_id)
+            assert current_job is not None and current_job.status is BackgroundJobStatus.running
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                delete(ImportJobAffectedAccountModel).where(
+                    ImportJobAffectedAccountModel.job_id == job_id
+                )
+            )
+            await connection.execute(
+                delete(ImportJobBatchModel).where(ImportJobBatchModel.job_id == job_id)
+            )
+            await connection.execute(
+                delete(BackgroundJobModel).where(BackgroundJobModel.id == job_id)
+            )
+            await connection.execute(
+                delete(ImportBatchModel).where(ImportBatchModel.id == batch_id)
+            )
+            await connection.execute(delete(AccountModel).where(AccountModel.id == account_id))
+            await connection.execute(delete(UserModel).where(UserModel.id == user_id))
         await engine.dispose()

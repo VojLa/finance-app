@@ -556,6 +556,7 @@ def _anycoin_row(
 def test_anycoin_grouped_trade_and_transfer_directions_match_b1_b3_contract() -> None:
     grouped = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row(
                 "payment",
@@ -581,6 +582,7 @@ def test_anycoin_grouped_trade_and_transfer_directions_match_b1_b3_contract() ->
 
     incoming = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row(
                 "deposit",
@@ -595,6 +597,7 @@ def test_anycoin_grouped_trade_and_transfer_directions_match_b1_b3_contract() ->
     )[0]
     outgoing = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row(
                 "withdrawal",

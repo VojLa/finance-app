@@ -19,6 +19,11 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.snapshots.calculation import (
+    DerivedSnapshotCalculationError,
+    multiply_derived_snapshot_values,
+    round_derived_snapshot_value,
+)
 
 _ERROR_MESSAGE = "Account snapshot evidence cannot produce an exact valuation."
 _CASH_ACCOUNT_TYPES = {
@@ -61,9 +66,9 @@ class SnapshotHoldingEvidence:
     symbol: str
     asset_type: AssetType
     quantity: Decimal
-    average_buy_price: Decimal
+    average_buy_price: Decimal | None
     cost_currency: str
-    cost_basis_by_currency: tuple[CurrencyAmount, ...]
+    cost_basis_by_currency: tuple[CurrencyAmount, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,13 +165,13 @@ class ExpectedAccountSnapshotItem:
     native_value: Decimal
     value_currency: str
     value: Decimal
-    native_cost_basis: Decimal
-    native_cost_currency: str
-    native_cost_basis_by_currency: tuple[CurrencyAmount, ...]
-    average_buy_price: Decimal
-    average_buy_price_currency: str
-    cost_basis: Decimal
-    cost_currency: str
+    native_cost_basis: Decimal | None
+    native_cost_currency: str | None
+    native_cost_basis_by_currency: tuple[CurrencyAmount, ...] | None
+    average_buy_price: Decimal | None
+    average_buy_price_currency: str | None
+    cost_basis: Decimal | None
+    cost_currency: str | None
     allocation_pct: Decimal
 
 
@@ -180,12 +185,12 @@ class ExpectedAccountSnapshotValuation:
     calculation_version: int
     cash_value: Decimal
     investment_value: Decimal
-    investment_cost_basis: Decimal
+    investment_cost_basis: Decimal | None
     liabilities_value: Decimal
     total_value: Decimal
     cash_value_by_currency: tuple[CurrencyAmount, ...]
     investment_value_by_currency: tuple[CurrencyAmount, ...]
-    investment_cost_basis_by_currency: tuple[CurrencyAmount, ...]
+    investment_cost_basis_by_currency: tuple[CurrencyAmount, ...] | None
     liabilities_value_by_currency: tuple[CurrencyAmount, ...]
     exchange_rates: tuple[ConsumedExchangeRate, ...]
     items: tuple[ExpectedAccountSnapshotItem, ...]
@@ -274,6 +279,11 @@ def _calculated(
     right: Decimal,
     numeric: Numeric,
 ) -> Decimal:
+    if operation == "multiply":
+        try:
+            return multiply_derived_snapshot_values(left, right, numeric)
+        except DerivedSnapshotCalculationError as exc:
+            raise _fail() from exc
     precision = max(
         value
         for value in (MONEY.precision, QUANTITY.precision, RATE.precision, numeric.precision)
@@ -281,9 +291,7 @@ def _calculated(
     )
     with localcontext() as context:
         context.prec = max(precision * 4, 112)
-        if operation == "multiply":
-            result = left * right
-        elif operation == "add":
+        if operation == "add":
             result = left + right
         elif operation == "subtract":
             result = left - right
@@ -312,7 +320,10 @@ def convert_currency_amount(
     if base == output:
         if rates:
             raise _fail()
-        return _exact(exact_amount, numeric), ()
+        try:
+            return round_derived_snapshot_value(exact_amount, numeric), ()
+        except DerivedSnapshotCalculationError as exc:
+            raise _fail() from exc
 
     direct_pair = (base, output)
     direct_rate = rates.get(direct_pair)
@@ -418,18 +429,29 @@ def _validate_holdings(
         _currency(holding.symbol)
         _enum(holding.asset_type, AssetType)
         _exact(holding.quantity, QUANTITY, positive=True)
-        _exact(holding.average_buy_price, QUANTITY, positive=True)
+        average = (
+            None
+            if holding.average_buy_price is None
+            else _exact(holding.average_buy_price, QUANTITY, positive=True)
+        )
         quote_currency = _currency(holding.cost_currency)
         component_currencies: list[str] = []
-        for component in holding.cost_basis_by_currency:
-            if not isinstance(component, CurrencyAmount):
-                raise _fail()
-            component_currencies.append(_currency(component.currency))
-            _exact(component.amount, QUANTITY, positive=True)
+        if holding.cost_basis_by_currency is not None:
+            for component in holding.cost_basis_by_currency:
+                if not isinstance(component, CurrencyAmount):
+                    raise _fail()
+                component_currencies.append(_currency(component.currency))
+                _exact(component.amount, QUANTITY, positive=True)
         if (
-            not component_currencies
-            or component_currencies != sorted(component_currencies)
-            or len(set(component_currencies)) != len(component_currencies)
+            (average is None) != (holding.cost_basis_by_currency is None)
+            or (
+                holding.cost_basis_by_currency is not None
+                and (
+                    not component_currencies
+                    or component_currencies != sorted(component_currencies)
+                    or len(set(component_currencies)) != len(component_currencies)
+                )
+            )
             or holding.cost_currency != quote_currency
         ):
             raise _fail()
@@ -526,11 +548,11 @@ def _raw_items(
 ) -> tuple[
     list[ExpectedAccountSnapshotItem],
     dict[str, Decimal],
-    dict[str, Decimal],
+    dict[str, Decimal] | None,
 ]:
     items: list[ExpectedAccountSnapshotItem] = []
     values_by_currency: dict[str, Decimal] = {}
-    costs_by_currency: dict[str, Decimal] = {}
+    costs_by_currency: dict[str, Decimal] | None = {}
     for listing_id, holding in sorted(holdings.items()):
         price = prices[listing_id]
         price_currency = _currency(price.currency)
@@ -544,34 +566,41 @@ def _raw_items(
             numeric=MONEY,
         )
         converted_costs: list[Decimal] = []
-        for component in holding.cost_basis_by_currency:
-            component_currency = _currency(component.currency)
-            component_amount = _exact(component.amount, QUANTITY, positive=True)
-            converted_costs.append(
-                _convert(
-                    component_amount,
-                    base_currency=component_currency,
-                    output_currency=output_currency,
-                    rates=rates,
-                    consumed=consumed,
-                    numeric=QUANTITY,
+        if holding.cost_basis_by_currency is None:
+            costs_by_currency = None
+            cost_basis = None
+        else:
+            for component in holding.cost_basis_by_currency:
+                component_currency = _currency(component.currency)
+                component_amount = _exact(component.amount, QUANTITY, positive=True)
+                converted_costs.append(
+                    _convert(
+                        component_amount,
+                        base_currency=component_currency,
+                        output_currency=output_currency,
+                        rates=rates,
+                        consumed=consumed,
+                        numeric=MONEY,
+                    )
                 )
-            )
-            _add_breakdown(
-                costs_by_currency,
-                currency=component_currency,
-                amount=component_amount,
-                numeric=QUANTITY,
-            )
-        cost_basis = _sum(converted_costs, QUANTITY)
-        _exact(cost_basis, MONEY)
+                if costs_by_currency is not None:
+                    _add_breakdown(
+                        costs_by_currency,
+                        currency=component_currency,
+                        amount=component_amount,
+                        numeric=QUANTITY,
+                    )
+            cost_basis = _sum(converted_costs, MONEY)
         _add_breakdown(
             values_by_currency,
             currency=price_currency,
             amount=native_value,
             numeric=QUANTITY,
         )
-        if len(holding.cost_basis_by_currency) == 1:
+        if holding.cost_basis_by_currency is None:
+            native_cost = None
+            native_cost_currency = None
+        elif len(holding.cost_basis_by_currency) == 1:
             native_cost = holding.cost_basis_by_currency[0].amount
             native_cost_currency = holding.cost_basis_by_currency[0].currency
         else:
@@ -594,9 +623,11 @@ def _raw_items(
                 native_cost_currency=native_cost_currency,
                 native_cost_basis_by_currency=holding.cost_basis_by_currency,
                 average_buy_price=holding.average_buy_price,
-                average_buy_price_currency=holding.cost_currency,
+                average_buy_price_currency=(
+                    None if holding.average_buy_price is None else holding.cost_currency
+                ),
                 cost_basis=cost_basis,
-                cost_currency=output_currency,
+                cost_currency=None if cost_basis is None else output_currency,
                 allocation_pct=Decimal(0),
             )
         )
@@ -702,9 +733,11 @@ def build_account_snapshot_projection(
         output_currency=output_currency,
     )
     investment_value = _sum([item.value for item in items], MONEY)
-    investment_cost_basis = _sum(
-        [_exact(item.cost_basis, MONEY) for item in items],
-        MONEY,
+    known_costs = [item.cost_basis for item in items if item.cost_basis is not None]
+    investment_cost_basis = (
+        _sum([_exact(cost, MONEY) for cost in known_costs], MONEY)
+        if len(known_costs) == len(items)
+        else None
     )
     if items:
         items = [
@@ -766,7 +799,9 @@ def build_account_snapshot_projection(
         total_value=total_value,
         cash_value_by_currency=cash_breakdown,
         investment_value_by_currency=_breakdown(investment_by_currency, QUANTITY),
-        investment_cost_basis_by_currency=_breakdown(costs_by_currency, QUANTITY),
+        investment_cost_basis_by_currency=(
+            None if costs_by_currency is None else _breakdown(costs_by_currency, QUANTITY)
+        ),
         liabilities_value_by_currency=liabilities_breakdown,
         exchange_rates=consumed_rates,
         items=tuple(items),

@@ -1,22 +1,65 @@
 # Domain Model
 
-The PostgreSQL schema contains 38 application tables. SQLAlchemy has a complete
+The PostgreSQL schema contains 42 application tables. SQLAlchemy has a complete
 mirror of that physical schema; this does not mean every domain has an API or
 application service yet.
 
-| Domain                 | Canonical records                                                      | Derived/read records                                         | Current Python use                                                              |
-| ---------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                            | Implemented                                                                     |
-| Accounts               | `Account`                                                              | —                                                            | Implemented                                                                     |
-| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                              | Read-only selection and atomic internal writer                                  |
-| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | filtered/paginated transaction view                          | Python manual lifecycle and canonical revision writes implemented               |
-| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | accessible category hierarchy                                | Python category hierarchy/default/user ownership implemented                    |
-| Budgets                | `Budget` and related item/account/alert tables                         | exact monthly plan, rollover, progress, and alerts           | Python read/write workflow implemented in R11-F                                 |
-| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | direct FX and exact persisted price evidence                 | Twelve Data direct FX, CoinGecko/Twelve Data prices, and exact alias onboarding |
-| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | authorized symbol event history                              | Python import and idempotent manual command writers implemented                 |
-| Portfolio              | —                                                                      | `Holding` and authorized symbol positions                    | Deterministic Python rebuild and read models implemented                        |
-| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`                                | parse, normalization, and duplicate state                    | Implemented through duplicate detection                                         |
-| Snapshots              | —                                                                      | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection                       |
+| Domain                 | Canonical records                                                      | Derived/read records                                                              | Current Python use                                                                           |
+| ---------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Identity and access    | `User`, `AccountMember`, `AccountInvite`                               | —                                                                                 | Implemented                                                                                  |
+| Accounts               | `Account`                                                              | —                                                                                 | Implemented                                                                                  |
+| Liabilities            | `LiabilityBalance`                                                     | latest-as-of liability evidence                                                   | Read-only selection and atomic internal writer                                               |
+| Cash transactions      | `Transaction`, `TransactionPair`, `TransactionSplit`                   | `TransactionReportingEvidence`, filtered/paginated transaction view               | Manual lifecycle and R12 Raiffeisenbank reconciliation/reporting/publication are implemented |
+| Classification         | `Counterparty`, `CounterpartyAlias`, `Category`, `CategoryRule`        | accessible category hierarchy                                                     | Python category hierarchy/default/user ownership implemented                                 |
+| Budgets                | `Budget` and related item/account/alert tables                         | exact monthly plan, rollover, progress, and alerts                                | Python read/write workflow implemented in R11-F                                              |
+| Assets and market data | `Asset`, `AssetListing`, `AssetAlias`, `PriceSnapshot`, `ExchangeRate` | direct FX and exact persisted price evidence                                      | Twelve Data direct FX, CoinGecko/Twelve Data prices, and exact alias onboarding              |
+| Investment ledger      | `InvestmentEvent`, `InvestmentMovement`                                | authorized symbol event history                                                   | Python import and idempotent manual command writers implemented                              |
+| Portfolio              | —                                                                      | `Holding` and authorized symbol positions                                         | Deterministic Python rebuild and read models implemented                                     |
+| Imports                | `ImportBatch`, `ImportRow`, `ImportLog`, `ImportSourceOccurrence`      | `ImportJobBatch`, `ImportJobAffectedAccount`, parse/normalization/duplicate state | Durable workflow, Raiffeisenbank reconciliation stages, and atomic publication implemented   |
+
+## Durable Raiffeisenbank reconciliation and publication
+
+Revision `3p0001rbfoundation` records immutable import-source occurrence
+identity, one exact reporting-FX evidence row per canonical transaction, and
+normalized durable-job membership. It also permits versioned reconciliation
+evidence on `TransactionPair` without rewriting historical pairs. It is the
+current Alembic head, following `3n0001emptyhold` and `3o0001unkbasis`.
+
+The durable Raiffeisenbank worker runs its job-wide stages after canonical
+posting in this order: deterministic reconciliation, direct historical
+reporting-FX acquisition, explicit credit-card/loan/mortgage liability
+readiness, and coordinated snapshot finalization/publication. Reconciliation
+creates or exactly replays versioned internal-transfer, credit-card-payment,
+and cash-exchange pairs. Reporting evidence is one direct, persisted FX lineage
+per canonical foreign-currency transaction; no inverse, pivot, synthetic rate,
+or unrelated job evidence can satisfy it. Liability accounts require an
+explicit latest-as-of `LiabilityBalance` before publication.
+
+Composite foreign keys prove the representative row belongs to the declared
+account/source batch, an optional canonical transaction belongs to the same
+account, reporting evidence uses the recorded FX direction, and job memberships
+retain their initiating user/account ownership. Pair and reporting evidence are
+created unpublished. The finalization transaction reconciles the job manifest,
+refreshes every affected account, stamps the evidence and publication targets,
+and completes the job atomically. A failed, pending, or partially completed job
+therefore cannot leak an operational reclassification or partial snapshot.
+
+Operational transaction readers use one fail-closed Python projection. A row
+whose import batch has durable job membership remains hidden until every
+membership job is completed; a foreign job-bound row additionally needs exact,
+published direct reporting evidence whose job is completed. Batches without a
+durable membership remain explicitly legacy-visible. A pair changes the
+effective operational type only after both its own `publishedAt` and its job
+completion are present. Published internal-transfer, credit-card-payment and
+cash-exchange legs remain available as audit rows but do not contribute to
+income, expenses, categories, or budgets. Snapshot and worker repositories
+continue to read canonical evidence before this operational publication gate.
+The reader also proves a pair job's affected-account membership and a reporting
+job's exact batch/account membership. Any pair with `publishedAt` without that
+completed proof, or two such pairs touching one transaction, hides the
+transaction rather than selecting an order-dependent or stale income/expense
+result.
+| Snapshots | — | `AccountSnapshot`, `AccountSnapshotItem`, `NetWorthSnapshot` | 5I account persistence and 5J-A pure net-worth projection |
 
 ## Manual investment command and symbol detail
 
@@ -67,14 +110,39 @@ Assets referenced by nonzero Holdings and missing the selected provider
 alias. Listing symbols, provider symbols, exchanges, and currencies appear as
 operator context but can never supply or derive `externalId`.
 
-The only writable providers are `coingecko` and `twelve_data`. CoinGecko
+The writable alias providers are `coingecko`, `twelve_data`, and
+`yahoo_finance`. CoinGecko
 requires `Asset.assetType=crypto` and one exact ASCII CoinGecko ID with no
 whitespace repair, control characters, URL/list delimiters, or multi-ID list.
 Twelve Data permits only stock, ETF, bond, commodity, and other Assets; cash
 and crypto are rejected. Its `externalId` must already equal the canonical
-parser output, for example `{"symbol":"AAPL","mic_code":"XNAS"}`. There is no
-ticker, name, ISIN, broker-symbol, Listing-MIC, exchange, first-alias, or
-hard-coded BTC inference and no provider discovery HTTP.
+parser output, for example `{"symbol":"AAPL","mic_code":"XNAS"}`. Generic
+inventory, provider, planner, and operator paths perform no ticker, name, ISIN,
+broker-symbol, Listing-MIC, exchange, first-alias, or network discovery.
+Yahoo Finance aliases are operator-owned non-crypto identities used only by
+the explicit non-production `local_free` source policy; for example the
+Trading212 `VUAA.IT` Listing is mapped explicitly to `VUAA.MI`, never by a
+suffix or exchange inference rule. Production does not register Yahoo for new
+market evidence.
+
+The only source-owned automatic exception is the exact durable-import allowlist
+`(anycoin, crypto, BTC) -> (coingecko, bitcoin)`. It runs after canonical
+`Asset`/`AssetListing` posting (including posting replay) and before Holdings or
+market acquisition. It reloads only asset movements belonging to the exact
+account and batch set, requires the canonical Anycoin exchange Listing and a
+single canonical BTC Asset, and then delegates to the unchanged create-only
+`AssetAliasWriter`. ETH, WBTC, case repair, arbitrary symbols, provider lookup,
+Yahoo, pivoting, and public mutation remain unsupported. A missing or mismatched
+BTC Asset/Listing, multiple canonical BTC Assets, or an existing conflicting
+`coingecko/bitcoin` owner fails before market acquisition without repointing an
+alias.
+
+Anycoin's separate display identity is equally closed:
+`(anycoin, crypto, BTC) -> Asset.name Bitcoin`. New normalized BTC rows carry
+that value. Resolver replay may enrich only an exact existing Anycoin BTC Asset
+whose name is NULL, under the existing provider advisory and row locks. An
+existing `Bitcoin` value replays; any other non-NULL name fails without rename
+or repoint. Other Anycoin symbols receive no derived display name.
 
 Before persistence the immutable command reloads the exact Asset and verifies
 the caller-supplied expected symbol, type, currency, and optional ISIN. Its
@@ -108,6 +176,13 @@ persisted Transaction, InvestmentEvent, or related canonical movement amount.
 They never substitute snapshot-time FX for event-date FX. Same currency is a
 structural bypass, not an `ExchangeRate` row; inverse and cross rates are not
 derived in R5-A.
+
+A nonzero investment Holding always keeps its exact Listing-price requirement.
+Its average-buy-price and ordered cost-basis map are one evidence pair: both may
+be NULL only when the canonical source cannot prove purchase cost. That unknown
+basis contributes no cost-currency FX requirement, because there is no cost
+amount to convert; price and Listing/account-currency requirements remain.
+One-sided, empty, zero, non-finite, or malformed cost state still fails closed.
 
 The explicit 0.1 freshness policy is 72 hours for prices and seven calendar
 days for FX. Evidence exactly at the maximum age is valid; future or older
@@ -146,9 +221,11 @@ the physical model. A requirement is eligible only through one persisted exact
 Asset names, `/coins/list`, and hard-coded symbol mappings are not identities.
 The provider's positive exact Decimal and actual `last_updated_at` UTC time are
 validated by R5-A and persisted append-only as `PriceSnapshot`. The timestamp
-is not clamped, and overprecision is not rounded. Anycoin crypto assets without
-that alias fail before HTTP. Trading212 listed securities use only an exact
-persisted Twelve Data alias.
+is not clamped, and overprecision is not rounded. Durable Anycoin BTC
+finalization first creates or replays its one allowlisted exact alias through
+the approved writer; every other Anycoin crypto asset without an explicit alias
+fails before HTTP. Trading212 listed securities use only an exact persisted
+Twelve Data alias.
 PostgreSQL tests use mocked HTTP but the production factory, planner, writer,
 snapshot executor, and exact portfolio/dashboard readers. Public
 market-evidence orchestration remains assigned to R5-B3, so overall R5 remains
@@ -176,9 +253,11 @@ minute-aligned interval `timestamp` and the UTC response `datetime` represents
 the same instant. Identity, currency, timestamp, freshness, and physical
 precision mismatches fail closed without rounding, clamping, or fallback.
 Production composition is CoinGecko plus Twelve Data for prices and Twelve Data
-for direct FX. Historical `cnb` and `yahoo_finance` values and rows remain
-readable audit evidence but are not registered providers or eligible for new
-snapshot selection.
+for direct FX. The explicit non-production `local_free` policy instead maps
+crypto to CoinGecko, non-crypto assets to exact Yahoo aliases, and direct FX to
+Yahoo; it rejects fallback, inverse, and pivot acquisition. Persisted `cnb` and
+inactive-provider rows remain readable audit evidence but are not eligible for
+selection under the active immutable source policy.
 
 The fixed UUIDv5 namespaces are
 `8c46da0b-b09a-49c7-94f1-a510cf4c2f7c` for `PriceSnapshot` and
@@ -1170,9 +1249,12 @@ missing `liabilitiesValueByCurrency` physical column.
 
 The conversion contract consumes exactly one persisted direct observation at
 snapshot write time. For foreign source A and target B, the expression is
-`amount * rate(A -> B)`. The calculation uses high-precision `Decimal`
-arithmetic and accepts only an exactly representable final MONEY value. It does
-not invert, triangulate, round, or persist a synthetic pair.
+`amount * rate(A -> B)`. Input evidence remains exact, while the derived
+snapshot output rounds once with Decimal `ROUND_HALF_EVEN` at its explicit
+final MONEY boundary. It does not invert, triangulate, or persist a synthetic
+pair. A nonzero underflow, non-finite value, or destination overflow fails
+closed. Native portfolio and total-net-worth `*ByCurrency` values retain their
+QUANTITY precision and need not equal the rounded output-currency MONEY scalar.
 
 Snapshot-time components use the direct pair as of the snapshot. Historical net
 deposits, realized P/L, fees, and taxes select the direct pair as of each event.
@@ -1280,6 +1362,14 @@ the current Holding set. The append-only `AccountCanonicalChange` stores only
 root identity, kind, financial timestamp, and commit-ordered revision; amounts,
 currencies, quantities, and movements remain in their authoritative tables.
 
+A newly created investment account has an exact empty Holding set, so its
+canonical state starts with `lastInvestmentRevision = holdingRevision = 0`.
+Non-investment accounts keep `holdingRevision = NULL`. The `3n0001emptyhold`
+migration applies the same state to existing investment accounts only when
+revision zero, no Holding rows, and no investment-event canonical roots prove
+that the account is empty; ambiguous or stale states remain unchanged and fail
+closed at the snapshot writer.
+
 One InvestmentEvent and its atomic InvestmentMovement set are one revision.
 LiabilityBalance remains a replacement observation rather than an additive
 delta. Exact replay validates the journal without advancing state. The account
@@ -1322,6 +1412,17 @@ account state is the baseline native state plus journal roots whose revision is
 above the account cutoff and whose financial timestamp is strictly after the
 baseline and no later than the server-owned `asOf`. D1 backfills remain fatal;
 future-dated roots remain excluded.
+
+Calculation-version compatibility is owned by the coordinated snapshot version
+module and is not a newest-available fallback. With no active import publication
+fence, the reader accepts only the current version 3 graph. While at least one
+accessible account is fenced by a `queued`, `running`, `retry_wait`, or `failed`
+import, the explicit allowlist is exactly versions 2 and 3 so the last complete
+v2 publication can remain readable during an incomplete v3 import. Version 1
+and every unlisted future or historical version remain unavailable. The
+exception changes only this root version gate: exact NetWorth/account graph,
+manifest, lineage, market evidence, source-policy, active-account, and canonical
+root validation all remain mandatory.
 
 For bank, cash, and savings accounts the delta is signed Transaction evidence.
 For broker, exchange, and crypto-wallet accounts the baseline quantity and

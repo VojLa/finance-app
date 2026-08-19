@@ -24,6 +24,7 @@ def _rows(name: str):
 def _outcomes(rows, *, account_id: str = "fixture-account"):
     return normalize_anycoin_batch(
         account_id=account_id,
+        account_currency="EUR",
         rows=[
             AnycoinBatchRow(
                 row_id=f"row-{row.row_number}",
@@ -67,11 +68,11 @@ def test_main_fixture_builds_one_exact_grouped_buy_with_anchor_members() -> None
         "asset": {
             "symbol": "BTC",
             "isin": None,
-            "name": None,
+            "name": "Bitcoin",
             "asset_type_hint": "crypto",
         },
         "quantity": "0.01",
-        "price": {"amount": "49000", "currency": "EUR"},
+        "price": None,
         "total": {"amount": "490", "currency": "EUR"},
         "fee": None,
         "conversion": None,
@@ -79,6 +80,7 @@ def test_main_fixture_builds_one_exact_grouped_buy_with_anchor_members() -> None
         "is_promotional": False,
         "note": None,
         "asset_direction": None,
+        "quote_currency": "EUR",
     }
     assert by_row["row-2"].status is ImportRowStatus.skipped
     assert by_row["row-2"].data == {
@@ -143,16 +145,13 @@ def test_issue_fixture_preserves_rows_and_fails_closed() -> None:
     assert all(outcome.status is ImportRowStatus.needs_review for outcome in outcomes)
     by_row = {outcome.row_id: outcome for outcome in outcomes}
     codes = {error["code"] for outcome in outcomes for error in outcome.validation_errors or []}
-    assert codes >= {
+    assert codes == {
         "missing_order_id",
         "incomplete_order",
         "multiple_asset_currencies",
         "multiple_fiat_currencies",
-        "contradictory_trade_direction",
-        "conflicting_external_id",
-        "zero_group_net",
-        "unsupported_anycoin_fiat_transfer",
         "invalid_anycoin_row",
+        "conflicting_anycoin_quote_currency",
     }
 
     def error_code(row_number: int) -> str:
@@ -160,11 +159,11 @@ def test_issue_fixture_preserves_rows_and_fails_closed() -> None:
         assert errors and len(errors) == 1
         return errors[0]["code"]
 
-    assert error_code(13) == "zero_group_net"
-    assert error_code(14) == "zero_group_net"
-    assert error_code(15) == "zero_group_net"
-    assert error_code(19) == "unsupported_anycoin_fiat_transfer"
-    assert error_code(20) == "unsupported_anycoin_fiat_transfer"
+    assert error_code(13) == "conflicting_anycoin_quote_currency"
+    assert error_code(14) == "conflicting_anycoin_quote_currency"
+    assert error_code(15) == "conflicting_anycoin_quote_currency"
+    assert error_code(19) == "conflicting_anycoin_quote_currency"
+    assert error_code(20) == "conflicting_anycoin_quote_currency"
     assert error_code(21) == "invalid_anycoin_row"
     assert error_code(22) == "invalid_anycoin_row"
     assert all(

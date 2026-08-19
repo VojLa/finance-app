@@ -10,6 +10,7 @@ from app.modules.asset_aliases.identity import (
     COINGECKO_ASSET_TYPES,
     SUPPORTED_ASSET_ALIAS_PROVIDERS,
     TWELVE_DATA_ASSET_TYPES,
+    YAHOO_FINANCE_ASSET_TYPES,
 )
 from app.modules.asset_aliases.service import ASSET_ALIAS_NAMESPACE
 
@@ -24,6 +25,7 @@ ALIAS_SERVICE = ALIAS_ROOT / "service.py"
 ALIAS_CLI = PYTHON_ROOT / "scripts" / "asset_alias.py"
 COINGECKO_PROVIDER = APP_ROOT / "modules" / "prices" / "providers" / "coingecko.py"
 TWELVE_DATA_PROVIDER = APP_ROOT / "modules" / "prices" / "providers" / "twelve_data.py"
+YAHOO_FINANCE_PROVIDER = APP_ROOT / "modules" / "prices" / "providers" / "yahoo_finance.py"
 ONBOARDING_E2E = TEST_ROOT / "test_asset_alias_onboarding_e2e_integration.py"
 
 
@@ -103,10 +105,16 @@ def test_provider_identity_validation_is_shared_exact_and_type_limited() -> None
 
     assert "parse_coingecko_asset_identity" in identity_source
     assert "parse_twelve_data_quote_identity" in identity_source
+    assert "parse_yahoo_finance_asset_identity" in identity_source
     assert "parse_coingecko_asset_identity" in _source(COINGECKO_PROVIDER)
     assert "parse_twelve_data_quote_identity" in _source(TWELVE_DATA_PROVIDER)
+    assert "parse_yahoo_finance_asset_identity" in _source(YAHOO_FINANCE_PROVIDER)
     assert SUPPORTED_ASSET_ALIAS_PROVIDERS == frozenset(
-        {AssetAliasProvider.coingecko, AssetAliasProvider.twelve_data}
+        {
+            AssetAliasProvider.coingecko,
+            AssetAliasProvider.twelve_data,
+            AssetAliasProvider.yahoo_finance,
+        }
     )
     assert COINGECKO_ASSET_TYPES == frozenset({AssetType.crypto})
     assert TWELVE_DATA_ASSET_TYPES == frozenset(
@@ -118,6 +126,7 @@ def test_provider_identity_validation_is_shared_exact_and_type_limited() -> None
             AssetType.other,
         }
     )
+    assert YAHOO_FINANCE_ASSET_TYPES == TWELVE_DATA_ASSET_TYPES
 
 
 def test_operator_cli_validates_provider_before_database_composition() -> None:

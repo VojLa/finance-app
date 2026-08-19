@@ -15,6 +15,9 @@ DIRECT_FX_REVISION = "3j0001twfx"
 MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
 BACKGROUND_JOB_REVISION = "3l0001bgjob"
 IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
+EMPTY_INVESTMENT_HOLDING_REVISION = "3n0001emptyhold"
+UNKNOWN_INVESTMENT_COST_BASIS_REVISION = "3o0001unkbasis"
+RB_SCHEMA_FOUNDATION_REVISION = "3p0001rbfoundation"
 
 
 def test_alembic_configuration_uses_local_migration_directory() -> None:
@@ -32,9 +35,9 @@ def test_alembic_revision_graph_contains_direct_fx_migration() -> None:
     revisions = list(directory.walk_revisions())
     by_revision = {revision.revision: revision for revision in revisions}
 
-    assert directory.get_heads() == [IMPORT_PUBLICATION_ANCHOR_REVISION]
+    assert directory.get_heads() == [RB_SCHEMA_FOUNDATION_REVISION]
     assert directory.get_bases() == [BASELINE_REVISION]
-    assert len(revisions) == 10
+    assert len(revisions) == 13
     assert by_revision[BASELINE_REVISION].down_revision is None
     assert by_revision[BASELINE_REVISION].branch_labels == {"prisma_baseline"}
     assert by_revision[CUTOVER_REVISION].down_revision == BASELINE_REVISION
@@ -46,3 +49,15 @@ def test_alembic_revision_graph_contains_direct_fx_migration() -> None:
     assert by_revision[MULTI_CURRENCY_COST_BASIS_REVISION].down_revision == DIRECT_FX_REVISION
     assert by_revision[BACKGROUND_JOB_REVISION].down_revision == MULTI_CURRENCY_COST_BASIS_REVISION
     assert by_revision[IMPORT_PUBLICATION_ANCHOR_REVISION].down_revision == BACKGROUND_JOB_REVISION
+    assert (
+        by_revision[EMPTY_INVESTMENT_HOLDING_REVISION].down_revision
+        == IMPORT_PUBLICATION_ANCHOR_REVISION
+    )
+    assert (
+        by_revision[UNKNOWN_INVESTMENT_COST_BASIS_REVISION].down_revision
+        == EMPTY_INVESTMENT_HOLDING_REVISION
+    )
+    assert (
+        by_revision[RB_SCHEMA_FOUNDATION_REVISION].down_revision
+        == UNKNOWN_INVESTMENT_COST_BASIS_REVISION
+    )

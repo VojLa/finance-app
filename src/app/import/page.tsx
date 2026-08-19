@@ -60,6 +60,10 @@ function backgroundStatus(job: PythonImportJob): string {
   return "zpracovává se"
 }
 
+function requiresLiabilityBalance(job: PythonImportJob): boolean {
+  return job.status === "retry_wait" && job.error?.code === "import_liability_balance_required"
+}
+
 function DropZone({ files, onFiles }: { files: File[]; onFiles: (files: File[]) => void }) {
   const input = useRef<HTMLInputElement>(null)
   const accept = (selected: FileList | File[]) =>
@@ -361,6 +365,16 @@ export default function ImportPage() {
               Dokončeno {state.job.progress.completed_units} z {state.job.progress.total_units}{" "}
               kroků.
             </p>
+            {requiresLiabilityBalance(state.job) && (
+              <p className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-amber-950">
+                Na stránce{" "}
+                <a className="underline" href="/accounts">
+                  Účty
+                </a>{" "}
+                zadej aktuální zůstatek závazku. Import potom automaticky pokračuje ve stejném
+                zpracování.
+              </p>
+            )}
             <p className="mt-1 text-xs">Stránku můžeš bezpečně zavřít.</p>
           </div>
         )}

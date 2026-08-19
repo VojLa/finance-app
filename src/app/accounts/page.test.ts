@@ -29,7 +29,7 @@ describe("account page Python cutover", () => {
     expect(source).toContain('action: "create"')
     expect(source).toContain('action: "update"')
     expect(source).toContain('action: "archive"')
-    expect(source.match(/await loadAccounts\("reload"\)/g)).toHaveLength(3)
+    expect(source.match(/await loadAccounts\("reload"\)/g)).toHaveLength(4)
   })
 
   it("keeps account type readonly during edit and omits it from PATCH", async () => {
@@ -82,6 +82,24 @@ describe("account page Python cutover", () => {
     expect(source).toContain("isSharedAccount(account.relationType)")
     expect(source).toContain("accountRoleLabel(account.role)")
     expect(source).toContain("Sdílený účet")
+  })
+
+  it("offers explicit manual liability entry only through the generated scoped client", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+
+    expect(source).toContain("requestCreateManualLiabilityBalance")
+    expect(source).toContain("LIABILITY_ACCOUNT_TYPES")
+    expect(source).toContain("Zadat zůstatek dluhu")
+    expect(source).toContain("Import transakcí dluh neodvozuje.")
+    expect(source).toContain("toNaiveUtcLiabilityTimestamp(liabilityForm.effectiveAt)")
+    expect(source).toContain("effectiveAt: defaultLiabilityEffectiveAt()")
+    expect(source).toContain("outstandingPrincipal: liabilityForm.outstandingPrincipal")
+    expect(source).toContain("accruedInterest: liabilityForm.accruedInterest")
+    expect(source).toContain("feesOutstanding: liabilityForm.feesOutstanding")
+    expect(source).toContain("Všechny tři částky mohou být 0.")
+    expect(source).toContain('await loadAccounts("reload")')
+    expect(source).not.toMatch(/liabilit(?:y|ies).*transaction.*derive/i)
+    expect(source).not.toContain("fetch(")
   })
 
   it("scopes update and archive errors to their exact account ID", async () => {

@@ -1,16 +1,35 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
-from app.db.models.enums import ImportStatus, SnapshotGranularity, SnapshotSource
+from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import (
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
+from app.db.models.enums import (
+    AccountType,
+    ImportSource,
+    ImportStatus,
+    SnapshotGranularity,
+    SnapshotSource,
+)
 from app.db.models.imports import ImportBatchModel
+from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
+from app.modules.asset_aliases.models import (
+    AssetAliasConflictError,
+    AssetAliasDatabaseUnavailableError,
+    AssetAliasInvalidError,
+    AssetAliasNotFoundError,
+    AssetAliasStateError,
+)
 from app.modules.imports.job_executor import (
     ImportExecutionCheckpoint as ExecutionCheckpoint,
 )
@@ -24,12 +43,26 @@ from app.modules.imports.job_executor import (
     ImportExecutionStage,
     ImportJobExecutionRetryableError,
     ImportJobExecutionStateError,
+    ImportJobWideStageResult,
 )
 from app.modules.imports.job_executor import (
     ImportJobExecutor as StageImportJobExecutor,
 )
 from app.modules.imports.models import ImportSnapshotRefreshStatus
 from app.modules.imports.multi_file_service import ImportMultiFileFinalizationService
+from app.modules.imports.raiffeisenbank_reconciliation_service import (
+    RaiffeisenbankReconciliationService,
+    RaiffeisenbankReconciliationStateError,
+    ReconcileRaiffeisenbankJobCommand,
+)
+from app.modules.imports.raiffeisenbank_reporting_fx import (
+    AcquireRaiffeisenbankReportingFxCommand,
+    RaiffeisenbankReportingFxConflictError,
+    RaiffeisenbankReportingFxStateError,
+)
+from app.modules.imports.raiffeisenbank_reporting_fx_factory import (
+    create_raiffeisenbank_reporting_fx_service,
+)
 from app.modules.jobs.models import (
     ImportJobCheckpoint,
     ImportJobPayload,
@@ -44,6 +77,11 @@ from app.modules.jobs.worker import (
     DeferredBackgroundJobError,
     PermanentBackgroundJobError,
     RetryableBackgroundJobError,
+)
+from app.modules.liabilities.evidence_service import (
+    LiabilityBalanceEvidenceService,
+    LiabilityBalanceEvidenceStateError,
+    SelectLiabilityBalanceCommand,
 )
 from app.modules.snapshot_refresh.market_backed_models import (
     ExecuteMarketBackedSnapshotRefreshCommand,
@@ -63,6 +101,9 @@ _STAGE_PHASE = {
     ImportExecutionStage.deduplicate: ImportJobPhase.deduplicating,
     ImportExecutionStage.classify: ImportJobPhase.classifying,
     ImportExecutionStage.canonical_post: ImportJobPhase.posting,
+    ImportExecutionStage.reconcile: ImportJobPhase.reconciling,
+    ImportExecutionStage.acquire_reporting_fx: ImportJobPhase.acquiring_reporting_fx,
+    ImportExecutionStage.validate_liability_readiness: ImportJobPhase.validating_liability,
     ImportExecutionStage.finalize: ImportJobPhase.refreshing_snapshot,
 }
 _PHASE_STAGE = {phase: stage for stage, phase in _STAGE_PHASE.items()}
@@ -73,10 +114,32 @@ _BATCH_STAGES = (
     ImportExecutionStage.classify,
     ImportExecutionStage.canonical_post,
 )
+_JOB_WIDE_STAGES = (
+    ImportExecutionStage.reconcile,
+    ImportExecutionStage.acquire_reporting_fx,
+    ImportExecutionStage.validate_liability_readiness,
+    ImportExecutionStage.finalize,
+)
 
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _now_milliseconds() -> datetime:
+    value = _now()
+    return value.replace(microsecond=(value.microsecond // 1_000) * 1_000)
+
+
+_LIABILITY_ACCOUNT_TYPES = {
+    AccountType.credit_card,
+    AccountType.loan,
+    AccountType.mortgage,
+}
+
+
+class ImportLiabilityBalanceRequiredError(RuntimeError):
+    """An explicit liability observation is required before publication."""
 
 
 class DurableImportJobExecutor:
@@ -99,6 +162,7 @@ class DurableImportJobExecutor:
             session_factory,
             principal_resolver=self._resolve_principal,
             finalization_factory=self._finalization_service,
+            job_wide_stage_hook=self._run_job_wide_stage,
         )
 
     async def execute(
@@ -152,12 +216,13 @@ class DurableImportJobExecutor:
         async def on_checkpoint(value: ExecutionCheckpoint) -> None:
             nonlocal current_completed
             current_completed = value.stage
-            is_final = value.stage is ImportExecutionStage.finalize
-            completed_units = (
-                initial_progress.total_units
-                if is_final
-                else (_BATCH_STAGES.index(value.stage) + 1) * len(payload.batch_ids)
-            )
+            if value.stage in _BATCH_STAGES:
+                completed_units = (_BATCH_STAGES.index(value.stage) + 1) * len(payload.batch_ids)
+            else:
+                completed_units = (len(_BATCH_STAGES) * len(payload.batch_ids)) + (
+                    _JOB_WIDE_STAGES.index(value.stage) + 1
+                )
+            completed_units = min(initial_progress.total_units, completed_units)
             await checkpoint(
                 ImportJobCheckpoint(
                     phase=_STAGE_PHASE[value.stage],
@@ -193,7 +258,11 @@ class DurableImportJobExecutor:
                 )
             future_targets = tuple(item.bucket for item in targets if item.bucket > now)
             if future_targets:
-                raise DeferredBackgroundJobError(run_after=max(future_targets))
+                raise DeferredBackgroundJobError(
+                    run_after=max(future_targets),
+                    code="import_publication_deferred",
+                    message="Portfolio publication is waiting for its reserved snapshot window.",
+                )
             return own_target.bucket
 
         try:
@@ -206,7 +275,34 @@ class DurableImportJobExecutor:
                 on_checkpoint,
                 on_progress=on_progress,
                 publication_bucket_resolver=reserve_publication_bucket,
+                affected_account_resolver=lambda: self._affected_account_ids(
+                    job_id=claimed.job.id,
+                    user_id=claimed.job.user_id,
+                    fallback_account_id=claimed.job.account_id,
+                ),
+                on_job_wide_stage=self._run_job_wide_stage,
             )
+        except ImportLiabilityBalanceRequiredError as exc:
+            raise DeferredBackgroundJobError(
+                run_after=_now() + timedelta(minutes=5),
+                code="import_liability_balance_required",
+                message=("An explicit liability balance is required before portfolio publication."),
+            ) from exc
+        except RaiffeisenbankReportingFxStateError as exc:
+            raise RetryableBackgroundJobError(
+                code="import_reporting_fx_unavailable",
+                message="Required reporting-currency evidence is temporarily unavailable.",
+            ) from exc
+        except RaiffeisenbankReportingFxConflictError as exc:
+            raise PermanentBackgroundJobError(
+                code="import_reporting_fx_conflict",
+                message="Persisted reporting-currency evidence is inconsistent.",
+            ) from exc
+        except RaiffeisenbankReconciliationStateError as exc:
+            raise PermanentBackgroundJobError(
+                code="import_reconciliation_state_invalid",
+                message="Persisted bank reconciliation evidence is inconsistent.",
+            ) from exc
         except ImportJobExecutionRetryableError as exc:
             raise RetryableBackgroundJobError(
                 code="snapshot_refresh_incomplete",
@@ -216,6 +312,21 @@ class DurableImportJobExecutor:
             raise PermanentBackgroundJobError(
                 code="import_job_state_invalid",
                 message="The import job can no longer be processed safely.",
+            ) from exc
+        except AssetAliasDatabaseUnavailableError as exc:
+            raise RetryableBackgroundJobError(
+                code="import_asset_alias_dependency_unavailable",
+                message="Required provider identity persistence is temporarily unavailable.",
+            ) from exc
+        except (
+            AssetAliasConflictError,
+            AssetAliasInvalidError,
+            AssetAliasNotFoundError,
+            AssetAliasStateError,
+        ) as exc:
+            raise PermanentBackgroundJobError(
+                code="import_asset_alias_state_invalid",
+                message="The imported asset cannot be assigned its exact provider identity.",
             ) from exc
         except ApplicationError as exc:
             if exc.status_code >= 500 or exc.code in {
@@ -245,6 +356,11 @@ class DurableImportJobExecutor:
         # departed unpublished target is retired and a new member receives an
         # exact internal publication before completion.
         await reserve_publication_bucket()
+        affected_account_ids = await self._affected_account_ids(
+            job_id=claimed.job.id,
+            user_id=claimed.job.user_id,
+            fallback_account_id=claimed.job.account_id,
+        )
         for target in targets:
             if target.user_id == claimed.job.user_id:
                 continue
@@ -264,7 +380,10 @@ class DurableImportJobExecutor:
                             created_at=target.bucket,
                             is_recalculated=False,
                             publication_job_id=claimed.job.id,
-                            publication_account_ids=(claimed.job.account_id,),
+                            publication_account_ids=await self._authorized_affected_account_ids(
+                                user_id=target.user_id,
+                                affected_account_ids=affected_account_ids,
+                            ),
                         )
                     )
             except (
@@ -283,6 +402,188 @@ class DurableImportJobExecutor:
             batch_ids=payload.batch_ids,
             snapshot_status=snapshot_status,
         )
+
+    async def _run_job_wide_stage(
+        self,
+        stage: ImportExecutionStage,
+        job_id: str,
+        user_id: str,
+        account_id: str,
+        batch_ids: tuple[str, ...],
+    ) -> ImportJobWideStageResult:
+        source = await self._manifest_source(
+            job_id=job_id,
+            user_id=user_id,
+            account_id=account_id,
+            batch_ids=batch_ids,
+        )
+        if source is not ImportSource.raiffeisenbank:
+            return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=False)
+        created_at = _now_milliseconds()
+        if stage is ImportExecutionStage.reconcile:
+            async with self.session_factory() as session:
+                await RaiffeisenbankReconciliationService(session).reconcile(
+                    command=ReconcileRaiffeisenbankJobCommand(
+                        job_id=job_id,
+                        user_id=user_id,
+                        created_at=created_at,
+                    )
+                )
+            return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=True)
+        if stage is ImportExecutionStage.acquire_reporting_fx:
+            async with self.session_factory() as session:
+                async with session.begin():
+                    user = await session.scalar(select(UserModel).where(UserModel.id == user_id))
+                    transaction_ids = tuple(
+                        (
+                            await session.scalars(
+                                select(TransactionModel.id)
+                                .where(TransactionModel.import_batch_id.in_(batch_ids))
+                                .order_by(TransactionModel.id)
+                            )
+                        ).all()
+                    )
+                if user is None:
+                    raise RaiffeisenbankReportingFxStateError()
+                await create_raiffeisenbank_reporting_fx_service(
+                    session,
+                    self.settings,
+                ).acquire(
+                    AcquireRaiffeisenbankReportingFxCommand(
+                        job_id=job_id,
+                        user_id=user_id,
+                        reporting_currency=user.base_currency,
+                        canonical_transaction_ids=transaction_ids,
+                        created_at=created_at,
+                    )
+                )
+            return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=True)
+        if stage is ImportExecutionStage.validate_liability_readiness:
+            affected_account_ids = await self._affected_account_ids(
+                job_id=job_id,
+                user_id=user_id,
+                fallback_account_id=account_id,
+            )
+            through = _now_milliseconds().replace(second=0, microsecond=0)
+            async with self.session_factory() as session:
+                async with session.begin():
+                    accounts = tuple(
+                        (
+                            await session.scalars(
+                                select(AccountModel)
+                                .where(AccountModel.id.in_(affected_account_ids))
+                                .order_by(AccountModel.id)
+                            )
+                        ).all()
+                    )
+                    if tuple(account.id for account in accounts) != affected_account_ids:
+                        raise RaiffeisenbankReconciliationStateError()
+                    evidence = LiabilityBalanceEvidenceService(session)
+                    for account in accounts:
+                        if account.type not in _LIABILITY_ACCOUNT_TYPES:
+                            continue
+                        try:
+                            await evidence.select(
+                                SelectLiabilityBalanceCommand(
+                                    account_id=account.id,
+                                    snapshot_timestamp=through,
+                                )
+                            )
+                        except LiabilityBalanceEvidenceStateError as exc:
+                            raise ImportLiabilityBalanceRequiredError() from exc
+            return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=True)
+        raise ImportJobExecutionStateError("Import job-wide stage is invalid.")
+
+    async def _manifest_source(
+        self,
+        *,
+        job_id: str,
+        user_id: str,
+        account_id: str,
+        batch_ids: tuple[str, ...],
+    ) -> ImportSource:
+        async with self.session_factory() as session:
+            rows = tuple(
+                (
+                    await session.execute(
+                        select(ImportJobBatchModel, ImportBatchModel)
+                        .join(
+                            ImportBatchModel,
+                            ImportBatchModel.id == ImportJobBatchModel.batch_id,
+                        )
+                        .where(
+                            ImportJobBatchModel.job_id == job_id,
+                            ImportJobBatchModel.user_id == user_id,
+                            ImportJobBatchModel.account_id == account_id,
+                        )
+                        .order_by(ImportJobBatchModel.batch_id)
+                    )
+                ).tuples()
+            )
+        if tuple(membership.batch_id for membership, _batch in rows) != batch_ids or any(
+            batch.id != membership.batch_id
+            or batch.user_id != user_id
+            or batch.account_id != account_id
+            or membership.user_id != user_id
+            or membership.account_id != account_id
+            for membership, batch in rows
+        ):
+            raise ImportJobExecutionStateError("Import job manifest is invalid.")
+        sources = {batch.source for _membership, batch in rows}
+        if len(sources) != 1:
+            raise ImportJobExecutionStateError("Import job manifest is invalid.")
+        return sources.pop()
+
+    async def _affected_account_ids(
+        self,
+        *,
+        job_id: str,
+        user_id: str,
+        fallback_account_id: str,
+    ) -> tuple[str, ...]:
+        async with self.session_factory() as session:
+            rows = tuple(
+                (
+                    await session.scalars(
+                        select(ImportJobAffectedAccountModel)
+                        .where(ImportJobAffectedAccountModel.job_id == job_id)
+                        .order_by(ImportJobAffectedAccountModel.account_id)
+                    )
+                ).all()
+            )
+        if not rows:
+            return (fallback_account_id,)
+        account_ids = tuple(row.account_id for row in rows)
+        if (
+            len(set(account_ids)) != len(account_ids)
+            or fallback_account_id not in account_ids
+            or any(row.user_id != user_id for row in rows)
+        ):
+            raise ImportJobExecutionStateError("Import affected-account manifest is invalid.")
+        return account_ids
+
+    async def _authorized_affected_account_ids(
+        self,
+        *,
+        user_id: str,
+        affected_account_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        async with self.session_factory() as session:
+            result = tuple(
+                (
+                    await session.scalars(
+                        select(AccountMemberModel.account_id)
+                        .where(
+                            AccountMemberModel.user_id == user_id,
+                            AccountMemberModel.account_id.in_(affected_account_ids),
+                        )
+                        .order_by(AccountMemberModel.account_id)
+                    )
+                ).all()
+            )
+        if not result:
+            raise ImportJobExecutionStateError("Import publication member scope is invalid.")
+        return result
 
     async def _result(
         self,

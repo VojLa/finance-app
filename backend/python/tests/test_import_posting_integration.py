@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import os
+from collections import Counter
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, TypedDict
 from unittest.mock import patch
 
@@ -23,7 +26,9 @@ from app.db.models.enums import (
     ImportRowStatus,
     ImportSource,
     ImportStatus,
+    InvestmentEventType,
     InvestmentMovementKind,
+    PriceSource,
 )
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
@@ -46,6 +51,9 @@ from app.modules.imports.transaction_posting import ImportTransactionPostingWrit
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
+REAL_ANYCOIN_FIXTURE = (
+    Path(__file__).parents[3] / "test_imports" / "AnyCoin" / "transactions (2).csv"
+)
 
 
 class _Snapshot(TypedDict):
@@ -181,6 +189,7 @@ async def _seed(
     source: ImportSource,
     rows: list[dict[str, str]],
     other_role: AccountMemberRole | None = None,
+    account_currency: str = "EUR",
 ) -> None:
     await _cleanup(prefix)
     engine = _engine()
@@ -206,7 +215,7 @@ async def _seed(
                 type=AccountType.bank
                 if source in {ImportSource.manual, ImportSource.raiffeisenbank}
                 else AccountType.broker,
-                currency="EUR",
+                currency=account_currency,
                 color=None,
                 notes=None,
                 is_archived=False,
@@ -322,6 +331,41 @@ async def _remove_asset_identities(provider_symbols: set[str]) -> None:
         )
         if asset_ids:
             await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
+        await session.commit()
+    await engine.dispose()
+
+
+async def _anycoin_czk_identities() -> set[tuple[str, str]]:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        rows = (
+            await session.execute(
+                select(AssetListingModel.id, AssetListingModel.asset_id).where(
+                    AssetListingModel.provider == PriceSource.exchange,
+                    AssetListingModel.provider_symbol == "BTC",
+                    AssetListingModel.currency == "CZK",
+                )
+            )
+        ).all()
+        identities = {(row[0], row[1]) for row in rows}
+    await engine.dispose()
+    return identities
+
+
+async def _remove_created_identities(identities: set[tuple[str, str]]) -> None:
+    if not identities:
+        return
+    listing_ids = {listing_id for listing_id, _ in identities}
+    asset_ids = {asset_id for _, asset_id in identities}
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        await session.execute(
+            delete(AssetAliasModel).where(AssetAliasModel.asset_id.in_(asset_ids))
+        )
+        await session.execute(
+            delete(AssetListingModel).where(AssetListingModel.id.in_(listing_ids))
+        )
+        await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
         await session.commit()
     await engine.dispose()
 
@@ -510,6 +554,161 @@ async def _snapshot(prefix: str) -> _Snapshot:
         }
     await engine.dispose()
     return value
+
+
+@pytest.mark.skipif(
+    not REAL_ANYCOIN_FIXTURE.exists(),
+    reason="Local Anycoin fixture is absent",
+)
+def test_real_anycoin_fixture_posts_one_canonical_identity_and_replays_exactly() -> None:
+    prefix = "ac-abc-real-fixture"
+
+    async def scenario() -> None:
+        before_identities = await _anycoin_czk_identities()
+        created_identities: set[tuple[str, str]] = set()
+        try:
+            with REAL_ANYCOIN_FIXTURE.open(encoding="utf-8-sig", newline="") as handle:
+                raw_rows = list(csv.DictReader(handle))
+            await _seed(
+                prefix,
+                source=ImportSource.anycoin,
+                rows=raw_rows,
+                account_currency="CZK",
+            )
+            await _prepare(prefix)
+            first = await _post(prefix)
+
+            engine = _engine()
+            async with AsyncSession(engine) as session:
+                rows = tuple(
+                    (
+                        await session.scalars(
+                            select(ImportRowModel).where(
+                                ImportRowModel.import_batch_id == f"{prefix}-batch"
+                            )
+                        )
+                    ).all()
+                )
+                events = tuple(
+                    (
+                        await session.scalars(
+                            select(InvestmentEventModel).where(
+                                InvestmentEventModel.account_id == f"{prefix}-account"
+                            )
+                        )
+                    ).all()
+                )
+                event_ids = {event.id for event in events}
+                movements = tuple(
+                    (
+                        await session.scalars(
+                            select(InvestmentMovementModel).where(
+                                InvestmentMovementModel.event_id.in_(event_ids)
+                            )
+                        )
+                    ).all()
+                )
+                linked_pairs = {
+                    (movement.listing_id, movement.asset_id)
+                    for movement in movements
+                    if movement.asset_id is not None or movement.listing_id is not None
+                }
+                assert len(linked_pairs) == 1
+                listing_id, asset_id = next(iter(linked_pairs))
+                assert isinstance(listing_id, str) and isinstance(asset_id, str)
+                listing = await session.get(AssetListingModel, listing_id)
+                asset = await session.get(AssetModel, asset_id)
+                assert listing is not None and asset is not None
+                first_event_ids = tuple(sorted(event_ids))
+                first_movement_ids = tuple(sorted(movement.id for movement in movements))
+            await engine.dispose()
+
+            assert first.status is ImportStatus.completed
+            assert first.investment_event_rows_imported == 194
+            assert first.transaction_rows_imported == 0
+            assert (first.rows_total, first.rows_imported, first.rows_skipped) == (450, 194, 256)
+            assert Counter(row.status for row in rows) == {
+                ImportRowStatus.imported: 194,
+                ImportRowStatus.skipped: 256,
+            }
+            assert Counter(event.type for event in events) == {
+                InvestmentEventType.trade: 115,
+                InvestmentEventType.asset_transfer: 16,
+                InvestmentEventType.cash_deposit: 60,
+                InvestmentEventType.cash_withdrawal: 3,
+            }
+            assert len(movements) == 309
+            assert (
+                listing.symbol,
+                listing.provider,
+                listing.provider_symbol,
+                listing.currency,
+                asset.symbol,
+                asset.name,
+                asset.currency,
+            ) == (
+                "BTC",
+                PriceSource.exchange,
+                "BTC",
+                "CZK",
+                "BTC",
+                "Bitcoin",
+                "BTC",
+            )
+            priced_assets = [
+                movement
+                for movement in movements
+                if movement.kind is InvestmentMovementKind.asset
+                and movement.price_per_unit is not None
+            ]
+            assert len(priced_assets) == 115
+            for movement in priced_assets:
+                assert movement.price_per_unit is not None
+                exponent = movement.price_per_unit.as_tuple().exponent
+                assert isinstance(exponent, int)
+                assert exponent >= -10
+                assert movement.value_amount is not None
+                assert movement.value_currency == "CZK"
+
+            replay = await _post(prefix)
+            assert replay.replayed is True
+            assert replay.completed_at == first.completed_at
+            engine = _engine()
+            async with AsyncSession(engine) as session:
+                replay_event_ids = tuple(
+                    sorted(
+                        (
+                            await session.scalars(
+                                select(InvestmentEventModel.id).where(
+                                    InvestmentEventModel.account_id == f"{prefix}-account"
+                                )
+                            )
+                        ).all()
+                    )
+                )
+                replay_movement_ids = tuple(
+                    sorted(
+                        (
+                            await session.scalars(
+                                select(InvestmentMovementModel.id).where(
+                                    InvestmentMovementModel.event_id.in_(replay_event_ids)
+                                )
+                            )
+                        ).all()
+                    )
+                )
+                replay_asset = await session.get(AssetModel, asset_id)
+                assert replay_asset is not None and replay_asset.name == "Bitcoin"
+            await engine.dispose()
+            assert replay_event_ids == first_event_ids
+            assert replay_movement_ids == first_movement_ids
+        finally:
+            after_identities = await _anycoin_czk_identities()
+            created_identities = after_identities - before_identities
+            await _cleanup(prefix)
+            await _remove_created_identities(created_identities)
+
+    asyncio.run(scenario())
 
 
 async def _assert_zero_import_roundtrip(

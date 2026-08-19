@@ -273,6 +273,14 @@ class BackgroundJobService:
                     raise RuntimeError(
                         "The canonical background job payload does not match replay."
                     )
+                await self.repository.reconcile_import_job_manifest(
+                    job=existing,
+                    user_id=command.principal.user_id,
+                    account_id=command.account_id,
+                    batch_ids=payload.batch_ids,
+                    now=_now(),
+                    create_if_missing=False,
+                )
                 await self.session.commit()
                 return EnqueueImportJobResult(job=existing, created=False)
 
@@ -304,7 +312,7 @@ class BackgroundJobService:
                 progress=ImportJobProgress(
                     phase=ImportJobPhase.queued,
                     completed_units=0,
-                    total_units=(5 * total_batches) + 2,
+                    total_units=(5 * total_batches) + 4,
                     completed_batches=0,
                     total_batches=total_batches,
                 ).model_dump(mode="json"),
@@ -313,6 +321,14 @@ class BackgroundJobService:
             )
             if enqueued.job.payload != payload.model_dump(mode="json"):
                 raise RuntimeError("The canonical background job payload does not match replay.")
+            await self.repository.reconcile_import_job_manifest(
+                job=enqueued.job,
+                user_id=command.principal.user_id,
+                account_id=command.account_id,
+                batch_ids=payload.batch_ids,
+                now=_now(),
+                create_if_missing=enqueued.created,
+            )
             await self.session.commit()
         except Exception:
             await self.session.rollback()

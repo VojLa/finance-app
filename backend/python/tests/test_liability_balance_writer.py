@@ -389,6 +389,27 @@ async def test_manual_create_uses_only_timestamp_identity_lock_and_no_external_l
 
 
 @pytest.mark.asyncio
+async def test_manual_replay_ignores_only_server_created_at() -> None:
+    writer, session, repository = _writer()
+    first = _command(source=LiabilityBalanceSource.manual, external_id=None)
+    repository.by_timestamp = _model(
+        build_expected_liability_balance(first),
+    )
+
+    result = await writer.write(
+        _command(
+            source=LiabilityBalanceSource.manual,
+            external_id=None,
+            created_at=CREATED_AT.replace(second=1),
+        )
+    )
+
+    assert result.disposition is LiabilityBalanceWriteDisposition.replayed
+    assert repository.inserted is None
+    assert session.commit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_exact_timestamp_and_external_identity_replay_is_read_only() -> None:
     writer, session, repository = _writer()
     expected = build_expected_liability_balance(_command())

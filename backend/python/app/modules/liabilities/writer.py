@@ -243,7 +243,16 @@ def _matches(
     if not isinstance(persisted, LiabilityBalanceModel):
         return False
     values = expected.model_values()
-    return all(getattr(persisted, name) == values[name] for name in _PHYSICAL_ATTRIBUTES)
+    # A manual HTTP observation obtains ``created_at`` from the server.  It has
+    # no caller-owned external identifier, so a transport retry cannot replay
+    # the original clock value.  The immutable financial observation is still
+    # fully identified by account, effective timestamp, source and its exact
+    # components.  Imported/provider observations retain their strict physical
+    # replay contract, including created_at.
+    attributes: tuple[str, ...] = _PHYSICAL_ATTRIBUTES
+    if expected.source is LiabilityBalanceSource.manual:
+        attributes = tuple(name for name in attributes if name != "created_at")
+    return all(getattr(persisted, name) == values[name] for name in attributes)
 
 
 def _result(

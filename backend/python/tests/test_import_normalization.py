@@ -9,14 +9,41 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import ImportRowStatus, ImportSource, ImportStatus
 from app.modules.imports.normalization import (
     ImportNormalizationService,
+    ImportNormalizeAccountCurrencyMismatchError,
     ImportNormalizeRowsMissingError,
     ImportNormalizeStateError,
 )
 from app.modules.imports.normalizers import normalize_import_row
+from app.modules.imports.raiffeisenbank import (
+    STATEMENT_KIND_FIELD,
+    raiffeisenbank_account_currency_matches,
+)
 
 
 def _principal() -> AuthenticatedPrincipal:
     return AuthenticatedPrincipal(user_id="user-a", email="a@example.com", name="A")
+
+
+def _rb_account_row(*, currency: str) -> dict[str, str]:
+    return {
+        STATEMENT_KIND_FIELD: "account_statement",
+        "Datum provedení": "20.07.2026",
+        "Zaúčtovaná částka": "10",
+        "Měna účtu": currency,
+        "Typ transakce": "Příchozí úhrada",
+        "Id transakce": f"rb-{currency}",
+    }
+
+
+def _rb_card_row(*, currency: str) -> dict[str, str]:
+    return {
+        STATEMENT_KIND_FIELD: "card_statement",
+        "Datum transakce": "20.07.2026",
+        "Zaúčtovaná částka": "-10",
+        "Měna zaúčtování": currency,
+        "Typ transakce": "Platba u obchodníka",
+        "Číslo kreditní karty": "520655XXXXXX2067",
+    }
 
 
 def test_normalizer_creates_canonical_data_and_stable_key() -> None:
@@ -167,6 +194,40 @@ def test_normalizer_rejects_invalid_currency(currency: str) -> None:
     )
     assert result.data is None
     assert any(error["field"] == "currency" for error in result.validation_errors or [])
+
+
+@pytest.mark.parametrize(
+    ("raw_data", "account_currency"),
+    [
+        (_rb_account_row(currency="czk"), "CZK"),
+        (_rb_card_row(currency="EUR"), "eur"),
+    ],
+)
+def test_raiffeisenbank_currency_preflight_accepts_matching_statement_currency(
+    raw_data: dict[str, str], account_currency: str
+) -> None:
+    assert raiffeisenbank_account_currency_matches(
+        raw_data=raw_data,
+        account_currency=account_currency,
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_data", "account_currency"),
+    [
+        (_rb_account_row(currency="EUR"), "CZK"),
+        (_rb_card_row(currency="CZK"), "EUR"),
+        ({**_rb_account_row(currency="CZK"), STATEMENT_KIND_FIELD: "invalid"}, "CZK"),
+        ({**_rb_account_row(currency="")}, "CZK"),
+    ],
+)
+def test_raiffeisenbank_currency_preflight_rejects_mismatch_or_corrupt_source_shape(
+    raw_data: dict[str, str], account_currency: str
+) -> None:
+    assert not raiffeisenbank_account_currency_matches(
+        raw_data=raw_data,
+        account_currency=account_currency,
+    )
 
 
 @pytest.mark.parametrize(
@@ -331,6 +392,65 @@ async def test_service_normalizes_pending_rows_and_preserves_parser_failures(
     assert batch.rows_imported == 0
     assert batch.rows_skipped == 2
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("currencies", [("CZK", "EUR"), ("EUR", "CZK")])
+async def test_raiffeisenbank_currency_mismatch_rejects_whole_batch_before_row_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    currencies: tuple[str, str],
+) -> None:
+    session = AsyncMock()
+    service = ImportNormalizationService(session)
+    batch = SimpleNamespace(
+        id="batch-rb",
+        source=ImportSource.raiffeisenbank,
+        status=ImportStatus.processing,
+        rows_total=2,
+        rows_imported=0,
+        rows_skipped=0,
+        completed_at=None,
+    )
+    rows = [
+        SimpleNamespace(
+            status=ImportRowStatus.pending,
+            raw_data=_rb_account_row(currency=currency),
+            normalized_data=None,
+            deduplication_key=None,
+            validation_errors=None,
+            error_message=None,
+        )
+        for currency in currencies
+    ]
+    monkeypatch.setattr(service.repository, "get_for_account", AsyncMock(return_value=batch))
+    monkeypatch.setattr(service.repository, "list_rows_for_update", AsyncMock(return_value=rows))
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_currency_for_update",
+        AsyncMock(return_value="CZK"),
+    )
+
+    async def allow_access(**_: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.imports.normalization.require_account_access", allow_access)
+
+    with pytest.raises(ImportNormalizeAccountCurrencyMismatchError) as error:
+        await service.normalize_batch(
+            principal=_principal(), account_id="account-a", batch_id="batch-rb"
+        )
+
+    assert error.value.code == "import_account_currency_mismatch"
+    assert all(
+        row.status is ImportRowStatus.pending
+        and row.normalized_data is None
+        and row.deduplication_key is None
+        and row.validation_errors is None
+        and row.error_message is None
+        for row in rows
+    )
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio

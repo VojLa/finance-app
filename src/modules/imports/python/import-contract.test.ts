@@ -38,6 +38,16 @@ describe("ImportJob browser contract", () => {
     expect(parseImportJob(job())).toMatchObject({ id: "job-a", status: "queued" })
   })
 
+  it.each(["reconciling", "acquiring_reporting_fx", "validating_liability"] as const)(
+    "accepts the durable %s progress phase",
+    (phase) => {
+      const value = copy(job())
+      value.status = "running"
+      value.progress.phase = phase
+      expect(parseImportJob(value).progress.phase).toBe(phase)
+    }
+  )
+
   it("fails closed on unknown fields, identity, enum, counters and dates", () => {
     const cases: unknown[] = [
       { ...job(), internal_trace: "secret" },
@@ -73,8 +83,32 @@ describe("ImportJob browser contract", () => {
 
     const retryWaiting = copy(job())
     retryWaiting.status = "retry_wait"
-    retryWaiting.error = { code: "transient_failure", message: "Try again later." }
-    expect(parseImportJob(retryWaiting)).toMatchObject({ status: "retry_wait" })
+    retryWaiting.error = {
+      code: "import_publication_deferred",
+      message: "Portfolio publication is waiting for its reserved snapshot window.",
+    }
+    expect(parseImportJob(retryWaiting)).toMatchObject({
+      status: "retry_wait",
+      error: { code: "import_publication_deferred" },
+    })
+
+    const failed = copy(job())
+    failed.status = "failed"
+    failed.progress.phase = "validating_liability"
+    failed.progress.completed_units = 6
+    failed.progress.completed_batches = 2
+    failed.attempt_count = 1
+    failed.started_at = "2026-08-19T21:48:06.762000"
+    failed.finished_at = "2026-08-19T21:48:10.887000"
+    failed.error = {
+      code: "import_job_validation_failed",
+      message: "The import job cannot continue with the persisted input.",
+    }
+    expect(parseImportJob(failed)).toMatchObject({
+      status: "failed",
+      progress: { phase: "validating_liability" },
+      error: { code: "import_job_validation_failed" },
+    })
 
     const invalidTerminalStates = [
       { ...completed, error: { code: "oops", message: "No." } },

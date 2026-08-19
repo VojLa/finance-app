@@ -281,7 +281,12 @@ def _validated_breakdown(
         raise _fail()
     if not entries and scalar != 0:
         raise _fail()
-    if len(entries) == 1 and currencies[0] == output_currency and amounts[0] != scalar:
+    if (
+        numeric is MONEY
+        and len(entries) == 1
+        and currencies[0] == output_currency
+        and amounts[0] != scalar
+    ):
         raise _fail()
     return tuple(entries)
 

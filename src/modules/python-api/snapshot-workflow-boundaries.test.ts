@@ -128,7 +128,7 @@ describe("snapshot workflow static boundaries", () => {
       'INTERNAL_AUTH_ISSUER="finance-app-next"',
       'INTERNAL_AUTH_AUDIENCE="finance-app-python"',
       'INTERNAL_AUTH_TOKEN_TTL_SECONDS="60"',
-      'PYTHON_API_TIMEOUT_MS="30000"',
+      'PYTHON_API_TIMEOUT_MS="60000"',
     ]) {
       expect(exampleEnvironment).toContain(line)
     }

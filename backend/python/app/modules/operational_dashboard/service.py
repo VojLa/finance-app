@@ -63,13 +63,19 @@ class OperationalDashboardService:
                 "expense": Decimal(0),
             }
         expense_categories: dict[str, tuple[CategoryModel | None, Decimal]] = {}
-        for transaction, category in trend_rows:
-            amount = transaction_czk(transaction)
+        for operational_transaction, category in trend_rows:
+            transaction = operational_transaction.transaction
+            if operational_transaction.effective_type not in {
+                TransactionType.income,
+                TransactionType.expense,
+            }:
+                continue
+            amount = transaction_czk(operational_transaction)
             key = f"{transaction.date.year:04d}-{transaction.date.month:02d}"
             bucket = months.get(key)
             if bucket is None:
                 continue
-            if transaction.type is TransactionType.income:
+            if operational_transaction.effective_type is TransactionType.income:
                 bucket["income"] = _money(Decimal(bucket["income"]) + amount)
             else:
                 expense = -amount
@@ -145,18 +151,18 @@ class OperationalDashboardService:
             monthly_trends=monthly_trends,
             recent_transactions=[
                 OperationalRecentTransactionResponse(
-                    id=transaction.id,
-                    date=transaction.date,
-                    amount=abs(transaction.amount),
-                    amount_czk=abs(transaction_czk(transaction)),
-                    currency=transaction.currency,
-                    type=transaction.type.value,
-                    description=transaction.description,
-                    counterparty=transaction.counterparty,
+                    id=operational_transaction.transaction.id,
+                    date=operational_transaction.transaction.date,
+                    amount=abs(operational_transaction.transaction.amount),
+                    amount_czk=abs(transaction_czk(operational_transaction)),
+                    currency=operational_transaction.transaction.currency,
+                    type=operational_transaction.effective_type.value,
+                    description=operational_transaction.transaction.description,
+                    counterparty=operational_transaction.transaction.counterparty,
                     account_name=account.name,
                     category_name=None if category is None else category.name,
                     category_icon=None if category is None else category.icon,
                 )
-                for transaction, account, category in recent_rows
+                for operational_transaction, account, category in recent_rows
             ],
         )

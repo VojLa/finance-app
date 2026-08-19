@@ -80,9 +80,9 @@ class CurrentHoldingState:
     name: str | None
     asset_type: AssetType
     quantity: Decimal
-    avg_buy_price: Decimal
+    avg_buy_price: Decimal | None
     currency: str
-    cost_basis_by_currency: tuple[tuple[str, Decimal], ...]
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None
     current_price: Decimal | None
     current_value: Decimal | None
     unrealized_pnl: Decimal | None
@@ -142,7 +142,9 @@ def _optional_numeric(value: object) -> Decimal | None:
     return None if value is None else _exact_numeric(value)
 
 
-def _cost_breakdown(value: object) -> tuple[tuple[str, Decimal], ...]:
+def _cost_breakdown(value: object) -> tuple[tuple[str, Decimal], ...] | None:
+    if value is None:
+        return None
     if not isinstance(value, dict) or not value:
         raise HoldingRebuildStateError()
     result: list[tuple[str, Decimal]] = []
@@ -164,8 +166,10 @@ def _cost_breakdown(value: object) -> tuple[tuple[str, Decimal], ...]:
 
 
 def _cost_breakdown_json(
-    value: tuple[tuple[str, Decimal], ...],
-) -> dict[str, object]:
+    value: tuple[tuple[str, Decimal], ...] | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
     if not value:
         raise HoldingRebuildStateError()
     result: dict[str, object] = {}
@@ -321,8 +325,11 @@ def validate_current_holdings(
             or _currency(holding.currency) != _currency(listing.currency)
             or not isinstance(holding.name, (str, type(None)))
             or _exact_numeric(holding.quantity) <= 0
-            or _exact_numeric(holding.avg_buy_price) <= 0
         ):
+            raise HoldingRebuildStateError()
+        average = _optional_numeric(holding.avg_buy_price)
+        cost_breakdown = _cost_breakdown(holding.cost_basis_by_currency)
+        if (average is None) != (cost_breakdown is None) or (average is not None and average <= 0):
             raise HoldingRebuildStateError()
         ids.add(holding_id)
         listing_ids.add(listing_id)
@@ -336,9 +343,9 @@ def validate_current_holdings(
                 name=holding.name,
                 asset_type=holding.asset_type,
                 quantity=holding.quantity,
-                avg_buy_price=holding.avg_buy_price,
+                avg_buy_price=average,
                 currency=_currency(holding.currency),
-                cost_basis_by_currency=_cost_breakdown(holding.cost_basis_by_currency),
+                cost_basis_by_currency=cost_breakdown,
                 current_price=_optional_numeric(holding.current_price),
                 current_value=_optional_numeric(holding.current_value),
                 unrealized_pnl=_optional_numeric(holding.unrealized_pnl),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -15,10 +16,25 @@ from app.db.models.enums import (
     ImportRowStatus,
     ImportStatus,
 )
-from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.imports import (
+    ImportBatchModel,
+    ImportLogModel,
+    ImportRowModel,
+    ImportSourceOccurrenceModel,
+)
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.cooperative import yield_after_rows
 from app.modules.imports.models import ImportDeduplicateResponse
+from app.modules.imports.posting_common import copied_canonical_payload
+from app.modules.imports.raiffeisenbank import STATEMENT_KIND_FIELD
+from app.modules.imports.raiffeisenbank_card_multiset import (
+    RaiffeisenbankCardCandidate,
+    RaiffeisenbankCardMultisetEvidenceError,
+    plan_raiffeisenbank_card_multiset,
+)
+from app.modules.imports.raiffeisenbank_card_occurrence_repository import (
+    RaiffeisenbankCardOccurrenceRepository,
+)
 from app.modules.imports.repository import ImportBatchRepository
 from app.shared.errors import ApplicationError
 
@@ -144,6 +160,7 @@ class ImportDeduplicationService:
         principal: AuthenticatedPrincipal,
         account_id: str,
         batch_id: str,
+        job_id: str | None = None,
     ) -> ImportDeduplicateResponse:
         await require_account_access(
             session=self.session,
@@ -189,6 +206,18 @@ class ImportDeduplicationService:
                 if row.status is ImportRowStatus.pending and row.deduplication_key is not None:
                     keys.add(row.deduplication_key)
                 await yield_after_rows(index)
+
+            manifest_response = await self._deduplicate_manifested_raiffeisenbank_cards(
+                principal=principal,
+                account_id=account_id,
+                batch_id=batch_id,
+                job_id=job_id,
+                current_rows=rows,
+                locked_batch=locked,
+            )
+            if manifest_response is not None:
+                await self.session.commit()
+                return manifest_response
             candidates = await self.repository.list_deduplication_candidates_for_update(
                 account_id=account_id,
                 source=locked.source,
@@ -277,3 +306,168 @@ class ImportDeduplicationService:
             rows_needs_review=needs_review,
             rows_failed=failed,
         )
+
+    async def _deduplicate_manifested_raiffeisenbank_cards(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        batch_id: str,
+        job_id: str | None,
+        current_rows: list[ImportRowModel],
+        locked_batch: ImportBatchModel,
+    ) -> ImportDeduplicateResponse | None:
+        """Apply the RB-2 multiset only inside one durable job manifest."""
+        if job_id is None or locked_batch.source.value != "raiffeisenbank":
+            return None
+        if not isinstance(job_id, str) or not job_id or job_id != job_id.strip():
+            raise ImportDeduplicateStateError()
+        occurrence_repository = RaiffeisenbankCardOccurrenceRepository(self.session)
+        manifested = await occurrence_repository.load_manifested_card_rows_for_update(
+            job_id=job_id,
+            user_id=principal.user_id,
+            account_id=account_id,
+        )
+        if manifested is None:
+            raise ImportDeduplicateStateError()
+        if not manifested.is_credit_card_account:
+            return None
+        if batch_id not in {batch.id for batch in manifested.batches}:
+            raise ImportDeduplicateStateError()
+
+        candidates: list[RaiffeisenbankCardCandidate] = []
+        rows_by_id: dict[str, ImportRowModel] = {}
+        batch_by_row_id: dict[str, ImportBatchModel] = {}
+        for index, (row, batch) in enumerate(manifested.rows, start=1):
+            if not _is_valid_row_state(row):
+                raise ImportDeduplicateStateError()
+            if row.status in {ImportRowStatus.pending, ImportRowStatus.duplicate}:
+                if (
+                    not isinstance(row.raw_data, dict)
+                    or row.raw_data.get(STATEMENT_KIND_FIELD) != "card_statement"
+                    or not isinstance(row.normalized_data, dict)
+                ):
+                    raise ImportDeduplicateStateError()
+                candidates.append(
+                    RaiffeisenbankCardCandidate(
+                        batch_id=batch.id,
+                        row_id=row.id,
+                        row_number=row.row_number,
+                        raw_data=row.raw_data,
+                        normalized_data=_card_multiset_normalized_payload(row),
+                    )
+                )
+                rows_by_id[row.id] = row
+                batch_by_row_id[row.id] = batch
+            await yield_after_rows(index)
+        if not candidates:
+            raise ImportDeduplicateRowsMissingError()
+        try:
+            plan = plan_raiffeisenbank_card_multiset(
+                account_id=account_id,
+                candidates=candidates,
+            )
+        except RaiffeisenbankCardMultisetEvidenceError as exc:
+            raise ImportDeduplicateStateError() from exc
+
+        for index, occurrence in enumerate(plan.occurrences, start=1):
+            existing = await occurrence_repository.get_occurrence_for_update(
+                account_id=account_id,
+                fingerprint_hash=occurrence.fingerprint,
+                ordinal=occurrence.occurrence_ordinal,
+            )
+            member_ids = (occurrence.canonical_row_id, *occurrence.duplicate_row_ids)
+            canonical_row_id = occurrence.canonical_row_id
+            if existing is None:
+                occurrence_repository.add_occurrence(
+                    ImportSourceOccurrenceModel(
+                        id=f"rb-occurrence-{occurrence.deduplication_key}",
+                        account_id=account_id,
+                        source=locked_batch.source,
+                        fingerprint_hash=occurrence.fingerprint,
+                        ordinal=occurrence.occurrence_ordinal,
+                        representative_import_row_id=canonical_row_id,
+                        representative_import_batch_id=batch_by_row_id[canonical_row_id].id,
+                        canonical_transaction_id=None,
+                        version=1,
+                        flags={"deduplication_key": occurrence.deduplication_key},
+                        created_at=_now(),
+                        updated_at=_now(),
+                    )
+                )
+            else:
+                if (
+                    existing.source is not locked_batch.source
+                    or existing.version != 1
+                    or existing.flags != {"deduplication_key": occurrence.deduplication_key}
+                    or (
+                        existing.representative_import_row_id not in member_ids
+                        and existing.canonical_transaction_id is None
+                    )
+                ):
+                    raise ImportDeduplicateStateError()
+                if existing.representative_import_row_id not in member_ids:
+                    canonical_row_id = ""
+                else:
+                    canonical_row_id = existing.representative_import_row_id
+
+            for row_id in member_ids:
+                row = rows_by_id[row_id]
+                row.deduplication_key = occurrence.deduplication_key
+                updated = copied_canonical_payload(row.normalized_data or {})
+                is_canonical = row_id == canonical_row_id
+                row.status = ImportRowStatus.pending if is_canonical else ImportRowStatus.duplicate
+                updated["deduplication"] = {
+                    "schema_version": 1,
+                    "status": "unique" if is_canonical else "duplicate",
+                }
+                row.normalized_data = updated
+                row.validation_errors = None
+                row.error_message = None if is_canonical else "Duplicate normalized import row."
+            await yield_after_rows(index)
+
+        duplicate_count = sum(row.status is ImportRowStatus.duplicate for row in current_rows)
+        needs_review = sum(row.status is ImportRowStatus.needs_review for row in current_rows)
+        failed = sum(row.status is ImportRowStatus.failed for row in current_rows)
+        skipped = sum(row.status is ImportRowStatus.skipped for row in current_rows)
+        unique = sum(row.status is ImportRowStatus.pending for row in current_rows)
+        locked_batch.rows_total = len(current_rows)
+        locked_batch.rows_imported = 0
+        locked_batch.rows_skipped = duplicate_count + needs_review + failed + skipped
+        locked_batch.completed_at = None
+        return ImportDeduplicateResponse(
+            batch_id=batch_id,
+            status=ImportStatus.processing,
+            rows_total=len(current_rows),
+            rows_unique=unique,
+            rows_duplicate=duplicate_count,
+            rows_needs_review=needs_review,
+            rows_failed=failed,
+        )
+
+
+def _card_multiset_normalized_payload(row: ImportRowModel) -> dict[str, object]:
+    """Return parser-normalizer evidence after accepting only the exact workflow marker.
+
+    A card multiset replay sees rows which a prior manifest pass has already
+    annotated.  The pure multiset planner intentionally accepts *only* raw
+    normalizer output, so the workflow marker must be stripped at this narrow
+    boundary.  Do not use the broader posting helper here: it would also hide
+    a corrupt ``posting_intent`` marker.
+    """
+
+    normalized = row.normalized_data
+    if not isinstance(normalized, dict):
+        raise ImportDeduplicateStateError()
+    if "posting_intent" in normalized:
+        raise ImportDeduplicateStateError()
+    marker = normalized.get("deduplication")
+    expected_marker = {
+        "schema_version": 1,
+        "status": "unique" if row.status is ImportRowStatus.pending else "duplicate",
+    }
+    if marker is not None and marker != expected_marker:
+        raise ImportDeduplicateStateError()
+    canonical = deepcopy(normalized)
+    canonical.pop("deduplication", None)
+    return canonical

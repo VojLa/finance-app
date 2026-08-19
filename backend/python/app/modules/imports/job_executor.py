@@ -45,6 +45,9 @@ class ImportExecutionStage(StrEnum):
     deduplicate = "deduplicate"
     classify = "classify"
     canonical_post = "canonical_post"
+    reconcile = "reconcile"
+    acquire_reporting_fx = "acquire_reporting_fx"
+    validate_liability_readiness = "validate_liability_readiness"
     finalize = "finalize"
 
 
@@ -70,6 +73,13 @@ class ImportExecutionProgress:
     stage: ImportExecutionStage
     completed_batches: int
     total_batches: int
+
+
+@dataclass(frozen=True, slots=True)
+class ImportJobWideStageResult:
+    job_id: str
+    stage: ImportExecutionStage
+    applied: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +117,7 @@ class _Deduplicator(Protocol):
         principal: AuthenticatedPrincipal,
         account_id: str,
         batch_id: str,
+        job_id: str | None = None,
     ) -> object: ...
 
 
@@ -149,6 +160,11 @@ type PosterFactory = Callable[[AsyncSession], _Poster]
 type FinalizerFactory = Callable[[AsyncSession], _Finalizer]
 type BatchRepositoryFactory = Callable[[AsyncSession], _BatchRepository]
 type PublicationBucketResolver = Callable[[], Awaitable[datetime]]
+type AffectedAccountResolver = Callable[[], Awaitable[tuple[str, ...]]]
+type JobWideStageHook = Callable[
+    [ImportExecutionStage, str, str, str, tuple[str, ...]],
+    Awaitable[ImportJobWideStageResult],
+]
 type CheckpointHook = Callable[[ImportExecutionCheckpoint], Awaitable[None]]
 type ProgressHook = Callable[[ImportExecutionProgress], Awaitable[None]]
 
@@ -304,6 +320,7 @@ class ImportJobExecutor:
         classification_factory: ClassifierFactory = ImportClassificationService,
         posting_factory: PosterFactory = ImportBatchPostingService,
         batch_repository_factory: BatchRepositoryFactory = ImportBatchRepository,
+        job_wide_stage_hook: JobWideStageHook | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.principal_resolver = principal_resolver
@@ -314,6 +331,7 @@ class ImportJobExecutor:
         self.classification_factory = classification_factory
         self.posting_factory = posting_factory
         self.batch_repository_factory = batch_repository_factory
+        self.job_wide_stage_hook = job_wide_stage_hook
 
     async def execute(
         self,
@@ -327,6 +345,8 @@ class ImportJobExecutor:
         on_progress: ProgressHook | None = None,
         publication_bucket: datetime | None = None,
         publication_bucket_resolver: PublicationBucketResolver | None = None,
+        affected_account_resolver: AffectedAccountResolver | None = None,
+        on_job_wide_stage: JobWideStageHook | None = None,
     ) -> ImportExecutionResult:
         canonical_job_id = _nonblank(job_id)
         canonical_user_id = _nonblank(user_id)
@@ -337,6 +357,7 @@ class ImportJobExecutor:
             raise ImportJobExecutionStateError("Import job hooks are invalid.")
 
         finalization: FinalizeImportBatchesResult | None = None
+        effective_job_wide_stage = on_job_wide_stage or self.job_wide_stage_hook
         for stage in _STAGES:
             if completed is not None and _STAGES.index(stage) <= _STAGES.index(completed):
                 continue
@@ -352,7 +373,35 @@ class ImportJobExecutor:
                     account_id=canonical_account_id,
                     batch_ids=canonical_payload.batch_ids,
                     publication_bucket=bucket,
+                    publication_account_ids=(
+                        await affected_account_resolver()
+                        if affected_account_resolver is not None
+                        else (canonical_account_id,)
+                    ),
                 )
+            elif stage in {
+                ImportExecutionStage.reconcile,
+                ImportExecutionStage.acquire_reporting_fx,
+                ImportExecutionStage.validate_liability_readiness,
+            }:
+                if effective_job_wide_stage is None:
+                    raise ImportJobExecutionStateError("Import job-wide stage hook is unavailable.")
+                job_stage_result = await effective_job_wide_stage(
+                    stage,
+                    canonical_job_id,
+                    canonical_user_id,
+                    canonical_account_id,
+                    canonical_payload.batch_ids,
+                )
+                if (
+                    not isinstance(job_stage_result, ImportJobWideStageResult)
+                    or job_stage_result.job_id != canonical_job_id
+                    or job_stage_result.stage is not stage
+                    or not isinstance(job_stage_result.applied, bool)
+                ):
+                    raise ImportJobExecutionStateError(
+                        "Import job-wide stage returned invalid state."
+                    )
             else:
                 await self._run_batch_stage(
                     stage=stage,
@@ -388,6 +437,11 @@ class ImportJobExecutor:
                 account_id=canonical_account_id,
                 batch_ids=canonical_payload.batch_ids,
                 publication_bucket=bucket,
+                publication_account_ids=(
+                    await affected_account_resolver()
+                    if affected_account_resolver is not None
+                    else (canonical_account_id,)
+                ),
             )
         return ImportExecutionResult(
             job_id=canonical_job_id,
@@ -440,6 +494,7 @@ class ImportJobExecutor:
                         principal=principal,
                         account_id=account_id,
                         batch_id=batch_id,
+                        job_id=job_id,
                     )
                     _validate_processing_result(stage=stage, batch_id=batch_id, result=result)
                 elif stage is ImportExecutionStage.classify:
@@ -479,6 +534,7 @@ class ImportJobExecutor:
         account_id: str,
         batch_ids: tuple[str, ...],
         publication_bucket: datetime | None,
+        publication_account_ids: tuple[str, ...],
     ) -> FinalizeImportBatchesResult:
         async with self.session_factory() as authorization_session:
             principal = await self._principal(
@@ -493,6 +549,7 @@ class ImportJobExecutor:
                     batch_ids=batch_ids,
                     background_job_id=_nonblank(job_id),
                     publication_bucket=publication_bucket,
+                    publication_account_ids=publication_account_ids,
                 )
             )
         if not isinstance(result, FinalizeImportBatchesResult) or result.batch_ids != batch_ids:

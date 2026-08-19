@@ -45,6 +45,7 @@ from app.modules.snapshot_refresh.market_backed_models import (
     MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
+from app.modules.snapshot_refresh.version import current_coordinated_snapshot_calculation_version
 
 COMPLETED_AT = datetime(2036, 7, 29, 14, 35, 27, 123000)
 BUCKET = datetime(2036, 7, 29, 14, 35)
@@ -167,7 +168,7 @@ def _executor_result(
         granularity=SnapshotGranularity.minute,
         output_currency="EUR",
         source=SnapshotSource.import_event,
-        calculation_version=1,
+        calculation_version=current_coordinated_snapshot_calculation_version(),
         account_snapshots=executions,
         required_account_snapshot_identities=tuple(
             SelectedAccountSnapshotIdentity(item.account_id, item.snapshot_id)
@@ -339,7 +340,7 @@ async def test_investment_import_rebuilds_then_runs_market_backed_and_audits() -
         snapshot_timestamp=BUCKET,
         granularity=SnapshotGranularity.minute,
         source=SnapshotSource.import_event,
-        calculation_version=1,
+        calculation_version=current_coordinated_snapshot_calculation_version(),
         calculated_at=BUCKET,
         created_at=BUCKET,
         is_recalculated=False,
@@ -395,12 +396,12 @@ async def test_holding_unavailable_preserves_import_result_and_skips_market() ->
         (
             MarketBackedSnapshotRefreshUnavailableError(),
             ImportSnapshotRefreshStatus.unavailable,
-            "72c2de47-cf4b-501a-bf24-6d3868c8f5c9",
+            "82c36add-8d76-59b9-8cec-81427855e909",
         ),
         (
             MarketBackedSnapshotRefreshConflictError(),
             ImportSnapshotRefreshStatus.conflict,
-            "8d87167d-aa17-57fe-b3a5-bb829d0910e6",
+            "ed1e34e5-a246-5c1d-8faf-9f0867b8b49b",
         ),
     ],
 )

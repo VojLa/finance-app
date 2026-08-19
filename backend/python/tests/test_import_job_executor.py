@@ -17,6 +17,7 @@ from app.modules.imports.job_executor import (
     ImportExecutionStage,
     ImportJobExecutionRetryableError,
     ImportJobExecutor,
+    ImportJobWideStageResult,
 )
 from app.modules.imports.models import (
     ImportClassifyResponse,
@@ -165,11 +166,30 @@ def _executor(
         classification_factory=Mock(return_value=classification),
         posting_factory=Mock(return_value=posting),
         batch_repository_factory=lambda _session: _BatchRepository(session),
+        job_wide_stage_hook=lambda stage, job_id, *_args: _job_stage_result(
+            stage=stage,
+            job_id=job_id,
+        ),
     )
     return executor, calls, principal_resolver
 
 
-@pytest.mark.parametrize("stage", list(ImportExecutionStage)[:-1])
+async def _job_stage_result(
+    *, stage: ImportExecutionStage, job_id: str
+) -> ImportJobWideStageResult:
+    return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=False)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        ImportExecutionStage.parse,
+        ImportExecutionStage.normalize,
+        ImportExecutionStage.deduplicate,
+        ImportExecutionStage.classify,
+        ImportExecutionStage.canonical_post,
+    ],
+)
 async def test_executor_fails_closed_on_invalid_stage_result(stage: ImportExecutionStage) -> None:
     executor, calls, _ = _executor(batches={"batch-a": _batch("batch-a")})
     method = (
@@ -191,6 +211,55 @@ async def test_executor_fails_closed_on_invalid_stage_result(stage: ImportExecut
             )
             if stage is not ImportExecutionStage.parse
             else None,
+            AsyncMock(),
+        )
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        ImportExecutionStage.reconcile,
+        ImportExecutionStage.acquire_reporting_fx,
+        ImportExecutionStage.validate_liability_readiness,
+    ],
+)
+async def test_executor_fails_closed_on_invalid_job_wide_stage_result(
+    stage: ImportExecutionStage,
+) -> None:
+    executor, _calls, _ = _executor(batches={"batch-a": _batch("batch-a")})
+    previous = ImportExecutionStage(
+        list(ImportExecutionStage)[list(ImportExecutionStage).index(stage) - 1]
+    )
+
+    with pytest.raises(RuntimeError, match="job-wide stage returned invalid"):
+        await executor.execute(
+            "job-a",
+            "user-a",
+            "account-a",
+            ImportExecutionPayload(("batch-a",)),
+            previous,
+            AsyncMock(),
+            on_job_wide_stage=AsyncMock(
+                return_value=ImportJobWideStageResult(
+                    job_id="wrong-job",
+                    stage=stage,
+                    applied=True,
+                )
+            ),
+        )
+
+
+async def test_executor_fails_closed_when_job_wide_stage_hook_is_missing() -> None:
+    executor, _calls, _ = _executor(batches={"batch-a": _batch("batch-a")})
+    executor.job_wide_stage_hook = None
+
+    with pytest.raises(RuntimeError, match="hook is unavailable"):
+        await executor.execute(
+            "job-a",
+            "user-a",
+            "account-a",
+            ImportExecutionPayload(("batch-a",)),
+            ImportExecutionStage.canonical_post,
             AsyncMock(),
         )
 

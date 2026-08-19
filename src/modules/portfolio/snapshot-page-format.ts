@@ -1,6 +1,9 @@
 const DECIMAL_STRING = /^([+-]?)(\d+)(?:\.(\d+))?$/
 
-export function formatSnapshotDecimal(value: string): string {
+export const UNAVAILABLE_COST_BASIS_LABEL = "Nedostupné – chybí pořizovací cena"
+
+export function formatSnapshotDecimal(value: string | null): string {
+  if (value === null) return UNAVAILABLE_COST_BASIS_LABEL
   const match = DECIMAL_STRING.exec(value)
   if (!match) return value
 
@@ -9,7 +12,8 @@ export function formatSnapshotDecimal(value: string): string {
   return `${sign}${groupedInteger}${fraction === undefined ? "" : `,${fraction}`}`
 }
 
-export function formatSnapshotAmount(value: string, currency: string): string {
+export function formatSnapshotAmount(value: string | null, currency: string | null): string {
+  if (value === null || currency === null) return UNAVAILABLE_COST_BASIS_LABEL
   return `${formatSnapshotDecimal(value)} ${currency}`
 }
 

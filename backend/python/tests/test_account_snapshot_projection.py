@@ -213,6 +213,54 @@ def test_one_holding_projects_exact_physical_item_and_totals() -> None:
     )
 
 
+def test_mixed_known_and_unknown_basis_preserves_values_and_nulls_cost_aggregate() -> None:
+    known = _holding()
+    unknown = replace(
+        _holding(),
+        holding_id="holding-unknown",
+        asset_id="asset-unknown",
+        listing_id="listing-unknown",
+        listing_asset_id="asset-unknown",
+        symbol="BTC",
+        quantity=Decimal("1"),
+        average_buy_price=None,
+        cost_basis_by_currency=None,
+    )
+    result = build_account_snapshot_projection(
+        _input(
+            holdings=(known, unknown),
+            prices=(
+                _price(),
+                _price(
+                    price_id="price-unknown",
+                    asset_id="asset-unknown",
+                    listing_id="listing-unknown",
+                    symbol="BTC",
+                    price=Decimal("50"),
+                ),
+            ),
+            exchange_rates=(_rate("EUR"),),
+        )
+    )
+
+    assert result.investment_value == Decimal("6250")
+    assert result.total_value == Decimal("6250")
+    assert result.investment_cost_basis is None
+    assert result.investment_cost_basis_by_currency is None
+    by_listing = {item.listing_id: item for item in result.items}
+    assert by_listing["listing"].cost_basis == Decimal("4000")
+    incomplete = by_listing["listing-unknown"]
+    assert (
+        incomplete.native_cost_basis,
+        incomplete.native_cost_currency,
+        incomplete.native_cost_basis_by_currency,
+        incomplete.average_buy_price,
+        incomplete.average_buy_price_currency,
+        incomplete.cost_basis,
+        incomplete.cost_currency,
+    ) == (None, None, None, None, None, None, None)
+
+
 def test_multi_settlement_cost_components_are_converted_directly_and_preserved() -> None:
     result = _one_holding(
         holding=_holding(

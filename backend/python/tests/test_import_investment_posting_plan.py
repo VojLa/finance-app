@@ -84,6 +84,7 @@ def _canonical(
         "note": "provider note",
         "order_id": None,
         "asset_direction": None,
+        "quote_currency": "EUR" if source is ImportSource.anycoin else None,
     }
     if action in {"buy", "sell"}:
         payload["asset"] = {
@@ -101,6 +102,7 @@ def _canonical(
             payload["asset"]["name"] = None
             payload["asset"]["asset_type_hint"] = "crypto"
             payload["order_id"] = "order-1"
+            payload["price"] = None
     elif action == "dividend":
         payload["asset"] = {
             "symbol": "aapl",
@@ -423,7 +425,7 @@ def test_buy_listing_currency_falls_back_from_price_to_total() -> None:
     assert asset.listing_currency_hint == "EUR"
 
 
-def test_anycoin_asset_resolution_is_crypto_exchange_with_symbol_currency() -> None:
+def test_anycoin_asset_resolution_is_crypto_exchange_with_account_quote_currency() -> None:
     payload = _canonical("asset_transfer", source=ImportSource.anycoin)
     plan = _plan(payload, source=ImportSource.anycoin)
     asset = plan.asset_resolution
@@ -433,7 +435,7 @@ def test_anycoin_asset_resolution_is_crypto_exchange_with_symbol_currency() -> N
         asset.provider,
         asset.listing_currency_hint,
         asset.asset_currency_hint,
-    ) == (AssetType.crypto, PriceSource.exchange, "BTC", "BTC")
+    ) == (AssetType.crypto, PriceSource.exchange, "EUR", "BTC")
 
 
 def test_anycoin_conflicting_asset_hint_fails_closed() -> None:
@@ -715,6 +717,7 @@ def _anycoin_row(
 def test_anycoin_grouped_normalize_classify_plan_composition() -> None:
     outcomes = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row("payment", 1, "trade payment", "-500", "EUR"),
             _anycoin_row("fill", 2, "trade fill", "0.01", "BTC"),
@@ -726,11 +729,39 @@ def test_anycoin_grouped_normalize_classify_plan_composition() -> None:
     assert plan.order_id == "order-1"
     assert plan.asset_resolution is not None
     assert plan.asset_resolution.asset_type is AssetType.crypto
+    assert plan.asset_resolution.name == "Bitcoin"
+
+
+def test_anycoin_btc_plan_enriches_legacy_null_name_but_rejects_source_conflict() -> None:
+    canonical = _canonical(source=ImportSource.anycoin)
+    assert canonical["asset"]["name"] is None
+    plan = _plan(canonical, source=ImportSource.anycoin)
+    assert plan.asset_resolution is not None
+    assert plan.asset_resolution.name == "Bitcoin"
+
+    conflicting = deepcopy(canonical)
+    conflicting["asset"]["name"] = "Wrapped Bitcoin"
+    with pytest.raises(ImportPostStateError):
+        _plan(conflicting, source=ImportSource.anycoin)
+
+
+def test_anycoin_non_btc_plan_does_not_guess_or_accept_a_display_name() -> None:
+    canonical = _canonical(source=ImportSource.anycoin)
+    canonical["asset"]["symbol"] = "eth"
+    plan = _plan(canonical, source=ImportSource.anycoin)
+    assert plan.asset_resolution is not None
+    assert plan.asset_resolution.name is None
+
+    conflicting = deepcopy(canonical)
+    conflicting["asset"]["name"] = "Ethereum"
+    with pytest.raises(ImportPostStateError):
+        _plan(conflicting, source=ImportSource.anycoin)
 
 
 def test_anycoin_standalone_normalize_classify_plan_composition() -> None:
     outcome = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[_anycoin_row("deposit", 1, "deposit", "0.5", "BTC", order_id="")],
     )[0]
     assert outcome.data is not None

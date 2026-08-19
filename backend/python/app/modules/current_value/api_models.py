@@ -69,8 +69,8 @@ class CurrentDashboardAccountResponse(BaseModel):
     cash_value: Decimal = Field(serialization_alias="cashValue")
     investment_value: Decimal = Field(serialization_alias="investmentValue")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
-    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
-    unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
+    net_deposits_value: Decimal | None = Field(serialization_alias="netDepositsValue")
+    unrealized_pnl_value: Decimal | None = Field(serialization_alias="unrealizedPnlValue")
     position_count: int = Field(serialization_alias="positionCount")
 
     @field_serializer(
@@ -81,8 +81,8 @@ class CurrentDashboardAccountResponse(BaseModel):
         "net_deposits_value",
         "unrealized_pnl_value",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return serialize_money(value)
+    def serialize_decimal(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_money(value)
 
 
 class CurrentDashboardResponse(BaseModel):

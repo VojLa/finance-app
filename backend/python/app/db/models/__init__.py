@@ -4,7 +4,11 @@ from app.db.models.accounts import (
     AccountModel,
 )
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
-from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
 from app.db.models.budgets import (
     BudgetAccountModel,
     BudgetAlertModel,
@@ -54,7 +58,12 @@ from app.db.models.enums import (
     TransactionType,
 )
 from app.db.models.holdings import HoldingModel
-from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.imports import (
+    ImportBatchModel,
+    ImportLogModel,
+    ImportRowModel,
+    ImportSourceOccurrenceModel,
+)
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
@@ -67,6 +76,7 @@ from app.db.models.snapshots import (
 from app.db.models.transactions import (
     TransactionModel,
     TransactionPairModel,
+    TransactionReportingEvidenceModel,
     TransactionSplitModel,
 )
 from app.db.models.users import UserModel
@@ -112,6 +122,8 @@ __all__ = [
     "ExchangeRateSource",
     "HoldingModel",
     "ImportBatchModel",
+    "ImportJobAffectedAccountModel",
+    "ImportJobBatchModel",
     "ImportJobPublicationTargetModel",
     "ImportLogEvent",
     "ImportLogLevel",
@@ -119,6 +131,7 @@ __all__ = [
     "ImportRowModel",
     "ImportRowStatus",
     "ImportSource",
+    "ImportSourceOccurrenceModel",
     "ImportStatus",
     "InvestmentEventModel",
     "InvestmentEventType",
@@ -137,6 +150,7 @@ __all__ = [
     "TransactionClassification",
     "TransactionModel",
     "TransactionPairModel",
+    "TransactionReportingEvidenceModel",
     "TransactionSplitModel",
     "TransactionType",
     "UserModel",

@@ -78,6 +78,12 @@ def _sum_money(values: tuple[object, ...]) -> Decimal:
     return _exact_money(result)
 
 
+def _sum_optional_money(values: tuple[Decimal | None, ...]) -> Decimal | None:
+    if any(value is None for value in values):
+        return None
+    return _sum_money(tuple(value for value in values if value is not None))
+
+
 def _sum_breakdowns(
     values: tuple[tuple[PortfolioCurrencyAmount, ...], ...],
 ) -> tuple[PortfolioCurrencyAmount, ...]:
@@ -92,6 +98,14 @@ def _sum_breakdowns(
         )
         for currency, currency_amounts in sorted(amounts.items())
     )
+
+
+def _sum_optional_breakdowns(
+    values: tuple[tuple[PortfolioCurrencyAmount, ...] | None, ...],
+) -> tuple[PortfolioCurrencyAmount, ...] | None:
+    if any(value is None for value in values):
+        return None
+    return _sum_breakdowns(tuple(value for value in values if value is not None))
 
 
 def _validate_view(view: object) -> PortfolioSnapshotView:
@@ -120,11 +134,19 @@ def _validate_view(view: object) -> PortfolioSnapshotView:
             scalar_total=view.summary.cash_value,
             output_currency=view.currency,
         )
-        validate_portfolio_currency_breakdown(
-            view.summary.net_deposits_by_currency,
-            scalar_total=view.summary.net_deposits_value,
-            output_currency=view.currency,
-        )
+        if (view.summary.net_deposits_value is None) != (
+            view.summary.net_deposits_by_currency is None
+        ):
+            raise _fail()
+        if (
+            view.summary.net_deposits_value is not None
+            and view.summary.net_deposits_by_currency is not None
+        ):
+            validate_portfolio_currency_breakdown(
+                view.summary.net_deposits_by_currency,
+                scalar_total=view.summary.net_deposits_value,
+                output_currency=view.currency,
+            )
     except PortfolioCurrencyBreakdownError as exc:
         raise _fail() from exc
     return view
@@ -136,22 +158,32 @@ def _summary(
     cash_value = _sum_money(tuple(view.summary.cash_value for view in views))
     cash_by_currency = _sum_breakdowns(tuple(view.summary.cash_by_currency for view in views))
     investment_value = _sum_money(tuple(view.summary.investment_value for view in views))
-    investment_cost_basis = _sum_money(tuple(view.summary.investment_cost_basis for view in views))
+    investment_cost_basis = _sum_optional_money(
+        tuple(view.summary.investment_cost_basis for view in views)
+    )
     liabilities_value = _sum_money(tuple(view.summary.liabilities_value for view in views))
     total_value = _sum_money(tuple(view.summary.total_value for view in views))
-    net_deposits_value = _sum_money(tuple(view.summary.net_deposits_value for view in views))
-    net_deposits_by_currency = _sum_breakdowns(
+    net_deposits_value = _sum_optional_money(
+        tuple(view.summary.net_deposits_value for view in views)
+    )
+    net_deposits_by_currency = _sum_optional_breakdowns(
         tuple(view.summary.net_deposits_by_currency for view in views)
     )
-    realized_pnl_value = _sum_money(tuple(view.summary.realized_pnl_value for view in views))
-    unrealized_pnl_value = _sum_money(tuple(view.summary.unrealized_pnl_value for view in views))
+    realized_pnl_value = _sum_optional_money(
+        tuple(view.summary.realized_pnl_value for view in views)
+    )
+    unrealized_pnl_value = _sum_optional_money(
+        tuple(view.summary.unrealized_pnl_value for view in views)
+    )
     fees_value = _sum_money(tuple(view.summary.fees_value for view in views))
     taxes_value = _sum_money(tuple(view.summary.taxes_value for view in views))
     try:
         with localcontext() as context:
             context.prec = 112
             expected_total = cash_value + investment_value - liabilities_value
-            expected_unrealized = investment_value - investment_cost_basis
+            expected_unrealized = (
+                None if investment_cost_basis is None else investment_value - investment_cost_basis
+            )
     except (InvalidOperation, OverflowError) as exc:
         raise _fail() from exc
     position_count = sum(len(view.positions) for view in views)

@@ -180,6 +180,56 @@ def test_investment_delta_advances_baseline_quantity_cost_and_cash() -> None:
     assert result.cash_by_currency == (_amount("USD", "40.000000"),)
 
 
+def test_unknown_basis_baseline_remains_unknown_across_forward_transfer() -> None:
+    baseline = replace(
+        _position(),
+        cost_basis=None,
+        cost_currency=None,
+        unrealized_pnl=None,
+        native_cost_basis=None,
+        native_cost_currency=None,
+        native_cost_basis_by_currency=None,
+        average_buy_price=None,
+        average_buy_price_currency=None,
+    )
+    asset = replace(
+        _movement(
+            "asset",
+            kind=InvestmentMovementKind.asset,
+            direction=MovementDirection.incoming,
+            quantity="1.0000000000",
+        ),
+        price_per_unit=None,
+        value_amount=None,
+        value_currency=None,
+    )
+    event = CurrentInvestmentEvent(
+        event=HoldingPersistenceEvent(
+            event_id="event-1",
+            account_id="account-1",
+            event_type=InvestmentEventType.asset_transfer,
+            event_date=AT,
+            external_id="external-1",
+            movements=(asset,),
+        ),
+        realized_pnl=None,
+        realized_pnl_currency=None,
+    )
+
+    result = apply_investment_events(
+        account_id="account-1",
+        baseline_positions=(baseline,),
+        baseline_cash=(),
+        events=(event,),
+    )
+
+    holding = result.holdings.holdings[0]
+    assert holding.quantity == Decimal("3.0000000000")
+    assert holding.avg_buy_price is None
+    assert holding.cost_basis_by_currency is None
+    assert result.has_asset_transfer is True
+
+
 def test_investment_delta_can_fully_close_a_baseline_position() -> None:
     event = CurrentInvestmentEvent(
         event=HoldingPersistenceEvent(

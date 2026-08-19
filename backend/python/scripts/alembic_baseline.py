@@ -33,8 +33,11 @@ DIRECT_FX_REVISION = "3j0001twfx"
 MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
 BACKGROUND_JOB_REVISION = "3l0001bgjob"
 IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
-HEAD_REVISION = IMPORT_PUBLICATION_ANCHOR_REVISION
-EXPECTED_TABLE_COUNT = 38
+EMPTY_INVESTMENT_HOLDING_REVISION = "3n0001emptyhold"
+UNKNOWN_INVESTMENT_COST_BASIS_REVISION = "3o0001unkbasis"
+RB_SCHEMA_FOUNDATION_REVISION = "3p0001rbfoundation"
+HEAD_REVISION = RB_SCHEMA_FOUNDATION_REVISION
+EXPECTED_TABLE_COUNT = 42
 EXPECTED_ENUM_COUNT = 30
 PREVIOUS_HEAD_TABLE_COUNT = 36
 PREVIOUS_HEAD_ENUM_COUNT = 28
@@ -61,8 +64,8 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 10:
-        raise RuntimeError(f"Expected exactly ten Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 13:
+        raise RuntimeError(f"Expected exactly thirteen Alembic revisions, found {len(revisions)}.")
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -78,6 +81,9 @@ def verify_revision_graph() -> None:
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
     multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
     background_job = by_revision.get(BACKGROUND_JOB_REVISION)
+    import_publication_anchor = by_revision.get(IMPORT_PUBLICATION_ANCHOR_REVISION)
+    empty_investment_holding = by_revision.get(EMPTY_INVESTMENT_HOLDING_REVISION)
+    unknown_cost_basis = by_revision.get(UNKNOWN_INVESTMENT_COST_BASIS_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
@@ -99,17 +105,38 @@ def verify_revision_graph() -> None:
         raise RuntimeError(
             "The background-job revision must follow the multi-currency cost basis head."
         )
-    if head is None or head.down_revision != BACKGROUND_JOB_REVISION:
+    if (
+        import_publication_anchor is None
+        or import_publication_anchor.down_revision != BACKGROUND_JOB_REVISION
+    ):
         raise RuntimeError(
             "The import publication-anchor revision must follow the background-job head."
+        )
+    if (
+        empty_investment_holding is None
+        or empty_investment_holding.down_revision != IMPORT_PUBLICATION_ANCHOR_REVISION
+    ):
+        raise RuntimeError(
+            "The empty investment Holding revision must follow the import publication-anchor head."
+        )
+    if (
+        unknown_cost_basis is None
+        or unknown_cost_basis.down_revision != EMPTY_INVESTMENT_HOLDING_REVISION
+    ):
+        raise RuntimeError(
+            "The unknown investment cost-basis revision must follow the empty-Holding head."
+        )
+    if head is None or head.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION:
+        raise RuntimeError(
+            "The reconciliation schema foundation must follow the unknown cost-basis head."
         )
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 14:
+    if manifest.get("schema_version") != 17:
         raise RuntimeError(
-            "Ownership manifest schema_version must be 14 after the import-anchor change."
+            "Ownership manifest schema_version must be 17 after reconciliation foundation."
         )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
@@ -139,7 +166,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 10,
+        "revision_count": 13,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -208,7 +235,15 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 def verify_database_state(state: DatabaseState) -> None:
     revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
-    if revision == HEAD_REVISION:
+    if revision in {
+        BACKGROUND_JOB_REVISION,
+        IMPORT_PUBLICATION_ANCHOR_REVISION,
+        EMPTY_INVESTMENT_HOLDING_REVISION,
+        UNKNOWN_INVESTMENT_COST_BASIS_REVISION,
+    }:
+        expected_tables = 38
+        expected_enums = EXPECTED_ENUM_COUNT
+    elif revision == HEAD_REVISION:
         expected_tables = EXPECTED_TABLE_COUNT
         expected_enums = EXPECTED_ENUM_COUNT
     elif revision in {

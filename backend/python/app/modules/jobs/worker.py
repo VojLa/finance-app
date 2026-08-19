@@ -46,9 +46,17 @@ class RetryableBackgroundJobError(RuntimeError):
 class DeferredBackgroundJobError(RuntimeError):
     """A durable reservation exists, but its exact publication minute is future."""
 
-    def __init__(self, *, run_after: datetime) -> None:
+    def __init__(
+        self,
+        *,
+        run_after: datetime,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> None:
         super().__init__("Import publication is reserved for a future minute.")
         self.run_after = run_after
+        self.code = code
+        self.message = message
 
 
 class PermanentBackgroundJobError(RuntimeError):
@@ -149,7 +157,12 @@ class BackgroundJobWorker:
         except RetryableBackgroundJobError as exc:
             await self._retry_or_fail(claimed, code=exc.code, message=exc.message)
         except DeferredBackgroundJobError as exc:
-            await self._defer(claimed, run_after=exc.run_after)
+            await self._defer(
+                claimed,
+                run_after=exc.run_after,
+                code=exc.code,
+                message=exc.message,
+            )
         except Exception:
             logger.exception("background_job_execution_failed", extra={"job_id": claimed.job.id})
             await self._retry_or_fail(
@@ -282,13 +295,22 @@ class BackgroundJobWorker:
             except BackgroundJobLeaseLostError:
                 await session.rollback()
 
-    async def _defer(self, claimed: ClaimedBackgroundJob, *, run_after: datetime) -> None:
+    async def _defer(
+        self,
+        claimed: ClaimedBackgroundJob,
+        *,
+        run_after: datetime,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> None:
         async with self.session_factory() as session:
             try:
                 await BackgroundJobRepository(session).defer(
                     lease=claimed.lease,
                     run_after=run_after,
                     now=_now(),
+                    error_code=code,
+                    error_message=message,
                 )
                 await session.commit()
             except BackgroundJobLeaseLostError:

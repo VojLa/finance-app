@@ -8,17 +8,22 @@ from decimal import Decimal
 from uuid import uuid4
 
 from pydantic import ValidationError
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.background_jobs import BackgroundJobModel, ImportJobBatchModel
 from app.db.models.common import MONEY, TIMESTAMP
 from app.db.models.enums import (
+    BackgroundJobKind,
     ImportRowStatus,
+    ImportSource,
     ImportStatus,
     TransactionClassification,
     TransactionType,
 )
 from app.db.models.imports import ImportBatchModel, ImportRowModel
-from app.db.models.transactions import TransactionModel
+from app.db.models.prices import ExchangeRateModel
+from app.db.models.transactions import TransactionModel, TransactionReportingEvidenceModel
 from app.modules.canonical_state import (
     CanonicalChangeKind,
     CanonicalStateError,
@@ -38,6 +43,10 @@ from app.modules.imports.posting_common import (
     copied_canonical_payload,
     exact_naive_timestamp,
     exact_numeric,
+)
+from app.modules.imports.raiffeisenbank_reporting_fx import (
+    REPORTING_FX_CALCULATION_VERSION,
+    calculate_reporting_amount,
 )
 
 
@@ -137,8 +146,6 @@ def _transaction_matches(
         and transaction.counterparty == plan.counterparty
         and transaction.external_id == plan.external_id
         and transaction.booking_date is None
-        and transaction.reporting_amount is None
-        and transaction.reporting_currency is None
         and transaction.note is None
         and transaction.category_id is None
         and transaction.archived_at is None
@@ -156,6 +163,78 @@ class ImportTransactionPostingWriter:
         self.session = session
         self.canonical_state = canonical_state or CanonicalStateService(session)
 
+    async def _reporting_evidence_matches(
+        self,
+        *,
+        transaction: TransactionModel,
+        plan: TransactionPostingPlan,
+    ) -> bool:
+        """Accept only the durable reporting projection introduced after posting.
+
+        Canonical transaction replay remains exact. A Raiffeisenbank workflow
+        may acquire direct reporting-FX evidence before its final posting
+        replay, however. That projection is acceptable only when its complete
+        evidence and exchange-rate lineage still prove both populated fields.
+        """
+
+        if transaction.reporting_amount is None and transaction.reporting_currency is None:
+            return True
+        if transaction.reporting_amount is None or transaction.reporting_currency is None:
+            return False
+        evidence = await self.session.get(TransactionReportingEvidenceModel, transaction.id)
+        if evidence is None or (
+            evidence.transaction_id != transaction.id
+            or evidence.source_amount != plan.amount
+            or evidence.source_currency != plan.currency
+            or evidence.source_event_time != plan.date
+            or evidence.reporting_amount != transaction.reporting_amount
+            or evidence.reporting_currency != transaction.reporting_currency
+            or evidence.calculation_version != REPORTING_FX_CALCULATION_VERSION
+            or not isinstance(evidence.background_job_id, str)
+            or not evidence.background_job_id
+        ):
+            return False
+        rate = await self.session.get(ExchangeRateModel, evidence.exchange_rate_id)
+        if rate is None or (
+            rate.id != evidence.exchange_rate_id
+            or rate.from_currency != evidence.source_currency
+            or rate.to_currency != evidence.reporting_currency
+            or rate.date > evidence.source_event_time
+        ):
+            return False
+        membership = await self.session.scalar(
+            select(ImportJobBatchModel.job_id)
+            .join(
+                BackgroundJobModel,
+                and_(
+                    BackgroundJobModel.id == ImportJobBatchModel.job_id,
+                    BackgroundJobModel.user_id == ImportJobBatchModel.user_id,
+                    BackgroundJobModel.account_id == ImportJobBatchModel.account_id,
+                ),
+            )
+            .join(
+                ImportBatchModel,
+                and_(
+                    ImportBatchModel.id == ImportJobBatchModel.batch_id,
+                    ImportBatchModel.user_id == ImportJobBatchModel.user_id,
+                    ImportBatchModel.account_id == ImportJobBatchModel.account_id,
+                ),
+            )
+            .where(
+                ImportJobBatchModel.job_id == evidence.background_job_id,
+                ImportJobBatchModel.batch_id == plan.import_batch_id,
+                ImportJobBatchModel.account_id == plan.account_id,
+                BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                ImportBatchModel.source == ImportSource.raiffeisenbank,
+            )
+        )
+        if membership != evidence.background_job_id:
+            return False
+        try:
+            return calculate_reporting_amount(plan.amount, rate.rate) == evidence.reporting_amount
+        except (TypeError, ValueError):
+            return False
+
     async def post_row(
         self,
         *,
@@ -167,10 +246,14 @@ class ImportTransactionPostingWriter:
         if row.status is ImportRowStatus.imported:
             assert row.created_transaction_id is not None
             existing = await self.session.get(TransactionModel, row.created_transaction_id)
-            if existing is None or not _transaction_matches(
-                existing,
-                transaction_id=row.created_transaction_id,
-                plan=plan,
+            if (
+                existing is None
+                or not _transaction_matches(
+                    existing,
+                    transaction_id=row.created_transaction_id,
+                    plan=plan,
+                )
+                or not await self._reporting_evidence_matches(transaction=existing, plan=plan)
             ):
                 raise ImportPostStateError()
             try:

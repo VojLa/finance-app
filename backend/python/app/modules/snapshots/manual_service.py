@@ -36,7 +36,7 @@ from app.modules.snapshots.writer import (
 )
 from app.shared.errors import ApplicationError
 
-CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION = 1
+CURRENT_ACCOUNT_SNAPSHOT_CALCULATION_VERSION = 3
 MANUAL_SNAPSHOT_GRANULARITY = SnapshotGranularity.minute
 MANUAL_SNAPSHOT_SOURCE = SnapshotSource.manual_recalculation
 WRITE_ROLES = {

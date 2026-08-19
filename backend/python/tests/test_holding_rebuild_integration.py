@@ -25,7 +25,6 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.url import normalize_database_url
 from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
-from app.modules.holdings.projection import HoldingProjectionStateError
 from app.modules.holdings.rebuild_service import (
     HoldingRebuildService,
     HoldingRebuildStateError,
@@ -414,6 +413,7 @@ async def _seed_holding(
                 realized_pnl=None,
                 calculated_at=NOW,
                 updated_at=NOW,
+                cost_basis_by_currency={"EUR": f"{(Decimal(quantity) * Decimal(average)):.10f}"},
             )
         )
         await session.commit()
@@ -668,7 +668,7 @@ async def test_cross_account_event_movement_relation_fails_closed() -> None:
     await _cleanup(prefix)
 
 
-async def test_mixed_currency_projection_failure_preserves_existing_holding() -> None:
+async def test_mixed_settlement_currency_projection_persists_exact_components() -> None:
     prefix = "h5c-currency"
     await _cleanup(prefix)
     account_id = await _seed_account(prefix)
@@ -689,17 +689,19 @@ async def test_mixed_currency_projection_failure_preserves_existing_holding() ->
             date=date,
             cost_currency=currency,
         )
-    engine = _engine()
-    async with AsyncSession(engine) as session:
-        with pytest.raises(HoldingProjectionStateError):
-            await HoldingRebuildService(session).rebuild(account_id=account_id, rebuilt_at=NOW)
-        await session.rollback()
-    await engine.dispose()
-    assert await _holdings(account_id) == []
+    result = await _rebuild(account_id)
+    holding = (await _holdings(account_id))[0]
+    assert result.created == 1
+    assert holding.quantity == Decimal("2.0000000000")
+    assert holding.avg_buy_price == Decimal("100.0000000000")
+    assert holding.cost_basis_by_currency == {
+        "EUR": "100.0000000000",
+        "USD": "100.0000000000",
+    }
     await _cleanup(prefix)
 
 
-async def test_unknown_basis_incoming_transfer_preserves_previous_projection() -> None:
+async def test_unknown_basis_incoming_transfer_persists_sticky_incomplete_projection() -> None:
     prefix = "h5c-transfer"
     await _cleanup(prefix)
     account_id = await _seed_account(prefix)
@@ -716,25 +718,19 @@ async def test_unknown_basis_incoming_transfer_preserves_previous_projection() -
         date=NOW,
     )
     await _rebuild(account_id)
-    before = (await _holdings(account_id))[0]
     await _add_incoming_transfer(
         prefix,
         asset_id=asset_id,
         listing_id=listing_id,
         symbol="VWCE",
     )
-    engine = _engine()
-    async with AsyncSession(engine) as session:
-        with pytest.raises(HoldingProjectionStateError):
-            await HoldingRebuildService(session).rebuild(account_id=account_id, rebuilt_at=LATER)
-        await session.rollback()
-    await engine.dispose()
+    result = await _rebuild(account_id, rebuilt_at=LATER)
     after = (await _holdings(account_id))[0]
-    assert (after.id, after.quantity, after.updated_at) == (
-        before.id,
-        before.quantity,
-        before.updated_at,
-    )
+    assert result.updated == 1
+    assert after.quantity == Decimal("2.0000000000")
+    assert after.avg_buy_price is None
+    assert after.cost_basis_by_currency is None
+    assert after.updated_at == LATER
     await _cleanup(prefix)
 
 

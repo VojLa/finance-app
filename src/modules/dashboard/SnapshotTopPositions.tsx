@@ -24,7 +24,7 @@ export function SnapshotTopPositions({ model }: Props) {
     <section className="rounded-lg border border-gray-200 bg-white p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-lg font-medium">Největší pozice</h2>
-        <span className="text-xs text-gray-400">Pořadí ze snapshot backendu</span>
+        <span className="text-xs text-gray-400">Pořadí podle hodnoty a identity</span>
       </div>
       {model.topPositions.length === 0 ? (
         <p className="py-12 text-center text-sm text-gray-400">Žádné investiční pozice.</p>

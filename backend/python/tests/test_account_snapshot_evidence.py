@@ -36,6 +36,9 @@ from app.modules.liabilities.evidence_service import (
 from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
 )
+from app.modules.market_data.source_policy import (
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
@@ -53,6 +56,8 @@ from app.modules.snapshots.evidence_service import (
     BuildAccountSnapshotEvidenceCommand,
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
+    SnapshotMetricUnsupportedReason,
+    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
@@ -172,7 +177,7 @@ def _price(
     timestamp: datetime,
     *,
     currency: str = "EUR",
-    source: PriceSource = PriceSource.broker,
+    source: PriceSource = PriceSource.twelve_data,
 ) -> PriceSnapshotModel:
     return PriceSnapshotModel(
         id=price_id,
@@ -868,12 +873,12 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
                 quote_currency="EUR",
             ),
             _rate(
-                "manual",
+                "same-active-source",
                 "0.9",
                 NOW,
                 base_currency="USD",
                 quote_currency="EUR",
-                source=ExchangeRateSource.manual,
+                source=ExchangeRateSource.twelve_data,
             ),
         ),
     ],
@@ -915,13 +920,86 @@ async def test_future_price_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_free_selects_yahoo_and_ignores_newer_canonical_price() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(),
+        load_price_candidates=(
+            _price("yahoo", "15", EARLIER, source=PriceSource.yahoo_finance),
+            _price("twelve-newer", "99", NOW, source=PriceSource.twelve_data),
+        ),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    ).build(_command())
+
+    assert result.selected_price_ids == ("yahoo",)
+
+
+@pytest.mark.asyncio
+async def test_canonical_policy_rejects_yahoo_only_price_evidence() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(),
+        load_price_candidates=(_price("yahoo", "15", NOW, source=PriceSource.yahoo_finance),),
+    )
+
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_local_free_selects_yahoo_direct_fx_and_ignores_twelve_data() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="USD"),
+        load_price_candidates=(
+            _price("yahoo-price", "15", NOW, currency="USD", source=PriceSource.yahoo_finance),
+        ),
+        load_exchange_rate_candidates=(
+            _rate(
+                "yahoo-rate",
+                "0.9",
+                NOW,
+                base_currency="USD",
+                quote_currency="EUR",
+                source=ExchangeRateSource.yahoo_finance,
+            ),
+            _rate(
+                "twelve-rate",
+                "0.8",
+                NOW,
+                base_currency="USD",
+                quote_currency="EUR",
+                source=ExchangeRateSource.twelve_data,
+            ),
+        ),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    ).build(_command(output_currency="EUR"))
+
+    assert result.selected_price_ids == ("yahoo-price",)
+    assert result.selected_snapshot_exchange_rate_ids == ("yahoo-rate",)
+
+
+@pytest.mark.asyncio
 async def test_same_timestamp_price_ambiguity_fails_closed() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="EUR"),
         load_holdings=_holding_rows(),
         load_price_candidates=(
             _price("broker", "15", NOW),
-            _price("manual", "15", NOW, source=PriceSource.manual),
+            _price("second-provider-row", "15", NOW, source=PriceSource.twelve_data),
         ),
     )
     with pytest.raises(AccountSnapshotEvidenceStateError):
@@ -939,7 +1017,7 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
         load_price_candidates=(_price("price", "15", NOW),),
         load_exchange_rate_candidates=(
             _rate("ecb", "25", NOW),
-            _rate("manual", "25", NOW, source=ExchangeRateSource.manual),
+            _rate("second-provider-row", "25", NOW, source=ExchangeRateSource.twelve_data),
         ),
     )
     with pytest.raises(AccountSnapshotEvidenceStateError):
@@ -1095,12 +1173,12 @@ async def test_mixed_currency_liability_selects_and_audits_direct_pair() -> None
                 quote_currency="EUR",
             ),
             _rate(
-                "manual",
+                "same-active-source",
                 "0.9",
                 NOW,
                 base_currency="USD",
                 quote_currency="EUR",
-                source=ExchangeRateSource.manual,
+                source=ExchangeRateSource.twelve_data,
             ),
         ),
     ],
@@ -1218,6 +1296,55 @@ async def test_asset_transfer_fails_when_externality_is_not_persisted() -> None:
             MagicMock(),
             repository=repository,
         ).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_asset_transfer_with_unknown_basis_keeps_value_and_marks_only_unsupported_metrics() -> (
+    None
+):
+    holdings = _holding_rows()
+    holdings[0].holding.avg_buy_price = None
+    holdings[0].holding.cost_basis_by_currency = None
+    event = _event(InvestmentEventType.asset_transfer)
+    movement = _movement()
+    movement.kind = InvestmentMovementKind.asset
+    movement.asset_id = "asset-1"
+    movement.listing_id = "listing-1"
+    movement.quantity = Decimal("2")
+    movement.currency = "ABC"
+    movement.price_per_unit = None
+    movement.value_amount = None
+    movement.value_currency = None
+    movement.source_symbol = "ABC"
+    movement.source_asset_type = AssetType.stock
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=holdings,
+        load_active_events=(event,),
+        load_active_movements=(movement,),
+        load_price_candidates=(_price("price", "15", NOW),),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+    ).build(_command(output_currency="EUR", calculation_version=3))
+
+    assert result.valuation.investment_value == Decimal("30")
+    assert result.valuation.total_value == Decimal("30")
+    assert result.valuation.investment_cost_basis is None
+    assert result.valuation.items[0].cost_basis is None
+    assert result.net_deposits == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+    )
+    assert result.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
+    assert result.unrealized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.cost_basis_evidence_unavailable
+    )
+    assert result.fees == ExactSnapshotMetric(Decimal(0), ())
+    assert result.taxes == ExactSnapshotMetric(Decimal(0), ())
 
 
 def _empty_valuation() -> ExpectedAccountSnapshotValuation:

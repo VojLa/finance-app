@@ -7,6 +7,12 @@
       "sessionEnforcement": "route"
     },
     {
+      "file": "src/app/api/accounts/[id]/liability-balances/route.ts",
+      "methods": ["POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
       "file": "src/app/api/accounts/[id]/route.ts",
       "methods": ["PATCH"],
       "classification": "authenticated_python_transport",

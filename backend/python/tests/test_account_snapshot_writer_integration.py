@@ -243,7 +243,10 @@ async def _seed_investment(
                 asset_type=AssetType.stock,
                 quantity=Decimal("2"),
                 avg_buy_price=Decimal("10"),
-                currency=cost_currency,
+                cost_basis_by_currency={cost_currency: "20.0000000000"},
+                # Holding.currency follows its Listing; execution-cost
+                # currencies remain explicit in costBasisByCurrency.
+                currency=price_currency,
                 current_price=None,
                 current_value=None,
                 unrealized_pnl=None,
@@ -260,7 +263,9 @@ async def _seed_investment(
                     listing_id=listing_id,
                     price=Decimal("15"),
                     currency=price_currency,
-                    source=PriceSource.broker,
+                    # AccountSnapshotWriter exercises the canonical source
+                    # policy; listed non-crypto prices are Twelve Data.
+                    source=PriceSource.twelve_data,
                     timestamp=snapshot_at,
                     created_at=snapshot_at,
                 ),
@@ -878,7 +883,7 @@ async def test_r10b1_mixed_account_currency_pair_is_atomic_and_concurrent() -> N
 
 
 @pytest.mark.asyncio
-async def test_r10b1_nonrepresentable_companion_rolls_back_primary() -> None:
+async def test_r10b1_companion_uses_canonical_derived_rounding_atomically() -> None:
     prefix = "r10b1-nonrepresentable"
     await _cleanup(prefix)
     account_id = await _seed_investment(
@@ -898,12 +903,24 @@ async def test_r10b1_nonrepresentable_companion_rolls_back_primary() -> None:
             snapshot_rate.rate = Decimal("0.33333333")
             await session.commit()
         async with AsyncSession(engine) as session:
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotWriter(session).write(
-                    _command(account_id, output_currency="CZK")
-                )
+            created = await AccountSnapshotWriter(session).write(
+                _command(account_id, output_currency="CZK")
+            )
+            assert created.disposition is AccountSnapshotWriteDisposition.created
         async with AsyncSession(engine) as session:
-            assert await _counts(session, account_id) == (0, 0)
+            snapshots = tuple(
+                await session.scalars(
+                    select(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                    .order_by(AccountSnapshotModel.currency)
+                )
+            )
+            assert tuple(snapshot.currency for snapshot in snapshots) == ("CZK", "EUR")
+            primary, companion = snapshots
+            assert primary.investment_value == Decimal("600.000000")
+            assert companion.investment_value == Decimal("10.000000")
+            assert companion.investment_cost_basis == Decimal("20.000000")
+            assert await _counts(session, account_id) == (2, 2)
     finally:
         await engine.dispose()
         await _cleanup(prefix)
@@ -1219,7 +1236,7 @@ async def test_item_flush_failure_rolls_back_snapshot_and_clean_retry_succeeds()
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_price_fails_before_physical_write() -> None:
+async def test_duplicate_canonical_price_is_rejected_by_database_uniqueness() -> None:
     prefix = "i5d-ambiguous"
     await _cleanup(prefix)
     account_id = await _seed_investment(prefix)
@@ -1234,15 +1251,14 @@ async def test_ambiguous_price_fails_before_physical_write() -> None:
                     listing_id=f"{prefix}-listing",
                     price=Decimal("16"),
                     currency="EUR",
-                    source=PriceSource.manual,
+                    source=PriceSource.twelve_data,
                     timestamp=snapshot_at,
                     created_at=snapshot_at,
                 )
             )
-            await session.commit()
-        async with AsyncSession(engine) as session:
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotWriter(session).write(_command(account_id))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
         async with AsyncSession(engine) as session:
             assert await _counts(session, account_id) == (0, 0)
     finally:
@@ -1317,7 +1333,7 @@ class _PausingLiabilityRepository(AccountSnapshotWriterRepository):
 
 
 @pytest.mark.asyncio
-async def test_changed_price_evidence_waits_then_fails_without_mixed_snapshot() -> None:
+async def test_duplicate_canonical_price_waits_then_is_rejected_without_mixed_snapshot() -> None:
     prefix = "i5d-price-change"
     await _cleanup(prefix)
     account_id = await _seed_investment(prefix)
@@ -1352,12 +1368,15 @@ async def test_changed_price_evidence_waits_then_fails_without_mixed_snapshot() 
                         listing_id=f"{prefix}-listing",
                         price=Decimal("16"),
                         currency="EUR",
-                        source=PriceSource.manual,
+                        source=PriceSource.twelve_data,
                         timestamp=snapshot_at,
                         created_at=snapshot_at,
                     )
                 )
-                await session.commit()
+                with pytest.raises(IntegrityError):
+                    await session.commit()
+                await session.rollback()
+                return "duplicate-rejected"
 
         writer_task = asyncio.create_task(first_write())
         price_task = asyncio.create_task(insert_price())
@@ -1367,14 +1386,16 @@ async def test_changed_price_evidence_waits_then_fails_without_mixed_snapshot() 
             locktype="relation",
         )
         release_writer.set()
-        created, _ = await asyncio.wait_for(
+        created, duplicate = await asyncio.wait_for(
             asyncio.gather(writer_task, price_task),
             timeout=20,
         )
         assert created.disposition is AccountSnapshotWriteDisposition.created
+        assert duplicate == "duplicate-rejected"
         async with AsyncSession(engine) as session:
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotWriter(session).write(_command(account_id))
+            replay = await AccountSnapshotWriter(session).write(_command(account_id))
+            assert replay.disposition is AccountSnapshotWriteDisposition.replayed
+            assert replay.snapshot_id == created.snapshot_id
         async with AsyncSession(engine) as session:
             snapshot = await session.get(AccountSnapshotModel, created.snapshot_id)
             assert snapshot is not None

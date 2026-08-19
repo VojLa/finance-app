@@ -50,15 +50,15 @@ class MultiAccountPortfolioSummaryResponse(BaseModel):
         serialization_alias="cashByCurrency"
     )
     investment_value: Decimal = Field(serialization_alias="investmentValue")
-    investment_cost_basis: Decimal = Field(serialization_alias="investmentCostBasis")
+    investment_cost_basis: Decimal | None = Field(serialization_alias="investmentCostBasis")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
     total_value: Decimal = Field(serialization_alias="totalValue")
-    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
-    net_deposits_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] = Field(
+    net_deposits_value: Decimal | None = Field(serialization_alias="netDepositsValue")
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmountResponse, ...] | None = Field(
         serialization_alias="netDepositsByCurrency"
     )
-    realized_pnl_value: Decimal = Field(serialization_alias="realizedPnlValue")
-    unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
+    realized_pnl_value: Decimal | None = Field(serialization_alias="realizedPnlValue")
+    unrealized_pnl_value: Decimal | None = Field(serialization_alias="unrealizedPnlValue")
     fees_value: Decimal = Field(serialization_alias="feesValue")
     taxes_value: Decimal = Field(serialization_alias="taxesValue")
     account_count: int = Field(serialization_alias="accountCount")
@@ -76,8 +76,8 @@ class MultiAccountPortfolioSummaryResponse(BaseModel):
         "fees_value",
         "taxes_value",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return serialize_money(value)
+    def serialize_decimal(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_money(value)
 
 
 class MultiAccountPortfolioAccountResponse(BaseModel):

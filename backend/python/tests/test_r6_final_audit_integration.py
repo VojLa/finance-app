@@ -168,11 +168,19 @@ def test_public_contract_requires_breakdowns_and_keeps_dashboard_isolated() -> N
     ):
         schema = schemas[name]
         assert {"cashByCurrency", "netDepositsByCurrency"} <= set(schema["required"])
-        for field in ("cashByCurrency", "netDepositsByCurrency"):
-            assert (
-                schema["properties"][field]["items"]["$ref"]
-                == "#/components/schemas/PortfolioCurrencyAmountResponse"
-            )
+        assert (
+            schema["properties"]["cashByCurrency"]["items"]["$ref"]
+            == "#/components/schemas/PortfolioCurrencyAmountResponse"
+        )
+        net_deposit_variants = schema["properties"]["netDepositsByCurrency"]["anyOf"]
+        assert {variant.get("type") for variant in net_deposit_variants} == {"array", "null"}
+        net_deposit_array = next(
+            variant for variant in net_deposit_variants if variant.get("type") == "array"
+        )
+        assert (
+            net_deposit_array["items"]["$ref"]
+            == "#/components/schemas/PortfolioCurrencyAmountResponse"
+        )
 
     dashboard = schemas["DashboardSnapshotSummaryResponse"]
     assert "cashByCurrency" not in dashboard["properties"]

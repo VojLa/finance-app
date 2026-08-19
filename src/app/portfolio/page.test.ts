@@ -67,7 +67,7 @@ describe("portfolio page snapshot workflow", () => {
         currency: "USD",
         amount: "-50.000000",
       })
-      expect(state.data.summary.netDepositsByCurrency[1]).toEqual({
+      expect(state.data.summary.netDepositsByCurrency?.[1]).toEqual({
         currency: "EUR",
         amount: "500.000000",
       })

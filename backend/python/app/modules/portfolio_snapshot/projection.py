@@ -22,6 +22,10 @@ from app.modules.portfolio_snapshot.models import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.snapshots.calculation import (
+    DerivedSnapshotCalculationError,
+    multiply_derived_snapshot_values,
+)
 
 _ERROR_MESSAGE = "Portfolio snapshot evidence cannot produce a complete view."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
@@ -159,6 +163,17 @@ def _sum(values: tuple[Decimal, ...], numeric: tuple[int, int]) -> Decimal:
     return result
 
 
+def _derived_product(
+    left: Decimal,
+    right: Decimal,
+    numeric: tuple[int, int],
+) -> Decimal:
+    try:
+        return multiply_derived_snapshot_values(left, right, numeric)
+    except DerivedSnapshotCalculationError as exc:
+        raise _fail() from exc
+
+
 def _validate_metadata(source: PortfolioSnapshotSource) -> tuple[str, datetime]:
     snapshot_id = _text(source.snapshot_id)
     _text(source.account_id)
@@ -184,16 +199,22 @@ def _validate_metadata(source: PortfolioSnapshotSource) -> tuple[str, datetime]:
 def _validate_summary(source: PortfolioSnapshotSource) -> PortfolioSummaryView:
     cash_value = _exact(source.cash_value, _MONEY)
     investment_value = _exact(source.investment_value, _MONEY, nonnegative=True)
-    investment_cost_basis = _exact(
-        source.investment_cost_basis,
-        _MONEY,
-        nonnegative=True,
+    investment_cost_basis = (
+        None
+        if source.investment_cost_basis is None
+        else _exact(source.investment_cost_basis, _MONEY, nonnegative=True)
     )
     liabilities_value = _exact(source.liabilities_value, _MONEY, nonnegative=True)
     total_value = _exact(source.total_value, _MONEY)
-    net_deposits_value = _exact(source.net_deposits_value, _MONEY)
-    realized_pnl_value = _exact(source.realized_pnl_value, _MONEY)
-    unrealized_pnl_value = _exact(source.unrealized_pnl_value, _MONEY)
+    net_deposits_value = (
+        None if source.net_deposits_value is None else _exact(source.net_deposits_value, _MONEY)
+    )
+    realized_pnl_value = (
+        None if source.realized_pnl_value is None else _exact(source.realized_pnl_value, _MONEY)
+    )
+    unrealized_pnl_value = (
+        None if source.unrealized_pnl_value is None else _exact(source.unrealized_pnl_value, _MONEY)
+    )
     fees_value = _exact(source.fees_value, _MONEY, nonnegative=True)
     taxes_value = _exact(source.taxes_value, _MONEY, nonnegative=True)
     try:
@@ -202,10 +223,14 @@ def _validate_summary(source: PortfolioSnapshotSource) -> PortfolioSummaryView:
             scalar_total=cash_value,
             output_currency=source.output_currency,
         )
-        net_deposits_by_currency = validate_portfolio_currency_breakdown(
-            source.net_deposits_by_currency,
-            scalar_total=net_deposits_value,
-            output_currency=source.output_currency,
+        net_deposits_by_currency = (
+            None
+            if source.net_deposits_by_currency is None
+            else validate_portfolio_currency_breakdown(
+                source.net_deposits_by_currency,
+                scalar_total=net_deposits_value,
+                output_currency=source.output_currency,
+            )
         )
     except PortfolioCurrencyBreakdownError as exc:
         raise _fail() from exc
@@ -217,8 +242,14 @@ def _validate_summary(source: PortfolioSnapshotSource) -> PortfolioSummaryView:
             _MONEY,
         )
         != total_value
-        or _calculated("subtract", investment_value, investment_cost_basis, _MONEY)
-        != unrealized_pnl_value
+        or (investment_cost_basis is None) != (unrealized_pnl_value is None)
+        or (net_deposits_value is None) != (net_deposits_by_currency is None)
+        or (
+            investment_cost_basis is not None
+            and unrealized_pnl_value is not None
+            and _calculated("subtract", investment_value, investment_cost_basis, _MONEY)
+            != unrealized_pnl_value
+        )
     ):
         raise _fail()
     return PortfolioSummaryView(
@@ -258,40 +289,80 @@ def _position(
     price_timestamp = _timestamp(item.price_timestamp)
     value = _exact(item.value, _MONEY, nonnegative=True)
     value_currency = _currency(item.value_currency)
-    cost_basis = _exact(item.cost_basis, _QUANTITY, nonnegative=True)
-    cost_currency = _currency(item.cost_currency)
-    unrealized_pnl = _exact(item.unrealized_pnl, _QUANTITY)
+    cost_values = (
+        item.cost_basis,
+        item.cost_currency,
+        item.unrealized_pnl,
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.native_cost_basis_by_currency,
+        item.average_buy_price,
+        item.average_buy_price_currency,
+    )
+    cost_complete = all(cost is not None for cost in cost_values)
+    if not cost_complete and any(cost is not None for cost in cost_values):
+        raise _fail()
+    cost_basis = (
+        None if item.cost_basis is None else _exact(item.cost_basis, _QUANTITY, nonnegative=True)
+    )
+    cost_currency = None if item.cost_currency is None else _currency(item.cost_currency)
+    unrealized_pnl = None if item.unrealized_pnl is None else _exact(item.unrealized_pnl, _QUANTITY)
     allocation_pct = _exact(item.allocation_pct, _PERCENTAGE, nonnegative=True)
     native_value = _exact(item.native_value, _QUANTITY, nonnegative=True)
     native_value_currency = _currency(item.native_value_currency)
-    native_cost_basis = _exact(item.native_cost_basis, _QUANTITY, nonnegative=True)
-    native_cost_currency = _currency(item.native_cost_currency)
-    average_buy_price = _exact(item.average_buy_price, _QUANTITY, nonnegative=True)
-    average_buy_price_currency = _currency(item.average_buy_price_currency)
+    native_cost_basis = (
+        None
+        if item.native_cost_basis is None
+        else _exact(item.native_cost_basis, _QUANTITY, nonnegative=True)
+    )
+    native_cost_currency = (
+        None if item.native_cost_currency is None else _currency(item.native_cost_currency)
+    )
+    average_buy_price = (
+        None
+        if item.average_buy_price is None
+        else _exact(item.average_buy_price, _QUANTITY, nonnegative=True)
+    )
+    average_buy_price_currency = (
+        None
+        if item.average_buy_price_currency is None
+        else _currency(item.average_buy_price_currency)
+    )
     try:
-        native_cost_basis_by_currency = validate_portfolio_quantity_breakdown(
-            item.native_cost_basis_by_currency
+        native_cost_basis_by_currency = (
+            None
+            if item.native_cost_basis_by_currency is None
+            else validate_portfolio_quantity_breakdown(item.native_cost_basis_by_currency)
         )
     except PortfolioCurrencyBreakdownError as exc:
         raise _fail() from exc
     if (
         price_timestamp > snapshot_timestamp
         or value_currency != output_currency
-        or cost_currency != output_currency
+        or (cost_complete and cost_currency != output_currency)
         or native_value_currency != price_currency
-        or average_buy_price <= 0
-        or average_buy_price_currency != price_currency
-        or _calculated("multiply", quantity, price_per_unit, _QUANTITY) != native_value
-        or _calculated("subtract", value, cost_basis, _QUANTITY) != unrealized_pnl
+        or (cost_complete and (average_buy_price is None or average_buy_price <= 0))
+        or (cost_complete and average_buy_price_currency != price_currency)
+        or _derived_product(quantity, price_per_unit, _QUANTITY) != native_value
         or (
-            len(native_cost_basis_by_currency) == 1
+            cost_complete
+            and cost_basis is not None
+            and unrealized_pnl is not None
+            and _calculated("subtract", value, cost_basis, _QUANTITY) != unrealized_pnl
+        )
+        or (
+            cost_complete
+            and native_cost_basis_by_currency is not None
+            and len(native_cost_basis_by_currency) == 1
             and (
                 native_cost_basis_by_currency[0].currency != native_cost_currency
                 or native_cost_basis_by_currency[0].amount != native_cost_basis
             )
         )
         or (
-            len(native_cost_basis_by_currency) > 1
+            cost_complete
+            and native_cost_basis_by_currency is not None
+            and len(native_cost_basis_by_currency) > 1
             and (native_cost_basis != cost_basis or native_cost_currency != cost_currency)
         )
     ):
@@ -373,10 +444,41 @@ def _positions(
     )
     if (
         _sum(tuple(position.value for position in positions), _MONEY) != summary.investment_value
-        or _sum(tuple(position.cost_basis for position in positions), _QUANTITY)
-        != summary.investment_cost_basis
-        or _sum(tuple(position.unrealized_pnl for position in positions), _QUANTITY)
-        != summary.unrealized_pnl_value
+        or (
+            summary.investment_cost_basis is not None
+            and (
+                any(position.cost_basis is None for position in positions)
+                or _sum(
+                    tuple(
+                        position.cost_basis
+                        for position in positions
+                        if position.cost_basis is not None
+                    ),
+                    _QUANTITY,
+                )
+                != summary.investment_cost_basis
+            )
+        )
+        or (
+            summary.investment_cost_basis is None
+            and positions
+            and all(position.cost_basis is not None for position in positions)
+        )
+        or (
+            summary.unrealized_pnl_value is not None
+            and (
+                any(position.unrealized_pnl is None for position in positions)
+                or _sum(
+                    tuple(
+                        position.unrealized_pnl
+                        for position in positions
+                        if position.unrealized_pnl is not None
+                    ),
+                    _QUANTITY,
+                )
+                != summary.unrealized_pnl_value
+            )
+        )
     ):
         raise _fail()
 

@@ -2,8 +2,14 @@ import "server-only"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { dashboardSnapshotFixture } from "@/test/dashboard-snapshot-fixture"
-import { portfolioSnapshotFixture } from "@/test/portfolio-snapshot-fixture"
+import {
+  anycoinIncompleteDashboardSnapshotFixture,
+  dashboardSnapshotFixture,
+} from "@/test/dashboard-snapshot-fixture"
+import {
+  anycoinIncompletePortfolioSnapshotFixture,
+  portfolioSnapshotFixture,
+} from "@/test/portfolio-snapshot-fixture"
 import type { PythonSnapshotApi } from "./client"
 import { runDashboardSnapshotWorkflow, runPortfolioSnapshotWorkflow } from "./snapshot-workflow"
 
@@ -81,6 +87,42 @@ describe("strict current portfolio workflow", () => {
     } as never
     await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
   })
+
+  it("accepts one correlated incomplete Anycoin branch without changing quantity or value", async () => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    const result = await runPortfolioSnapshotWorkflow(IDENTITY, api(payload))
+    const anycoin = result.data.accounts[1]?.positions[0]
+
+    expect(result.data.summary.investmentCostBasis).toBeNull()
+    expect(result.data.summary.netDepositsValue).toBeNull()
+    expect(result.data.summary.realizedPnlValue).toBeNull()
+    expect(result.data.summary.unrealizedPnlValue).toBeNull()
+    expect(anycoin).toMatchObject({
+      quantity: "1.0000000000",
+      value: "40.000000",
+      costBasis: null,
+      unrealizedPnl: null,
+      nativeCostBasis: null,
+    })
+    expect(result.data.accounts[0]?.positions[0]?.costBasis).toBe("100.0000010000")
+  })
+
+  it.each([
+    ["summary cost only", { investmentCostBasis: "0.000000" }],
+    ["summary deposits only", { netDepositsValue: "0.000000" }],
+  ])("rejects a partial-null Anycoin %s branch", async (_label, summaryMutation) => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    payload.summary = { ...payload.summary, ...summaryMutation } as never
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
+
+  it("rejects a partial-null position instead of substituting zero", async () => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    const position = payload.accounts[1]?.positions[0]
+    if (position === undefined) throw new Error("Missing Anycoin fixture position.")
+    ;(position as { costBasis: string | null }).costBasis = "0.0000000000"
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
 })
 
 describe("strict current dashboard workflow", () => {
@@ -112,5 +154,32 @@ describe("strict current dashboard workflow", () => {
         api(undefined, { ...dashboardSnapshotFixture, ...mutation })
       )
     )
+  })
+
+  it("preserves a correlated incomplete Anycoin dashboard branch", async () => {
+    const payload = anycoinIncompleteDashboardSnapshotFixture()
+    const result = await runDashboardSnapshotWorkflow(IDENTITY, api(undefined, payload))
+
+    expect(result.data.summary.investmentCostBasis).toBeNull()
+    expect(result.data.summary.netDepositsValue).toBeNull()
+    expect(result.data.summary.realizedPnlValue).toBeNull()
+    expect(result.data.summary.unrealizedPnlValue).toBeNull()
+    expect(result.data.topPositions.find(({ symbol }) => symbol === "BTC")).toMatchObject({
+      value: "2.000001",
+      unrealizedPnl: null,
+    })
+  })
+
+  it("rejects partial-null dashboard summary and account branches", async () => {
+    const summaryPayload = anycoinIncompleteDashboardSnapshotFixture()
+    ;(summaryPayload.summary as { investmentCostBasis: string | null }).investmentCostBasis =
+      "0.000000"
+    await contractFailure(runDashboardSnapshotWorkflow(IDENTITY, api(undefined, summaryPayload)))
+
+    const accountPayload = anycoinIncompleteDashboardSnapshotFixture()
+    const account = accountPayload.accounts[0]
+    if (account === undefined) throw new Error("Missing Anycoin fixture account.")
+    ;(account as { netDepositsValue: string | null }).netDepositsValue = "0.000000"
+    await contractFailure(runDashboardSnapshotWorkflow(IDENTITY, api(undefined, accountPayload)))
   })
 })

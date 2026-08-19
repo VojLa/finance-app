@@ -826,10 +826,12 @@ class DailySnapshotBaselineService:
         # Imported lazily to keep the lineage module independent from the
         # snapshot_refresh package's public re-export initialization.
         from app.modules.snapshot_refresh.version import (
-            current_coordinated_snapshot_calculation_version,
+            current_value_baseline_calculation_versions,
         )
 
-        current_version = current_coordinated_snapshot_calculation_version()
+        accepted_versions = current_value_baseline_calculation_versions(
+            import_fence_active=bool(frozen_accounts),
+        )
         if (
             user is None
             or net_worth is None
@@ -843,7 +845,7 @@ class DailySnapshotBaselineService:
             or root.granularity is not net_worth.granularity
             or root.currency != _currency(user.base_currency)
             or root.currency != net_worth.currency
-            or root.calculation_version != current_version
+            or root.calculation_version not in accepted_versions
             or root.calculation_version != net_worth.calculation_version
             or root.source is not net_worth.source
         ):

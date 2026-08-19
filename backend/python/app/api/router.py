@@ -12,6 +12,7 @@ from app.modules.holdings.api import router as holdings_router
 from app.modules.imports.api import router as imports_router
 from app.modules.investments.api import router as investments_router
 from app.modules.jobs.api import router as background_jobs_router
+from app.modules.liabilities.api import router as liabilities_router
 from app.modules.net_worth.api import router as net_worth_router
 from app.modules.operational_dashboard.api import router as operational_dashboard_router
 from app.modules.portfolio.api import router as portfolio_router
@@ -31,6 +32,7 @@ api_router.include_router(categories_router)
 api_router.include_router(budgets_router)
 api_router.include_router(accounts_router)
 api_router.include_router(account_invitation_router)
+api_router.include_router(liabilities_router)
 api_router.include_router(current_value_router)
 api_router.include_router(holdings_router)
 api_router.include_router(imports_router)

@@ -199,3 +199,37 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
     ],
   }
 }
+
+export function anycoinIncompletePortfolioSnapshotFixture(): PortfolioSnapshotData {
+  const fixture = portfolioSnapshotFixture()
+  const anycoinAccount = fixture.accounts[1]
+  const anycoinAggregate = fixture.aggregatePositions[1]
+  if (anycoinAccount === undefined || anycoinAggregate === undefined) {
+    throw new Error("Portfolio fixture is missing the Anycoin account.")
+  }
+
+  fixture.summary.investmentCostBasis = null
+  fixture.summary.netDepositsValue = null
+  fixture.summary.netDepositsByCurrency = null
+  fixture.summary.realizedPnlValue = null
+  fixture.summary.unrealizedPnlValue = null
+
+  anycoinAccount.account.name = "Anycoin BTC"
+  anycoinAccount.summary.investmentCostBasis = null
+  anycoinAccount.summary.netDepositsValue = null
+  anycoinAccount.summary.netDepositsByCurrency = null
+  anycoinAccount.summary.realizedPnlValue = null
+  anycoinAccount.summary.unrealizedPnlValue = null
+
+  for (const position of [anycoinAccount.positions[0], anycoinAggregate.position]) {
+    if (position === undefined)
+      throw new Error("Portfolio fixture is missing the Anycoin position.")
+    position.costBasis = null
+    position.costCurrency = null
+    position.unrealizedPnl = null
+    position.nativeCostBasis = null
+    position.nativeCostCurrency = null
+    position.nativeCostBasisByCurrency = null
+  }
+  return fixture
+}

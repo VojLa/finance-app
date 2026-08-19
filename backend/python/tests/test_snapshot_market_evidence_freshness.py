@@ -69,7 +69,7 @@ def _holding() -> tuple[PersistedHoldingEvidence, ...]:
         mic=None,
         currency="EUR",
         country=None,
-        provider=PriceSource.yahoo_finance,
+        provider=PriceSource.twelve_data,
         provider_symbol="EXACT",
         is_primary=False,
         updated_at=NOW,
@@ -103,7 +103,7 @@ def _price(timestamp: datetime) -> PriceSnapshotModel:
         listing_id="listing-1",
         price=Decimal("110"),
         currency="EUR",
-        source=PriceSource.yahoo_finance,
+        source=PriceSource.twelve_data,
         timestamp=timestamp,
     )
 

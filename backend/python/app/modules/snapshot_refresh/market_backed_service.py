@@ -18,6 +18,9 @@ from app.modules.market_data.models import (
     MarketEvidenceStateError,
 )
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
+from app.modules.market_data.source_policy import (
+    market_evidence_source_policy_from_settings,
+)
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
@@ -342,7 +345,7 @@ class MarketBackedSnapshotRefreshService:
         settings: Settings,
         *,
         market_service_factory: MarketServiceFactory = (create_production_market_evidence_service),
-        executor_factory: SnapshotExecutorFactory = UserSnapshotRefreshExecutor,
+        executor_factory: SnapshotExecutorFactory | None = None,
         market_service: _MarketService | None = None,
         snapshot_executor: _SnapshotExecutor | None = None,
     ) -> None:
@@ -352,6 +355,7 @@ class MarketBackedSnapshotRefreshService:
         self.executor_factory = executor_factory
         self.market_service = market_service
         self.snapshot_executor = snapshot_executor
+        self.source_policy = market_evidence_source_policy_from_settings(settings)
 
     def _require_idle_entry(self) -> None:
         if self.session.in_transaction():
@@ -397,7 +401,14 @@ class MarketBackedSnapshotRefreshService:
 
         snapshot_executor = self.snapshot_executor
         if snapshot_executor is None:
-            snapshot_executor = self.executor_factory(self.session)
+            snapshot_executor = (
+                UserSnapshotRefreshExecutor(
+                    self.session,
+                    source_policy=self.source_policy,
+                )
+                if self.executor_factory is None
+                else self.executor_factory(self.session)
+            )
         await self._dependency_must_leave_idle("snapshot")
         try:
             snapshots = await snapshot_executor.execute(

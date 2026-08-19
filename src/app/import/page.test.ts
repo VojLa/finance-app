@@ -25,4 +25,12 @@ describe("durable import page", () => {
     expect(source).toContain('status: "failed"')
     expect(source).toContain("publishImportCompleted")
   })
+
+  it("shows actionable liability guidance only for the exact waiting-input code", async () => {
+    const source = await readFile("src/app/import/page.tsx", "utf8")
+    expect(source).toContain('job.error?.code === "import_liability_balance_required"')
+    expect(source).toContain('href="/accounts"')
+    expect(source).toContain("zadej aktuální zůstatek")
+    expect(source).toContain("automaticky pokračuje ve stejném zpracování")
+  })
 })

@@ -12,7 +12,11 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
-from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
 from app.db.models.canonical_lineage import (
     AccountCanonicalStateModel,
     DailySnapshotBaselineAccountModel,
@@ -21,11 +25,21 @@ from app.db.models.canonical_lineage import (
 from app.db.models.enums import (
     BackgroundJobKind,
     BackgroundJobStatus,
+    ImportSource,
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.imports import ImportBatchModel
+from app.db.models.prices import ExchangeRateModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.transactions import (
+    TransactionModel,
+    TransactionPairModel,
+    TransactionReportingEvidenceModel,
+)
+from app.db.models.users import UserModel
 from app.modules.jobs.lifecycle import MAX_MANUAL_RETRIES, LeaseIdentity
+from app.modules.jobs.models import ImportJobPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +129,78 @@ class BackgroundJobRepository:
         if replay is None:
             raise RuntimeError("The canonical background job replay is missing.")
         return EnqueuedBackgroundJob(job=replay, created=False)
+
+    async def reconcile_import_job_manifest(
+        self,
+        *,
+        job: BackgroundJobModel,
+        user_id: str,
+        account_id: str,
+        batch_ids: tuple[str, ...],
+        now: datetime,
+        create_if_missing: bool,
+    ) -> None:
+        """Create or exactly replay the immutable ImportJobBatch manifest.
+
+        The caller owns the account and input-batch locks.  This method never
+        widens a manifest: an existing row set must equal the canonical job
+        payload before the enclosing enqueue transaction can commit.
+        """
+        if (
+            job.user_id != user_id
+            or job.account_id != account_id
+            or job.kind is not BackgroundJobKind.import_workflow
+        ):
+            raise RuntimeError("The import-job manifest scope is invalid.")
+        rows = tuple(
+            (
+                await self.session.scalars(
+                    select(ImportJobBatchModel)
+                    .where(ImportJobBatchModel.job_id == job.id)
+                    .order_by(ImportJobBatchModel.batch_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
+        )
+        if rows:
+            if tuple(row.batch_id for row in rows) != batch_ids or any(
+                row.user_id != user_id or row.account_id != account_id for row in rows
+            ):
+                raise RuntimeError("The import-job manifest does not match replay.")
+        else:
+            if not create_if_missing:
+                raise RuntimeError("The import-job manifest is missing on replay.")
+            for batch_id in batch_ids:
+                self.session.add(
+                    ImportJobBatchModel(
+                        job_id=job.id,
+                        batch_id=batch_id,
+                        user_id=user_id,
+                        account_id=account_id,
+                        created_at=now,
+                    )
+                )
+        initiator = await self.session.scalar(
+            select(ImportJobAffectedAccountModel)
+            .where(
+                ImportJobAffectedAccountModel.job_id == job.id,
+                ImportJobAffectedAccountModel.account_id == account_id,
+            )
+            .with_for_update()
+        )
+        if initiator is None:
+            self.session.add(
+                ImportJobAffectedAccountModel(
+                    job_id=job.id,
+                    account_id=account_id,
+                    user_id=user_id,
+                    created_at=now,
+                )
+            )
+        elif initiator.user_id != user_id:
+            raise RuntimeError("The import-job affected account scope is invalid.")
+        await self.session.flush()
 
     async def get_owned_by_key(
         self,
@@ -371,13 +457,50 @@ class BackgroundJobRepository:
             .where(BackgroundJobModel.id == lease.job_id)
             .with_for_update()
         )
-        if job is None:
+        if (
+            job is None
+            or job.status is not BackgroundJobStatus.running
+            or job.lease_owner != lease.owner
+            or job.lease_version != lease.version
+        ):
             raise BackgroundJobLeaseLostError("The background job is no longer owned.")
+        affected_rows = tuple(
+            (
+                await self.session.scalars(
+                    select(ImportJobAffectedAccountModel)
+                    .where(ImportJobAffectedAccountModel.job_id == lease.job_id)
+                    .order_by(ImportJobAffectedAccountModel.account_id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        affected_account_ids = (
+            tuple(row.account_id for row in affected_rows) if affected_rows else (job.account_id,)
+        )
+        if (
+            job.account_id not in affected_account_ids
+            or len(set(affected_account_ids)) != len(affected_account_ids)
+            or any(row.user_id != job.user_id for row in affected_rows)
+        ):
+            raise BackgroundJobLeaseLostError("The import affected-account manifest is invalid.")
+        accounts = tuple(
+            (
+                await self.session.scalars(
+                    select(AccountModel)
+                    .where(AccountModel.id.in_(affected_account_ids))
+                    .order_by(AccountModel.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if tuple(account.id for account in accounts) != affected_account_ids:
+            raise BackgroundJobLeaseLostError("An import publication account was removed.")
         targets = tuple(
             (
                 await self.session.scalars(
                     select(ImportJobPublicationTargetModel)
                     .where(ImportJobPublicationTargetModel.job_id == lease.job_id)
+                    .order_by(ImportJobPublicationTargetModel.user_id)
                     .with_for_update()
                 )
             ).all()
@@ -387,20 +510,17 @@ class BackgroundJobRepository:
         # would release the current-value fence without an immutable baseline.
         if not targets:
             raise BackgroundJobLeaseLostError("The import publication targets are missing.")
-        account = await self.session.scalar(
-            select(AccountModel).where(AccountModel.id == job.account_id).with_for_update()
-        )
-        if account is None:
-            raise BackgroundJobLeaseLostError("The import publication account was removed.")
-        current_members = set(
+        affected_memberships = set(
             (
-                await self.session.scalars(
-                    select(AccountMemberModel.user_id).where(
-                        AccountMemberModel.account_id == job.account_id
-                    )
+                await self.session.execute(
+                    select(
+                        AccountMemberModel.account_id,
+                        AccountMemberModel.user_id,
+                    ).where(AccountMemberModel.account_id.in_(affected_account_ids))
                 )
             ).all()
         )
+        current_members = {user_id for _account_id, user_id in affected_memberships}
         anchor_pairs = set(
             (
                 await self.session.execute(
@@ -422,38 +542,184 @@ class BackgroundJobRepository:
             or anchor_pairs != expected_anchors
         ):
             raise BackgroundJobLeaseLostError("The import publication membership changed.")
-        canonical_state = await self.session.scalar(
-            select(AccountCanonicalStateModel)
-            .where(AccountCanonicalStateModel.account_id == job.account_id)
-            .with_for_update()
-        )
-        anchor_revisions = set(
+        anchors = tuple(
             (
-                await self.session.execute(
-                    select(
-                        DailySnapshotBaselineModel.user_id,
-                        DailySnapshotBaselineAccountModel.canonical_revision,
-                    )
-                    .join(
-                        DailySnapshotBaselineAccountModel,
-                        DailySnapshotBaselineAccountModel.baseline_id
-                        == DailySnapshotBaselineModel.id,
-                    )
-                    .where(
-                        DailySnapshotBaselineModel.background_job_id == lease.job_id,
-                        DailySnapshotBaselineAccountModel.account_id == job.account_id,
-                    )
+                await self.session.scalars(
+                    select(DailySnapshotBaselineModel)
+                    .where(DailySnapshotBaselineModel.background_job_id == lease.job_id)
+                    .order_by(DailySnapshotBaselineModel.user_id)
+                    .with_for_update()
                 )
             ).all()
         )
-        if canonical_state is None or anchor_revisions != {
-            (target.user_id, canonical_state.last_revision) for target in targets
-        }:
+        anchor_by_id = {anchor.id: anchor for anchor in anchors}
+        anchor_by_user = {anchor.user_id: anchor for anchor in anchors}
+        if len(anchor_by_id) != len(anchors) or len(anchor_by_user) != len(anchors):
+            raise BackgroundJobLeaseLostError("The import publication anchors are invalid.")
+        baseline_accounts = tuple(
+            (
+                await self.session.scalars(
+                    select(DailySnapshotBaselineAccountModel)
+                    .where(DailySnapshotBaselineAccountModel.baseline_id.in_(anchor_by_id))
+                    .order_by(
+                        DailySnapshotBaselineAccountModel.baseline_id,
+                        DailySnapshotBaselineAccountModel.account_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        anchor_account_ids = tuple(sorted({item.account_id for item in baseline_accounts}))
+        canonical_states = tuple(
+            (
+                await self.session.scalars(
+                    select(AccountCanonicalStateModel)
+                    .where(AccountCanonicalStateModel.account_id.in_(anchor_account_ids))
+                    .order_by(AccountCanonicalStateModel.account_id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        state_revisions = {state.account_id: state.last_revision for state in canonical_states}
+        anchor_accounts_by_user: dict[str, set[str]] = {target.user_id: set() for target in targets}
+        for item in baseline_accounts:
+            anchor = anchor_by_id.get(item.baseline_id)
+            if anchor is None or anchor.user_id not in anchor_accounts_by_user:
+                raise BackgroundJobLeaseLostError("The import publication anchors are invalid.")
+            anchor_accounts_by_user[anchor.user_id].add(item.account_id)
+            if state_revisions.get(item.account_id) != item.canonical_revision:
+                raise BackgroundJobPublicationStaleError(
+                    "The import publication canonical state changed."
+                )
+        published_memberships = set(
+            (
+                await self.session.execute(
+                    select(
+                        AccountMemberModel.account_id,
+                        AccountMemberModel.user_id,
+                    ).where(AccountMemberModel.account_id.in_(anchor_account_ids))
+                )
+            ).all()
+        )
+        if any(
+            (account_id, user_id) not in published_memberships
+            for user_id, account_ids in anchor_accounts_by_user.items()
+            for account_id in account_ids
+        ) or any(
+            not {
+                account_id
+                for account_id, member_user_id in affected_memberships
+                if member_user_id == target.user_id
+            }.issubset(anchor_accounts_by_user[target.user_id])
+            for target in targets
+        ):
+            raise BackgroundJobLeaseLostError(
+                "The import publication account lineage is incomplete."
+            )
+        if not set(affected_account_ids).issubset(state_revisions):
             raise BackgroundJobPublicationStaleError(
                 "The import publication canonical state changed."
             )
+        pairs = tuple(
+            (
+                await self.session.scalars(
+                    select(TransactionPairModel)
+                    .where(TransactionPairModel.background_job_id == lease.job_id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        reporting_evidence = tuple(
+            (
+                await self.session.scalars(
+                    select(TransactionReportingEvidenceModel)
+                    .where(TransactionReportingEvidenceModel.background_job_id == lease.job_id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if any(item.published_at is not None for item in pairs) or any(
+            item.published_at is not None for item in reporting_evidence
+        ):
+            raise BackgroundJobLeaseLostError(
+                "Import reconciliation evidence is already published."
+            )
+        manifested = tuple(
+            (
+                await self.session.execute(
+                    select(ImportJobBatchModel, ImportBatchModel)
+                    .join(ImportBatchModel, ImportBatchModel.id == ImportJobBatchModel.batch_id)
+                    .where(
+                        ImportJobBatchModel.job_id == lease.job_id,
+                        ImportJobBatchModel.user_id == job.user_id,
+                    )
+                    .order_by(ImportJobBatchModel.batch_id)
+                    .with_for_update()
+                )
+            ).tuples()
+        )
+        try:
+            payload_batch_ids = ImportJobPayload.model_validate(job.payload).batch_ids
+        except ValueError as exc:
+            raise BackgroundJobLeaseLostError("The import job payload is invalid.") from exc
+        if (
+            not manifested
+            or tuple(membership.batch_id for membership, _batch in manifested) != payload_batch_ids
+            or any(
+                membership.account_id != job.account_id
+                or membership.account_id != batch.account_id
+                or membership.batch_id != batch.id
+                or batch.user_id != job.user_id
+                for membership, batch in manifested
+            )
+            or len({batch.source for _membership, batch in manifested}) != 1
+        ):
+            raise BackgroundJobLeaseLostError("The import batch manifest is invalid.")
+        source = manifested[0][1].source
+        batch_ids = tuple(membership.batch_id for membership, _batch in manifested)
+        transactions = tuple(
+            (
+                await self.session.scalars(
+                    select(TransactionModel)
+                    .where(TransactionModel.import_batch_id.in_(batch_ids))
+                    .order_by(TransactionModel.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if source is ImportSource.raiffeisenbank:
+            from app.modules.imports.raiffeisenbank_reconciliation_service import (
+                RaiffeisenbankReconciliationStateError,
+                validate_raiffeisenbank_publication_state,
+            )
+
+            try:
+                await validate_raiffeisenbank_publication_state(
+                    self.session,
+                    job_id=job.id,
+                    user_id=job.user_id,
+                    affected_account_ids=affected_account_ids,
+                    persisted_pairs=pairs,
+                )
+                await self._validate_raiffeisenbank_reporting_evidence(
+                    job=job,
+                    transactions=transactions,
+                    reporting_evidence=reporting_evidence,
+                )
+            except RaiffeisenbankReconciliationStateError as exc:
+                raise BackgroundJobPublicationStaleError(
+                    "The import reconciliation evidence changed."
+                ) from exc
+        elif pairs or reporting_evidence:
+            raise BackgroundJobPublicationStaleError(
+                "Unexpected reconciliation evidence cannot be published."
+            )
         for target in targets:
             target.published_at = now
+        for pair in pairs:
+            pair.published_at = now
+        for evidence in reporting_evidence:
+            evidence.published_at = now
         await self.session.flush()
         await self._fenced_update(
             lease,
@@ -470,6 +736,118 @@ class BackgroundJobRepository:
                 "updated_at": now,
             },
         )
+
+    async def _validate_raiffeisenbank_reporting_evidence(
+        self,
+        *,
+        job: BackgroundJobModel,
+        transactions: tuple[TransactionModel, ...],
+        reporting_evidence: tuple[TransactionReportingEvidenceModel, ...],
+    ) -> None:
+        from app.modules.fx.models import ExchangeRateObservation
+        from app.modules.fx.validation import (
+            ExchangeRateObservationValidationError,
+            validate_exchange_rate_observation,
+        )
+        from app.modules.imports.raiffeisenbank_reporting_fx import (
+            REPORTING_FX_CALCULATION_VERSION,
+            RaiffeisenbankReportingFxStateError,
+            calculate_reporting_amount,
+        )
+        from app.modules.market_data.models import ExchangeRateRequirement
+        from app.modules.market_data.policy import DEFAULT_MARKET_EVIDENCE_POLICY
+        from app.modules.market_data.writer import exchange_rate_id
+
+        user = await self.session.get(UserModel, job.user_id)
+        if user is None:
+            raise BackgroundJobPublicationStaleError("The reporting-currency owner was removed.")
+        foreign = {
+            transaction.id: transaction
+            for transaction in transactions
+            if transaction.currency != user.base_currency
+        }
+        evidence_by_transaction = {
+            evidence.transaction_id: evidence for evidence in reporting_evidence
+        }
+        if len(evidence_by_transaction) != len(reporting_evidence) or set(
+            evidence_by_transaction
+        ) != set(foreign):
+            raise BackgroundJobPublicationStaleError("The reporting-currency evidence set changed.")
+        rate_ids = tuple(sorted({item.exchange_rate_id for item in reporting_evidence}))
+        rates = tuple(
+            (
+                await self.session.scalars(
+                    select(ExchangeRateModel)
+                    .where(ExchangeRateModel.id.in_(rate_ids))
+                    .order_by(ExchangeRateModel.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        rates_by_id = {rate.id: rate for rate in rates}
+        if len(rates_by_id) != len(rate_ids):
+            raise BackgroundJobPublicationStaleError("The reporting-currency FX lineage changed.")
+        for transaction_id, transaction in foreign.items():
+            evidence = evidence_by_transaction[transaction_id]
+            rate = rates_by_id.get(evidence.exchange_rate_id)
+            try:
+                observation = (
+                    validate_exchange_rate_observation(
+                        ExchangeRateObservation(
+                            from_currency=rate.from_currency,
+                            to_currency=rate.to_currency,
+                            provider=rate.source,
+                            rate=rate.rate,
+                            effective_at=rate.date,
+                        ),
+                        requirement=ExchangeRateRequirement(
+                            from_currency=transaction.currency,
+                            to_currency=user.base_currency,
+                            through=transaction.date,
+                            provider=rate.source,
+                        ),
+                        policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+                    )
+                    if rate is not None
+                    else None
+                )
+                calculated = (
+                    calculate_reporting_amount(transaction.amount, observation.rate)
+                    if observation is not None
+                    else None
+                )
+            except (
+                ExchangeRateObservationValidationError,
+                RaiffeisenbankReportingFxStateError,
+            ) as exc:
+                raise BackgroundJobPublicationStaleError(
+                    "The reporting-currency calculation changed."
+                ) from exc
+            if (
+                rate is None
+                or evidence.background_job_id != job.id
+                or evidence.calculation_version != REPORTING_FX_CALCULATION_VERSION
+                or evidence.source_amount != transaction.amount
+                or evidence.source_currency != transaction.currency
+                or evidence.source_event_time != transaction.date
+                or evidence.reporting_currency != user.base_currency
+                or evidence.reporting_amount != calculated
+                or transaction.reporting_amount != evidence.reporting_amount
+                or transaction.reporting_currency != evidence.reporting_currency
+                or rate.from_currency != evidence.source_currency
+                or rate.to_currency != evidence.reporting_currency
+                or observation is None
+                or exchange_rate_id(observation) != rate.id
+            ):
+                raise BackgroundJobPublicationStaleError("The reporting-currency evidence changed.")
+        if any(
+            transaction.reporting_amount is not None or transaction.reporting_currency is not None
+            for transaction in transactions
+            if transaction.id not in foreign
+        ):
+            raise BackgroundJobPublicationStaleError(
+                "Same-currency transactions contain unexpected reporting evidence."
+            )
 
     async def schedule_retry(
         self,
@@ -556,17 +934,23 @@ class BackgroundJobRepository:
         lease: LeaseIdentity,
         run_after: datetime,
         now: datetime,
+        error_code: str | None = None,
+        error_message: str | None = None,
     ) -> None:
         if now.tzinfo is not None or run_after.tzinfo is not None or run_after <= now:
             raise ValueError("The deferred publication timestamp is invalid.")
+        if (error_code is None) is not (error_message is None):
+            raise ValueError("The deferred safe error is invalid.")
+        if error_code is not None and error_message is not None:
+            self._validate_safe_error(error_code, error_message)
         await self._fenced_update(
             lease,
             values={
                 "status": BackgroundJobStatus.retry_wait,
                 "run_after": run_after,
                 "attempt_count": BackgroundJobModel.attempt_count - 1,
-                "error_code": None,
-                "error_message": None,
+                "error_code": error_code,
+                "error_message": error_message,
                 "lease_owner": None,
                 "lease_expires_at": None,
                 "lease_heartbeat_at": None,

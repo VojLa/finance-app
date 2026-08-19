@@ -23,6 +23,7 @@ from app.modules.budgets.models import (
     BudgetSaveRequest,
 )
 from app.modules.budgets.repository import BudgetRepository
+from app.modules.transactions.operational_visibility import OperationalTransaction
 from app.shared.errors import ApplicationError
 from app.shared.numeric_serialization import serialize_money, serialize_percentage
 
@@ -83,17 +84,40 @@ def _percentage(numerator: Decimal, denominator: Decimal) -> Decimal:
     return value
 
 
-def transaction_czk(transaction: TransactionModel) -> Decimal:
-    if transaction.currency == "CZK":
-        value = transaction.amount
-    elif transaction.reporting_currency == "CZK" and transaction.reporting_amount is not None:
-        value = transaction.reporting_amount
+def transaction_czk(transaction: TransactionModel | OperationalTransaction) -> Decimal:
+    """Return a CZK amount only from the shared operational evidence boundary.
+
+    ``TransactionModel`` is retained for legacy/manual callers and existing
+    tests. Operational repositories always pass ``OperationalTransaction`` so
+    manifested foreign imports cannot fall back to denormalized columns.
+    """
+    if isinstance(transaction, OperationalTransaction):
+        operational: OperationalTransaction | None = transaction
+        canonical = transaction.transaction
+    else:
+        operational = None
+        canonical = transaction
+    if canonical.currency == "CZK":
+        value = canonical.amount
+    elif (
+        operational is not None
+        and operational.reporting_currency == "CZK"
+        and operational.reporting_amount is not None
+    ):
+        value = operational.reporting_amount
+    elif (
+        operational is None
+        and canonical.reporting_currency == "CZK"
+        and canonical.reporting_amount is not None
+    ):
+        value = canonical.reporting_amount
     else:
         raise BudgetUnavailableError("A transaction has no persisted CZK representation.")
     value = _money(value)
-    if transaction.type is TransactionType.expense and value >= 0:
+    transaction_type = canonical.type if operational is None else operational.effective_type
+    if transaction_type is TransactionType.expense and value >= 0:
         raise BudgetUnavailableError()
-    if transaction.type is TransactionType.income and value <= 0:
+    if transaction_type is TransactionType.income and value <= 0:
         raise BudgetUnavailableError()
     return value
 
@@ -232,16 +256,17 @@ class BudgetService:
             account_ids = await self.repository.accessible_account_ids(user_id)
         category_ids = tuple(category.id for _, category in rows)
         spent = {category_id: Decimal(0) for category_id in category_ids}
-        for transaction in await self.repository.expense_transactions(
+        for operational_transaction in await self.repository.expense_transactions(
             account_ids=account_ids,
             category_ids=category_ids,
             start=start,
             end=end,
         ):
+            transaction = operational_transaction.transaction
             if transaction.category_id is None:
                 raise BudgetUnavailableError()
             spent[transaction.category_id] = _money(
-                spent[transaction.category_id] - transaction_czk(transaction)
+                spent[transaction.category_id] - transaction_czk(operational_transaction)
             )
 
         items: list[BudgetProgressItemResponse] = []

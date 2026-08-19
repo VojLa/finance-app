@@ -120,7 +120,10 @@ class TransactionService:
             account_id=account_id,
             search=search,
         )
-        responses = [await self._response(row) for row in rows]
+        responses = [
+            await self._response(row.transaction, transaction_type=row.effective_type)
+            for row in rows
+        ]
         await self.session.commit()
         return TransactionPageResponse(
             transactions=responses,
@@ -406,13 +409,14 @@ class TransactionService:
         transaction: TransactionModel,
         *,
         category: CategoryModel | None = None,
+        transaction_type: TransactionType | None = None,
     ) -> TransactionResponse:
         account = await self.repository.account(transaction.account_id)
         if account is None:
             raise TransactionConflictError()
         if category is None and transaction.category_id is not None:
             category = await self.repository.category(transaction.category_id)
-        return self._to_response(transaction, account, category)
+        return self._to_response(transaction, account, category, transaction_type=transaction_type)
 
     async def _commit(self) -> None:
         try:
@@ -426,13 +430,15 @@ class TransactionService:
         transaction: TransactionModel,
         account: AccountModel,
         category: CategoryModel | None,
+        *,
+        transaction_type: TransactionType | None = None,
     ) -> TransactionResponse:
         return TransactionResponse(
             id=transaction.id,
             date=transaction.date,
             amount=transaction.amount,
             currency=transaction.currency,
-            type=transaction.type,
+            type=transaction.type if transaction_type is None else transaction_type,
             description=transaction.description,
             counterparty=transaction.counterparty,
             note=transaction.note,

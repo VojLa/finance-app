@@ -73,6 +73,7 @@ def _provider(value: object) -> AssetAliasProvider:
     if provider not in {
         AssetAliasProvider.coingecko,
         AssetAliasProvider.twelve_data,
+        AssetAliasProvider.yahoo_finance,
     }:
         raise AssetAliasInvalidError()
     return provider

@@ -718,6 +718,130 @@ def test_same_provider_concurrency_returns_one_pair() -> None:
     asyncio.run(scenario())
 
 
+def _exact_anycoin_btc_plan() -> InvestmentAssetResolutionPlan:
+    return InvestmentAssetResolutionPlan(
+        symbol="BTC",
+        isin=None,
+        name="Bitcoin",
+        asset_type=AssetType.crypto,
+        provider=PriceSource.exchange,
+        provider_symbol="BTC",
+        exchange="anycoin",
+        listing_currency_hint="CZK",
+        asset_currency_hint="BTC",
+    )
+
+
+def test_exact_anycoin_btc_concurrency_creates_one_named_identity() -> None:
+    plan = _exact_anycoin_btc_plan()
+
+    async def scenario() -> None:
+        await _clean_assets(symbols={"BTC"}, isins=set())
+        engine = _engine()
+        first_resolved = asyncio.Event()
+        second_pid_ready = asyncio.Event()
+        release_first = asyncio.Event()
+        second_pid: int | None = None
+
+        async def first_call():
+            async with _session(engine) as session:
+                result = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
+                first_resolved.set()
+                await release_first.wait()
+                await session.commit()
+                return result
+
+        async def second_call():
+            await first_resolved.wait()
+            async with _session(engine) as session:
+                nonlocal second_pid
+                second_pid = int(await session.scalar(select(func.pg_backend_pid())) or 0)
+                second_pid_ready.set()
+                result = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
+                await session.commit()
+                return result
+
+        first_task = asyncio.create_task(first_call())
+        second_task = asyncio.create_task(second_call())
+        await second_pid_ready.wait()
+        assert second_pid is not None
+        try:
+            await _wait_for_ungranted_advisory_lock(engine=engine, backend_pid=second_pid)
+        finally:
+            release_first.set()
+        first, second = await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=10)
+        assert (first.asset.id, first.listing.id) == (second.asset.id, second.listing.id)
+        assert first.asset.name == second.asset.name == "Bitcoin"
+        assert (first.asset_created, first.listing_created) == (True, True)
+        assert (second.asset_created, second.listing_created) == (False, False)
+        await engine.dispose()
+        assert await _asset_counts(symbols={"BTC"}, isins=set()) == (1, 1)
+        await _clean_assets(symbols={"BTC"}, isins=set())
+
+    asyncio.run(scenario())
+
+
+def test_exact_anycoin_btc_enriches_null_but_rejects_conflicting_persisted_name() -> None:
+    plan = _exact_anycoin_btc_plan()
+
+    async def scenario() -> None:
+        await _clean_assets(symbols={"BTC"}, isins=set())
+        engine = _engine()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        async with _session(engine) as session:
+            asset = AssetModel(
+                id="anycoin-btc-null-name",
+                symbol="BTC",
+                isin=None,
+                name=None,
+                asset_type=AssetType.crypto,
+                currency="BTC",
+                updated_at=now,
+            )
+            listing = AssetListingModel(
+                id="anycoin-btc-null-name-listing",
+                asset_id=asset.id,
+                symbol="BTC",
+                exchange="anycoin",
+                mic=None,
+                currency="CZK",
+                country=None,
+                provider=PriceSource.exchange,
+                provider_symbol="BTC",
+                is_primary=False,
+                updated_at=now,
+            )
+            session.add(asset)
+            await session.flush()
+            session.add(listing)
+            await session.commit()
+
+        async with _session(engine) as session:
+            resolved = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
+            await session.commit()
+            assert resolved.asset.name == "Bitcoin"
+
+        async with _session(engine) as session:
+            persisted = await session.get(AssetModel, "anycoin-btc-null-name")
+            assert persisted is not None
+            assert persisted.name == "Bitcoin"
+            persisted.name = "Bitcoin Cash"
+            await session.commit()
+
+        async with _session(engine) as session:
+            with pytest.raises(ImportPostStateError):
+                await ImportInvestmentAssetResolver(session).resolve(plan=plan)
+            await session.rollback()
+
+        async with _session(engine) as session:
+            persisted = await session.get(AssetModel, "anycoin-btc-null-name")
+            assert persisted is not None and persisted.name == "Bitcoin Cash"
+        await engine.dispose()
+        await _clean_assets(symbols={"BTC"}, isins=set())
+
+    asyncio.run(scenario())
+
+
 def test_same_isin_different_symbols_concurrency_reuses_one_asset() -> None:
     isin = "ISINB2TWOLISTINGS"
     plan_a = InvestmentAssetResolutionPlan(
@@ -827,7 +951,11 @@ def test_anycoin_transfer_resolves_crypto_exchange_identity() -> None:
             PriceSource.exchange,
             "anycoin",
         )
-        assert (resolved.asset.currency, resolved.listing.currency) == ("BTC", "BTC")
+        assert (
+            resolved.asset.currency,
+            resolved.listing.currency,
+            resolved.asset.name,
+        ) == ("BTC", "EUR", "Bitcoin")
         assert await _import_snapshot(prefix) == before
         assert await _out_of_scope_counts() == {
             "AssetAlias": 0,

@@ -39,7 +39,10 @@ DIRECT_FX_REVISION = "3j0001twfx"
 MULTI_CURRENCY_COST_BASIS_REVISION = "3k0001mcost"
 BACKGROUND_JOB_REVISION = "3l0001bgjob"
 IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
-HEAD_REVISION = IMPORT_PUBLICATION_ANCHOR_REVISION
+EMPTY_INVESTMENT_HOLDING_REVISION = "3n0001emptyhold"
+UNKNOWN_INVESTMENT_COST_BASIS_REVISION = "3o0001unkbasis"
+RB_SCHEMA_FOUNDATION_REVISION = "3p0001rbfoundation"
+HEAD_REVISION = RB_SCHEMA_FOUNDATION_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -67,6 +70,24 @@ IMPORT_PUBLICATION_ANCHOR_REVISION_PATH = (
     / "migrations"
     / "versions"
     / "3m0001importanchor_allow_minute_import_publication_anchor.py"
+)
+EMPTY_INVESTMENT_HOLDING_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3n0001emptyhold_initialize_empty_investment_holdings.py"
+)
+UNKNOWN_INVESTMENT_COST_BASIS_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3o0001unkbasis_allow_unknown_investment_cost_basis.py"
+)
+RB_SCHEMA_FOUNDATION_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3p0001rbfoundation_add_reconciliation_schema_foundation.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -224,7 +245,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 14,
+        "schema_version": 17,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -263,7 +284,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 10,
+        "revision_count": 13,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -271,8 +292,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3m0001importanchor/schema.sql",
-        "checksum_source": "database/revisions/3m0001importanchor/schema.sha256",
+        "schema_source": "database/revisions/3p0001rbfoundation/schema.sql",
+        "checksum_source": "database/revisions/3p0001rbfoundation/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -312,9 +333,9 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 10:
+    if len(revisions) != 13:
         raise RuntimeError(
-            "The import publication-anchor schema requires exactly ten Alembic revisions."
+            "The reconciliation schema foundation requires exactly thirteen Alembic revisions."
         )
 
     by_revision = {revision.revision: revision for revision in revisions}
@@ -327,6 +348,9 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     direct_fx = by_revision.get(DIRECT_FX_REVISION)
     multi_currency_cost = by_revision.get(MULTI_CURRENCY_COST_BASIS_REVISION)
     background_job = by_revision.get(BACKGROUND_JOB_REVISION)
+    import_publication_anchor = by_revision.get(IMPORT_PUBLICATION_ANCHOR_REVISION)
+    empty_investment_holding = by_revision.get(EMPTY_INVESTMENT_HOLDING_REVISION)
+    unknown_cost_basis = by_revision.get(UNKNOWN_INVESTMENT_COST_BASIS_REVISION)
     head = by_revision.get(HEAD_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
@@ -348,9 +372,30 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(
             "The background-job revision must follow the multi-currency cost basis head."
         )
-    if head is None or head.down_revision != BACKGROUND_JOB_REVISION:
+    if (
+        import_publication_anchor is None
+        or import_publication_anchor.down_revision != BACKGROUND_JOB_REVISION
+    ):
         raise RuntimeError(
             "The import publication-anchor revision must follow the background-job head."
+        )
+    if (
+        empty_investment_holding is None
+        or empty_investment_holding.down_revision != IMPORT_PUBLICATION_ANCHOR_REVISION
+    ):
+        raise RuntimeError(
+            "The empty investment Holding revision must follow the import publication-anchor head."
+        )
+    if (
+        unknown_cost_basis is None
+        or unknown_cost_basis.down_revision != EMPTY_INVESTMENT_HOLDING_REVISION
+    ):
+        raise RuntimeError(
+            "The unknown investment cost-basis revision must follow the empty-Holding head."
+        )
+    if head is None or head.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION:
+        raise RuntimeError(
+            "The reconciliation schema foundation must follow the unknown cost-basis head."
         )
 
     cutover_module = cutover.module
@@ -550,7 +595,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": False,
     }
     for key, value in expected_anchor_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(import_publication_anchor.module, key, None) != value:
             raise RuntimeError(f"Import publication-anchor revision metadata is invalid for {key}.")
     anchor_source = IMPORT_PUBLICATION_ANCHOR_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -566,6 +611,97 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         if token not in anchor_source:
             raise RuntimeError(
                 f"Import publication-anchor revision is missing required token {token}."
+            )
+
+    expected_empty_holding_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "initialize_empty_investment_holding_revision",
+        "affected_tables": ("Account", "AccountCanonicalState", "Holding"),
+        "affected_columns": (
+            "Account.type",
+            "AccountCanonicalState.lastInvestmentRevision",
+            "AccountCanonicalState.holdingRevision",
+            "Holding.accountId",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_empty_holding_metadata.items():
+        if getattr(empty_investment_holding.module, key, None) != value:
+            raise RuntimeError(f"Empty investment Holding revision metadata is invalid for {key}.")
+    empty_holding_source = EMPTY_INVESTMENT_HOLDING_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        'CREATE OR REPLACE FUNCTION "public"."initializeAccountCanonicalState"()',
+        "'broker', 'exchange', 'crypto_wallet'",
+        'state."lastInvestmentRevision" = 0',
+        'state."holdingRevision" IS NULL',
+        'FROM "public"."Holding" AS holding',
+        'FROM "public"."AccountCanonicalChange" AS change',
+        "change.\"kind\" = 'investment_event'",
+        "Cannot remove initialized empty investment Holding revisions automatically.",
+    ):
+        if token not in empty_holding_source:
+            raise RuntimeError(
+                f"Empty investment Holding revision is missing required token {token}."
+            )
+
+    expected_unknown_basis_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "allow_unknown_investment_cost_basis",
+        "affected_tables": ("Holding", "AccountSnapshot", "AccountSnapshotItem"),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_unknown_basis_metadata.items():
+        if getattr(unknown_cost_basis.module, key, None) != value:
+            raise RuntimeError(f"Unknown cost-basis revision metadata is invalid for {key}.")
+    unknown_basis_source = UNKNOWN_INVESTMENT_COST_BASIS_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "Holding_cost_basis_completeness_pair",
+        "AccountSnapshotItem_cost_basis_completeness",
+        "Cannot remove unknown investment cost-basis support while incomplete evidence exists.",
+    ):
+        if token not in unknown_basis_source:
+            raise RuntimeError(f"Unknown cost-basis revision is missing required token {token}.")
+
+    expected_reconciliation_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_import_reconciliation_evidence_foundation",
+        "affected_tables": (
+            "ImportBatch",
+            "ImportRow",
+            "Transaction",
+            "ExchangeRate",
+            "BackgroundJob",
+            "ImportSourceOccurrence",
+            "TransactionReportingEvidence",
+            "ImportJobBatch",
+            "ImportJobAffectedAccount",
+            "TransactionPair",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_reconciliation_metadata.items():
+        if getattr(head.module, key, None) != value:
+            raise RuntimeError(f"Reconciliation foundation metadata is invalid for {key}.")
+    reconciliation_source = RB_SCHEMA_FOUNDATION_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"ImportSourceOccurrence"',
+        '"TransactionReportingEvidence"',
+        '"ImportJobBatch"',
+        '"ImportJobAffectedAccount"',
+        '"TransactionPair"',
+        "ImportSourceOccurrence_fp_identity_key",
+        "TransactionReportingEvidence_fx_direction_fkey",
+        "ImportJobBatch_job_scope_fkey",
+        "ImportJobAffectedAccount_member_fkey",
+        "TransactionPair_reconciliation_evidence_complete_or_legacy",
+        "Cannot remove import reconciliation evidence while durable evidence exists.",
+    ):
+        if token not in reconciliation_source:
+            raise RuntimeError(
+                f"Reconciliation foundation revision is missing required token {token}."
             )
 
 

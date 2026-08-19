@@ -7,7 +7,8 @@ browser upload -> Next.js allowlist -> register/upload ImportBatch -> enqueue on
                                                                         |
                                                                         v
 worker claim -> parse -> normalize -> deduplicate -> classify -> canonical post
-             -> Holdings rebuild -> reconcile member publication buckets
+             -> exact Anycoin BTC alias create/replay -> Holdings rebuild
+             -> reconcile member publication buckets
              -> direct market/FX evidence -> per-member atomic snapshots
              -> atomically publish targets + complete job -> portfolio/dashboard refresh
 ```
@@ -46,7 +47,10 @@ worker claim -> parse -> normalize -> deduplicate -> classify -> canonical post
    A canonical change before atomic completion sends the job to `retry_wait`,
    retires only its unpublished stale anchor/target, and reacquires a fresh
    later bucket. Shared finalization derives
-   affected finance from persisted canonical rows, rebuilds Holdings, obtains
+   affected finance from persisted canonical rows. For an Anycoin BTC import it
+   first verifies the exact canonical crypto Asset and exchange Listing and
+   creates or replays only `coingecko/bitcoin` through the global locked alias
+   writer. It then rebuilds Holdings, obtains
    only required persisted direct provider evidence, and persists one exact
    minute `import_event` anchor per current member. For a viewer, this refresh
    is a narrow system-owned publication of the imported shared account only;

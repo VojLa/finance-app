@@ -27,14 +27,17 @@ def _migration_module() -> ModuleType:
     return module
 
 
-def test_r12a_cost_basis_model_contract_is_nonnullable_json_object() -> None:
+def test_current_cost_basis_model_contract_supports_complete_or_unknown_evidence() -> None:
     from app.db.models.holdings import HoldingModel
     from app.db.models.snapshots import AccountSnapshotItemModel
 
-    assert HoldingModel.__table__.c.costBasisByCurrency.nullable is False
-    assert AccountSnapshotItemModel.__table__.c.nativeCostBasisByCurrency.nullable is False
-    assert AccountSnapshotItemModel.__table__.c.averageBuyPrice.nullable is False
-    assert AccountSnapshotItemModel.__table__.c.averageBuyPriceCurrency.nullable is False
+    # R12-A introduced the JSON object contract. Revision 3o deliberately
+    # supersedes its non-nullability so imports with genuinely unavailable
+    # acquisition evidence remain truthful instead of inventing zero cost.
+    assert HoldingModel.__table__.c.costBasisByCurrency.nullable is True
+    assert AccountSnapshotItemModel.__table__.c.nativeCostBasisByCurrency.nullable is True
+    assert AccountSnapshotItemModel.__table__.c.averageBuyPrice.nullable is True
+    assert AccountSnapshotItemModel.__table__.c.averageBuyPriceCurrency.nullable is True
 
 
 @pytest.mark.integration

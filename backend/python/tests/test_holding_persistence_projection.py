@@ -443,7 +443,7 @@ def test_exact_full_outgoing_transfer_removes_holding() -> None:
     assert _project(_buy("buy", "1", "100", date=datetime(2026, 7, 20)), transfer).holdings == ()
 
 
-def test_incoming_transfer_requires_exact_persisted_basis() -> None:
+def test_incoming_transfer_without_basis_persists_unknown_cost_evidence() -> None:
     missing = _event(
         "missing",
         InvestmentEventType.asset_transfer,
@@ -473,9 +473,80 @@ def test_incoming_transfer_requires_exact_persisted_basis() -> None:
         ),
         date=datetime(2026, 7, 20),
     )
-    with pytest.raises(HoldingProjectionStateError):
-        _project(missing)
+    unknown = _project(missing).holdings[0]
+    assert unknown.quantity == Decimal("1")
+    assert unknown.avg_buy_price is None
+    assert unknown.cost_basis_by_currency is None
     assert _project(exact).holdings[0].avg_buy_price == Decimal("50")
+
+
+def test_unknown_cost_basis_is_sticky_until_full_close_then_known_reopen() -> None:
+    incoming = _event(
+        "unknown-in",
+        InvestmentEventType.asset_transfer,
+        (
+            _asset(
+                "unknown-in",
+                direction=MovementDirection.incoming,
+                quantity=Decimal("1"),
+                price=None,
+                value=None,
+                value_currency=None,
+            ),
+        ),
+        date=datetime(2026, 7, 21),
+    )
+    partial_out = _event(
+        "partial-out",
+        InvestmentEventType.asset_transfer,
+        (
+            _asset(
+                "partial-out",
+                direction=MovementDirection.outgoing,
+                quantity=Decimal("0.5"),
+                price=None,
+                value=None,
+                value_currency=None,
+            ),
+        ),
+        date=datetime(2026, 7, 22),
+    )
+    full_out = replace(
+        partial_out,
+        event_id="full-out",
+        external_id="external-full-out",
+        event_date=datetime(2026, 7, 23),
+        movements=(
+            replace(
+                partial_out.movements[0],
+                movement_id="full-out-asset",
+                event_id="full-out",
+                quantity=Decimal("1.5"),
+            ),
+        ),
+    )
+    known_buy = _buy("known", "1", "125", date=datetime(2026, 7, 20))
+    mixed = _project(known_buy, incoming)
+    assert mixed.holdings[0].quantity == Decimal("2")
+    assert mixed.holdings[0].avg_buy_price is None
+    assert mixed.holdings[0].cost_basis_by_currency is None
+
+    partial = _project(known_buy, incoming, partial_out)
+    assert partial.holdings[0].quantity == Decimal("1.5")
+    assert partial.holdings[0].avg_buy_price is None
+    assert partial.holdings[0].cost_basis_by_currency is None
+    assert _project(known_buy, incoming, partial_out, full_out).holdings == ()
+
+    reopened = _project(
+        known_buy,
+        incoming,
+        partial_out,
+        full_out,
+        _buy("reopen", "2", "150", date=datetime(2026, 7, 24)),
+    ).holdings[0]
+    assert reopened.quantity == Decimal("2")
+    assert reopened.avg_buy_price == Decimal("150")
+    assert reopened.cost_basis_by_currency == (("EUR", Decimal("300")),)
 
 
 @pytest.mark.parametrize(
@@ -1011,6 +1082,7 @@ def test_actual_cross_currency_trading212_buy_projects_executed_cost() -> None:
 def test_actual_anycoin_grouped_trade_and_outgoing_transfer_project_exactly() -> None:
     outcomes = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row("payment", 1, "trade payment", "-500", "EUR", "2026-07-20T10:00:00Z"),
             _anycoin_row("fill", 2, "trade fill", "0.01", "BTC", "2026-07-20T10:00:00Z"),
@@ -1021,6 +1093,7 @@ def test_actual_anycoin_grouped_trade_and_outgoing_transfer_project_exactly() ->
     buy = _from_plan(_plan(anchor.data, ImportSource.anycoin), "grouped")
     withdrawal = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row(
                 "withdrawal",
@@ -1041,9 +1114,10 @@ def test_actual_anycoin_grouped_trade_and_outgoing_transfer_project_exactly() ->
     assert result.holdings[0].currency == "EUR"
 
 
-def test_actual_anycoin_incoming_transfer_fails_without_basis() -> None:
+def test_actual_anycoin_incoming_transfer_preserves_quantity_with_unknown_basis() -> None:
     outcome = normalize_anycoin_batch(
         account_id="account",
+        account_currency="EUR",
         rows=[
             _anycoin_row(
                 "deposit",
@@ -1057,5 +1131,9 @@ def test_actual_anycoin_incoming_transfer_fails_without_basis() -> None:
         ],
     )[0]
     assert outcome.data is not None
-    with pytest.raises(HoldingProjectionStateError):
-        _project(_from_plan(_plan(outcome.data, ImportSource.anycoin), "incoming"))
+    holding = _project(_from_plan(_plan(outcome.data, ImportSource.anycoin), "incoming")).holdings[
+        0
+    ]
+    assert holding.quantity == Decimal("0.5")
+    assert holding.avg_buy_price is None
+    assert holding.cost_basis_by_currency is None

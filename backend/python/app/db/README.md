@@ -74,6 +74,11 @@ without registering an HTTP adapter.
 
 Revisions `3i0001d1base` and `3j0001twfx` add daily lineage tables and the
 direct Twelve Data FX source identity. Revision `3j0001twfx` is historical;
-the current head is `3m0001importanchor`, after the multi-currency holding
+the current head is `3o0001unkbasis`, after the multi-currency holding
 cost-basis (`3k0001mcost`), durable background-job (`3l0001bgjob`), and import
-publication-anchor (`3m0001importanchor`) revisions.
+publication-anchor (`3m0001importanchor`) revisions. The head initializes an
+exact revision-zero Holding watermark for newly created investment accounts and
+safely backfills only provably empty existing accounts. Revision `3o0001unkbasis`
+allows an investment position and snapshot to retain exact quantity and market
+value when acquisition cost evidence is unavailable; its cost-basis and dependent
+profit metrics remain `NULL` rather than being coerced to zero.

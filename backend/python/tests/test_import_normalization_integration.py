@@ -32,7 +32,12 @@ from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
-from app.modules.imports.normalization import ImportNormalizationService, ImportNormalizeStateError
+from app.modules.imports.normalization import (
+    ImportNormalizationService,
+    ImportNormalizeAccountCurrencyMismatchError,
+    ImportNormalizeStateError,
+)
+from app.modules.imports.raiffeisenbank import STATEMENT_KIND_FIELD
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5d-internal-auth-secret-32-characters"
@@ -97,6 +102,7 @@ async def _seed() -> None:
         "norm-anycoin-batch",
         "norm-anycoin-review-batch",
         "norm-anycoin-rollback-batch",
+        "norm-rb-currency-batch",
     ]
     async with AsyncSession(engine) as session:
         await session.execute(
@@ -475,6 +481,63 @@ def _anycoin_buy_rows(*, order_id: str = "anycoin-order-1") -> list[dict[str, st
     ]
 
 
+async def _add_raiffeisenbank_batch(rows: list[dict[str, str]]) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with AsyncSession(engine) as session:
+        session.add(
+            ImportBatchModel(
+                id="norm-rb-currency-batch",
+                user_id="norm-owner",
+                account_id="norm-active",
+                source=ImportSource.raiffeisenbank,
+                filename="rb-currency.csv",
+                file_size=10,
+                file_encoding="utf-8",
+                checksum=hashlib.sha256(b"norm-rb-currency-batch").hexdigest(),
+                status=ImportStatus.processing,
+                rows_total=len(rows),
+                rows_imported=0,
+                rows_skipped=0,
+                created_at=now,
+                completed_at=None,
+                retain_until=None,
+                raw_data_purged_at=None,
+            )
+        )
+        for index, raw_data in enumerate(rows, start=2):
+            session.add(
+                ImportRowModel(
+                    id=f"norm-rb-currency-row-{index}",
+                    import_batch_id="norm-rb-currency-batch",
+                    row_number=index,
+                    raw_data=raw_data,
+                    normalized_data=None,
+                    validation_errors=None,
+                    deduplication_key=None,
+                    status=ImportRowStatus.pending,
+                    error_message=None,
+                    created_transaction_id=None,
+                    created_investment_event_id=None,
+                    created_at=now,
+                )
+            )
+        await session.commit()
+    await engine.dispose()
+
+
+def _rb_account_row(*, currency: str, external_id: str) -> dict[str, str]:
+    return {
+        STATEMENT_KIND_FIELD: "account_statement",
+        "Datum provedení": "20.07.2026",
+        "Zaúčtovaná částka": "10",
+        "Měna účtu": currency,
+        "Typ transakce": "Příchozí úhrada",
+        "Id transakce": external_id,
+    }
+
+
 def test_normalization_endpoint_and_postgresql_contract() -> None:
     assert DATABASE_URL is not None
     _run(_seed())
@@ -598,6 +661,29 @@ def test_trading212_normalization_persists_schema_v2_without_posting() -> None:
     assert row.normalized_data["action"] == "buy"
     assert row.deduplication_key and len(row.deduplication_key) == 64
     assert row.created_transaction_id is None and row.created_investment_event_id is None
+
+
+def test_raiffeisenbank_mixed_currency_batch_rolls_back_without_normalizing_any_row() -> None:
+    assert DATABASE_URL is not None
+    _run(_seed())
+    _run(
+        _add_raiffeisenbank_batch(
+            [
+                _rb_account_row(currency="EUR", external_id="rb-eur-first"),
+                _rb_account_row(currency="CZK", external_id="rb-czk-second"),
+            ]
+        )
+    )
+
+    with pytest.raises(ImportNormalizeAccountCurrencyMismatchError) as error:
+        _run(_normalize_batch("norm-rb-currency-batch"))
+
+    assert error.value.code == "import_account_currency_mismatch"
+    assert _run(_batch_counters("norm-rb-currency-batch")) == (2, 0, 0)
+    rows = _run(_rows("norm-rb-currency-batch"))
+    assert all(row.status is ImportRowStatus.pending for row in rows)
+    assert all(row.normalized_data is None and row.deduplication_key is None for row in rows)
+    assert all(row.validation_errors is None and row.error_message is None for row in rows)
 
 
 def test_trading212_invalid_row_persists_structured_review_transition() -> None:

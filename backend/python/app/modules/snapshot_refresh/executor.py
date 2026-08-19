@@ -12,7 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.background_jobs import BackgroundJobModel
+from app.db.models.accounts import AccountMemberModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+)
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import (
     AccountMemberRole,
@@ -29,6 +33,11 @@ from app.modules.daily_baselines import (
     DailySnapshotBaselineService,
     PersistDailySnapshotBaselineCommand,
     PersistDailySnapshotBaselineResult,
+)
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
 )
 from app.modules.net_worth.evidence_service import (
     NetWorthEvidenceStateError,
@@ -62,6 +71,7 @@ from app.modules.snapshot_refresh.plan import (
     ExpectedUserSnapshotRefreshPlan,
     SnapshotRefreshPlanStateError,
 )
+from app.modules.snapshots.evidence_service import AccountSnapshotEvidenceService
 from app.modules.snapshots.financial_metrics import AccountSnapshotEvidenceStateError
 from app.modules.snapshots.persistence_projection import (
     AccountSnapshotPersistenceProjectionError,
@@ -561,14 +571,24 @@ class UserSnapshotRefreshExecutor:
         *,
         repository: SnapshotRefreshExecutorRepository | None = None,
         coverage_service_factory: CoverageServiceFactory = (SnapshotRefreshEvidenceService),
-        account_writer_factory: AccountSnapshotWriterFactory = AccountSnapshotWriter,
+        account_writer_factory: AccountSnapshotWriterFactory | None = None,
+        source_policy: MarketEvidenceSourcePolicy = CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         net_worth_writer_factory: NetWorthSnapshotWriterFactory = (NetWorthSnapshotWriter),
         daily_baseline_writer_factory: DailyBaselineWriterFactory = (DailySnapshotBaselineService),
     ) -> None:
         self.session = session
         self.repository = repository or SnapshotRefreshExecutorRepository(session)
         self.coverage_service_factory = coverage_service_factory
-        self.account_writer_factory = account_writer_factory
+        self.source_policy = validate_market_evidence_source_policy(source_policy)
+        self.account_writer_factory = account_writer_factory or (
+            lambda writer_session: AccountSnapshotWriter(
+                writer_session,
+                evidence_service=AccountSnapshotEvidenceService(
+                    writer_session,
+                    source_policy=self.source_policy,
+                ),
+            )
+        )
         self.net_worth_writer_factory = net_worth_writer_factory
         self.daily_baseline_writer_factory = daily_baseline_writer_factory
 
@@ -589,25 +609,41 @@ class UserSnapshotRefreshExecutor:
             async with self.session.begin():
                 await self.repository.set_transaction_repeatable_read()
                 if canonical.publication_account_ids:
+                    publication_job = await self.session.scalar(
+                        select(BackgroundJobModel)
+                        .join(
+                            ImportJobPublicationTargetModel,
+                            ImportJobPublicationTargetModel.job_id == BackgroundJobModel.id,
+                        )
+                        .where(
+                            BackgroundJobModel.id == canonical.publication_job_id,
+                            BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
+                            BackgroundJobModel.status == BackgroundJobStatus.running,
+                            ImportJobPublicationTargetModel.user_id == canonical.user_id,
+                            ImportJobPublicationTargetModel.bucket == canonical.snapshot_timestamp,
+                            ImportJobPublicationTargetModel.published_at.is_(None),
+                        )
+                    )
+                    if publication_job is None:
+                        raise _fail()
+                    affected_account_ids = tuple(
+                        (
+                            await self.session.scalars(
+                                select(ImportJobAffectedAccountModel.account_id)
+                                .where(
+                                    ImportJobAffectedAccountModel.job_id
+                                    == canonical.publication_job_id
+                                )
+                                .order_by(ImportJobAffectedAccountModel.account_id)
+                            )
+                        ).all()
+                    ) or (publication_job.account_id,)
                     validated_publication_accounts = set(
                         (
                             await self.session.scalars(
-                                select(BackgroundJobModel.account_id)
-                                .join(
-                                    ImportJobPublicationTargetModel,
-                                    ImportJobPublicationTargetModel.job_id == BackgroundJobModel.id,
-                                )
-                                .where(
-                                    BackgroundJobModel.id == canonical.publication_job_id,
-                                    BackgroundJobModel.kind == BackgroundJobKind.import_workflow,
-                                    BackgroundJobModel.status == BackgroundJobStatus.running,
-                                    ImportJobPublicationTargetModel.user_id == canonical.user_id,
-                                    ImportJobPublicationTargetModel.bucket
-                                    == canonical.snapshot_timestamp,
-                                    ImportJobPublicationTargetModel.published_at.is_(None),
-                                    BackgroundJobModel.account_id.in_(
-                                        canonical.publication_account_ids
-                                    ),
+                                select(AccountMemberModel.account_id).where(
+                                    AccountMemberModel.user_id == canonical.user_id,
+                                    AccountMemberModel.account_id.in_(affected_account_ids),
                                 )
                             )
                         ).all()

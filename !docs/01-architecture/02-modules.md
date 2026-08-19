@@ -4,30 +4,30 @@ The Python code is organized under `backend/python/app/modules`. A module owns
 its API adapter, service layer, and repository where those exist; routers stay
 thin and shared database infrastructure lives outside modules.
 
-| Module                  | Responsibility                                                                        | Status                                                                      |
-| ----------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `auth`                  | Verify a trusted HS256 session-bridge token and resolve its user                      | Implemented                                                                 |
-| `accounts`              | Account lifecycle, memberships, and invitations                                       | Implemented                                                                 |
-| `categories`            | Default/user category hierarchy and ownership                                         | R11-E implemented                                                           |
-| `budgets`               | Exact monthly plans, rollover, account scope, progress, and alerts                    | R11-F implemented                                                           |
-| `operational_dashboard` | Read-only persisted cash-flow, category, trend, and recent-transaction projection     | R11-F implemented                                                           |
-| `asset_aliases`         | Server-operator exact provider identity inventory and immutable onboarding            | R5-B4 implemented; remediation re-audit passed                              |
-| `liabilities`           | Canonical positive liability observations, atomic writes, and latest-as-of evidence   | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
-| `imports`               | Register/upload files and execute durable logical multi-file CSV histories            | R12 PostgreSQL job and worker lifecycle implemented                         |
-| `investments`           | Idempotent manual event commands, atomic Holding rebuild, and symbol-detail reads     | R11-G implemented                                                           |
-| `portfolio`             | Read accessible accounts and holdings, convert cost values using latest FX            | Basic read endpoint implemented                                             |
-| `portfolio_snapshot`    | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation | R6-A/B contract and portfolio presentation implemented                      |
-| `portfolio_history`     | Read-only exact NetWorthSnapshot history and deterministic public selection           | R7-A Python API and R7-B browser/chart cutover implemented                  |
-| `dashboard_snapshot`    | Pure dashboard projection and authorized exact API adapter                            | 5L complete; final cross-boundary audit passed                              |
-| transactions            | Exact cash transaction list and manual lifecycle with canonical revisions             | R11-E implemented                                                           |
-| ledger                  | Investment events and movements written by imports and manual investment commands     | Canonical Python writers implemented                                        |
-| holdings                | Project and rebuild holdings from active canonical investment history                 | Pure projections, atomic writer, and authorized manual endpoint implemented |
-| net_worth               | Exact aggregation, persistence, and authenticated manual recalculation                | 5J-A–5J-E implemented                                                       |
-| snapshot_refresh        | Cross-domain planning, persisted coverage, coordinated execution, and manual API      | R5-B3A coordinator used by R5-B3B manual and R5-B3C import paths            |
-| snapshots               | Exact account valuation, persistence, and authorized manual recalculation             | 5I complete; output-currency chain implemented through 5K-C5                |
-| market_data             | Exact market requirements, provider ports, orchestration, and atomic evidence writes  | R5-A through R5-B3C coordinated production consumption implemented          |
-| prices / FX             | Canonical price and direct-FX observation models, validation, and providers           | Twelve Data direct FX plus CoinGecko and Twelve Data prices                 |
-| dashboard / reporting   | Dashboard read models                                                                 | Snapshot read path complete and final-audited through 5L                    |
+| Module                  | Responsibility                                                                                         | Status                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `auth`                  | Verify a trusted HS256 session-bridge token and resolve its user                                       | Implemented                                                                 |
+| `accounts`              | Account lifecycle, memberships, and invitations                                                        | Implemented                                                                 |
+| `categories`            | Default/user category hierarchy and ownership                                                          | R11-E implemented                                                           |
+| `budgets`               | Exact monthly plans, rollover, account scope, progress, and alerts                                     | R11-F implemented                                                           |
+| `operational_dashboard` | Read-only persisted cash-flow, category, trend, and recent-transaction projection                      | R11-F implemented                                                           |
+| `asset_aliases`         | Server-operator exact provider identity inventory and immutable onboarding                             | R5-B4 implemented; remediation re-audit passed                              |
+| `liabilities`           | Canonical positive liability observations, atomic writes, and latest-as-of evidence                    | 5I-L1/L2A implemented; consumed by snapshots in 5I-L2B                      |
+| `imports`               | Register/upload files; durable multi-file histories; RB reconciliation/reporting/liability/publication | R12 lifecycle and durable RB workflow implemented                           |
+| `investments`           | Idempotent manual event commands, atomic Holding rebuild, and symbol-detail reads                      | R11-G implemented                                                           |
+| `portfolio`             | Read accessible accounts and holdings, convert cost values using latest FX                             | Basic read endpoint implemented                                             |
+| `portfolio_snapshot`    | Exact snapshot projection, currency breakdown reads, authorized APIs, and aggregation                  | R6-A/B contract and portfolio presentation implemented                      |
+| `portfolio_history`     | Read-only exact NetWorthSnapshot history and deterministic public selection                            | R7-A Python API and R7-B browser/chart cutover implemented                  |
+| `dashboard_snapshot`    | Pure dashboard projection and authorized exact API adapter                                             | 5L complete; final cross-boundary audit passed                              |
+| transactions            | Exact cash transaction list and manual lifecycle with canonical revisions                              | R11-E implemented                                                           |
+| ledger                  | Investment events and movements written by imports and manual investment commands                      | Canonical Python writers implemented                                        |
+| holdings                | Project and rebuild holdings from active canonical investment history                                  | Pure projections, atomic writer, and authorized manual endpoint implemented |
+| net_worth               | Exact aggregation, persistence, and authenticated manual recalculation                                 | 5J-A–5J-E implemented                                                       |
+| snapshot_refresh        | Cross-domain planning, persisted coverage, coordinated execution, and manual API                       | R5-B3A coordinator used by R5-B3B manual and R5-B3C import paths            |
+| snapshots               | Exact account valuation, persistence, and authorized manual recalculation                              | 5I complete; output-currency chain implemented through 5K-C5                |
+| market_data             | Exact market requirements, provider ports, orchestration, and atomic evidence writes                   | R5-A through R5-B3C coordinated production consumption implemented          |
+| prices / FX             | Canonical price and direct-FX observation models, validation, and providers                            | Twelve Data direct FX plus CoinGecko and Twelve Data prices                 |
+| dashboard / reporting   | Dashboard read models                                                                                  | Snapshot read path complete and final-audited through 5L                    |
 
 `app/db/models` is a complete physical-schema mirror, grouped by domain. It is
 not a service layer and it intentionally defines no ORM relationships, so
@@ -45,12 +45,23 @@ inverse-rate derivation, or cross-rate derivation.
 
 Price and FX providers are injected protocols registered by exact source enum.
 The registry permits at most one adapter per non-manual source and performs no
-fallback between sources. Provider calls occur sequentially and outside every
-database transaction. Production composition registers exactly
+fallback between sources. Independent provider acquisitions run outside every
+database transaction in a bounded `TaskGroup` (maximum four concurrent
+operations). Results retain the immutable plan order; one acquisition failure
+cancels and awaits its siblings, and no write starts. Only after all
+observations validate does the single append-only `SERIALIZABLE` writer commit
+the whole price/FX batch atomically. Production composition registers exactly
 `ExchangeRateSource.twelve_data` for direct `FROM/TO` FX evidence, plus
 `PriceSource.coingecko` for crypto and `PriceSource.twelve_data` for listed
 securities. Historical CNB/Yahoo source identities remain readable but cannot
 be selected by production composition.
+
+`local_free` is an environment-gated, non-production fixture policy, not a
+production fallback. It maps crypto prices to CoinGecko, non-crypto listed
+prices to Yahoo Finance, and every FX requirement to Yahoo Finance's requested
+direct pair. It does not invert, pivot, triangulate, cross-rate, or fall back
+between providers. The canonical production policy remains unchanged: CoinGecko
+for crypto, Twelve Data for non-crypto prices, and Twelve Data for direct FX.
 
 R5-B4 adds the `asset_aliases` application module and
 `scripts/asset_alias.py` as the supported server-operator boundary for those
@@ -78,6 +89,23 @@ New alias IDs use UUIDv5 namespace
 `createdAt`; any repoint, replacement, duplicate, corrupt state, or
 deterministic ID collision fails closed. Only SQLSTATE `40001`, `40P01`, or
 `23505` retries, for at most three complete attempts.
+
+Durable Anycoin finalization has one imports-owned, closed allowlist above that
+same writer: an exact persisted Anycoin asset movement with normalized symbol
+`BTC`, `AssetType.crypto`, and its canonical exchange Listing may receive
+`AssetAlias(provider=coingecko, externalId=bitcoin)`. Canonical posting/replay
+must finish first; alias creation/replay finishes before Holdings and market
+acquisition. The boundary rejects zero or multiple canonical BTC identities,
+wrong Asset/Listing state, and immutable alias conflicts before provider HTTP.
+It contains no ETH or generic symbol map, provider discovery, Yahoo/pivot
+fallback, public API, second writer, or direct `AssetAlias` construction.
+
+Imports also owns one explicit display-only rule for this exact source tuple:
+Anycoin crypto `BTC` has canonical `Asset.name=Bitcoin`. Normalization supplies
+it for new rows and resolver replay enriches only a legacy NULL name while the
+same provider lock and Asset row lock are held. A conflicting non-NULL name
+fails closed; non-BTC symbols are never named by ticker guessing. This rule does
+not derive or replace the independent CoinGecko alias identity.
 
 R5-B2B0 adds `AssetAliasProvider.twelve_data` and
 `PriceSource.twelve_data` across PostgreSQL and SQLAlchemy. R5-B2B1 narrows that
@@ -148,8 +176,9 @@ lower-case Listing quote currency. It performs no ticker or name lookup,
 optional Demo key is an HTTP-header-only secret. Strict JSON parsing retains
 the exact `Decimal` and provider `last_updated_at` timestamp; duplicate keys,
 excess identities, invalid numbers, future/stale time, or `NUMERIC(28,10)`
-overprecision fail without rounding or timestamp repair. An Anycoin Listing
-without a CoinGecko alias is therefore unavailable. Trading212-style listed
+overprecision fail without rounding or timestamp repair. The exact Anycoin BTC
+durable-import allowlist onboards `bitcoin` before acquisition; another Anycoin
+Listing without a CoinGecko alias is therefore unavailable. Trading212-style listed
 securities require their separate canonical Twelve Data alias; the adapter
 does not reuse the broker identity. R5-B3A composes the internal refresh and
 R5-B3B connects it to the approved manual endpoint and R5-B3C connects it to
@@ -824,6 +853,14 @@ status. The same transaction locks `AccountCanonicalState` and requires every
 member anchor to carry the current imported-account canonical revision. Only
 that completed publication releases the fence. Portfolio and
 dashboard share this service.
+
+The snapshot-version module owns one narrow rollout exception for this fence.
+An unfenced current read accepts only coordinated version 3. A read with at
+least one actively fenced account accepts the explicit set `{2, 3}`, allowing a
+coherent completed v2 publication to survive an incomplete v3 import. This is
+not baseline fallback: version 1 and unlisted versions fail, and the selected
+root must still pass the full account graph, NetWorth recomputation, manifest,
+canonical lineage, active-membership, source-policy, and market-evidence checks.
 
 Raw files remain local in R12. Therefore the embedded worker is a single-instance
 deployment boundary unless every instance mounts the same import storage. The

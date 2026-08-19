@@ -6,6 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.categories import CategoryModel
 from app.db.models.transactions import TransactionModel
+from app.modules.transactions.operational_visibility import (
+    OperationalTransaction,
+    operational_projection_columns,
+    operational_transaction_from_values,
+    operational_visibility_predicate,
+)
 
 
 class OperationalDashboardRepository:
@@ -29,22 +35,25 @@ class OperationalDashboardRepository:
 
     async def trend_transactions(
         self, *, account_ids: tuple[str, ...], start: datetime, end: datetime
-    ) -> list[tuple[TransactionModel, CategoryModel | None]]:
+    ) -> list[tuple[OperationalTransaction, CategoryModel | None]]:
         if not account_ids:
             return []
         return [
-            (transaction, category)
-            for transaction, category in (
+            (
+                operational_transaction_from_values(transaction, classification, amount, currency),
+                category,
+            )
+            for transaction, classification, amount, currency, category in (
                 await self.session.execute(
-                    select(TransactionModel, CategoryModel)
+                    select(TransactionModel, *operational_projection_columns(), CategoryModel)
                     .outerjoin(CategoryModel, CategoryModel.id == TransactionModel.category_id)
                     .where(
                         TransactionModel.account_id.in_(account_ids),
-                        TransactionModel.type.in_(("income", "expense")),
                         TransactionModel.date >= start,
                         TransactionModel.date < end,
                         TransactionModel.archived_at.is_(None),
                         TransactionModel.deleted_at.is_(None),
+                        operational_visibility_predicate(),
                     )
                     .order_by(TransactionModel.date, TransactionModel.id)
                 )
@@ -53,20 +62,30 @@ class OperationalDashboardRepository:
 
     async def recent_transactions(
         self, *, account_ids: tuple[str, ...], limit: int
-    ) -> list[tuple[TransactionModel, AccountModel, CategoryModel | None]]:
+    ) -> list[tuple[OperationalTransaction, AccountModel, CategoryModel | None]]:
         if not account_ids:
             return []
         return [
-            (transaction, account, category)
-            for transaction, account, category in (
+            (
+                operational_transaction_from_values(transaction, classification, amount, currency),
+                account,
+                category,
+            )
+            for transaction, classification, amount, currency, account, category in (
                 await self.session.execute(
-                    select(TransactionModel, AccountModel, CategoryModel)
+                    select(
+                        TransactionModel,
+                        *operational_projection_columns(),
+                        AccountModel,
+                        CategoryModel,
+                    )
                     .join(AccountModel, AccountModel.id == TransactionModel.account_id)
                     .outerjoin(CategoryModel, CategoryModel.id == TransactionModel.category_id)
                     .where(
                         TransactionModel.account_id.in_(account_ids),
                         TransactionModel.archived_at.is_(None),
                         TransactionModel.deleted_at.is_(None),
+                        operational_visibility_predicate(),
                     )
                     .order_by(TransactionModel.date.desc(), TransactionModel.id.desc())
                     .limit(limit)

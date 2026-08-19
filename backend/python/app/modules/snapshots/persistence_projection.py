@@ -25,9 +25,15 @@ from app.modules.snapshots.account_projection import (
     ExpectedAccountSnapshotValuation,
     convert_currency_amount,
 )
+from app.modules.snapshots.calculation import (
+    DerivedSnapshotCalculationError,
+    multiply_derived_snapshot_values,
+)
 from app.modules.snapshots.evidence_service import (
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
+    SnapshotMetricUnsupportedReason,
+    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import ConsumedHistoricalExchangeRate
 
@@ -71,23 +77,23 @@ class ExpectedAccountSnapshotRow:
     currency: str
     cash_value: Decimal
     investment_value: Decimal
-    investment_cost_basis: Decimal
+    investment_cost_basis: Decimal | None
     liabilities_value: Decimal
     total_value: Decimal
     is_recalculated: bool
     calculated_at: datetime
     calculation_version: int
     created_at: datetime
-    net_deposits_value: Decimal
-    realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
+    net_deposits_value: Decimal | None
+    realized_pnl_value: Decimal | None
+    unrealized_pnl_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     cash_value_by_currency: CanonicalJsonObject
     investment_value_by_currency: CanonicalJsonObject
-    investment_cost_basis_by_currency: CanonicalJsonObject
-    net_deposits_by_currency: CanonicalJsonObject
-    realized_pnl_by_currency: CanonicalJsonObject
+    investment_cost_basis_by_currency: CanonicalJsonObject | None
+    net_deposits_by_currency: CanonicalJsonObject | None
+    realized_pnl_by_currency: CanonicalJsonObject | None
     unrealized_pnl_by_currency: CanonicalJsonObject | None
     fees_by_currency: CanonicalJsonObject
     taxes_by_currency: CanonicalJsonObject
@@ -117,9 +123,21 @@ class ExpectedAccountSnapshotRow:
             "taxes_value": self.taxes_value,
             "cash_value_by_currency": self.cash_value_by_currency.to_json(),
             "investment_value_by_currency": self.investment_value_by_currency.to_json(),
-            "investment_cost_basis_by_currency": (self.investment_cost_basis_by_currency.to_json()),
-            "net_deposits_by_currency": self.net_deposits_by_currency.to_json(),
-            "realized_pnl_by_currency": self.realized_pnl_by_currency.to_json(),
+            "investment_cost_basis_by_currency": (
+                None
+                if self.investment_cost_basis_by_currency is None
+                else self.investment_cost_basis_by_currency.to_json()
+            ),
+            "net_deposits_by_currency": (
+                None
+                if self.net_deposits_by_currency is None
+                else self.net_deposits_by_currency.to_json()
+            ),
+            "realized_pnl_by_currency": (
+                None
+                if self.realized_pnl_by_currency is None
+                else self.realized_pnl_by_currency.to_json()
+            ),
             "unrealized_pnl_by_currency": (
                 None
                 if self.unrealized_pnl_by_currency is None
@@ -152,9 +170,9 @@ class ExpectedAccountSnapshotItemRow:
     value_currency: str | None
     native_cost_basis: Decimal | None
     native_cost_currency: str | None
-    native_cost_basis_by_currency: CanonicalJsonObject
-    average_buy_price: Decimal
-    average_buy_price_currency: str
+    native_cost_basis_by_currency: CanonicalJsonObject | None
+    average_buy_price: Decimal | None
+    average_buy_price_currency: str | None
 
     def model_values(self) -> dict[str, object]:
         return {
@@ -177,7 +195,11 @@ class ExpectedAccountSnapshotItemRow:
             "value_currency": self.value_currency,
             "native_cost_basis": self.native_cost_basis,
             "native_cost_currency": self.native_cost_currency,
-            "native_cost_basis_by_currency": self.native_cost_basis_by_currency.to_json(),
+            "native_cost_basis_by_currency": (
+                None
+                if self.native_cost_basis_by_currency is None
+                else self.native_cost_basis_by_currency.to_json()
+            ),
             "average_buy_price": self.average_buy_price,
             "average_buy_price_currency": self.average_buy_price_currency,
         }
@@ -275,6 +297,11 @@ def _exact(
 
 
 def _calculated(operation: str, left: Decimal, right: Decimal, numeric: Numeric) -> Decimal:
+    if operation == "multiply":
+        try:
+            return multiply_derived_snapshot_values(left, right, numeric)
+        except DerivedSnapshotCalculationError as exc:
+            raise _fail() from exc
     try:
         with localcontext() as context:
             context.prec = 112
@@ -282,8 +309,6 @@ def _calculated(operation: str, left: Decimal, right: Decimal, numeric: Numeric)
                 result = left + right
             elif operation == "subtract":
                 result = left - right
-            elif operation == "multiply":
-                result = left * right
             else:
                 raise RuntimeError(f"Unsupported arithmetic operation: {operation}")
     except (InvalidOperation, OverflowError) as exc:
@@ -310,7 +335,7 @@ def _breakdown(
     value: object,
     *,
     numeric: Numeric,
-    converted_value: Decimal,
+    converted_value: Decimal | None,
     output_currency: str,
     allow_none: bool = False,
     nonnegative: bool = False,
@@ -318,6 +343,8 @@ def _breakdown(
     if value is None:
         if allow_none:
             return None
+        raise _fail()
+    if converted_value is None:
         raise _fail()
     if not isinstance(value, tuple):
         raise _fail()
@@ -331,7 +358,14 @@ def _breakdown(
         amounts[currency] = _exact(item.amount, numeric, nonnegative=nonnegative)
     if not amounts and converted_value != 0:
         raise _fail()
-    if set(amounts) == {output_currency} and amounts[output_currency] != converted_value:
+    # Native portfolio breakdowns intentionally retain QUANTITY precision.
+    # They can therefore differ from an output MONEY scalar after the latter's
+    # explicit derived rounding boundary.
+    if (
+        numeric is MONEY
+        and set(amounts) == {output_currency}
+        and amounts[output_currency] != converted_value
+    ):
         raise _fail()
     return CanonicalJsonObject(
         tuple(
@@ -347,7 +381,12 @@ def _metric(
     output_currency: str,
     allow_none_breakdown: bool = False,
     nonnegative: bool = False,
-) -> tuple[Decimal, CanonicalJsonObject | None]:
+    unsupported_reason: SnapshotMetricUnsupportedReason | None = None,
+) -> tuple[Decimal | None, CanonicalJsonObject | None]:
+    if isinstance(value, UnsupportedSnapshotMetric):
+        if unsupported_reason is None or value.reason is not unsupported_reason:
+            raise _fail()
+        return None, None
     if not isinstance(value, ExactSnapshotMetric):
         raise _fail()
     exact_value = _exact(value.value, MONEY, nonnegative=nonnegative)
@@ -529,60 +568,86 @@ def _items(
         symbol = _currency(item.symbol)
         price_currency = _currency(item.price_currency)
         value_currency = _currency(item.value_currency)
-        cost_currency = _currency(item.cost_currency)
-        native_cost_currency = _currency(item.native_cost_currency)
         price_source = _enum(item.price_source, PriceSource)
         price_timestamp = _timestamp(item.price_timestamp)
         quantity = _exact(item.quantity, QUANTITY, positive=True)
         price_per_unit = _exact(item.price_per_unit, QUANTITY, positive=True)
         native_value = _exact(item.native_value, QUANTITY, positive=True)
         value = _exact(item.value, MONEY, positive=True)
-        native_cost_basis = _exact(item.native_cost_basis, QUANTITY, positive=True)
-        average_buy_price = _exact(item.average_buy_price, QUANTITY, positive=True)
-        average_buy_price_currency = _currency(item.average_buy_price_currency)
+        cost_values = (
+            item.cost_basis,
+            item.cost_currency,
+            item.native_cost_basis,
+            item.native_cost_currency,
+            item.native_cost_basis_by_currency,
+            item.average_buy_price,
+            item.average_buy_price_currency,
+        )
+        cost_complete = all(cost is not None for cost in cost_values)
+        if not cost_complete and any(cost is not None for cost in cost_values):
+            raise _fail()
+        cost_currency: str | None = None
+        native_cost_currency: str | None = None
+        native_cost_basis: Decimal | None = None
+        average_buy_price: Decimal | None = None
+        average_buy_price_currency: str | None = None
+        native_cost_breakdown: CanonicalJsonObject | None = None
+        cost_basis: Decimal | None = None
         component_entries: list[tuple[str, object]] = []
         component_currencies: set[str] = set()
-        for component in item.native_cost_basis_by_currency:
-            if not isinstance(component, CurrencyAmount):
+        if cost_complete:
+            cost_currency = _currency(item.cost_currency)
+            native_cost_currency = _currency(item.native_cost_currency)
+            native_cost_basis = _exact(item.native_cost_basis, QUANTITY, positive=True)
+            average_buy_price = _exact(item.average_buy_price, QUANTITY, positive=True)
+            average_buy_price_currency = _currency(item.average_buy_price_currency)
+            if not isinstance(item.native_cost_basis_by_currency, tuple):
                 raise _fail()
-            component_currency = _currency(component.currency)
-            component_amount = _exact(component.amount, QUANTITY, positive=True)
-            if component_currency in component_currencies:
+            for component in item.native_cost_basis_by_currency:
+                if not isinstance(component, CurrencyAmount):
+                    raise _fail()
+                component_currency = _currency(component.currency)
+                component_amount = _exact(component.amount, QUANTITY, positive=True)
+                if component_currency in component_currencies:
+                    raise _fail()
+                component_currencies.add(component_currency)
+                component_entries.append(
+                    (component_currency, _decimal_string(component_amount, QUANTITY))
+                )
+            if not component_entries or tuple(
+                currency for currency, _ in component_entries
+            ) != tuple(sorted(component_currencies)):
                 raise _fail()
-            component_currencies.add(component_currency)
-            component_entries.append(
-                (component_currency, _decimal_string(component_amount, QUANTITY))
-            )
-        if not component_entries or tuple(currency for currency, _ in component_entries) != tuple(
-            sorted(component_currencies)
-        ):
-            raise _fail()
-        native_cost_breakdown = CanonicalJsonObject(tuple(component_entries))
-        cost_basis = _exact(item.cost_basis, QUANTITY, positive=True)
+            native_cost_breakdown = CanonicalJsonObject(tuple(component_entries))
+            cost_basis = _exact(item.cost_basis, MONEY, positive=True)
         allocation_pct = _exact(item.allocation_pct, PERCENTAGE, positive=True)
         if (
             listing_id in listing_ids
             or price_timestamp > valuation.timestamp
             or price_currency != value_currency
-            or cost_currency != valuation.currency
-            or average_buy_price_currency != price_currency
             or _calculated("multiply", quantity, price_per_unit, QUANTITY) != native_value
+            or (cost_complete and cost_currency != valuation.currency)
+            or (cost_complete and average_buy_price_currency != price_currency)
             or (
-                len(component_entries) == 1
+                cost_complete
+                and len(component_entries) == 1
                 and (
                     component_entries[0][0] != native_cost_currency
+                    or not isinstance(item.native_cost_basis_by_currency, tuple)
                     or item.native_cost_basis_by_currency[0].amount != native_cost_basis
                 )
             )
             or (
-                len(component_entries) > 1
+                cost_complete
+                and len(component_entries) > 1
                 and (native_cost_currency != cost_currency or native_cost_basis != cost_basis)
             )
         ):
             raise _fail()
         listing_ids.add(listing_id)
         values.append(value)
-        costs.append(cost_basis)
+        if cost_basis is not None:
+            costs.append(cost_basis)
         allocations.append(allocation_pct)
         rows.append(
             ExpectedAccountSnapshotItemRow(
@@ -613,7 +678,14 @@ def _items(
     if rows:
         if (
             _sum(tuple(values), MONEY) != valuation.investment_value
-            or _exact(_sum(tuple(costs), QUANTITY), MONEY) != valuation.investment_cost_basis
+            or (
+                valuation.investment_cost_basis is not None
+                and (
+                    len(costs) != len(rows)
+                    or _sum(tuple(costs), MONEY) != valuation.investment_cost_basis
+                )
+            )
+            or (valuation.investment_cost_basis is None and len(costs) == len(rows))
             or _sum(tuple(allocations), PERCENTAGE) != Decimal(100)
         ):
             raise _fail()
@@ -630,7 +702,7 @@ def _liability_audit(
     price_ids: tuple[str, ...],
     snapshot_rate_ids: tuple[str, ...],
     historical_rate_ids: tuple[str, ...],
-    metrics: tuple[tuple[Decimal, CanonicalJsonObject | None], ...],
+    metrics: tuple[tuple[Decimal | None, CanonicalJsonObject | None], ...],
     liability_breakdown: CanonicalJsonObject,
 ) -> tuple[str | None, datetime | None, LiabilityBalanceSource | None]:
     balance_id = evidence.selected_liability_balance_id
@@ -748,10 +820,14 @@ def build_account_snapshot_persistence_projection(
 
         cash_value = _exact(valuation.cash_value, MONEY)
         investment_value = _exact(valuation.investment_value, MONEY, nonnegative=True)
-        investment_cost_basis = _exact(
-            valuation.investment_cost_basis,
-            MONEY,
-            nonnegative=True,
+        investment_cost_basis = (
+            None
+            if valuation.investment_cost_basis is None
+            else _exact(
+                valuation.investment_cost_basis,
+                MONEY,
+                nonnegative=True,
+            )
         )
         liabilities_value = _exact(valuation.liabilities_value, MONEY, nonnegative=True)
         total_value = _exact(valuation.total_value, MONEY)
@@ -769,15 +845,20 @@ def build_account_snapshot_persistence_projection(
         net_deposits, net_deposits_breakdown = _metric(
             evidence.net_deposits,
             output_currency=currency,
+            unsupported_reason=(
+                SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+            ),
         )
         realized_pnl, realized_pnl_breakdown = _metric(
             evidence.realized_pnl,
             output_currency=currency,
+            unsupported_reason=SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable,
         )
         unrealized_pnl, unrealized_pnl_breakdown = _metric(
             evidence.unrealized_pnl,
             output_currency=currency,
             allow_none_breakdown=True,
+            unsupported_reason=SnapshotMetricUnsupportedReason.cost_basis_evidence_unavailable,
         )
         fees, fees_breakdown = _metric(
             evidence.fees,
@@ -790,15 +871,22 @@ def build_account_snapshot_persistence_projection(
             nonnegative=True,
         )
         if (
-            _calculated(
-                "subtract",
-                investment_value,
-                investment_cost_basis,
-                MONEY,
+            (investment_cost_basis is None) != (unrealized_pnl is None)
+            or (
+                investment_cost_basis is not None
+                and unrealized_pnl is not None
+                and _calculated(
+                    "subtract",
+                    investment_value,
+                    investment_cost_basis,
+                    MONEY,
+                )
+                != unrealized_pnl
             )
-            != unrealized_pnl
-            or net_deposits_breakdown is None
-            or realized_pnl_breakdown is None
+            or (net_deposits is not None and net_deposits_breakdown is None)
+            or (realized_pnl is not None and realized_pnl_breakdown is None)
+            or fees is None
+            or taxes is None
             or fees_breakdown is None
             or taxes_breakdown is None
         ):
@@ -866,9 +954,14 @@ def build_account_snapshot_persistence_projection(
             numeric=QUANTITY,
             converted_value=investment_cost_basis,
             output_currency=currency,
+            allow_none=True,
             nonnegative=True,
         )
-        if cash_breakdown is None or investment_breakdown is None or cost_breakdown is None:
+        if (
+            cash_breakdown is None
+            or investment_breakdown is None
+            or (investment_cost_basis is None) != (cost_breakdown is None)
+        ):
             raise _fail()
 
         snapshot = ExpectedAccountSnapshotRow(

@@ -53,7 +53,7 @@ describe("loadPythonApiConfig", () => {
       internalAuthIssuer: "finance-app-next",
       internalAuthAudience: "finance-app-python",
       internalAuthTokenTtlSeconds: 60,
-      timeoutMs: 30000,
+      timeoutMs: 60000,
     })
   })
 

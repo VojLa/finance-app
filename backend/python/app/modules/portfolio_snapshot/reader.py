@@ -295,12 +295,16 @@ def _snapshot(
     _timestamp(source.created_at)
     _exact(source.cash_value, MONEY)
     _exact(source.investment_value, MONEY, nonnegative=True)
-    _exact(source.investment_cost_basis, MONEY, nonnegative=True)
+    if source.investment_cost_basis is not None:
+        _exact(source.investment_cost_basis, MONEY, nonnegative=True)
     _exact(source.liabilities_value, MONEY, nonnegative=True)
     _exact(source.total_value, MONEY)
-    _exact(source.net_deposits_value, MONEY)
-    _exact(source.realized_pnl_value, MONEY)
-    _exact(source.unrealized_pnl_value, MONEY)
+    if source.net_deposits_value is not None:
+        _exact(source.net_deposits_value, MONEY)
+    if source.realized_pnl_value is not None:
+        _exact(source.realized_pnl_value, MONEY)
+    if source.unrealized_pnl_value is not None:
+        _exact(source.unrealized_pnl_value, MONEY)
     _exact(source.fees_value, MONEY, nonnegative=True)
     _exact(source.taxes_value, MONEY, nonnegative=True)
     return source, _GRANULARITY_FROM_DB[source.granularity], _SOURCE_MAP[source.source]
@@ -340,35 +344,71 @@ def _item(
     listing_currency = _currency(listing.currency)
     price_currency = _currency(item.price_currency)
     physical_value_currency = _currency(item.value_currency)
-    cost_currency = _currency(item.cost_currency)
-    native_cost_currency = _currency(item.native_cost_currency)
-    if (
-        price_currency != physical_value_currency
-        or price_currency != listing_currency
-        or cost_currency != snapshot.currency
-    ):
+    if price_currency != physical_value_currency or price_currency != listing_currency:
         raise _fail()
     quantity = _exact(item.quantity, QUANTITY, positive=True)
     price_per_unit = _exact(item.price_per_unit, QUANTITY, positive=True)
     price_timestamp = _timestamp(item.price_timestamp)
     value = _exact(item.value, MONEY, positive=True)
-    cost_basis = _exact(item.cost_basis, QUANTITY, positive=True)
+    cost_values = (
+        item.cost_basis,
+        item.cost_currency,
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.native_cost_basis_by_currency,
+        item.average_buy_price,
+        item.average_buy_price_currency,
+    )
+    cost_complete = all(value is not None for value in cost_values)
+    if not cost_complete and any(value is not None for value in cost_values):
+        raise _fail()
+    cost_basis = (
+        None if item.cost_basis is None else _exact(item.cost_basis, QUANTITY, positive=True)
+    )
+    cost_currency = None if item.cost_currency is None else _currency(item.cost_currency)
     allocation_pct = _exact(item.allocation_pct, PERCENTAGE, positive=True)
     created_at = _timestamp(item.created_at)
     native_value = _exact(item.native_value, QUANTITY, positive=True)
-    native_cost_basis = _exact(item.native_cost_basis, QUANTITY, positive=True)
-    average_buy_price = _exact(item.average_buy_price, QUANTITY, positive=True)
-    average_buy_price_currency = _currency(item.average_buy_price_currency)
-    if average_buy_price_currency != listing_currency:
-        raise _fail()
-    native_cost_basis_by_currency = decode_portfolio_quantity_breakdown(
-        item.native_cost_basis_by_currency
+    native_cost_basis = (
+        None
+        if item.native_cost_basis is None
+        else _exact(item.native_cost_basis, QUANTITY, positive=True)
     )
-    if len(native_cost_basis_by_currency) == 1:
+    native_cost_currency = (
+        None if item.native_cost_currency is None else _currency(item.native_cost_currency)
+    )
+    average_buy_price = (
+        None
+        if item.average_buy_price is None
+        else _exact(item.average_buy_price, QUANTITY, positive=True)
+    )
+    average_buy_price_currency = (
+        None
+        if item.average_buy_price_currency is None
+        else _currency(item.average_buy_price_currency)
+    )
+    if cost_complete and (
+        cost_currency != snapshot.currency or average_buy_price_currency != listing_currency
+    ):
+        raise _fail()
+    native_cost_basis_by_currency = (
+        None
+        if item.native_cost_basis_by_currency is None
+        else decode_portfolio_quantity_breakdown(item.native_cost_basis_by_currency)
+    )
+    if (
+        cost_complete
+        and native_cost_basis_by_currency is not None
+        and len(native_cost_basis_by_currency) == 1
+    ):
         component = native_cost_basis_by_currency[0]
         if native_cost_basis != component.amount or native_cost_currency != component.currency:
             raise _fail()
-    elif native_cost_basis != cost_basis or native_cost_currency != cost_currency:
+    elif cost_complete and (
+        native_cost_basis_by_currency is None
+        or native_cost_basis != cost_basis
+        or native_cost_currency != cost_currency
+    ):
         raise _fail()
     if price_timestamp > snapshot.timestamp or created_at != snapshot.created_at:
         raise _fail()
@@ -391,7 +431,7 @@ def _item(
             value_currency=snapshot.currency,
             cost_basis=cost_basis,
             cost_currency=cost_currency,
-            unrealized_pnl=_subtract(value, cost_basis),
+            unrealized_pnl=(None if cost_basis is None else _subtract(value, cost_basis)),
             allocation_pct=allocation_pct,
             native_value=native_value,
             native_value_currency=physical_value_currency,
@@ -482,11 +522,30 @@ class PortfolioSnapshotReader:
                 scalar_total=snapshot.cash_value,
                 output_currency=snapshot.currency,
             )
-            net_deposits_by_currency = decode_portfolio_currency_breakdown(
-                snapshot.net_deposits_by_currency,
-                scalar_total=snapshot.net_deposits_value,
-                output_currency=snapshot.currency,
+            net_deposits_by_currency = (
+                None
+                if snapshot.net_deposits_value is None
+                else decode_portfolio_currency_breakdown(
+                    snapshot.net_deposits_by_currency,
+                    scalar_total=snapshot.net_deposits_value,
+                    output_currency=snapshot.currency,
+                )
             )
+            if (
+                (
+                    snapshot.investment_cost_basis is None
+                    and snapshot.investment_cost_basis_by_currency is not None
+                )
+                or (
+                    snapshot.net_deposits_value is None
+                    and snapshot.net_deposits_by_currency is not None
+                )
+                or (
+                    snapshot.realized_pnl_value is None
+                    and snapshot.realized_pnl_by_currency is not None
+                )
+            ):
+                raise _fail()
             items, selected_item_ids = _items(
                 await self.repository.load_snapshot_items(snapshot.id),
                 snapshot=snapshot,

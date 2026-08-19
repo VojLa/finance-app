@@ -48,3 +48,18 @@ schema_change = true
 schema_source = "database/revisions/3m0001importanchor/schema.sql"
 checksum_source = "database/revisions/3m0001importanchor/schema.sha256"
 schema_change = true
+
+[revisions."3n0001emptyhold"]
+schema_source = "database/revisions/3n0001emptyhold/schema.sql"
+checksum_source = "database/revisions/3n0001emptyhold/schema.sha256"
+schema_change = true
+
+[revisions."3o0001unkbasis"]
+schema_source = "database/revisions/3o0001unkbasis/schema.sql"
+checksum_source = "database/revisions/3o0001unkbasis/schema.sha256"
+schema_change = true
+
+[revisions."3p0001rbfoundation"]
+schema_source = "database/revisions/3p0001rbfoundation/schema.sql"
+checksum_source = "database/revisions/3p0001rbfoundation/schema.sha256"
+schema_change = true

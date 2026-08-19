@@ -68,6 +68,7 @@ class CurrentInvestmentDelta:
     holdings: HoldingPersistenceProjection
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     historical_metrics: tuple[HistoricalMetricEvidence, ...]
+    has_asset_transfer: bool
 
 
 def _fail() -> CurrentDeltaProjectionError:
@@ -180,26 +181,45 @@ def baseline_holding_seeds(
             raise _fail()
         listings.add(position.listing_id)
         quantity = _exact(position.quantity, quantity=True, positive=True)
-        native_cost = _exact(position.native_cost_basis, quantity=True, positive=True)
-        average = _exact(position.average_buy_price, quantity=True, positive=True)
-        quote_currency = _currency(position.average_buy_price_currency)
-        components = tuple(
-            (_currency(item.currency), _exact(item.amount, quantity=True, positive=True))
-            for item in position.native_cost_basis_by_currency
+        cost_values = (
+            position.native_cost_basis,
+            position.average_buy_price,
+            position.average_buy_price_currency,
+            position.native_cost_basis_by_currency,
+            position.native_cost_currency,
+            position.cost_basis,
+            position.cost_currency,
+            position.unrealized_pnl,
         )
-        if not components or len({currency for currency, _ in components}) != len(components):
+        cost_complete = all(value is not None for value in cost_values)
+        if not cost_complete and any(value is not None for value in cost_values):
             raise _fail()
-        if tuple(currency for currency, _ in components) != tuple(
-            sorted(currency for currency, _ in components)
-        ):
-            raise _fail()
-        if len(components) == 1:
-            if components[0] != (_currency(position.native_cost_currency), native_cost):
+        quote_currency = _currency(position.price_currency)
+        average: Decimal | None = None
+        components: tuple[tuple[str, Decimal], ...] | None = None
+        if cost_complete:
+            native_cost = _exact(position.native_cost_basis, quantity=True, positive=True)
+            average = _exact(position.average_buy_price, quantity=True, positive=True)
+            quote_currency = _currency(position.average_buy_price_currency)
+            if not isinstance(position.native_cost_basis_by_currency, tuple):
                 raise _fail()
-        elif _currency(position.native_cost_currency) != _currency(
-            position.cost_currency
-        ) or native_cost != _exact(position.cost_basis, quantity=True, positive=True):
-            raise _fail()
+            components = tuple(
+                (_currency(item.currency), _exact(item.amount, quantity=True, positive=True))
+                for item in position.native_cost_basis_by_currency
+            )
+            if not components or len({currency for currency, _ in components}) != len(components):
+                raise _fail()
+            if tuple(currency for currency, _ in components) != tuple(
+                sorted(currency for currency, _ in components)
+            ):
+                raise _fail()
+            if len(components) == 1:
+                if components[0] != (_currency(position.native_cost_currency), native_cost):
+                    raise _fail()
+            elif _currency(position.native_cost_currency) != _currency(
+                position.cost_currency
+            ) or native_cost != _exact(position.cost_basis, quantity=True, positive=True):
+                raise _fail()
         seeds.append(
             ExpectedPersistedHoldingPlan(
                 account_id=_text(account_id),
@@ -274,6 +294,7 @@ def apply_investment_events(
     cash = _breakdown_map(baseline_cash)
     metrics: list[HistoricalMetricEvidence] = []
     event_ids: set[str] = set()
+    has_asset_transfer = False
     for current in sorted(events, key=lambda item: (item.event.event_date, item.event.event_id)):
         if not isinstance(current, CurrentInvestmentEvent):
             raise _fail()
@@ -282,6 +303,8 @@ def apply_investment_events(
         if event_id in event_ids:
             raise _fail()
         event_ids.add(event_id)
+        if event.event_type is InvestmentEventType.asset_transfer:
+            has_asset_transfer = True
         if (current.realized_pnl is None) != (current.realized_pnl_currency is None):
             raise _fail()
         for movement in event.movements:
@@ -343,4 +366,5 @@ def apply_investment_events(
         historical_metrics=tuple(
             sorted(metrics, key=lambda item: (item.timestamp, item.evidence_id))
         ),
+        has_asset_transfer=has_asset_transfer,
     )

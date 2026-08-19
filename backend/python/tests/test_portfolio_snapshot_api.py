@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -249,6 +250,63 @@ def test_thin_adapter_maps_exact_command_and_serializes_public_view(
             }
         ],
     }
+
+
+def test_public_response_preserves_unknown_cost_metrics_as_json_null(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known = _view()
+    incomplete = replace(
+        known.positions[0],
+        cost_basis=None,
+        cost_currency=None,
+        unrealized_pnl=None,
+        native_cost_basis=None,
+        native_cost_currency=None,
+        native_cost_basis_by_currency=None,
+        average_buy_price=None,
+        average_buy_price_currency=None,
+    )
+    view = replace(
+        known,
+        summary=replace(
+            known.summary,
+            investment_cost_basis=None,
+            net_deposits_value=None,
+            net_deposits_by_currency=None,
+            realized_pnl_value=None,
+            unrealized_pnl_value=None,
+        ),
+        positions=(incomplete,),
+    )
+    monkeypatch.setattr(
+        AuthorizedPortfolioSnapshotService,
+        "read",
+        AsyncMock(return_value=ReadAuthorizedPortfolioSnapshotResult(view=view)),
+    )
+    client, _ = _client(test_settings)
+
+    with client:
+        response = client.get(PATH, params=QUERY)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["investmentValue"] == "100.000000"
+    assert body["summary"]["totalValue"] == "110.000000"
+    assert body["summary"]["investmentCostBasis"] is None
+    assert body["summary"]["netDepositsValue"] is None
+    assert body["summary"]["netDepositsByCurrency"] is None
+    assert body["summary"]["realizedPnlValue"] is None
+    assert body["summary"]["unrealizedPnlValue"] is None
+    assert body["positions"][0]["quantity"] == "2.0000000000"
+    assert body["positions"][0]["value"] == "100.000000"
+    assert body["positions"][0]["costBasis"] is None
+    assert body["positions"][0]["costCurrency"] is None
+    assert body["positions"][0]["unrealizedPnl"] is None
+    assert body["positions"][0]["nativeCostBasis"] is None
+    assert body["positions"][0]["nativeCostCurrency"] is None
+    assert body["positions"][0]["nativeCostBasisByCurrency"] is None
 
 
 def test_response_has_no_binary_financial_floats_or_internal_evidence(

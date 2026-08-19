@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+MarketEvidenceSourceMode = Literal["canonical", "local_free"]
 
 
 class Settings(BaseSettings):
@@ -32,6 +33,11 @@ class Settings(BaseSettings):
     twelve_data_max_response_bytes: int = 1_048_576
     twelve_data_user_agent: str = "finance-app/0.1"
     twelve_data_api_key: SecretStr | None = None
+    market_evidence_source_mode: MarketEvidenceSourceMode = "canonical"
+    yahoo_finance_chart_base_url: str = "https://query1.finance.yahoo.com/v8/finance/chart"
+    yahoo_finance_timeout_seconds: float = 10.0
+    yahoo_finance_max_response_bytes: int = 1_048_576
+    yahoo_finance_user_agent: str = "finance-app/0.1"
     background_jobs_enabled: bool = False
     background_job_poll_seconds: float = 0.75
     background_job_lease_seconds: int = 300
@@ -133,6 +139,36 @@ class Settings(BaseSettings):
                 or len(api_key) > 512
             ):
                 raise ValueError("TWELVE_DATA_API_KEY must be a safe non-empty value")
+        yahoo_chart_url = urlsplit(self.yahoo_finance_chart_base_url)
+        if (
+            yahoo_chart_url.scheme != "https"
+            or not yahoo_chart_url.hostname
+            or yahoo_chart_url.username is not None
+            or yahoo_chart_url.password is not None
+            or bool(yahoo_chart_url.query)
+            or bool(yahoo_chart_url.fragment)
+            or self.yahoo_finance_chart_base_url.endswith("/")
+            or any(character.isspace() for character in self.yahoo_finance_chart_base_url)
+        ):
+            raise ValueError(
+                "YAHOO_FINANCE_CHART_BASE_URL must be an absolute credential-free HTTPS URL"
+            )
+        if not 0 < self.yahoo_finance_timeout_seconds <= 120:
+            raise ValueError(
+                "YAHOO_FINANCE_TIMEOUT_SECONDS must be greater than zero and at most 120"
+            )
+        if not 0 < self.yahoo_finance_max_response_bytes <= 10_485_760:
+            raise ValueError(
+                "YAHOO_FINANCE_MAX_RESPONSE_BYTES must be greater than zero and at most 10485760"
+            )
+        if (
+            not self.yahoo_finance_user_agent
+            or self.yahoo_finance_user_agent != self.yahoo_finance_user_agent.strip()
+            or "\r" in self.yahoo_finance_user_agent
+            or "\n" in self.yahoo_finance_user_agent
+            or len(self.yahoo_finance_user_agent) > 256
+        ):
+            raise ValueError("YAHOO_FINANCE_USER_AGENT must be a safe non-empty value")
         if not 0.1 <= self.background_job_poll_seconds <= 60:
             raise ValueError("BACKGROUND_JOB_POLL_SECONDS must be between 0.1 and 60")
         if not 30 <= self.background_job_lease_seconds <= 1800:
@@ -159,6 +195,8 @@ class Settings(BaseSettings):
             errors.append("INTERNAL_AUTH_SECRET must contain at least 32 characters")
         if self.twelve_data_api_key is None:
             errors.append("TWELVE_DATA_API_KEY is required")
+        if self.market_evidence_source_mode != "canonical":
+            errors.append("MARKET_EVIDENCE_SOURCE_MODE must be canonical in production")
         if self.background_jobs_enabled and self.database_url is None:
             errors.append("DATABASE_URL is required when background jobs are enabled")
 

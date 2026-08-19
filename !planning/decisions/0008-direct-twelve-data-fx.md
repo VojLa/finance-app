@@ -59,3 +59,25 @@ selector, ktery akceptuje jen `twelve_data`.
    prime evidence a snapshoty.
 5. CNB runtime a TS Yahoo/rates runtime se odstrani. Historicke enum identity
    zustavaji zachovane.
+
+## Docasny lokalni dodatek (2026-08-19)
+
+Pro overeni fixture importu lze mimo produkci explicitne zapnout
+`MARKET_EVIDENCE_SOURCE_MODE=local_free`. Tento rezim registruje Yahoo Finance
+pro ne-crypto cenove kotace a prime FX dvojice `FROMTO=X`; crypto zustava na
+CoinGecko. Produkcni konfigurace tento rezim odmitne. Yahoo data se vzdy
+persistuji se zdrojem `yahoo_finance` a nejsou zamennou za licencovane Twelve
+Data.
+
+Yahoo endpoint neni povazovan za schvalene produkcni market-data API. Pred
+jakymkoliv automatizovanym pouzitim mimo lokalni vyvoj musi operator overit a
+zdokumentovat prislusne podminky a opravneni Yahoo. Pred produkcnim nasazenim
+se tento rezim odstrani nebo nahradi licencovanym providerem v novem prijatem
+rozhodnuti.
+
+Vyber neni fallback: crypto ma presne CoinGecko, ostatni investicni typy presne
+Yahoo. Operator musi ulozit jednu kanonickou alias identitu pro dany provider;
+napr. fixture VUAA ma `VUAA.MI` v EUR. Pri chybejici/nejasne identite, chybe
+provideru nebo nedostupnem primem paru refresh skonci bez castecneho zapisu.
+Historicke Yahoo FX pozadavky se sdruzuji jen podle stejne prime dvojice;
+aplikace je neobraci ani nesklada pres treti menu.

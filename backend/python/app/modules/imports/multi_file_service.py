@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import ImportSource, ImportStatus
 from app.modules.accounts.access import require_account_access
+from app.modules.imports.anycoin_btc_alias import (
+    AnycoinBtcAliasService,
+    OnboardAnycoinBtcAliasCommand,
+)
 from app.modules.imports.models import ImportSnapshotRefreshStatus
 from app.modules.imports.post_processing_repository import (
     ImportBatchPostProcessingRepository,
@@ -38,6 +42,7 @@ _TERMINAL_STATUSES = {ImportStatus.completed, ImportStatus.partially_completed}
 _MAX_BATCHES = 10
 
 type BatchRepositoryFactory = Callable[[AsyncSession], ImportBatchRepository]
+type AnycoinBtcAliasFactory = Callable[[AsyncSession], AnycoinBtcAliasService]
 
 
 class ImportBatchFinalizationStateError(ApplicationError):
@@ -56,6 +61,7 @@ class FinalizeImportBatchesCommand:
     batch_ids: tuple[str, ...]
     background_job_id: str | None = None
     publication_bucket: datetime | None = None
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +98,20 @@ def _validate_command(value: object) -> FinalizeImportBatchesCommand:
         or value.publication_bucket.microsecond != 0
     ):
         raise RuntimeError("Import finalization command is invalid.")
+    if (
+        not isinstance(value.publication_account_ids, tuple)
+        or tuple(sorted(set(value.publication_account_ids))) != value.publication_account_ids
+        or any(
+            not isinstance(account_id, str) or not account_id or account_id != account_id.strip()
+            for account_id in value.publication_account_ids
+        )
+        or (value.background_job_id is None) != (not value.publication_account_ids)
+        or (
+            value.background_job_id is not None
+            and value.account_id not in value.publication_account_ids
+        )
+    ):
+        raise RuntimeError("Import finalization command is invalid.")
     return value
 
 
@@ -107,6 +127,7 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
         holding_service_factory: HoldingServiceFactory = _holding_factory,
         repository_factory: RepositoryFactory = ImportBatchPostProcessingRepository,
         batch_repository_factory: BatchRepositoryFactory = ImportBatchRepository,
+        anycoin_btc_alias_factory: AnycoinBtcAliasFactory = AnycoinBtcAliasService,
     ) -> None:
         super().__init__(
             session,
@@ -116,6 +137,7 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
             repository_factory=repository_factory,
         )
         self.batch_repository = batch_repository_factory(session)
+        self.anycoin_btc_alias_factory = anycoin_btc_alias_factory
 
     async def finalize(
         self,
@@ -165,12 +187,26 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
             await self._require_idle("Import posting replay left an active transaction.")
             postings.append(posting)
 
+        if source is None:
+            raise ImportBatchFinalizationStateError()
+        alias_service = self.anycoin_btc_alias_factory(self.session)
+        await alias_service.onboard(
+            OnboardAnycoinBtcAliasCommand(
+                account_id=canonical.account_id,
+                batch_ids=canonical.batch_ids,
+                source=source,
+                created_at=max(posting.completed_at for posting in postings),
+            )
+        )
+        await self._require_idle("Anycoin BTC alias onboarding left an active transaction.")
+
         status = await self._finalize_postings(
             principal=canonical.principal,
             account_id=canonical.account_id,
             postings=tuple(postings),
             background_job_id=canonical.background_job_id,
             publication_bucket=canonical.publication_bucket,
+            publication_account_ids=canonical.publication_account_ids,
         )
         return FinalizeImportBatchesResult(
             batch_ids=canonical.batch_ids,

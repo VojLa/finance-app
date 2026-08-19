@@ -18,11 +18,16 @@ from app.modules.prices.providers.coingecko_identity import (
 from app.modules.prices.providers.twelve_data_identity import (
     parse_twelve_data_quote_identity,
 )
+from app.modules.prices.providers.yahoo_finance_identity import (
+    YahooFinanceAssetIdentityError,
+    parse_yahoo_finance_asset_identity,
+)
 
 SUPPORTED_ASSET_ALIAS_PROVIDERS = frozenset(
     {
         AssetAliasProvider.coingecko,
         AssetAliasProvider.twelve_data,
+        AssetAliasProvider.yahoo_finance,
     }
 )
 COINGECKO_ASSET_TYPES = frozenset({AssetType.crypto})
@@ -35,6 +40,7 @@ TWELVE_DATA_ASSET_TYPES = frozenset(
         AssetType.other,
     }
 )
+YAHOO_FINANCE_ASSET_TYPES = TWELVE_DATA_ASSET_TYPES
 
 _SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,63}\Z")
 _CURRENCY = re.compile(r"[A-Z]{3}\Z")
@@ -49,6 +55,8 @@ def provider_asset_types(provider: AssetAliasProvider) -> frozenset[AssetType]:
         return COINGECKO_ASSET_TYPES
     if provider is AssetAliasProvider.twelve_data:
         return TWELVE_DATA_ASSET_TYPES
+    if provider is AssetAliasProvider.yahoo_finance:
+        return YAHOO_FINANCE_ASSET_TYPES
     raise _fail()
 
 
@@ -65,6 +73,11 @@ def canonical_external_id(
         try:
             return parse_twelve_data_quote_identity(value).canonical_external_id
         except MarketEvidenceStateError as exc:
+            raise _fail() from exc
+    if provider is AssetAliasProvider.yahoo_finance:
+        try:
+            return parse_yahoo_finance_asset_identity(value)
+        except YahooFinanceAssetIdentityError as exc:
             raise _fail() from exc
     raise _fail()
 
@@ -111,6 +124,7 @@ __all__ = [
     "COINGECKO_ASSET_TYPES",
     "SUPPORTED_ASSET_ALIAS_PROVIDERS",
     "TWELVE_DATA_ASSET_TYPES",
+    "YAHOO_FINANCE_ASSET_TYPES",
     "canonical_external_id",
     "provider_asset_types",
     "validate_onboard_asset_alias_command",
