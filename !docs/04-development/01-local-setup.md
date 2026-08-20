@@ -61,6 +61,15 @@ If Next.js reports missing chunks or an undefined module call, stop its dev
 server, remove `.next`, and restart it. Avoid `npm run build` while a dev server
 is running.
 
+## Temporary HTTPS access outside the local network
+
+Expose only the Next.js port through a development tunnel. Keep FastAPI and
+PostgreSQL private. Docker Compose accepts runtime overrides for
+`NEXTAUTH_URL` and `NEXTAUTH_SECRET`; set the generated HTTPS tunnel URL and a
+fresh random secret before recreating `app`. Cloudflare Quick Tunnels are
+temporary development endpoints, so stop the tunnel container after testing
+and never reuse the placeholder NextAuth secret for public access.
+
 ## Generate Python API types
 
 From the repository root:

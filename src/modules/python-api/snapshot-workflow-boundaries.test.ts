@@ -134,6 +134,8 @@ describe("snapshot workflow static boundaries", () => {
     }
 
     const compose = await source("docker-compose.yml")
+    expect(compose).toContain('NEXTAUTH_URL: "${NEXTAUTH_URL:-http://localhost:3000}"')
+    expect(compose).toContain('NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-development-secret-change-me}"')
     expect(
       compose.match(/INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me/g)
     ).toHaveLength(2)
