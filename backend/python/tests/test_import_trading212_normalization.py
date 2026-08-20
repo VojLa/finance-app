@@ -158,6 +158,71 @@ def test_zero_provider_fee_column_is_absent_from_canonical_payload() -> None:
     assert result.data["fee"] is None
 
 
+@pytest.mark.parametrize("action", ["Market buy", "Limit buy"])
+def test_buy_ignores_trading212_blank_result_currency_placeholder(action: str) -> None:
+    result = _normalize(Action=action, **{"Result": "", "Currency (Result)": "eur"})
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["realized_pnl"] is None
+    assert isinstance(
+        classify_import_row(source=ImportSource.trading212, normalized_data=result.data),
+        InvestmentEventPostingIntent,
+    )
+
+
+@pytest.mark.parametrize("action", ["Market sell", "Dividend"])
+def test_non_buy_blank_result_currency_requires_paired_realized_pnl(action: str) -> None:
+    result = _normalize(Action=action, **{"Result": "", "Currency (Result)": "EUR"})
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert {error["code"] for error in result.validation_errors} >= {"paired_required"}
+
+
+def test_sell_preserves_filled_realized_pnl_and_classifies() -> None:
+    result = _normalize(Action="Market sell", **{"Result": "1.25", "Currency (Result)": "EUR"})
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["realized_pnl"] == {"amount": "1.25", "currency": "EUR"}
+    assert isinstance(
+        classify_import_row(source=ImportSource.trading212, normalized_data=result.data),
+        InvestmentEventPostingIntent,
+    )
+
+
+def test_sell_result_without_currency_requires_paired_realized_pnl() -> None:
+    result = _normalize(Action="Market sell", **{"Result": "1.25", "Currency (Result)": ""})
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert {error["code"] for error in result.validation_errors} >= {"paired_required"}
+
+
+def test_buy_blank_result_with_invalid_currency_requires_review() -> None:
+    result = _normalize(**{"Result": "", "Currency (Result)": "EUR!"})
+
+    assert result.data is None
+    assert result.validation_errors is not None
+    assert any(
+        error
+        == {"field": "realized_pnl.currency", "code": "invalid", "message": "Currency is invalid."}
+        for error in result.validation_errors
+    )
+
+
+def test_buy_preserves_filled_realized_pnl_for_classifier_review() -> None:
+    result = _normalize(**{"Result": "1.25", "Currency (Result)": "EUR"})
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["realized_pnl"] == {"amount": "1.25", "currency": "EUR"}
+    classified = classify_import_row(source=ImportSource.trading212, normalized_data=result.data)
+    assert isinstance(classified, NeedsReviewPostingIntent)
+    assert classified.errors[0].code.value == "incompatible_investment_fields"
+
+
 @pytest.mark.parametrize(
     ("action", "expected"),
     [

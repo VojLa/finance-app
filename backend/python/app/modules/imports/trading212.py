@@ -318,13 +318,21 @@ def normalize_trading212_import_row(
         ("Currency (Total)", "Currency (Amount)", "Currency"),
         positive=True,
     )
-    realized_pnl = _money(
-        raw_data,
-        errors,
-        "realized_pnl",
-        ("Result", "Realized P/L"),
-        ("Currency (Result)", "Currency (Realized P/L)"),
-    )
+    realized_pnl_amount = _value(raw_data, "Result", "Realized P/L")
+    realized_pnl_currency = _value(raw_data, "Currency (Result)", "Currency (Realized P/L)")
+    if action == "buy" and realized_pnl_amount is None and realized_pnl_currency is not None:
+        # Trading212 emits a result currency for buy rows although buys cannot have
+        # realized P/L. Preserve invalid provider values as review evidence.
+        _currency(realized_pnl_currency, errors, "realized_pnl.currency")
+        realized_pnl = None
+    else:
+        realized_pnl = _money(
+            raw_data,
+            errors,
+            "realized_pnl",
+            ("Result", "Realized P/L"),
+            ("Currency (Result)", "Currency (Realized P/L)"),
+        )
     fee = None if promotional else _fees(raw_data, errors)
     exchange_rate = _decimal(
         _value(raw_data, "Exchange rate", "Exchange Rate"),
