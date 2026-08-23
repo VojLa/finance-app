@@ -16,14 +16,20 @@ Treat these folders as the entry points. Do not add links to their individual do
 Before working on a task:
 
 1. Read `memory/codex_rules.md`.
-2. Read the relevant parts of [`!docs/`](!docs/) for the current architecture and technical constraints.
-3. Read the relevant parts of [`!planning/`](!planning/) for the intended design, accepted decisions, current scope, and roadmap.
-4. Follow [`CHATGPT/`](CHATGPT/) for the appropriate design, planning, implementation, and review workflow.
+2. Read [`!docs/map/PROJECT-MAP.md`](!docs/map/PROJECT-MAP.md) and then only the relevant domain map.
+3. Read the relevant parts of [`!docs/`](!docs/) for the current architecture and technical constraints.
+4. Read the relevant parts of [`!planning/`](!planning/) for the intended design, accepted decisions, current scope, and roadmap.
+5. Follow [`CHATGPT/`](CHATGPT/) for the appropriate design, planning, implementation, and review workflow.
 
 When architecture or design is unclear or inconsistent, resolve and document it in the appropriate source folder before making a large implementation decision. Keep detailed cross-references inside `!docs/`, `!planning/`, or `CHATGPT/`, not in this file.
 
 ## Working Rules
 
+- For a non-trivial task, apply `.agents/skills/finance-orchestrator/SKILL.md`
+  before choosing implementation work. Apply
+  `.agents/skills/finance-development/SKILL.md` for implementation and
+  `.agents/skills/finance-docs/SKILL.md` for its final documentation-impact
+  check.
 - Keep the current application working while changes are introduced in small, reversible steps.
 - Do not duplicate domain rules across TypeScript, Python, and Rust without explicit boundaries and parity tests.
 - Keep database ownership and migrations aligned with the documented architecture and accepted decisions.

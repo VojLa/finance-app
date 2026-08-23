@@ -33,16 +33,43 @@ This status is not a declaration of public-production readiness.
 
 ## Reading guide
 
-- [Product overview](01-product-overview.md), [domain model](02-domain-model.md), and
-  [glossary](03-glossary.md) describe the business vocabulary and implementation status.
-- [`01-architecture`](01-architecture/) describes runtime boundaries, modules, data flow,
-  and security.
-- [`02-imports`](02-imports/) documents the implemented import pipeline and its limits.
-- [`03-api`](03-api/01-conventions.md) is the HTTP integration guide. The live OpenAPI
-  schema is available from the Python service when documentation is enabled.
-- [`04-development`](04-development/) contains local setup, checks, and coding rules.
-- [`05-decisions`](05-decisions/) mirrors the short, implementation-facing architectural
-  decisions. The full ADR record lives in [`!planning/decisions`](../!planning/decisions/).
+- [Project Map](map/PROJECT-MAP.md) → [Domain Map](map/DOMAIN-MAP.md) →
+  [domain guide](domains/README.md) is the default L0/L1/L2 path.
+- [Architecture](architecture/README.md) explains runtime boundaries, data flow,
+  security, and cross-domain module evidence.
+- [Imports](02-imports/README.md) explains the implemented import pipeline and
+  parser boundary.
+- [API](api/README.md) routes to the HTTP contract, OpenAPI inventory, and
+  adapter boundary.
+- [Development](development/README.md) covers setup, testing, coding rules, and
+  documentation automation.
+- [Decisions](decisions/README.md) indexes implemented decisions; proposed
+  long-lived ADRs are in [planning decisions](../!planning/decisions/README.md).
+- [Glossary](glossary.md) and [generated inventories](map/generated/README.md)
+  provide vocabulary and deterministic file-level discovery.
+
+## Documentation network
+
+```mermaid
+flowchart TD
+    ROOT[!docs/README.md] --> MAP[map/README.md]
+    ROOT --> ARCH[architecture/README.md]
+    ROOT --> DOMAINS[domains/README.md]
+    ROOT --> IMPORTS[02-imports/README.md]
+    ROOT --> API[api/README.md]
+    ROOT --> DEV[development/README.md]
+    ROOT --> DECISIONS[decisions/README.md]
+    MAP --> L0[PROJECT-MAP.md]
+    MAP --> L1[DOMAIN-MAP.md]
+    MAP --> GENERATED[map/generated/README.md]
+    L0 --> L1
+    L1 --> DOMAINS
+    DOMAINS --> GUIDES[one maintained module guide]
+    DOMAINS --> EVIDENCE[domains/evidence/README.md]
+    ARCH --> MODULES[architecture/modules/README.md]
+    GUIDES --> CODE[relevant code and focused tests]
+    GENERATED --> CODE
+```
 
 When documentation conflicts with code, treat the code, its tests, and the live
 OpenAPI document as the immediate runtime truth; update this directory in the
