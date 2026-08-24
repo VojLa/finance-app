@@ -31,6 +31,7 @@ Neni to jen jednorazovy plan. Je to ziva dokumentace, podle ktere se rozhoduje o
 7. `architecture/10-security-strategy.md`
 8. `architecture/11-development-workflow.md`
 9. `architecture/12-python-backend-completion.md`
+10. `architecture/documentation/README.md`
 
 ### Decisions
 
