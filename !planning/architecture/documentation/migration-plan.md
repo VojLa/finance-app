@@ -1,7 +1,7 @@
 # Documentation migration plan
 
 Type: reference
-Status: proposed
+Status: completed
 Owns: pořadí, bezpečnost a akceptační kritéria dokumentační migrace
 Code: všechny dokumentační kořeny a `scripts/docs`
 Update when: změní se migrační pořadí nebo cílové kontroly
@@ -9,7 +9,7 @@ Update when: změní se migrační pořadí nebo cílové kontroly
 ## Pořadí
 
 1. Zavést šablony, registry typů, ID a cílové README rozcestníky.
-2. Zkrátit L0/L1 mapy na routing a odstranit z nich doménový detail.
+2. Zkrátit L0 a rozdělit L1 do jedné mapy na doménu.
 3. Vytvořit invariant catalog a přesunout přesná opakovaná pravidla.
 4. Převést domény v pořadí identity → accounts → ledger/imports → market
    evidence → valuation → read models/history.

@@ -1,7 +1,7 @@
 # Documentation audit and gaps
 
 Type: reference
-Status: proposed
+Status: historical
 Owns: výchozí audit rozsahu pro návrh dokumentační migrace
 Code: celé repository
 Update when: před zahájením migrace nebo při přidání nového subsystému
@@ -34,7 +34,7 @@ zdroje, testovací vrstvy a dokumentační pokrytí. Nenahrazuje budoucí
 
 - Číslované složky, `domains/`, `architecture/modules/` a `domains/evidence/`
   tvoří paralelní cesty ke stejným informacím.
-- `DOMAIN-MAP.md` je současně router i zkrácená doménová dokumentace.
+- Původní `DOMAIN-MAP.md` směšoval router a doménovou dokumentaci; nyní je rozdělen do `map/domain-map/`.
 - Účel, source of truth, invarianty a testy se opakují ve více souborech.
 - Milestone a auditní evidence je místy vedena jako aktuální architektura.
 - Jeden aktuální architecture evidence soubor má 498 řádků; mapa má 333.

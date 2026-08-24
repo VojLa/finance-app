@@ -1,9 +1,8 @@
 # Documentation information architecture
 
-Status: proposed
+Status: implemented V1
 
-Tato složka navrhuje cílový dokumentační systém. Neznamená, že současné
-`!docs` již byly převedeny. Návrh vychází ze strukturálního průchodu kódem,
+Tato složka zaznamenává implementovaný V1 dokumentační systém. Návrh vychází ze strukturálního průchodu kódem,
 FastAPI routami, databázovými modely a migracemi, frontendem, testy, CI,
 skripty a všemi dokumentačními kořeny.
 

@@ -1,4 +1,3 @@
-# API records
+# API legacy paths
 
-Read [API conventions](01-conventions.md), then the semantic
-[API index](../api/README.md) for generated contract and identity links.
+Current owner: [API documentation](../api/README.md). The local file is a compatibility route.

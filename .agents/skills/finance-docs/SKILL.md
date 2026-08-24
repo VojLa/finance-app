@@ -16,7 +16,7 @@ Use this skill after a relevant implementation or documentation change. Update o
 | `!user-docs/` | End-user instructions, feature explanations, troubleshooting, and FAQ without implementation detail. |
 | `!docs/map/generated/` | Deterministic inventories only. Never hand-edit generated output. |
 
-The existing numbered `!docs/` hierarchy remains current during migration. The semantic paths described in `!docs/map/README.md` are the target navigation structure and must not duplicate or contradict current documentation.
+Semantic paths under `!docs/architecture`, `domains`, `api`, `data`, `testing`, `security`, `operations`, `development`, and `reference` own current documentation. Numbered paths and evidence folders are historical compatibility routes; do not add current rules to them.
 
 ## Documentation impact
 

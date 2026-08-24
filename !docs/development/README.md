@@ -1,10 +1,15 @@
-# Development documentation
+# Development
 
-- [Local setup](../04-development/01-local-setup.md)
-- [Testing](../04-development/02-testing.md)
-- [Coding standards](../04-development/03-coding-standards.md)
-- [FX reconciliation](../04-development/04-fx-reconciliation.md)
-- [Documentation automation](../../scripts/docs/README.md)
+Type: reference
+Status: current
+Owns: implementation workflow and development navigation
+Code: development scripts and CI
+Update when: workflow, verification or documentation tooling changes
 
-Use the Project Map before opening code and run the smallest relevant check
-before broader quality gates.
+- [Coding standards](coding-standards.md)
+- [Testing and quality gates](../testing/README.md)
+- [Local development](../operations/local-development.md)
+- [Documentation workflow](documentation.md)
+- [Document types](document-types.md)
+- [Deterministic documentation tools](../../scripts/docs/README.md)
+- [AI implementation workflow](../../CHATGPT/README.md)

@@ -1,8 +1,11 @@
-# Technical decisions
+# Implemented decisions
 
-Implemented decisions are in [05-decisions](../05-decisions/README.md).
-Long-lived ADRs and proposed decisions belong in
-[planning decisions](../../!planning/decisions/README.md).
+Type: reference
+Status: current
+Owns: routing between active effects and decision rationale
+Code: architecture, persistence and API boundaries
+Update when: a decision is accepted, superseded or archived
 
-Use a decision record for durable changes to architecture, security, ownership,
-or public contracts; do not create duplicate decision text in domain guides.
+Active effects are stated once in the owning architecture/domain document.
+Decision rationale and proposals are in [planning decisions](../../!planning/decisions/README.md).
+The numbered `05-decisions` records remain historical compatibility evidence.

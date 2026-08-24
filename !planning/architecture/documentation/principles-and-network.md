@@ -1,7 +1,7 @@
 # Documentation principles and network
 
 Type: reference
-Status: proposed
+Status: implemented
 Owns: pravidla vlastnictví, životního cyklu a propojení dokumentů
 Code: dokumentační kořeny a `scripts/docs`
 Update when: změní se dokumentační autorita, síť nebo životní cyklus
@@ -71,7 +71,7 @@ pouze mechanicky podle délky.
 ```text
 !docs/
 ├── README.md
-├── map/{PROJECT-MAP.md, DOMAIN-MAP.md, generated/}
+├── map/{project-map/, domain-map/, generated/}
 ├── architecture/{boundaries/, flows/, invariants/}
 ├── domains/<domain>/{README.md, modules/, flows/, testing.md}
 ├── api/

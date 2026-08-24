@@ -1,4 +1,10 @@
-# Domain evidence index
+# Historical domain evidence
+
+Type: reference
+Status: historical
+Owns: milestone domain evidence
+Code: none
+Update when: evidence is archived
 
 These files preserve detailed implemented evidence that was previously in the
 large consolidated domain model. They are supporting material for the maintained

@@ -9,7 +9,7 @@ Use this skill before a non-trivial Finance App task. Its purpose is to choose a
 
 ## Start with bounded context
 
-1. Read `memory/codex_rules.md` and `!docs/map/PROJECT-MAP.md`.
+1. Read `memory/codex_rules.md` and `!docs/map/project-map/README.md`.
 2. Load the relevant domain section, its linked current documentation, and only the code needed to understand the change.
 3. Classify the request by kind: reconnaissance, documentation, bug fix, implementation, refactor, test, review, or architecture/decision.
 4. State the visible outcome, affected domain, explicit non-goals, and any API, database, auth, import-boundary, concurrency, or financial-invariant impact.

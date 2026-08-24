@@ -1,7 +1,7 @@
 # Documentation project coverage
 
 Type: reference
-Status: proposed
+Status: implemented
 Owns: mapování skutečných subsystémů na budoucí doménové dokumenty
 Code: `src`, `backend/python`, `backend/rust`, databáze, scripts a CI
 Update when: vznikne, zanikne nebo změní autoritu runtime subsystém

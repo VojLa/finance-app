@@ -1,6 +1,6 @@
-# Numbered architecture records
+# Numbered architecture legacy paths
 
-Use the semantic [architecture index](../architecture/README.md) first.
+Current owner: [semantic architecture](../architecture/README.md). Files here are compatibility routes.
 
 - [Technical overview](01-technical-overview.md)
 - [Module catalogue index](02-modules.md)

@@ -1,4 +1,10 @@
-# Architecture module evidence
+# Historical architecture module evidence
+
+Type: reference
+Status: historical
+Owns: milestone implementation evidence
+Code: none
+Update when: evidence is archived
 
 These files split the former long module catalogue into short cross-domain
 architecture records. For ordinary feature work, start with the maintained

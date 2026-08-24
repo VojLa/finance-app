@@ -1,7 +1,7 @@
 # Documentation file type registry
 
 Type: reference
-Status: proposed
+Status: implemented
 Owns: povinnou strukturu jednotlivých typů dokumentů
 Code: `!docs`, `!planning`, `!user-docs` a historie
 Update when: vznikne nový typ informace nebo se změní jeho vlastník
@@ -12,11 +12,10 @@ Obsahuje rozsah adresáře, tabulku dokument → kdy jej číst, odkaz na rodič
 pravidlo, co sem nepatří. Neobsahuje dlouhé invarianty, file list ani milestone
 historii. Aktualizuje se při přidání, odstranění nebo změně účelu potomka.
 
-## L0 Project Map
+## L0 Project maps
 
-Obsahuje runtime vrstvy, autority, hlavní domény a čtecí cestu. Neobsahuje
-konkrétní testy ani detailní entry points. Mění se jen při změně systémové
-hranice, autority nebo seznamu domén.
+Samostatné krátké mapy vlastní runtime vrstvy, repository lokace, systémový tok,
+zdroje pravdy a čtecí cestu. Nemíchají detail domén ani úplné inventáře.
 
 ## L1 Domain Map
 

@@ -1,6 +1,6 @@
-# Development records
+# Development legacy paths
 
-Use the semantic [development index](../development/README.md).
+Current owner: [Development](../development/README.md). Files here are compatibility routes.
 
 - [Local setup](01-local-setup.md)
 - [Testing](02-testing.md)

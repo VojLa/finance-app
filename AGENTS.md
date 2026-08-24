@@ -16,7 +16,7 @@ Treat these folders as the entry points. Do not add links to their individual do
 Before working on a task:
 
 1. Read `memory/codex_rules.md`.
-2. Read [`!docs/map/PROJECT-MAP.md`](!docs/map/PROJECT-MAP.md) and then only the relevant domain map.
+2. Read [`!docs/map/project-map/`](!docs/map/project-map/README.md), then select one map from [`!docs/map/domain-map/`](!docs/map/domain-map/README.md).
 3. Read the relevant parts of [`!docs/`](!docs/) for the current architecture and technical constraints.
 4. Read the relevant parts of [`!planning/`](!planning/) for the intended design, accepted decisions, current scope, and roadmap.
 5. Follow [`CHATGPT/`](CHATGPT/) for the appropriate design, planning, implementation, and review workflow.
