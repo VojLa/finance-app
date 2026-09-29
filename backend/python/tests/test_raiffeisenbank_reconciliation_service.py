@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from runpy import run_path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -28,7 +30,10 @@ from app.modules.imports.raiffeisenbank_reconciliation_service import (
     _reconciliation_accounts,
 )
 
-_FIXTURES = Path(__file__).parents[3] / "test_imports" / "RB"
+_EXPORT_BUILDERS = run_path(
+    str(Path(__file__).parent / "fixtures" / "raiffeisenbank" / "synthetic_exports.py")
+)
+_RB_EXPORTS = cast(Callable[[], dict[str, bytes]], _EXPORT_BUILDERS["reconciliation_exports"])()
 _NOW = datetime(2026, 8, 20, 12, 0, 0)
 
 
@@ -87,10 +92,10 @@ class _Repository:
 
 def _pair_evidence():
     basic = parse_import_file(
-        ImportSource.raiffeisenbank, (_FIXTURES / "Basic CZK.csv").read_bytes(), encoding=None
+        ImportSource.raiffeisenbank, _RB_EXPORTS["Basic CZK.csv"], encoding=None
     )
     savings = parse_import_file(
-        ImportSource.raiffeisenbank, (_FIXTURES / "Savings.csv").read_bytes(), encoding=None
+        ImportSource.raiffeisenbank, _RB_EXPORTS["Savings.csv"], encoding=None
     )
     basic_by_id = {row.raw_data.get("Id transakce"): row for row in basic}
     for savings_row in savings:

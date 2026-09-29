@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from runpy import run_path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -27,7 +28,10 @@ from app.modules.imports.raiffeisenbank_card_multiset import (
     raiffeisenbank_card_full_fingerprint,
 )
 
-RB_FIXTURES = Path(__file__).parents[3] / "test_imports" / "RB"
+_EXPORT_BUILDERS = run_path(
+    str(Path(__file__).parent / "fixtures" / "raiffeisenbank" / "synthetic_exports.py")
+)
+_CARD_EXPORTS = cast(Callable[[], dict[str, bytes]], _EXPORT_BUILDERS["card_multiset_exports"])()
 ACCOUNT_ID = "rb-credit-card-account"
 CandidateMutator = Callable[[RaiffeisenbankCardCandidate], RaiffeisenbankCardCandidate]
 
@@ -35,7 +39,7 @@ CandidateMutator = Callable[[RaiffeisenbankCardCandidate], RaiffeisenbankCardCan
 def _fixture_candidates(filename: str, batch_id: str) -> list[RaiffeisenbankCardCandidate]:
     rows = parse_import_file(
         ImportSource.raiffeisenbank,
-        (RB_FIXTURES / filename).read_bytes(),
+        _CARD_EXPORTS[filename],
         encoding=None,
     )
     candidates: list[RaiffeisenbankCardCandidate] = []
@@ -69,7 +73,7 @@ def credit_candidates() -> tuple[
     )
 
 
-def test_real_credit_exports_plan_the_exact_multiset(
+def test_synthetic_credit_exports_plan_the_exact_multiset(
     credit_candidates: tuple[list[RaiffeisenbankCardCandidate], list[RaiffeisenbankCardCandidate]],
 ) -> None:
     current, history = credit_candidates
@@ -90,7 +94,7 @@ def test_real_credit_exports_plan_the_exact_multiset(
     assert duplicate_batches == {"credit-history"}
 
 
-def test_real_credit_exports_preserve_all_within_file_repetitions(
+def test_synthetic_credit_exports_preserve_all_within_file_repetitions(
     credit_candidates: tuple[list[RaiffeisenbankCardCandidate], list[RaiffeisenbankCardCandidate]],
 ) -> None:
     current, history = credit_candidates
@@ -120,7 +124,7 @@ def test_real_credit_exports_preserve_all_within_file_repetitions(
     assert not legitimate_repeat_ids & set(plan.duplicate_row_ids)
 
 
-def test_real_credit_plan_is_independent_of_row_and_file_order(
+def test_synthetic_credit_plan_is_independent_of_row_and_file_order(
     credit_candidates: tuple[list[RaiffeisenbankCardCandidate], list[RaiffeisenbankCardCandidate]],
 ) -> None:
     current, history = credit_candidates

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from runpy import run_path
+from typing import cast
 
 import pytest
 
@@ -27,7 +30,10 @@ from app.modules.imports.raiffeisenbank_reconciliation import (
     plan_raiffeisenbank_reconciliation,
 )
 
-RB_FIXTURES = Path(__file__).parents[3] / "test_imports" / "RB"
+_EXPORT_BUILDERS = run_path(
+    str(Path(__file__).parent / "fixtures" / "raiffeisenbank" / "synthetic_exports.py")
+)
+_RB_EXPORTS = cast(Callable[[], dict[str, bytes]], _EXPORT_BUILDERS["reconciliation_exports"])()
 
 
 def _accounts() -> tuple[RaiffeisenbankReconciliationAccount, ...]:
@@ -62,7 +68,7 @@ def _accounts() -> tuple[RaiffeisenbankReconciliationAccount, ...]:
 def _rows(filename: str):
     return parse_import_file(
         ImportSource.raiffeisenbank,
-        (RB_FIXTURES / filename).read_bytes(),
+        _RB_EXPORTS[filename],
         encoding=None,
     )
 
@@ -156,7 +162,7 @@ def fixture_input() -> tuple[
     return _accounts(), tuple(candidates)
 
 
-def test_real_rb_fixtures_plan_all_and_only_supported_pairs(
+def test_synthetic_rb_exports_plan_all_and_only_supported_pairs(
     fixture_input: tuple[
         tuple[RaiffeisenbankReconciliationAccount, ...],
         tuple[RaiffeisenbankReconciliationCandidate, ...],
@@ -198,10 +204,10 @@ def test_real_rb_fixtures_plan_all_and_only_supported_pairs(
     )
     assert repayment_pair.classification is TransactionClassification.credit_card_payment
     assert by_id[repayment_pair.from_transaction_id].posted.account_id == "basic-czk"
-    assert repayment.raw_data["Číslo kreditní karty"] == "520655XXXXXX2067"
-    assert by_id[repayment_pair.from_transaction_id].raw_data["VS"] == "4668142067"
+    assert repayment.raw_data["Číslo kreditní karty"] == "999999XXXXXX2067"
+    assert by_id[repayment_pair.from_transaction_id].raw_data["VS"] == "9999992067"
     assert (
-        by_id[repayment_pair.from_transaction_id].raw_data["Číslo protiúčtu"] == "1101083110/5500"
+        by_id[repayment_pair.from_transaction_id].raw_data["Číslo protiúčtu"] == "TEST-CARD-ACCOUNT"
     )
     same_day_savings_transfer = next(
         candidate
@@ -209,7 +215,7 @@ def test_real_rb_fixtures_plan_all_and_only_supported_pairs(
         if candidate.posted.account_id == "basic-czk"
         and candidate.posted.date.date().isoformat() == "2024-05-02"
         and candidate.posted.amount == Decimal("-2000")
-        and candidate.raw_data["Číslo protiúčtu"] == "1530315311/5500"
+        and candidate.raw_data["Číslo protiúčtu"] == "TEST-SAVINGS-CZK"
     )
     savings_transfer_pair = next(
         pair
@@ -221,7 +227,7 @@ def test_real_rb_fixtures_plan_all_and_only_supported_pairs(
     assert savings_transfer_pair.pair_id != repayment_pair.pair_id
 
 
-def test_real_fixture_plan_is_reorder_stable_and_late_arrival_converges(
+def test_synthetic_fixture_plan_is_reorder_stable_and_late_arrival_converges(
     fixture_input: tuple[
         tuple[RaiffeisenbankReconciliationAccount, ...],
         tuple[RaiffeisenbankReconciliationCandidate, ...],
