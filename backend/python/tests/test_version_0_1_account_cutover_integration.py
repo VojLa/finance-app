@@ -24,6 +24,7 @@ from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.accounts.models import AccountCreateRequest
 from app.modules.accounts.service import AccountService
+from app.modules.market_data.source_policy import LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "version-0-1-account-cutover-secret-32-characters"
@@ -159,7 +160,10 @@ async def _verify_atomic_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
     identifiers = iter([failed_id, member_id])
     monkeypatch.setattr("app.modules.accounts.service.uuid4", lambda: next(identifiers))
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountService(session)
+        service = AccountService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         with pytest.raises(IntegrityError):
             await service.create_account(
                 principal=AuthenticatedPrincipal(

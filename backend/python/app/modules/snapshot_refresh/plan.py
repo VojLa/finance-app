@@ -66,6 +66,7 @@ class SnapshotRefreshAccountEvidence:
     accepted_at: datetime
     is_archived: bool
     archived_at: datetime | None
+    has_canonical_history: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,16 +239,24 @@ def _validate_account(
         raise _fail()
     if value.account_type not in _SUPPORTED_ACCOUNT_TYPES:
         raise _fail()
-
     membership_id = _nonblank(value.membership_id)
-    mode = (
-        AccountSnapshotRefreshMode.refresh
-        if account_id in publication_account_ids
-        else _refresh_mode(value.membership_role)
-    )
+    membership_mode = _refresh_mode(value.membership_role)
     if not isinstance(value.relation_type, AccountRelationType):
         raise _fail()
     _timestamp(value.accepted_at)
+    if not isinstance(value.has_canonical_history, bool):
+        raise _fail()
+    # An account with no canonical financial history has no valuation evidence to
+    # snapshot. It remains part of access validation, but is deliberately absent
+    # from both account and net-worth snapshot dependencies.
+    if not value.has_canonical_history:
+        return None
+
+    mode = (
+        AccountSnapshotRefreshMode.refresh
+        if account_id in publication_account_ids
+        else membership_mode
+    )
 
     return (
         account_id,
@@ -333,8 +342,6 @@ def build_user_snapshot_refresh_plan(
     account_targets = tuple(
         item[2] for item in sorted(validated, key=lambda item: (item[0], item[1]))
     )
-    if not publication_accounts.issubset({target.account_id for target in account_targets}):
-        raise _fail()
     required_account_ids = tuple(target.account_id for target in account_targets)
     net_worth_target = ExpectedNetWorthRefreshTarget(
         user_id=user_id,

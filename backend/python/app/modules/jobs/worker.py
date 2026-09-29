@@ -67,7 +67,12 @@ class PermanentBackgroundJobError(RuntimeError):
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    value = datetime.now(UTC).replace(tzinfo=None)
+    # Durable job timestamps are persisted as TIMESTAMP(3).  Keep the worker's
+    # completion boundary byte-for-byte compatible with atomic history
+    # invalidation instead of passing transient sub-millisecond precision that
+    # PostgreSQL would truncate only after the transaction has been validated.
+    return value.replace(microsecond=(value.microsecond // 1_000) * 1_000)
 
 
 class BackgroundJobWorker:
@@ -250,8 +255,8 @@ class BackgroundJobWorker:
             if claimed.job.attempt_count >= claimed.job.max_attempts:
                 await repository.fail(
                     lease=claimed.lease,
-                    error_code="background_job_attempts_exhausted",
-                    error_message="Background processing could not be completed after all retries.",
+                    error_code=code,
+                    error_message=message,
                     now=now,
                 )
             else:

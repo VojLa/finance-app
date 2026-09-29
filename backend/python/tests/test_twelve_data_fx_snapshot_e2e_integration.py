@@ -9,12 +9,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.fx_integration import (
-    fx_engine,
-    principal,
-    seed_eur_cash_flow,
-    snapshot_command,
-)
 
 from app.config.settings import Settings
 from app.db.models.prices import ExchangeRateModel
@@ -34,6 +28,12 @@ from app.modules.portfolio_snapshot.multi_account_service import (
     ReadAuthorizedMultiAccountPortfolioSnapshotCommand,
 )
 from app.modules.snapshot_refresh.executor import UserSnapshotRefreshExecutor
+from tests.support.fx_integration import (
+    fx_engine,
+    principal,
+    seed_eur_cash_flow,
+    snapshot_command,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(

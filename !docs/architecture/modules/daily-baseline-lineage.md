@@ -1,5 +1,11 @@
 ## Daily baseline lineage foundation
 
+Type: historical
+Status: historical
+Owns: milestone evidence for daily-baseline lineage
+Code: baseline and canonical-lineage implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-D1 adds two internal modules without changing the active browser flow.
 `canonical_state` owns commit-ordered per-account revision allocation and its
 append-only root journal. Transaction and LiabilityBalance each consume one

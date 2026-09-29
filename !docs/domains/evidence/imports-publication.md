@@ -1,5 +1,11 @@
 ## Durable Raiffeisenbank reconciliation and publication
 
+Type: historical
+Status: historical
+Owns: milestone evidence for reconciliation and publication
+Code: import reconciliation/job implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 Revision `3p0001rbfoundation` records immutable import-source occurrence
 identity, one exact reporting-FX evidence row per canonical transaction, and
 normalized durable-job membership. It also permits versioned reconciliation

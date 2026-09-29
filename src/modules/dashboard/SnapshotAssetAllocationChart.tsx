@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts"
 
 import { formatSnapshotAmount } from "@/modules/portfolio/snapshot-page-format"
@@ -47,10 +48,10 @@ export function SnapshotAssetAllocationChart({ model }: Props) {
   }))
 
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-5">
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-4">
-        <h2 className="text-lg font-medium">Alokace podle typu aktiv</h2>
-        <p className="mt-1 text-xs text-gray-400">Vypočteno snapshot backendem</p>
+        <h2 className="text-lg font-medium">Rozložení investic</h2>
+        <p className="mt-1 text-sm text-gray-500">Podle typu aktiv</p>
       </div>
       {data.length === 0 ? (
         <p className="py-12 text-center text-sm text-gray-400">Žádná investiční alokace.</p>
@@ -100,6 +101,11 @@ export function SnapshotAssetAllocationChart({ model }: Props) {
           </div>
         </div>
       )}
+      <div className="mt-5 flex justify-end border-t border-gray-100 pt-4">
+        <Link href="/portfolio" className="text-sm font-medium text-blue-600 hover:underline">
+          Zobrazit více
+        </Link>
+      </div>
     </section>
   )
 }

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -57,23 +57,28 @@ def _principal(prefix: str) -> AuthenticatedPrincipal:
     )
 
 
-async def _clean_assets(*, symbols: set[str], isins: set[str]) -> None:
+def _owned_asset_filter(prefix: str, symbols: set[str], isins: set[str]):
+    test_symbols = {symbol for symbol in symbols if symbol.startswith("B2")}
+    test_isins = {isin for isin in isins if isin.startswith("ISINB2")}
+    return or_(
+        AssetModel.id.startswith(f"{prefix}-"),
+        AssetModel.symbol.in_(test_symbols),
+        AssetModel.isin.in_(test_isins),
+    )
+
+
+async def _clean_assets(*, prefix: str, symbols: set[str], isins: set[str]) -> None:
     engine = _engine()
     async with AsyncSession(engine) as session:
-        listing_ids = list(
-            (
-                await session.scalars(
-                    select(AssetListingModel.id).where(AssetListingModel.symbol.in_(symbols))
-                )
-            ).all()
-        )
-        if listing_ids:
-            await session.execute(
-                delete(AssetListingModel).where(AssetListingModel.id.in_(listing_ids))
-            )
-        await session.execute(
-            delete(AssetModel).where(AssetModel.symbol.in_(symbols) | AssetModel.isin.in_(isins))
-        )
+        await session.execute(delete(AssetModel).where(_owned_asset_filter(prefix, symbols, isins)))
+        await session.commit()
+    await engine.dispose()
+
+
+async def _clean_asset_id(asset_id: str) -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        await session.execute(delete(AssetModel).where(AssetModel.id == asset_id))
         await session.commit()
     await engine.dispose()
 
@@ -247,40 +252,52 @@ async def _import_snapshot(prefix: str) -> Any:
     return snapshot
 
 
-async def _out_of_scope_counts() -> dict[str, int]:
+async def _out_of_scope_counts(*, account_id: str, asset_id: str) -> dict[str, int]:
     engine = _engine()
     async with AsyncSession(engine) as session:
         result = {
-            model.__tablename__: int(
-                await session.scalar(select(func.count()).select_from(model)) or 0
-            )
-            for model in (
-                AssetAliasModel,
-                InvestmentEventModel,
-                InvestmentMovementModel,
-                TransactionModel,
-            )
+            "AssetAlias": int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AssetAliasModel)
+                    .where(AssetAliasModel.asset_id == asset_id)
+                )
+                or 0
+            ),
+            **{
+                model.__tablename__: int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(model)
+                        .where(model.account_id == account_id)
+                    )
+                    or 0
+                )
+                for model in (InvestmentEventModel, InvestmentMovementModel, TransactionModel)
+            },
         }
     await engine.dispose()
     return result
 
 
-async def _asset_counts(*, symbols: set[str], isins: set[str]) -> tuple[int, int]:
+async def _asset_counts(
+    *, prefix: str, symbols: set[str], isins: set[str], asset_ids: set[str] | None = None
+) -> tuple[int, int]:
     engine = _engine()
     async with AsyncSession(engine) as session:
+        owned_assets = _owned_asset_filter(prefix, symbols, isins)
+        if asset_ids:
+            owned_assets = or_(owned_assets, AssetModel.id.in_(asset_ids))
         assets = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(AssetModel)
-                .where(AssetModel.symbol.in_(symbols) | AssetModel.isin.in_(isins))
-            )
+            await session.scalar(select(func.count()).select_from(AssetModel).where(owned_assets))
             or 0
         )
         listings = int(
             await session.scalar(
                 select(func.count())
                 .select_from(AssetListingModel)
-                .where(AssetListingModel.symbol.in_(symbols))
+                .join(AssetModel, AssetListingModel.asset_id == AssetModel.id)
+                .where(owned_assets)
             )
             or 0
         )
@@ -405,7 +422,7 @@ def test_new_trading212_pair_and_exact_replay_preserve_import_state() -> None:
     prefix, symbol, isin = "b2-new", "B2NEW", "ISINB2NEW"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins={isin})
+        await _clean_assets(prefix=prefix, symbols={symbol}, isins={isin})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -451,9 +468,11 @@ def test_new_trading212_pair_and_exact_replay_preserve_import_state() -> None:
             "trading212",
             "EUR",
         )
-        assert await _asset_counts(symbols={symbol}, isins={isin}) == (1, 1)
+        assert await _asset_counts(prefix=prefix, symbols={symbol}, isins={isin}) == (1, 1)
         assert await _import_snapshot(prefix) == before
-        assert await _out_of_scope_counts() == {
+        assert await _out_of_scope_counts(
+            account_id=f"{prefix}-account", asset_id=first.asset.id
+        ) == {
             "AssetAlias": 0,
             "InvestmentEvent": 0,
             "InvestmentMovement": 0,
@@ -467,7 +486,7 @@ def test_existing_provider_listing_is_reused_without_update() -> None:
     prefix, symbol, isin = "b2-provider", "B2PROVIDER", "ISINB2PROVIDER"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins={isin})
+        await _clean_assets(prefix=prefix, symbols={symbol}, isins={isin})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -498,7 +517,7 @@ def test_existing_provider_listing_is_reused_without_update() -> None:
             False,
             False,
         )
-        assert await _asset_counts(symbols={symbol}, isins={isin}) == (1, 1)
+        assert await _asset_counts(prefix=prefix, symbols={symbol}, isins={isin}) == (1, 1)
 
     asyncio.run(scenario())
 
@@ -507,7 +526,7 @@ def test_unique_isin_asset_creates_only_listing() -> None:
     prefix, symbol, isin = "b2-isin", "B2ISIN", "ISINB2ISIN"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol, "OLDSYMBOL"}, isins={isin})
+        await _clean_assets(prefix=prefix, symbols={symbol, "OLDSYMBOL"}, isins={isin})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -524,7 +543,10 @@ def test_unique_isin_asset_creates_only_listing() -> None:
             False,
             True,
         )
-        assert await _asset_counts(symbols={symbol, "OLDSYMBOL"}, isins={isin}) == (1, 1)
+        assert await _asset_counts(prefix=prefix, symbols={symbol, "OLDSYMBOL"}, isins={isin}) == (
+            1,
+            1,
+        )
 
     asyncio.run(scenario())
 
@@ -533,7 +555,7 @@ def test_symbol_only_identity_never_merges_assets() -> None:
     prefix, symbol, isin = "b2-symbol", "B2SYMBOL", "ISINB2SYMBOL"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins={isin, "OTHERISIN"})
+        await _clean_assets(prefix=prefix, symbols={symbol}, isins={isin, "OTHERISIN"})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -546,7 +568,10 @@ def test_symbol_only_identity_never_merges_assets() -> None:
             await session.commit()
         await engine.dispose()
         assert resolved.asset.id != unrelated.id and resolved.asset_created is True
-        assert await _asset_counts(symbols={symbol}, isins={isin, "OTHERISIN"}) == (2, 1)
+        assert await _asset_counts(prefix=prefix, symbols={symbol}, isins={isin, "OTHERISIN"}) == (
+            2,
+            1,
+        )
 
     asyncio.run(scenario())
 
@@ -557,6 +582,7 @@ def test_missing_currency_evidence_and_ambiguous_isin_fail_without_mutation() ->
 
     async def scenario() -> None:
         await _clean_assets(
+            prefix=ambiguous_prefix,
             symbols={missing_symbol, ambiguous_symbol, "B2AMBONE", "B2AMBTWO"},
             isins={missing_isin, ambiguous_isin},
         )
@@ -572,7 +598,9 @@ def test_missing_currency_evidence_and_ambiguous_isin_fail_without_mutation() ->
             with pytest.raises(ImportPostStateError):
                 await ImportInvestmentAssetResolver(session).resolve(plan=missing_plan)
         await engine.dispose()
-        assert await _asset_counts(symbols={missing_symbol}, isins={missing_isin}) == (0, 0)
+        assert await _asset_counts(
+            prefix=missing_prefix, symbols={missing_symbol}, isins={missing_isin}
+        ) == (0, 0)
         assert await _import_snapshot(missing_prefix) == missing_before
 
         await _seed_pipeline(
@@ -587,7 +615,9 @@ def test_missing_currency_evidence_and_ambiguous_isin_fail_without_mutation() ->
             with pytest.raises(ImportPostStateError):
                 await ImportInvestmentAssetResolver(session).resolve(plan=ambiguous_plan)
         assert await _asset_counts(
-            symbols={ambiguous_symbol, "B2AMBONE", "B2AMBTWO"}, isins={ambiguous_isin}
+            prefix=ambiguous_prefix,
+            symbols={ambiguous_symbol, "B2AMBONE", "B2AMBTWO"},
+            isins={ambiguous_isin},
         ) == (2, 0)
 
     asyncio.run(scenario())
@@ -602,7 +632,7 @@ def test_exact_provider_corruption_fails_closed(conflict: str) -> None:
     )
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol, "OTHER"}, isins={isin, "OTHERISIN"})
+        await _clean_assets(prefix=prefix, symbols={symbol, "OTHER"}, isins={isin, "OTHERISIN"})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -627,7 +657,9 @@ def test_exact_provider_corruption_fails_closed(conflict: str) -> None:
             with pytest.raises(ImportPostStateError):
                 await ImportInvestmentAssetResolver(session).resolve(plan=plan)
         await engine.dispose()
-        assert await _asset_counts(symbols={symbol, "OTHER"}, isins={isin, "OTHERISIN"}) == (1, 1)
+        assert await _asset_counts(
+            prefix=prefix, symbols={symbol, "OTHER"}, isins={isin, "OTHERISIN"}
+        ) == (1, 1)
 
     asyncio.run(scenario())
 
@@ -636,7 +668,7 @@ def test_caller_rollback_removes_pair_then_retry_creates_one() -> None:
     prefix, symbol, isin = "b2-rollback", "B2ROLL", "ISINB2ROLL"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins={isin})
+        await _clean_assets(prefix=prefix, symbols={symbol}, isins={isin})
         await _seed_pipeline(
             prefix, source=ImportSource.trading212, rows=[_trading_buy(symbol, isin)]
         )
@@ -646,7 +678,7 @@ def test_caller_rollback_removes_pair_then_retry_creates_one() -> None:
             first = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
             assert first.asset_created and first.listing_created
             await session.rollback()
-        assert await _asset_counts(symbols={symbol}, isins={isin}) == (0, 0)
+        assert await _asset_counts(prefix=prefix, symbols={symbol}, isins={isin}) == (0, 0)
         async with _session(engine) as session:
             retry = await ImportInvestmentAssetResolver(session).resolve(plan=plan)
             await session.commit()
@@ -655,7 +687,7 @@ def test_caller_rollback_removes_pair_then_retry_creates_one() -> None:
             await session.commit()
         await engine.dispose()
         assert retry.asset.id == replay.asset.id and retry.listing.id == replay.listing.id
-        assert await _asset_counts(symbols={symbol}, isins={isin}) == (1, 1)
+        assert await _asset_counts(prefix=prefix, symbols={symbol}, isins={isin}) == (1, 1)
 
     asyncio.run(scenario())
 
@@ -675,7 +707,7 @@ def test_same_provider_concurrency_returns_one_pair() -> None:
     )
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins={isin})
+        await _clean_assets(prefix="b2-concurrent", symbols={symbol}, isins={isin})
         engine = _engine()
         first_resolved = asyncio.Event()
         second_pid_ready = asyncio.Event()
@@ -713,7 +745,7 @@ def test_same_provider_concurrency_returns_one_pair() -> None:
         assert (first.asset.id, first.listing.id) == (second.asset.id, second.listing.id)
         assert (first.asset_created, first.listing_created) == (True, True)
         assert (second.asset_created, second.listing_created) == (False, False)
-        assert await _asset_counts(symbols={symbol}, isins={isin}) == (1, 1)
+        assert await _asset_counts(prefix="b2-concurrent", symbols={symbol}, isins={isin}) == (1, 1)
 
     asyncio.run(scenario())
 
@@ -736,7 +768,6 @@ def test_exact_anycoin_btc_concurrency_creates_one_named_identity() -> None:
     plan = _exact_anycoin_btc_plan()
 
     async def scenario() -> None:
-        await _clean_assets(symbols={"BTC"}, isins=set())
         engine = _engine()
         first_resolved = asyncio.Event()
         second_pid_ready = asyncio.Event()
@@ -775,8 +806,13 @@ def test_exact_anycoin_btc_concurrency_creates_one_named_identity() -> None:
         assert (first.asset_created, first.listing_created) == (True, True)
         assert (second.asset_created, second.listing_created) == (False, False)
         await engine.dispose()
-        assert await _asset_counts(symbols={"BTC"}, isins=set()) == (1, 1)
-        await _clean_assets(symbols={"BTC"}, isins=set())
+        assert await _asset_counts(
+            prefix="b2-anycoin-concurrent",
+            symbols={"BTC"},
+            isins=set(),
+            asset_ids={first.asset.id},
+        ) == (1, 1)
+        await _clean_asset_id(first.asset.id)
 
     asyncio.run(scenario())
 
@@ -785,7 +821,7 @@ def test_exact_anycoin_btc_enriches_null_but_rejects_conflicting_persisted_name(
     plan = _exact_anycoin_btc_plan()
 
     async def scenario() -> None:
-        await _clean_assets(symbols={"BTC"}, isins=set())
+        await _clean_asset_id("anycoin-btc-null-name")
         engine = _engine()
         now = datetime.now(UTC).replace(tzinfo=None)
         async with _session(engine) as session:
@@ -837,7 +873,7 @@ def test_exact_anycoin_btc_enriches_null_but_rejects_conflicting_persisted_name(
             persisted = await session.get(AssetModel, "anycoin-btc-null-name")
             assert persisted is not None and persisted.name == "Bitcoin Cash"
         await engine.dispose()
-        await _clean_assets(symbols={"BTC"}, isins=set())
+        await _clean_asset_id("anycoin-btc-null-name")
 
     asyncio.run(scenario())
 
@@ -868,7 +904,7 @@ def test_same_isin_different_symbols_concurrency_reuses_one_asset() -> None:
     )
 
     async def scenario() -> None:
-        await _clean_assets(symbols={"B2ALPHA", "B2BETA"}, isins={isin})
+        await _clean_assets(prefix="b2-two-listings", symbols={"B2ALPHA", "B2BETA"}, isins={isin})
         engine = _engine()
         first_resolved = asyncio.Event()
         second_pid_ready = asyncio.Event()
@@ -911,16 +947,17 @@ def test_same_isin_different_symbols_concurrency_reuses_one_asset() -> None:
             plan_a.provider_symbol,
             plan_b.provider_symbol,
         )
-        assert await _asset_counts(symbols={"B2ALPHA", "B2BETA"}, isins={isin}) == (1, 2)
+        assert await _asset_counts(
+            prefix="b2-two-listings", symbols={"B2ALPHA", "B2BETA"}, isins={isin}
+        ) == (1, 2)
 
     asyncio.run(scenario())
 
 
 def test_anycoin_transfer_resolves_crypto_exchange_identity() -> None:
-    prefix, symbol = "b2-anycoin", "BTC"
+    prefix = "b2-anycoin"
 
     async def scenario() -> None:
-        await _clean_assets(symbols={symbol}, isins=set())
         await _seed_pipeline(
             prefix,
             source=ImportSource.anycoin,
@@ -957,11 +994,15 @@ def test_anycoin_transfer_resolves_crypto_exchange_identity() -> None:
             resolved.asset.name,
         ) == ("BTC", "EUR", "Bitcoin")
         assert await _import_snapshot(prefix) == before
-        assert await _out_of_scope_counts() == {
+        assert await _out_of_scope_counts(
+            account_id=f"{prefix}-account", asset_id=resolved.asset.id
+        ) == {
             "AssetAlias": 0,
             "InvestmentEvent": 0,
             "InvestmentMovement": 0,
             "Transaction": 0,
         }
+        if resolved.asset_created:
+            await _clean_asset_id(resolved.asset.id)
 
     asyncio.run(scenario())

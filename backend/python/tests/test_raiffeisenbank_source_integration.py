@@ -6,21 +6,41 @@ import hashlib
 import hmac
 import json
 import os
+import subprocess
+import sys
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from uuid import uuid4
 
+import asyncpg
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
+from app.db.models.canonical_lineage import (
+    AccountSnapshotCanonicalBoundaryModel,
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -30,6 +50,21 @@ from app.db.models.enums import (
     TransactionType,
 )
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.investment_snapshots import (
+    InvestmentAccountSnapshotItemModel,
+    InvestmentAccountSnapshotModel,
+    PortfolioSnapshotInputModel,
+    PortfolioSnapshotItemAccountModel,
+    PortfolioSnapshotItemModel,
+    PortfolioSnapshotModel,
+)
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -44,9 +79,81 @@ from app.modules.imports.transaction_posting import ImportTransactionPostingWrit
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+BASELINE = PYTHON_ROOT / "database" / "baseline" / "schema.sql"
+ALEMBIC = PYTHON_ROOT / "alembic.ini"
 
 SECRET = "r2-raiffeisenbank-integration-secret-32-characters"
 FIXTURES = Path(__file__).parent / "fixtures" / "imports" / "raiffeisenbank"
+
+
+async def _create_database() -> tuple[str, str, str]:
+    assert DATABASE_URL is not None
+    source_url = make_url(normalize_database_url(DATABASE_URL))
+    database_name = f"finance_app_rb_source_{uuid4().hex}"
+    admin_url = source_url.set(drivername="postgresql", database="postgres")
+    target_url = source_url.set(database=database_name)
+    admin = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
+    await admin.execute(f'CREATE DATABASE "{database_name}"')
+    target = await asyncpg.connect(
+        target_url.set(drivername="postgresql").render_as_string(hide_password=False)
+    )
+    try:
+        await target.execute(
+            BASELINE.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
+        )
+    finally:
+        await target.close()
+    migration_env = os.environ.copy()
+    target_database_url = target_url.render_as_string(hide_password=False)
+    migration_env["DATABASE_URL"] = target_database_url
+    try:
+        for action in (("stamp", "3d0001base"), ("upgrade", "head")):
+            subprocess.run(
+                [sys.executable, "-m", "alembic", "-c", str(ALEMBIC), *action],
+                cwd=PYTHON_ROOT,
+                env=migration_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+    except BaseException:
+        await admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            database_name,
+        )
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+        await admin.close()
+        raise
+    await admin.close()
+    return admin_url.render_as_string(hide_password=False), database_name, target_database_url
+
+
+async def _drop_database(admin_url: str, database_name: str) -> None:
+    admin = await asyncpg.connect(admin_url)
+    try:
+        await admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            database_name,
+        )
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+    finally:
+        await admin.close()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_current_head_database() -> Iterator[None]:
+    global DATABASE_URL
+    previous_url = DATABASE_URL
+    admin_url, database_name, target_url = asyncio.run(_create_database())
+    DATABASE_URL = target_url
+    try:
+        yield
+    finally:
+        DATABASE_URL = previous_url
+        asyncio.run(_drop_database(admin_url, database_name))
 
 
 def _encode(value: object) -> str:
@@ -104,8 +211,78 @@ async def _cleanup(prefix: str) -> None:
     account_ids = [f"{prefix}-account", f"{prefix}-foreign-account", f"{prefix}-concurrent"]
     async with AsyncSession(engine) as session:
         batch_ids = select(ImportBatchModel.id).where(ImportBatchModel.account_id.in_(account_ids))
+        job_ids = list(
+            (
+                await session.scalars(
+                    select(ImportJobBatchModel.job_id).where(
+                        ImportJobBatchModel.batch_id.in_(batch_ids)
+                    )
+                )
+            ).all()
+        )
         snapshot_ids = select(AccountSnapshotModel.id).where(
             AccountSnapshotModel.account_id.in_(account_ids)
+        )
+        await session.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotItemAccountModel).where(
+                PortfolioSnapshotItemAccountModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotInputModel).where(
+                PortfolioSnapshotInputModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotItemModel).where(
+                PortfolioSnapshotItemModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.account_id.in_(account_ids)
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineModel).where(
+                DailySnapshotBaselineModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.user_id.in_(user_ids))
+        )
+        await session.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id.in_(user_ids))
+        )
+        await session.execute(
+            delete(InvestmentAccountSnapshotItemModel).where(
+                InvestmentAccountSnapshotItemModel.account_id.in_(account_ids)
+            )
+        )
+        await session.execute(
+            delete(InvestmentAccountSnapshotModel).where(
+                InvestmentAccountSnapshotModel.account_id.in_(account_ids)
+            )
+        )
+        await session.execute(
+            delete(AccountSnapshotCanonicalBoundaryModel).where(
+                AccountSnapshotCanonicalBoundaryModel.account_id.in_(account_ids)
+            )
         )
         await session.execute(
             delete(AccountSnapshotItemModel).where(
@@ -119,15 +296,52 @@ async def _cleanup(prefix: str) -> None:
             delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
         )
         await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotGenerationModel).where(
+                SnapshotGenerationModel.id.startswith(f"{prefix}-"),
+                ~select(SnapshotGenerationTargetModel.generation_id)
+                .where(SnapshotGenerationTargetModel.generation_id == SnapshotGenerationModel.id)
+                .exists(),
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationWatermarkModel).where(
+                UserReadModelPublicationWatermarkModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
             delete(TransactionModel).where(TransactionModel.account_id.in_(account_ids))
         )
         await session.execute(
             delete(ImportLogModel).where(ImportLogModel.import_batch_id.in_(batch_ids))
         )
         await session.execute(
+            delete(ImportJobBatchModel).where(ImportJobBatchModel.batch_id.in_(batch_ids))
+        )
+        await session.execute(
             delete(ImportRowModel).where(ImportRowModel.import_batch_id.in_(batch_ids))
         )
         await session.execute(delete(ImportBatchModel).where(ImportBatchModel.id.in_(batch_ids)))
+        await session.execute(
+            delete(ImportJobPublicationTargetModel).where(
+                ImportJobPublicationTargetModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(ImportJobAffectedAccountModel).where(
+                ImportJobAffectedAccountModel.account_id.in_(account_ids)
+            )
+        )
+        await session.execute(delete(BackgroundJobModel).where(BackgroundJobModel.id.in_(job_ids)))
         await session.execute(
             delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
         )
@@ -225,7 +439,7 @@ def _create_and_prepare(
         },
     )
     assert created.status_code == 201, created.text
-    batch_id = created.json()["id"]
+    batch_id = created.json()["batch"]["id"]
     uploaded = client.put(
         f"/api/v1/accounts/{account_id}/imports/{batch_id}/file",
         headers=_headers(user_id, binary=True),
@@ -298,7 +512,7 @@ def test_raiffeisenbank_fixtures_post_exact_transactions_and_deduplicate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = "r2-rb-source"
+    prefix = f"r2-rb-source-{uuid4().hex}"
     asyncio.run(_seed(prefix))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
     app = create_app(_settings())
@@ -454,14 +668,14 @@ def test_raiffeisenbank_fixtures_post_exact_transactions_and_deduplicate(
         assert len(asyncio.run(_transactions(foreign_account))) == 3
         assert asyncio.run(_idle_in_transaction_count()) == 0
     finally:
-        asyncio.run(_cleanup(prefix))
+        pass
 
 
 def test_concurrent_duplicate_processing_selects_one_account_scoped_winner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = "r2-rb-concurrent"
+    prefix = f"r2-rb-concurrent-{uuid4().hex}"
     asyncio.run(_seed(prefix))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
     app = create_app(_settings())
@@ -516,14 +730,14 @@ def test_concurrent_duplicate_processing_selects_one_account_scoped_winner(
 
         assert len(asyncio.run(_transactions(account))) == 3
     finally:
-        asyncio.run(_cleanup(prefix))
+        pass
 
 
 def test_posting_rollback_retry_and_counterparty_corruption_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prefix = "r2-rb-rollback"
+    prefix = f"r2-rb-rollback-{uuid4().hex}"
     asyncio.run(_seed(prefix))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
     app = create_app(_settings())
@@ -588,7 +802,7 @@ def test_posting_rollback_retry_and_counterparty_corruption_fail_closed(
                 == 1
             )
     finally:
-        asyncio.run(_cleanup(prefix))
+        pass
 
 
 async def _count_transactions(*, account_id: str, external_id: str | None) -> int:

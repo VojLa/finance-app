@@ -61,6 +61,7 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
 )
+from tests.support.investment_fixture_e2e import cleanup as cleanup_fixture
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -238,6 +239,7 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
                 account_id=account_id,
                 calculated_at=CREATED_AT,
                 updated_at=CREATED_AT,
+                cost_basis_by_currency={"EUR": "200.0000000000"},
             )
         )
         for index, event_at in enumerate((EVENT_AT, SECOND_EVENT_AT), start=1):
@@ -340,7 +342,14 @@ async def test_provider_failure_writes_no_market_or_snapshot_rows() -> None:
                 )
             assert str(error.value) == "Market evidence is unavailable."
             assert price_provider.calls == 1
-            assert fx_provider.requirements == []
+            assert [
+                (item.from_currency, item.to_currency, item.through, item.provider)
+                for item in fx_provider.requirements
+            ] == [
+                ("EUR", "CZK", EVENT_AT, ExchangeRateSource.twelve_data),
+                ("EUR", "CZK", SECOND_EVENT_AT, ExchangeRateSource.twelve_data),
+                ("EUR", "CZK", SNAPSHOT_AT, ExchangeRateSource.twelve_data),
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             assert (
@@ -373,6 +382,7 @@ async def test_provider_failure_writes_no_market_or_snapshot_rows() -> None:
             )
     finally:
         await engine.dispose()
+        await cleanup_fixture(prefix)
 
 
 @pytest.mark.asyncio
@@ -595,3 +605,4 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             assert replayed_snapshot.replayed_account_snapshot_count == 1
     finally:
         await engine.dispose()
+        await cleanup_fixture(prefix)

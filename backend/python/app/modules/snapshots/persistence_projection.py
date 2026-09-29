@@ -41,6 +41,7 @@ _ERROR_MESSAGE = "Account snapshot evidence is not physically persistable."
 _SNAPSHOT_ID_NAMESPACE = UUID("63a292f7-4329-5bae-acd7-5a7bde53a01c")
 _ITEM_ID_NAMESPACE = UUID("2c260800-5e2a-54c6-9596-4fb1827b867d")
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
 
 
 class AccountSnapshotPersistenceProjectionError(ValueError):
@@ -65,6 +66,7 @@ class AccountSnapshotPersistenceMetadata:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    generation_id: str = _LEGACY_GENERATION_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,12 +94,14 @@ class ExpectedAccountSnapshotRow:
     cash_value_by_currency: CanonicalJsonObject
     investment_value_by_currency: CanonicalJsonObject
     investment_cost_basis_by_currency: CanonicalJsonObject | None
+    liabilities_value_by_currency: CanonicalJsonObject
     net_deposits_by_currency: CanonicalJsonObject | None
     realized_pnl_by_currency: CanonicalJsonObject | None
     unrealized_pnl_by_currency: CanonicalJsonObject | None
     fees_by_currency: CanonicalJsonObject
     taxes_by_currency: CanonicalJsonObject
     exchange_rates: CanonicalJsonObject
+    generation_id: str = _LEGACY_GENERATION_ID
 
     def model_values(self) -> dict[str, object]:
         return {
@@ -128,6 +132,7 @@ class ExpectedAccountSnapshotRow:
                 if self.investment_cost_basis_by_currency is None
                 else self.investment_cost_basis_by_currency.to_json()
             ),
+            "liabilities_value_by_currency": self.liabilities_value_by_currency.to_json(),
             "net_deposits_by_currency": (
                 None
                 if self.net_deposits_by_currency is None
@@ -146,6 +151,7 @@ class ExpectedAccountSnapshotRow:
             "fees_by_currency": self.fees_by_currency.to_json(),
             "taxes_by_currency": self.taxes_by_currency.to_json(),
             "exchange_rates": self.exchange_rates.to_json(),
+            "generation_id": self.generation_id,
         }
 
 
@@ -412,15 +418,16 @@ def _stable_ids(values: object, *, expected_count: int | None = None) -> tuple[s
     return result
 
 
-def _snapshot_id(valuation: ExpectedAccountSnapshotValuation) -> str:
-    payload = "\0".join(
-        (
-            valuation.account_id,
-            valuation.timestamp.isoformat(timespec="milliseconds"),
-            valuation.currency,
-            valuation.granularity.value,
-        )
+def _snapshot_id(valuation: ExpectedAccountSnapshotValuation, generation_id: str) -> str:
+    identity: tuple[str, ...] = (
+        valuation.account_id,
+        valuation.timestamp.isoformat(timespec="milliseconds"),
+        valuation.currency,
+        valuation.granularity.value,
     )
+    if generation_id != _LEGACY_GENERATION_ID:
+        identity = (*identity, generation_id)
+    payload = "\0".join(identity)
     return str(uuid5(_SNAPSHOT_ID_NAMESPACE, payload))
 
 
@@ -621,13 +628,14 @@ def _items(
             native_cost_breakdown = CanonicalJsonObject(tuple(component_entries))
             cost_basis = _exact(item.cost_basis, MONEY, positive=True)
         allocation_pct = _exact(item.allocation_pct, PERCENTAGE, positive=True)
+        # The price/value pair and average/cost pair are separately coherent;
+        # their native currencies need not be equal.
         if (
             listing_id in listing_ids
             or price_timestamp > valuation.timestamp
             or price_currency != value_currency
             or _calculated("multiply", quantity, price_per_unit, QUANTITY) != native_value
             or (cost_complete and cost_currency != valuation.currency)
-            or (cost_complete and average_buy_price_currency != price_currency)
             or (
                 cost_complete
                 and len(component_entries) == 1
@@ -904,7 +912,8 @@ def build_account_snapshot_persistence_projection(
             historical_ids=historical_rate_ids,
             historical_rates=evidence.consumed_historical_exchange_rates,
         )
-        snapshot_id = _snapshot_id(valuation)
+        generation_id = _nonblank(metadata.generation_id)
+        snapshot_id = _snapshot_id(valuation, generation_id)
         items = _items(
             valuation,
             snapshot_id=snapshot_id,
@@ -988,12 +997,14 @@ def build_account_snapshot_persistence_projection(
             cash_value_by_currency=cash_breakdown,
             investment_value_by_currency=investment_breakdown,
             investment_cost_basis_by_currency=cost_breakdown,
+            liabilities_value_by_currency=liability_breakdown,
             net_deposits_by_currency=net_deposits_breakdown,
             realized_pnl_by_currency=realized_pnl_breakdown,
             unrealized_pnl_by_currency=unrealized_pnl_breakdown,
             fees_by_currency=fees_breakdown,
             taxes_by_currency=taxes_breakdown,
             exchange_rates=exchange_rates,
+            generation_id=generation_id,
         )
         return ExpectedAccountSnapshotPersistence(
             snapshot=snapshot,

@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import SnapshotGranularity
 from app.db.models.snapshots import AccountSnapshotModel
 from app.db.models.users import UserModel
@@ -18,6 +19,7 @@ from app.db.models.users import UserModel
 class PersistedAccountAccess:
     account: AccountModel
     membership: AccountMemberModel
+    has_canonical_history: bool = False
 
 
 class NetWorthEvidenceRepository:
@@ -41,16 +43,31 @@ class NetWorthEvidenceRepository:
         user_id: str,
     ) -> tuple[PersistedAccountAccess, ...]:
         result = await self.session.execute(
-            select(AccountModel, AccountMemberModel)
+            select(
+                AccountModel,
+                AccountMemberModel,
+                AccountCanonicalStateModel.last_revision > 0,
+            )
             .join(
                 AccountMemberModel,
                 AccountMemberModel.account_id == AccountModel.id,
+            )
+            .outerjoin(
+                AccountCanonicalStateModel,
+                AccountCanonicalStateModel.account_id == AccountModel.id,
             )
             .where(AccountMemberModel.user_id == user_id)
             .order_by(AccountModel.id, AccountMemberModel.id)
             .execution_options(autoflush=False)
         )
-        return tuple(PersistedAccountAccess(account, membership) for account, membership in result)
+        return tuple(
+            PersistedAccountAccess(
+                account=account,
+                membership=membership,
+                has_canonical_history=bool(has_canonical_history),
+            )
+            for account, membership, has_canonical_history in result
+        )
 
     async def load_exact_snapshots(
         self,

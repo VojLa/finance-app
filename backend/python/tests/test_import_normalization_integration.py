@@ -81,7 +81,7 @@ def _principal(user_id: str = "norm-owner") -> AuthenticatedPrincipal:
     return AuthenticatedPrincipal(user_id=user_id, email=f"{user_id}@example.com", name=user_id)
 
 
-async def _seed() -> None:
+async def _seed(*, active_currency: str = "CZK") -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -137,7 +137,7 @@ async def _seed() -> None:
                     id=account_id,
                     name=account_id,
                     type=AccountType.bank,
-                    currency="CZK",
+                    currency=active_currency if account_id == "norm-active" else "CZK",
                     color=None,
                     notes=None,
                     is_archived=archived,
@@ -727,7 +727,7 @@ def test_trading212_normalization_rollback_leaves_no_partial_rows_and_retries() 
 def test_anycoin_group_normalization_persists_anchor_review_and_retry_contract() -> None:
     """Exercise the grouped Anycoin path against PostgreSQL, without ledger posting."""
     assert DATABASE_URL is not None
-    _run(_seed())
+    _run(_seed(active_currency="EUR"))
     _run(_add_anycoin_batch("norm-anycoin-batch", _anycoin_buy_rows()))
     _run(
         _add_anycoin_batch(

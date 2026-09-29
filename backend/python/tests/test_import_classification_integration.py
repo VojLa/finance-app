@@ -444,12 +444,18 @@ async def _reload(prefix: str) -> tuple[ImportBatchModel, ImportRowModel]:
     return batch, row
 
 
-async def _assert_no_posting() -> None:
+async def _assert_no_posting(*prefixes: str) -> None:
     assert DATABASE_URL is not None
+    account_ids = [f"{prefix}-account" for prefix in prefixes]
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine) as session:
         counts = [
-            int(await session.scalar(select(func.count()).select_from(model)) or 0)
+            int(
+                await session.scalar(
+                    select(func.count()).select_from(model).where(model.account_id.in_(account_ids))
+                )
+                or 0
+            )
             for model in (TransactionModel, InvestmentEventModel, InvestmentMovementModel)
         ]
     await engine.dispose()
@@ -486,7 +492,7 @@ def test_concurrent_classify_requests_are_serialized_and_idempotent() -> None:
         assert row.normalized_data["deduplication"] == {"schema_version": 1, "status": "unique"}
         assert row.normalized_data["posting_intent"]["target"] == "transaction"
         assert row.normalized_data["amount"] == "10"
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -517,7 +523,7 @@ def test_commit_failure_rolls_back_and_clean_retry_succeeds() -> None:
         assert failed_row.validation_errors == before_row.validation_errors
         assert failed_row.error_message == before_row.error_message
         assert failed_batch.rows_skipped == before_batch.rows_skipped
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
         async with AsyncSession(engine) as session:
             response = await ImportClassificationService(session).classify_batch(
                 principal=_principal_for(user_id),
@@ -531,7 +537,7 @@ def test_commit_failure_rolls_back_and_clean_retry_succeeds() -> None:
         assert retried_row.normalized_data is not None
         assert retried_row.normalized_data["posting_intent"]["target"] == "transaction"
         assert retried_row.normalized_data["amount"] == "10"
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -573,7 +579,7 @@ def test_postgresql_authorization_roles(role: AccountMemberRole, allowed: bool) 
         assert (
             row.normalized_data is not None and "posting_intent" in row.normalized_data
         ) is allowed
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -606,7 +612,7 @@ def test_non_member_is_rejected_without_mutation() -> None:
         _, row = await _reload(prefix)
         assert row.status is ImportRowStatus.pending
         assert row.normalized_data is not None and "posting_intent" not in row.normalized_data
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -649,7 +655,7 @@ def test_foreign_account_batch_path_uses_account_scoped_not_found() -> None:
         assert after_row.error_message == before_row.error_message
         assert after_row.normalized_data is not None
         assert "posting_intent" not in after_row.normalized_data
-        await _assert_no_posting()
+        await _assert_no_posting(account_a, account_b)
 
     asyncio.run(scenario())
 
@@ -727,7 +733,7 @@ def test_provider_normalize_deduplicate_classify_matrix() -> None:
                 {
                     "Type": "withdrawal",
                     "Date": "2026-07-24T12:00:00Z",
-                    "Amount": "1",
+                    "Amount": "-1",
                     "Currency": "SOL",
                 },
             ],
@@ -744,7 +750,7 @@ def test_provider_normalize_deduplicate_classify_matrix() -> None:
         assert deposit.normalized_data["posting_intent"]["asset_direction"] == "in"
         assert withdrawal.normalized_data is not None
         assert withdrawal.normalized_data["posting_intent"]["asset_direction"] == "out"
-        await _assert_no_posting()
+        await _assert_no_posting(rb_prefix, t212_prefix, any_prefix)
 
     asyncio.run(scenario())
 
@@ -801,7 +807,7 @@ def test_duplicate_loser_remains_non_postable_after_classification() -> None:
         assert batch.status is ImportStatus.processing
         assert batch.rows_imported == 0
         assert batch.completed_at is None
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -901,7 +907,7 @@ def test_failed_and_normalization_review_rows_are_preserved() -> None:
         assert batch.rows_imported == 0
         assert batch.rows_skipped == 2
         assert batch.completed_at is None
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -958,7 +964,7 @@ def test_classify_before_deduplicate_returns_409_without_mutation() -> None:
         assert after_batch.rows_imported == before_batch.rows_imported
         assert after_batch.rows_skipped == before_batch.rows_skipped
         assert after_batch.completed_at == before_batch.completed_at
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -1010,7 +1016,7 @@ def test_successful_classify_repeat_is_database_idempotent() -> None:
         assert second_batch.rows_imported == first_batch.rows_imported == 0
         assert second_batch.rows_skipped == first_batch.rows_skipped
         assert second_batch.completed_at == first_batch.completed_at is None
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())
 
@@ -1060,6 +1066,6 @@ def test_classification_review_repeat_is_database_idempotent() -> None:
         assert second_batch.rows_imported == first_batch.rows_imported == 0
         assert second_batch.rows_skipped == first_batch.rows_skipped
         assert second_batch.completed_at == first_batch.completed_at is None
-        await _assert_no_posting()
+        await _assert_no_posting(prefix)
 
     asyncio.run(scenario())

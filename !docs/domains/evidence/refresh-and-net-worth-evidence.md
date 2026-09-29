@@ -1,5 +1,11 @@
 ## Coordinated snapshot-refresh plan
 
+Type: historical
+Status: historical
+Owns: milestone evidence for refresh and net worth
+Code: snapshot-refresh and net-worth implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 The pure 5K-A contract describes a complete coordinated refresh without
 executing it. Current active broker, exchange, crypto-wallet, credit-card, loan,
 and mortgage accounts each produce one immutable target. An active bank, cash,

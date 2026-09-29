@@ -21,6 +21,7 @@ from app.db.models.enums import (
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.modules.holdings.persistence_projection import (
     ExpectedPersistedHoldingPlan,
+    ExpectedRealizedPnlPlan,
     HoldingPersistenceEvent,
     HoldingPersistenceMovement,
     HoldingPersistenceProjection,
@@ -252,6 +253,83 @@ def test_multiple_equal_and_different_buys_use_exact_weighted_average() -> None:
     assert equal.holdings[0].avg_buy_price == Decimal("100")
     assert weighted.holdings[0].quantity == Decimal("4")
     assert weighted.holdings[0].avg_buy_price == Decimal("175")
+
+
+def test_anycoin_sell_materializes_exact_average_cost_realized_pnl() -> None:
+    result = _project(
+        _buy("buy-a", "2", "100", date=datetime(2026, 7, 20)),
+        _buy("buy-b", "1", "200", date=datetime(2026, 7, 21)),
+        replace(
+            _sell("sell", "1.5", "100", date=datetime(2026, 7, 22)),
+            source=ImportSource.anycoin,
+        ),
+    )
+
+    assert result.realized_pnl == (
+        ExpectedRealizedPnlPlan(
+            event_id="sell",
+            amount=Decimal("-50.0000000000"),
+            currency="EUR",
+        ),
+    )
+    assert result.holdings[0].quantity == Decimal("1.5")
+    assert result.holdings[0].avg_buy_price == Decimal("133.3333333333")
+
+
+def test_anycoin_sell_with_unknown_basis_preserves_unknown_realized_pnl() -> None:
+    unknown_transfer = _event(
+        "unknown-transfer",
+        InvestmentEventType.asset_transfer,
+        (
+            _asset(
+                "unknown-transfer",
+                direction=MovementDirection.incoming,
+                quantity=Decimal("1"),
+                price=None,
+                value=None,
+                value_currency=None,
+            ),
+        ),
+        date=datetime(2026, 7, 20),
+    )
+    sell = replace(
+        _sell("sell", "0.5", "120", date=datetime(2026, 7, 21)),
+        source=ImportSource.anycoin,
+    )
+
+    result = _project(unknown_transfer, sell)
+
+    assert result.realized_pnl == ()
+    assert result.holdings[0].quantity == Decimal("0.5")
+    assert result.holdings[0].avg_buy_price is None
+    assert result.holdings[0].cost_basis_by_currency is None
+
+
+def test_anycoin_sell_with_unknown_basis_rejects_unverifiable_persisted_pnl() -> None:
+    unknown_transfer = _event(
+        "unknown-transfer",
+        InvestmentEventType.asset_transfer,
+        (
+            _asset(
+                "unknown-transfer",
+                direction=MovementDirection.incoming,
+                quantity=Decimal("1"),
+                price=None,
+                value=None,
+                value_currency=None,
+            ),
+        ),
+        date=datetime(2026, 7, 20),
+    )
+    sell = replace(
+        _sell("sell", "0.5", "120", date=datetime(2026, 7, 21)),
+        source=ImportSource.anycoin,
+        realized_pnl=Decimal("10"),
+        realized_pnl_currency="EUR",
+    )
+
+    with pytest.raises(HoldingProjectionStateError):
+        _project(unknown_transfer, sell)
 
 
 def test_fractional_acquisition_and_multiple_listings_remain_exact_and_separate() -> None:

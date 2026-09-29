@@ -31,6 +31,7 @@ from app.modules.current_value.delta_projection import (
     CurrentTransaction,
     add_currency_breakdowns,
     apply_cash_transactions,
+    apply_investment_cash_transactions,
     apply_investment_events,
 )
 from app.modules.current_value.models import CurrentPortfolioResult, CurrentValuePlan
@@ -64,7 +65,11 @@ from app.modules.market_data.source_policy import (
     MarketEvidenceSourcePolicy,
     market_evidence_source_policy_from_settings,
 )
-from app.modules.portfolio_snapshot.aggregate_models import AccountPortfolioPresentationView
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioSummary,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.currency_breakdown import (
     PortfolioCurrencyBreakdownError,
@@ -114,9 +119,9 @@ from app.modules.snapshots.financial_metrics import (
 )
 from app.shared.errors import ApplicationError
 
-_CASH_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings}
+_CASH_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card}
 _INVESTMENT_TYPES = {AccountType.broker, AccountType.exchange, AccountType.crypto_wallet}
-_LIABILITY_TYPES = {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
+_LIABILITY_TYPES = {AccountType.loan, AccountType.mortgage}
 
 
 class CurrentValueUnavailableError(ApplicationError):
@@ -156,6 +161,53 @@ class _PreparedAccount:
 class _PreparedState:
     baseline: DailySnapshotBaseline
     accounts: tuple[_PreparedAccount, ...]
+
+
+def _select_account_types(
+    state: _PreparedState,
+    account_types: frozenset[AccountType] | None,
+) -> _PreparedState:
+    if account_types is None:
+        return state
+    return _PreparedState(
+        baseline=state.baseline,
+        accounts=tuple(
+            account for account in state.accounts if account.lineage.account_type in account_types
+        ),
+    )
+
+
+def _empty_portfolio(
+    *,
+    as_of: datetime,
+    baseline: DailySnapshotBaseline,
+) -> MultiAccountPortfolioView:
+    """Represent an authorized user with no accounts in the requested portfolio scope."""
+
+    zero = Decimal(0).quantize(Decimal("0.000001"))
+    return MultiAccountPortfolioView(
+        timestamp=as_of,
+        granularity=PortfolioGranularity.minute,
+        currency=baseline.currency,
+        calculation_version=baseline.calculation_version,
+        summary=MultiAccountPortfolioSummary(
+            cash_value=zero,
+            cash_by_currency=(),
+            investment_value=zero,
+            investment_cost_basis=zero,
+            liabilities_value=zero,
+            total_value=zero,
+            net_deposits_value=zero,
+            net_deposits_by_currency=(),
+            realized_pnl_value=zero,
+            unrealized_pnl_value=zero,
+            fees_value=zero,
+            taxes_value=zero,
+            account_count=0,
+            position_count=0,
+        ),
+        accounts=(),
+    )
 
 
 class _MarketService(Protocol):
@@ -523,10 +575,20 @@ async def _prepare_account(
         forward_asset_transfer = False
         liability = None
     elif lineage.account_type in _INVESTMENT_TYPES:
-        if any(change.kind != "investment_event" for change in changes):
+        if any(change.kind not in {"investment_event", "transaction"} for change in changes):
             raise _fail()
         events: list[CurrentInvestmentEvent] = []
+        investment_transactions: list[CurrentTransaction] = []
         for change in changes:
+            if change.kind == "transaction":
+                investment_transactions.append(
+                    _current_transaction(
+                        lineage.account_id,
+                        change,
+                        await repository.load_transaction(change.entity_id),
+                    )
+                )
+                continue
             event = await repository.load_investment_event(
                 event_id=change.entity_id,
                 account_id=lineage.account_id,
@@ -544,9 +606,19 @@ async def _prepare_account(
             baseline_cash=primary.summary.cash_by_currency,
             events=tuple(events),
         )
+        transaction_delta = apply_investment_cash_transactions(
+            account_id=lineage.account_id,
+            baseline=delta.cash_by_currency,
+            transactions=tuple(investment_transactions),
+        )
         holdings = delta.holdings.holdings
-        cash = delta.cash_by_currency
-        metrics = delta.historical_metrics
+        cash = transaction_delta.cash_by_currency
+        metrics = tuple(
+            sorted(
+                (*delta.historical_metrics, *transaction_delta.historical_metrics),
+                key=lambda item: (item.timestamp, item.evidence_id),
+            )
+        )
         forward_asset_transfer = delta.has_asset_transfer
         liability = None
     elif lineage.account_type in _LIABILITY_TYPES:
@@ -1099,6 +1171,22 @@ class CurrentValueService:
         self,
         command: ReadCurrentPortfolioCommand,
     ) -> CurrentPortfolioResult:
+        return await self._read(command, account_types=None)
+
+    async def read_investment_portfolio(
+        self,
+        command: ReadCurrentPortfolioCommand,
+    ) -> CurrentPortfolioResult:
+        """Return only broker, exchange and crypto-wallet accounts for Portfolio."""
+
+        return await self._read(command, account_types=frozenset(_INVESTMENT_TYPES))
+
+    async def _read(
+        self,
+        command: ReadCurrentPortfolioCommand,
+        *,
+        account_types: frozenset[AccountType] | None,
+    ) -> CurrentPortfolioResult:
         user_id = _principal(command)
         as_of = canonical_current_value_as_of(self.clock())
         baseline_service = DailySnapshotBaselineService(self.session)
@@ -1115,25 +1203,46 @@ class CurrentValueService:
                         through=as_of,
                         frozen_account_ids=frozen_account_ids,
                     )
+                    if account_types is not None and not any(
+                        account.account_type in account_types for account in baseline.accounts
+                    ):
+                        await self._require_idle()
+                        return CurrentPortfolioResult(
+                            as_of=as_of,
+                            baseline_id=baseline.baseline_id,
+                            baseline_timestamp=baseline.timestamp,
+                            baseline_net_worth_snapshot_id=baseline.net_worth_snapshot_id,
+                            portfolio=_empty_portfolio(as_of=as_of, baseline=baseline),
+                            account_presentations=(),
+                        )
                     plan = await self._build_plan(
                         baseline,
                         as_of=as_of,
                         frozen_account_ids=frozen_account_ids,
+                        account_types=account_types,
                     )
-                    market_service = self.market_service_factory(
-                        self.session,
-                        self.settings,
-                        _StaticPlanner(plan.market_plan),
-                    )
-                    market_result = await market_service.refresh(
-                        RefreshMarketEvidenceCommand(
-                            user_id=user_id,
-                            snapshot_timestamp=as_of,
-                            created_at=as_of,
+                    if plan.market_plan.price_requirements or plan.market_plan.fx_requirements:
+                        market_service = self.market_service_factory(
+                            self.session,
+                            self.settings,
+                            _StaticPlanner(plan.market_plan),
                         )
-                    )
-                    _validate_market_result(market_result, plan.market_plan)
-                    return await self._project(plan)
+                        try:
+                            market_result = await market_service.refresh(
+                                RefreshMarketEvidenceCommand(
+                                    user_id=user_id,
+                                    snapshot_timestamp=as_of,
+                                    created_at=as_of,
+                                )
+                            )
+                            _validate_market_result(market_result, plan.market_plan)
+                        except MarketEvidenceConflictError:
+                            # Provider revisions must not overwrite immutable
+                            # evidence. Continue only with the existing
+                            # evidence; _project still verifies that it is
+                            # complete and within the freshness policy.
+                            await self._require_idle()
+                    return await self._project(plan, account_types=account_types)
                 except _PublicationStateChangedError:
                     if attempt == 0:
                         continue
@@ -1168,6 +1277,7 @@ class CurrentValueService:
         *,
         as_of: datetime,
         frozen_account_ids: tuple[str, ...],
+        account_types: frozenset[AccountType] | None,
     ) -> CurrentValuePlan:
         if self.session.in_transaction():
             raise _fail()
@@ -1188,10 +1298,13 @@ class CurrentValueService:
             )
             if exact != baseline:
                 raise _fail()
-            state = await _prepare_state(
-                repository,
-                exact,
-                source_policy=self.source_policy,
+            state = _select_account_types(
+                await _prepare_state(
+                    repository,
+                    exact,
+                    source_policy=self.source_policy,
+                ),
+                account_types,
             )
             market_plan = await _build_market_plan(
                 repository,
@@ -1207,7 +1320,12 @@ class CurrentValueService:
             frozen_account_ids=frozen_account_ids,
         )
 
-    async def _project(self, plan: CurrentValuePlan) -> CurrentPortfolioResult:
+    async def _project(
+        self,
+        plan: CurrentValuePlan,
+        *,
+        account_types: frozenset[AccountType] | None,
+    ) -> CurrentPortfolioResult:
         if self.session.in_transaction():
             raise _fail()
         async with self.session.begin():
@@ -1229,10 +1347,13 @@ class CurrentValueService:
             )
             if baseline != plan.baseline:
                 raise _fail()
-            state = await _prepare_state(
-                repository,
-                baseline,
-                source_policy=self.source_policy,
+            state = _select_account_types(
+                await _prepare_state(
+                    repository,
+                    baseline,
+                    source_policy=self.source_policy,
+                ),
+                account_types,
             )
             if (
                 await _build_market_plan(
@@ -1277,7 +1398,11 @@ class CurrentValueService:
                         positions=presentation.positions,
                     )
                 )
-            portfolio = build_multi_account_portfolio_view(tuple(primary_views))
+            portfolio = (
+                _empty_portfolio(as_of=plan.as_of, baseline=baseline)
+                if not primary_views
+                else build_multi_account_portfolio_view(tuple(primary_views))
+            )
         await self._require_idle()
         return CurrentPortfolioResult(
             as_of=plan.as_of,

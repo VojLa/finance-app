@@ -1,5 +1,11 @@
 # 0008 Direct Twelve Data FX without pivot or fallback
 
+Type: historical
+Status: historical
+Owns: retained rationale for direct FX evidence
+Code: FX providers, market evidence and valuation
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted and implemented by R11-J.

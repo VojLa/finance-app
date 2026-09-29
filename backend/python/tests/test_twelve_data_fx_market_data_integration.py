@@ -9,7 +9,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.fx_integration import fx_engine, seed_eur_cash_flow
 
 from app.config.settings import Settings
 from app.db.models.enums import ExchangeRateSource
@@ -18,6 +17,7 @@ from app.modules.fx.models import ExchangeRateObservation
 from app.modules.market_data.factory import create_production_market_evidence_service
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
 from app.modules.market_data.writer import exchange_rate_id
+from tests.support.fx_integration import fx_engine, seed_eur_cash_flow
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(

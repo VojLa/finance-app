@@ -1,5 +1,6 @@
 from datetime import datetime
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -27,12 +28,23 @@ def _session() -> tuple[AsyncSession, AsyncMock, AsyncMock, AsyncMock]:
     )
 
 
+def _service(session: AsyncSession) -> tuple[AccountService, SimpleNamespace]:
+    history = SimpleNamespace(
+        lock_generation_users=AsyncMock(),
+        invalidate_scope_users=AsyncMock(),
+    )
+    return AccountService(session, history=cast(Any, history)), history
+
+
 @pytest.mark.asyncio
 async def test_create_forces_authenticated_owner_membership_and_commits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, flush, commit, rollback = _session()
-    service = AccountService(session)
+    cast(Mock, session.in_transaction).return_value = False
+    begin = AsyncMock()
+    cast(Any, session).begin = begin
+    service, history = _service(session)
     add_account = Mock()
     add_membership = Mock()
     monkeypatch.setattr(service.repository, "add_account", add_account)
@@ -50,6 +62,9 @@ async def test_create_forces_authenticated_owner_membership_and_commits(
     assert membership.role is AccountMemberRole.owner
     assert membership.relation_type is AccountRelationType.owner
     assert account.currency == "CZK"
+    history.lock_generation_users.assert_awaited_once_with(("user-a",))
+    assert history.invalidate_scope_users.await_args.kwargs["user_ids"] == ("user-a",)
+    begin.assert_awaited_once_with()
     flush.assert_awaited_once()
     commit.assert_awaited_once()
     rollback.assert_not_awaited()
@@ -60,7 +75,10 @@ async def test_create_rolls_back_when_membership_persistence_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, flush, commit, rollback = _session()
-    service = AccountService(session)
+    cast(Mock, session.in_transaction).return_value = False
+    begin = AsyncMock()
+    cast(Any, session).begin = begin
+    service, _history = _service(session)
     add_account = Mock()
     add_membership = Mock(side_effect=RuntimeError("membership failed"))
     monkeypatch.setattr(service.repository, "add_account", add_account)
@@ -73,6 +91,7 @@ async def test_create_rolls_back_when_membership_persistence_fails(
         )
 
     add_account.assert_called_once()
+    begin.assert_awaited_once_with()
     flush.assert_awaited_once()
     commit.assert_not_awaited()
     rollback.assert_awaited_once()
@@ -115,6 +134,74 @@ async def test_update_rolls_back_when_commit_fails(monkeypatch: pytest.MonkeyPat
         )
 
     rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("currency", "invalidates"), [("EUR", True), ("CZK", False)])
+async def test_only_real_currency_change_invalidates_all_accepted_members(
+    currency: str,
+    invalidates: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, _flush, commit, _rollback = _session()
+    service, history = _service(session)
+    now = datetime(2026, 7, 18, 12, 0, 0)
+    account = AccountModel(
+        id="account-a",
+        name="Before",
+        type=AccountType.bank,
+        currency="CZK",
+        color=None,
+        notes=None,
+        is_archived=False,
+        archived_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    authorized = AuthorizedAccount(
+        account_id="account-a",
+        role=AccountMemberRole.owner,
+        relation_type=AccountRelationType.owner,
+    )
+    authorize = AsyncMock(return_value=authorized)
+    monkeypatch.setattr("app.modules.accounts.service.require_account_access", authorize)
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_for_update",
+        AsyncMock(return_value=account),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "accepted_user_ids",
+        AsyncMock(return_value=("owner", "viewer")),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "lock_accepted_memberships",
+        AsyncMock(
+            return_value=(
+                SimpleNamespace(user_id="owner"),
+                SimpleNamespace(user_id="viewer"),
+            )
+        ),
+    )
+
+    result = await service.update_account(
+        principal=_principal(),
+        account_id="account-a",
+        payload=AccountUpdateRequest(currency=currency),
+    )
+
+    assert result.currency == currency
+    history.lock_generation_users.assert_awaited_once_with(("owner", "viewer"))
+    if invalidates:
+        assert history.invalidate_scope_users.await_args.kwargs["user_ids"] == (
+            "owner",
+            "viewer",
+        )
+    else:
+        history.invalidate_scope_users.assert_not_awaited()
+    commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

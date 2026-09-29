@@ -1,38 +1,49 @@
 ---
 name: finance-docs
-description: Maintain Finance App project maps and documentation through scoped impact analysis, preserving the distinction between planned, implemented, user-facing, and generated content.
+description: "Assess and update Finance App documentation after a change without duplicating current, planned, user-facing, historical, or generated information."
 ---
 
-# Finance App documentation workflow
+# Finance App documentation impact
 
-Use this skill after a relevant implementation or documentation change. Update only documentation whose truth changes; do not rewrite unrelated material.
+Use at the end of implementation or for a documentation-only task. Update only the
+owner whose truth changed.
 
-## Documentation ownership
+## Ownership
 
-| Location | Owns |
+| Location | Authority |
 | --- | --- |
-| `!planning/` | Future scope, roadmap, target architecture, proposals, and decisions before implementation. |
-| `!docs/` | The currently implemented technical system: architecture, domains, data flow, API, database, security, development, tests, invariants, and implementation-facing decisions. |
-| `!user-docs/` | End-user instructions, feature explanations, troubleshooting, and FAQ without implementation detail. |
-| `!docs/map/generated/` | Deterministic inventories only. Never hand-edit generated output. |
+| `!docs/` | currently implemented architecture, domains, API, data, security, operations, tests, and development |
+| `!planning/` | future scope, target design, roadmap, proposals, and durable decisions |
+| `!user-docs/` | observable user behavior and troubleshooting |
+| `!docs/map/generated/` | deterministic inventories; never hand-edit |
+| `.agents/` | current Codex workflow, skills, model routing, and templates |
+| `ChatGPT/` | historical execution and audit evidence only |
 
-Semantic paths under `!docs/architecture`, `domains`, `api`, `data`, `testing`, `security`, `operations`, `development`, and `reference` own current documentation. Numbered paths and evidence folders are historical compatibility routes; do not add current rules to them.
+Semantic paths under `!docs/architecture`, `domains`, `api`, `data`, `testing`,
+`security`, `operations`, `development`, and `reference` own current prose.
+Numbered and evidence paths are historical compatibility routes.
 
-## Documentation impact
+## Impact decision
 
-At the end of a change, decide explicitly whether it affects:
+Record exactly which category changed:
 
-1. Project or domain map;
-2. implemented technical documentation;
-3. OpenAPI/API inventory;
+1. project/domain map or module entry point;
+2. current technical documentation or invariant;
+3. OpenAPI or generated inventory;
 4. user documentation;
-5. ADR/planning decision; or
-6. no documentation.
+5. ADR/planning decision;
+6. active agent workflow under `.agents/`; or
+7. no documentation.
 
-Record the result in the handoff. A changed module boundary, entry point, dependency, test location, or source of truth updates the relevant map. A public behavior change needs user documentation only when an end user can observe or act on it. A durable architectural decision belongs in `!planning/decisions/` before or with the implementation.
+A module boundary, entry point, dependency, source of truth, test location, or
+recovery route updates its current semantic owner. A public behavior change updates
+user docs only when the user can observe or act on it. A durable architectural
+decision belongs in `!planning/decisions/` before or with implementation.
 
-## Generated material and checks
+## Verification
 
-Prefer deterministic scripts under `scripts/docs/` for code, API, database/model, test, and module inventories. Generated files must carry an auto-generated notice and be reproducible by their script. Before claiming generated output is current, run its check mode. Link checks and existence checks belong in `scripts/docs/check_docs.py` when that tooling is introduced.
-
-Use concise, source-linked prose for semantic documentation. Avoid documenting trivial functions or copying code inventories into human-maintained maps.
+Regenerate only affected inventories with `scripts/docs/`; do not copy exhaustive
+lists into maintained prose. Run `python scripts/docs/check_docs.py`, the affected
+generator's `--check`, and a delta review of changed documents and immediate links.
+Historical files may retain old facts only when explicitly marked historical and
+routed to the current owner.

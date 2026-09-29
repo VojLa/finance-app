@@ -211,8 +211,7 @@ class _Repository:
             holding_revision=investment,
             selected_liability_balance_id=(
                 self.projection.audit.selected_liability_balance_id
-                if self.account.type
-                in {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
+                if self.account.type in {AccountType.loan, AccountType.mortgage}
                 else None
             ),
             created_at=CREATED_AT,
@@ -313,6 +312,7 @@ def _projection() -> ExpectedAccountSnapshotPersistence:
         cash_value_by_currency=_json("100.000000"),
         investment_value_by_currency=_json("200.0000000000"),
         investment_cost_basis_by_currency=_json("150.0000000000"),
+        liabilities_value_by_currency=_json("0.000000"),
         net_deposits_by_currency=_json("50.000000"),
         realized_pnl_by_currency=_json("10.000000"),
         unrealized_pnl_by_currency=_json("50.000000"),
@@ -522,6 +522,43 @@ async def test_created_composes_evidence_projection_and_persistence_once() -> No
     assert session.rollback_count == 0
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        SnapshotSource.manual_recalculation,
+        SnapshotSource.import_event,
+        SnapshotSource.price_refresh,
+        SnapshotSource.scheduled,
+    ),
+)
+@pytest.mark.asyncio
+async def test_publishable_minute_snapshot_persists_its_canonical_boundary(
+    source: SnapshotSource,
+) -> None:
+    day_projection = _projection()
+    minute_projection = replace(
+        day_projection,
+        snapshot=replace(
+            day_projection.snapshot,
+            granularity=SnapshotGranularity.minute,
+            source=source,
+        ),
+    )
+    writer, _, repository, _, _ = _writer(projection=minute_projection)
+
+    result = await writer.write(_command(granularity=SnapshotGranularity.minute, source=source))
+
+    assert result.granularity is SnapshotGranularity.minute
+    assert tuple(repository.boundaries) == ("snapshot-1",)
+    assert repository.calls[:5] == [
+        "account",
+        "snapshot_lock",
+        "canonical_locks",
+        "canonical_state",
+        "market_locks",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_exact_replay_inserts_nothing_and_returns_replayed() -> None:
     projection = _projection()
@@ -576,7 +613,7 @@ async def test_liability_zero_item_create_and_replay_skip_investment_locks() -> 
 async def test_liability_snapshot_rejects_unexpected_existing_item() -> None:
     projection = _liability_projection()
     writer, session, repository, _, _ = _writer(projection=projection)
-    repository.account.type = AccountType.credit_card
+    repository.account.type = AccountType.loan
     repository.existing, _ = _persisted(projection)
     repository.existing_items = _persisted(_projection())[1]
 
@@ -747,7 +784,10 @@ async def test_output_currency_resolves_lock_evidence_replay_and_result(
         "currency": expected,
         "granularity": SnapshotGranularity.day,
     }
-    assert repository.existing_values == repository.snapshot_lock_values
+    assert repository.existing_values == {
+        **repository.snapshot_lock_values,
+        "generation_id": "legacy-snapshot-generation:3u0001",
+    }
     assert tuple(
         cast(BuildAccountSnapshotEvidenceCommand, call).output_currency for call in evidence.calls
     ) == (("CZK", "EUR") if expected == "EUR" else ("CZK",))

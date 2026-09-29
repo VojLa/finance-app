@@ -200,6 +200,8 @@ export type CurrentValueSummary = {
   historyAnchorSnapshotId: string
   currency: string
   calculationVersion: number
+  valuationTimestamp: string
+  isStale: boolean
 }
 
 export type ReadySnapshotWorkflowResult<T> = {

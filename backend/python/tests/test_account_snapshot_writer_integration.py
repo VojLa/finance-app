@@ -1048,7 +1048,7 @@ async def test_empty_cash_account_writes_structural_zero_snapshot(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 async def test_same_currency_liability_create_and_fresh_replay(
     account_type: AccountType,

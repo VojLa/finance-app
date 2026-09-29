@@ -1,5 +1,11 @@
 # Generated documentation inventory
 
+Type: reference
+Status: current
+Owns: navigation and regeneration rules for deterministic inventories
+Code: `scripts/docs/generate_*.py`
+Update when: a generated inventory or generator is added, removed or renamed
+
 This directory contains deterministic generated files:
 [code index](CODE-INVENTORY.md), [API inventory](API-INVENTORY.md),
 [database inventory](DB-INVENTORY.md), [test inventory](TEST-INVENTORY.md),

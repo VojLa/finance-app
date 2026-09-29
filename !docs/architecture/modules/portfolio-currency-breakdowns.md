@@ -1,5 +1,11 @@
 ## Exact portfolio currency breakdowns
 
+Type: historical
+Status: historical
+Owns: milestone evidence for portfolio currency breakdowns
+Code: portfolio projection at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R6-A extends only the `portfolio_snapshot` presentation boundary. The physical
 AccountSnapshot `cashValueByCurrency` and `netDepositsByCurrency` JSONB columns
 already existed and remain owned by the snapshot persistence writer. The exact

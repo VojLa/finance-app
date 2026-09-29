@@ -144,7 +144,7 @@ jobs:
         run: |
           uv run alembic -c alembic.ini current --check-heads
           uv run alembic -c alembic.ini check
-          uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run python scripts/sqlalchemy_schema.py --check
           uv run python scripts/seed_defaults.py
           uv run python scripts/seed_defaults.py
@@ -159,7 +159,7 @@ jobs:
           export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
           uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run python scripts/sqlalchemy_schema.py --check
 
       - name: Verify final PostgreSQL business boundary matrix
@@ -181,7 +181,7 @@ jobs:
           createdb --host localhost --username postgres finance_app_version_0_1_acceptance
           export DATABASE_URL="$ACCEPTANCE_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
-          uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run pytest tests/test_version_0_1_acceptance_integration.py -v
 
       - name: Verify clean register-to-dashboard acceptance
@@ -192,7 +192,7 @@ jobs:
           createdb --host localhost --username postgres finance_app_version_0_1_r8
           export DATABASE_URL="$CLEAN_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
-          uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run pytest tests/test_version_0_1_clean_main_scenario_integration.py -v
 
       - name: Rehearse backup recovery without financial data loss
@@ -210,5 +210,5 @@ jobs:
           diff --strip-trailing-cr "$RUNNER_TEMP/r11-source.sql" "$RUNNER_TEMP/r11-restored.sql"
           export DATABASE_URL="$RECOVERY_DATABASE_URL"
           uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run python scripts/sqlalchemy_schema.py --check

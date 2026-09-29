@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -64,13 +66,9 @@ pytestmark = [
 ]
 
 _FIXTURES = Path(__file__).parents[3] / "test_imports" / "RB"
-_SCHEMA = (
-    Path(__file__).resolve().parents[1]
-    / "database"
-    / "revisions"
-    / "3p0001rbfoundation"
-    / "schema.sql"
-)
+_PYTHON_ROOT = Path(__file__).resolve().parents[1]
+_BASELINE = _PYTHON_ROOT / "database" / "baseline" / "schema.sql"
+_ALEMBIC = _PYTHON_ROOT / "alembic.ini"
 _NOW = datetime(2026, 8, 20, 12)
 
 
@@ -86,10 +84,31 @@ async def _create_database() -> tuple[asyncpg.Connection, str, str]:
     target = await asyncpg.connect(target_dsn)
     try:
         await target.execute(
-            _SCHEMA.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
+            _BASELINE.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
         )
     finally:
         await target.close()
+    migration_env = os.environ.copy()
+    migration_env["DATABASE_URL"] = target_url.render_as_string(hide_password=False)
+    try:
+        for action in (("stamp", "3d0001base"), ("upgrade", "head")):
+            subprocess.run(
+                [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC), *action],
+                cwd=_PYTHON_ROOT,
+                env=migration_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+    except BaseException:
+        await admin.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            database_name,
+        )
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+        await admin.close()
+        raise
     return admin, database_name, target_url.render_as_string(hide_password=False)
 
 
@@ -491,7 +510,7 @@ async def test_disposable_postgresql_card_manifest_multiset_posting_linkage_and_
     admin, database_name, database_url = await _create_database()
     engine = create_async_engine(normalize_database_url(database_url))
     try:
-        prefix = "rb-card-multiset"
+        prefix = f"rb-card-multiset-{uuid4().hex}"
         user_id, job_id, batch_ids = await _seed_card_manifest(database_url, prefix)
         account_id = f"{prefix}-credit"
 
@@ -605,9 +624,8 @@ async def test_disposable_postgresql_late_arrival_uses_only_current_and_complete
     admin, database_name, database_url = await _create_database()
     engine = create_async_engine(normalize_database_url(database_url))
     try:
-        user_id, current_job_id, prior_job_id = await _seed_late_arrival_pair(
-            database_url, "rb-late-arrival"
-        )
+        prefix = f"rb-late-arrival-{uuid4().hex}"
+        user_id, current_job_id, prior_job_id = await _seed_late_arrival_pair(database_url, prefix)
         async with AsyncSession(engine) as session:
             current, evidence = await RaiffeisenbankReconciliationRepository(
                 session
@@ -622,8 +640,8 @@ async def test_disposable_postgresql_late_arrival_uses_only_current_and_complete
             )
             assert (result.pairs_created, result.pairs_replayed) == (1, 0)
             assert result.affected_account_ids == (
-                "rb-late-arrival-basic",
-                "rb-late-arrival-savings",
+                f"{prefix}-basic",
+                f"{prefix}-savings",
             )
 
         async with AsyncSession(engine) as session:
@@ -633,20 +651,20 @@ async def test_disposable_postgresql_late_arrival_uses_only_current_and_complete
             assert pairs[0].background_job_id == current_job_id
             affected = tuple(await session.scalars(select(ImportJobAffectedAccountModel)))
             assert {(item.job_id, item.account_id) for item in affected} == {
-                (current_job_id, "rb-late-arrival-basic"),
-                (current_job_id, "rb-late-arrival-savings"),
+                (current_job_id, f"{prefix}-basic"),
+                (current_job_id, f"{prefix}-savings"),
             }
             replay = await RaiffeisenbankReconciliationService(session).reconcile(
                 command=ReconcileRaiffeisenbankJobCommand(current_job_id, user_id, _NOW)
             )
             assert (replay.pairs_created, replay.pairs_replayed) == (0, 1)
 
-            extra_batch_id = "rb-late-arrival-extra-manifest-batch"
+            extra_batch_id = f"{prefix}-extra-manifest-batch"
             session.add(
                 ImportBatchModel(
                     id=extra_batch_id,
                     user_id=user_id,
-                    account_id="rb-late-arrival-savings",
+                    account_id=f"{prefix}-savings",
                     source=ImportSource.raiffeisenbank,
                     filename="unexpected.csv",
                     file_size=1,
@@ -668,7 +686,7 @@ async def test_disposable_postgresql_late_arrival_uses_only_current_and_complete
                     job_id=current_job_id,
                     batch_id=extra_batch_id,
                     user_id=user_id,
-                    account_id="rb-late-arrival-savings",
+                    account_id=f"{prefix}-savings",
                     created_at=_NOW,
                 )
             )
@@ -681,7 +699,7 @@ async def test_disposable_postgresql_late_arrival_uses_only_current_and_complete
                 ).load_manifested_card_rows_for_update(
                     job_id=current_job_id,
                     user_id=user_id,
-                    account_id="rb-late-arrival-savings",
+                    account_id=f"{prefix}-savings",
                 )
     finally:
         await engine.dispose()

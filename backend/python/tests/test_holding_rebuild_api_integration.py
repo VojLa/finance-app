@@ -45,6 +45,7 @@ from app.modules.holdings.orchestration import (
 )
 from app.modules.holdings.rebuild_service import HoldingRebuildService
 from app.modules.holdings.repository import HoldingRebuildRepository
+from tests.support.investment_fixture_e2e import cleanup_snapshot_publications
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -77,6 +78,9 @@ async def _cleanup(prefix: str) -> None:
         user_ids = list(
             (await session.scalars(select(UserModel.id).where(UserModel.id.like(pattern)))).all()
         )
+        await cleanup_snapshot_publications(
+            session, user_ids=tuple(user_ids), account_ids=tuple(account_ids)
+        )
         if account_ids:
             await session.execute(
                 delete(HoldingModel).where(HoldingModel.account_id.in_(account_ids))
@@ -98,6 +102,36 @@ async def _cleanup(prefix: str) -> None:
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
         if user_ids:
             await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+        for owned_model, column, ids in (
+            (UserModel, UserModel.id, user_ids),
+            (AccountModel, AccountModel.id, account_ids),
+            (AccountMemberModel, AccountMemberModel.account_id, account_ids),
+            (HoldingModel, HoldingModel.account_id, account_ids),
+            (InvestmentEventModel, InvestmentEventModel.account_id, account_ids),
+            (InvestmentMovementModel, InvestmentMovementModel.account_id, account_ids),
+        ):
+            if (
+                ids
+                and await session.scalar(
+                    select(1).select_from(owned_model).where(column.in_(ids)).limit(1)
+                )
+                is not None
+            ):
+                raise AssertionError(f"fixture cleanup left {owned_model.__tablename__} rows")
+        if (
+            await session.scalar(
+                select(1).select_from(AssetListingModel).where(AssetListingModel.id.like(pattern))
+            )
+            is not None
+        ):
+            raise AssertionError("fixture cleanup left AssetListing rows")
+        if (
+            await session.scalar(
+                select(1).select_from(AssetModel).where(AssetModel.id.like(pattern))
+            )
+            is not None
+        ):
+            raise AssertionError("fixture cleanup left Asset rows")
         await session.commit()
     await engine.dispose()
 
@@ -114,6 +148,9 @@ async def _seed(
     user_ids = tuple(f"{prefix}-user-{index}" for index in range(len(roles)))
     asset_id = f"{prefix}-asset"
     listing_id = f"{prefix}-listing"
+    unvalued_anycoin_transfer = history == "transfer"
+    symbol = "BTC" if unvalued_anycoin_transfer else "VWCE"
+    currency = "CZK" if unvalued_anycoin_transfer else "EUR"
     engine = _engine()
     async with AsyncSession(engine) as session:
         session.add_all(
@@ -123,7 +160,7 @@ async def _seed(
                     email=f"{user_id}@example.com",
                     name=user_id,
                     password_hash=None,
-                    base_currency="EUR",
+                    base_currency=currency,
                     created_at=NOW,
                     updated_at=NOW,
                 )
@@ -134,8 +171,8 @@ async def _seed(
             AccountModel(
                 id=account_id,
                 name=account_id,
-                type=AccountType.broker,
-                currency="EUR",
+                type=AccountType.exchange if unvalued_anycoin_transfer else AccountType.broker,
+                currency=currency,
                 color=None,
                 is_archived=archived,
                 archived_at=NOW if archived else None,
@@ -168,11 +205,11 @@ async def _seed(
         session.add(
             AssetModel(
                 id=asset_id,
-                symbol="VWCE",
-                isin=f"{prefix}-isin",
-                name="VWCE",
-                asset_type=AssetType.etf,
-                currency="EUR",
+                symbol=symbol,
+                isin=None if unvalued_anycoin_transfer else f"{prefix}-isin",
+                name=symbol,
+                asset_type=AssetType.crypto if unvalued_anycoin_transfer else AssetType.etf,
+                currency="BTC" if unvalued_anycoin_transfer else "EUR",
                 created_at=NOW,
                 updated_at=NOW,
             )
@@ -182,13 +219,13 @@ async def _seed(
             AssetListingModel(
                 id=listing_id,
                 asset_id=asset_id,
-                symbol="VWCE",
+                symbol=symbol,
                 exchange=f"{prefix}-exchange",
                 mic=None,
-                currency="EUR",
+                currency=currency,
                 country=None,
-                provider=PriceSource.broker,
-                provider_symbol=f"{prefix}-symbol",
+                provider=PriceSource.exchange if unvalued_anycoin_transfer else PriceSource.broker,
+                provider_symbol=symbol if unvalued_anycoin_transfer else f"{prefix}-symbol",
                 is_primary=False,
                 created_at=NOW,
                 updated_at=NOW,
@@ -229,12 +266,14 @@ async def _seed(
                     kind=InvestmentMovementKind.asset,
                     direction=MovementDirection.incoming,
                     quantity=Decimal("2"),
-                    currency="VWCE",
+                    currency=symbol,
                     price_per_unit=Decimal("100") if history == "buy" else None,
                     value_amount=Decimal("200") if history == "buy" else None,
                     value_currency="EUR" if history == "buy" else None,
-                    source_symbol="VWCE",
-                    source_asset_type=AssetType.etf,
+                    source_symbol=symbol,
+                    source_asset_type=(
+                        AssetType.crypto if unvalued_anycoin_transfer else AssetType.etf
+                    ),
                     note=None,
                     created_at=NOW,
                     updated_at=NOW,
@@ -490,6 +529,7 @@ def test_real_endpoint_serializes_response_and_conceals_path_substitution() -> N
 
 async def test_unsupported_history_maps_to_conflict_and_preserves_holdings() -> None:
     prefix = "h5d-unsupported"
+    # A real Anycoin BTC transfer requires a persisted event-date valuation overlay.
     account_id, (user_id,) = await _seed(prefix, history="transfer")
 
     with pytest.raises(HoldingRebuildUnavailableError):

@@ -446,6 +446,33 @@ def test_mixed_currency_positions_preserve_native_fields_and_output_aggregates()
     assert {position.cost_currency for position in view.positions} == {"EUR"}
 
 
+def test_position_preserves_cost_currency_when_provider_quote_differs() -> None:
+    item = replace(
+        _item(),
+        allocation_pct=Decimal("100"),
+        average_buy_price_currency="EUR",
+        native_cost_currency="EUR",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("EUR", Decimal("50")),),
+    )
+    view = build_portfolio_snapshot_view(
+        _source(
+            items=(item,),
+            investment_value=Decimal("60"),
+            investment_cost_basis=Decimal("50"),
+            total_value=Decimal("70"),
+            unrealized_pnl_value=Decimal("10"),
+        )
+    )
+
+    position = view.positions[0]
+    assert (position.price_currency, position.native_value_currency) == ("USD", "USD")
+    assert (
+        position.average_buy_price_currency,
+        position.native_cost_currency,
+        position.native_cost_basis_by_currency,
+    ) == ("EUR", "EUR", (PortfolioCurrencyAmount("EUR", Decimal("50")),))
+
+
 def test_position_permutation_produces_structurally_equal_view() -> None:
     source = _source()
     permuted = replace(source, items=tuple(reversed(source.items)))

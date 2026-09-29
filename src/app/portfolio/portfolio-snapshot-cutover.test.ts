@@ -36,6 +36,9 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(page).toContain("view.summary.cashByCurrency")
     expect(page).toContain("view.summary.netDepositsByCurrency")
     expect(page).toContain("<SnapshotCurrencyBreakdown")
+    expect(page).toContain("state.current.isStale")
+    expect(page).toContain("state.current.valuationTimestamp")
+    expect(page).toContain("Ceny jsou starší než 30 minut")
     expect(client).toContain('method: "POST"')
     expect(client).not.toMatch(/\bbody\s*:/)
     expect(client).not.toContain("accountId")
@@ -49,11 +52,12 @@ describe("portfolio snapshot page cutover boundaries", () => {
     const transport = await source("src/modules/python-api/server/portfolio-history.ts")
 
     expect(historyClient).toContain("/api/portfolio/history?")
-    expect(historyClient).not.toContain("accountId")
+    expect(historyClient).toContain("accountId: string | null = null")
+    expect(historyClient).toContain('parameters.set("accountId", accountId)')
     expect(historyClient).toContain("parseSnapshotPortfolioHistory")
     expect(historyContract).toContain('components["schemas"]["PortfolioHistoryResponse"]')
-    expect(historyContract).toContain("MAX_POINTS = 512")
-    expect(route).toContain("readSnapshotBackedPortfolioHistory")
+    expect(historyContract).toContain("MAX_POINTS = 480")
+    expect(route).toContain("readGenerationPortfolioHistory")
     expect(transport).toContain('client.GET("/api/v1/portfolio/history"')
     expect(transport).toContain("createAuthenticatedPythonTransport")
     expect(page).not.toContain("activeHistoryPoint")
@@ -74,13 +78,16 @@ describe("portfolio snapshot page cutover boundaries", () => {
     const breakdown = await source("src/modules/portfolio/SnapshotCurrencyBreakdown.tsx")
     const allocation = await source("src/modules/portfolio/SnapshotAllocationPie.tsx")
 
-    for (const content of [page, model, holdings, breakdown]) {
+    for (const content of [model, holdings, breakdown]) {
       expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
       expect(content).not.toMatch(/\bMath\./)
       expect(content).not.toContain(".toFixed(")
       expect(content).not.toContain(".reduce(")
       expect(content).not.toContain(".sort(")
     }
+    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
+    expect(page).toContain("Number(position.allocationPct)")
+    expect(page).toContain("Math.min(100")
     expect(allocation.match(/\bNumber\s*\(/g)).toHaveLength(1)
     expect(allocation).toContain("Presentation-only conversion at the Recharts leaf boundary")
     expect(allocation).not.toMatch(/\b(?:Math|parseFloat|parseInt)\b/)

@@ -16,6 +16,7 @@ class AccountRepository:
             .join(AccountMemberModel, AccountMemberModel.account_id == AccountModel.id)
             .where(
                 AccountMemberModel.user_id == user_id,
+                AccountMemberModel.accepted_at.is_not(None),
                 AccountModel.is_archived.is_(False),
             )
             .order_by(AccountModel.created_at.asc(), AccountModel.id.asc())
@@ -27,6 +28,7 @@ class AccountRepository:
                 name=account.name,
                 type=account.type,
                 currency=account.currency,
+                credit_limit=account.credit_limit,
                 color=account.color,
                 notes=account.notes,
                 is_archived=account.is_archived,
@@ -45,6 +47,7 @@ class AccountRepository:
             .where(
                 AccountModel.id == account_id,
                 AccountMemberModel.user_id == user_id,
+                AccountMemberModel.accepted_at.is_not(None),
                 AccountModel.is_archived.is_(False),
             )
         )
@@ -57,6 +60,7 @@ class AccountRepository:
             name=account.name,
             type=account.type,
             currency=account.currency,
+            credit_limit=account.credit_limit,
             color=account.color,
             notes=account.notes,
             is_archived=account.is_archived,
@@ -94,6 +98,45 @@ class AccountRepository:
             select(AccountMemberModel).where(
                 AccountMemberModel.id == member_id,
                 AccountMemberModel.account_id == account_id,
+            )
+        )
+
+    async def get_member_for_update(
+        self, *, account_id: str, member_id: str
+    ) -> AccountMemberModel | None:
+        return await self.session.scalar(
+            select(AccountMemberModel)
+            .where(
+                AccountMemberModel.id == member_id,
+                AccountMemberModel.account_id == account_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def accepted_user_ids(self, account_id: str) -> tuple[str, ...]:
+        return tuple(
+            await self.session.scalars(
+                select(AccountMemberModel.user_id)
+                .where(
+                    AccountMemberModel.account_id == account_id,
+                    AccountMemberModel.accepted_at.is_not(None),
+                )
+                .order_by(AccountMemberModel.user_id)
+            )
+        )
+
+    async def lock_accepted_memberships(self, account_id: str) -> tuple[AccountMemberModel, ...]:
+        return tuple(
+            await self.session.scalars(
+                select(AccountMemberModel)
+                .where(
+                    AccountMemberModel.account_id == account_id,
+                    AccountMemberModel.accepted_at.is_not(None),
+                )
+                .order_by(AccountMemberModel.user_id, AccountMemberModel.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         )
 
@@ -147,4 +190,9 @@ class AccountRepository:
         )
 
     async def get_account_for_lifecycle(self, account_id: str) -> AccountModel | None:
-        return await self.session.scalar(select(AccountModel).where(AccountModel.id == account_id))
+        return await self.session.scalar(
+            select(AccountModel)
+            .where(AccountModel.id == account_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )

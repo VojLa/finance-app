@@ -1,49 +1,90 @@
 ---
 name: finance-orchestrator
-description: "Triage and coordinate Finance App work: classify scope and risk, load the smallest useful context, delegate bounded work, and choose the least costly adequate model and reasoning effort."
+description: "Triage and coordinate non-trivial Finance App work with bounded context, Sol-led acceptance, cost-aware delegation, and evidence-based escalation."
 ---
 
 # Finance App orchestrator
 
-Use this skill before a non-trivial Finance App task. Its purpose is to choose a safe, inexpensive execution shape; it is not a replacement for implementation or domain guidance.
+Use this skill before non-trivial Finance App implementation, review, debugging,
+documentation, or architecture work. It chooses the execution shape; domain rules
+remain in `!docs/`, `!planning/`, and `memory/codex_rules.md`.
 
-## Start with bounded context
+## Triage
 
-1. Read `memory/codex_rules.md` and `!docs/map/project-map/README.md`.
-2. Load the relevant domain section, its linked current documentation, and only the code needed to understand the change.
-3. Classify the request by kind: reconnaissance, documentation, bug fix, implementation, refactor, test, review, or architecture/decision.
-4. State the visible outcome, affected domain, explicit non-goals, and any API, database, auth, import-boundary, concurrency, or financial-invariant impact.
+1. Read `memory/codex_rules.md`, one project map, one domain map, the linked current
+   owner, and directly related code/tests.
+2. State the observable outcome, non-goals, source of truth, affected domain, size,
+   risk, acceptance criteria, and cheapest meaningful verification.
+3. Identify API, schema, auth/account-isolation, money/FX, import, data-loss,
+   transaction, idempotency, lease, or concurrency impact.
+4. Choose one route:
+   - **DIRECT:** obvious XS/S work or a task with no independently useful subtask;
+   - **DELEGATE:** bounded, independently verifiable work with explicit ownership;
+   - **ESCALATE:** an unresolved high-risk decision or material conflict in authority.
 
-## Size and risk
+Read `.agents/STEP-SIZING.md` only when size is unclear. Read
+`.agents/MODEL-ROUTING.md` when selecting or escalating a worker.
 
-Use these sizes as an execution decision, not as an estimate of calendar time:
+## Acceptance ownership
 
-| Size | Meaning | Execution rule |
-| --- | --- | --- |
-| XS | One obvious local change | Implement directly after discovery. |
-| S | One localized behavior or documentation change | Implement directly; use a focused check. |
-| M | One coherent vertical slice across necessary layers | Make a short design and one bounded implementation step. |
-| L | Several dependent M slices or an unresolved boundary | Decompose before implementation. |
-| XL | Cross-domain, migration, or product/architecture initiative | Complete a dependency plan and acceptance criteria before any slice starts. |
+The primary orchestrator is the sole acceptance owner. It retains the original
+criteria, cross-domain decisions, and dependency order. A worker may report
+`COMPLETE`; it cannot declare the initiative accepted.
 
-Mark risk as low, medium, or high. High risk includes money or currency arithmetic, source of truth, schema/migrations, authentication or account isolation, imports/untrusted files, concurrency/idempotency, data loss, and public contracts. Read the linked invariants before changing a high-risk domain.
+After each result, the primary checks:
 
-## Model and reasoning selection
+- the requested outcome and every binary criterion;
+- changed files against write scope;
+- verification evidence and remaining risks;
+- conflicts with current docs, accepted decisions, or adjacent contracts;
+- documentation impact.
 
-Assign the least capable adequate worker. Keep prompts narrow: outcome, exact files or map links, constraints, acceptance criteria, and targeted verification.
+Use `.agents/templates/ACCEPTANCE-REVIEW.md` for an initiative checkpoint.
 
-| Work | Default |
-| --- | --- |
-| Search, inventory, mechanical edits, format/lint, focused checks, simple documentation | Luna, low or medium |
-| Normal M implementation, localized debugging, integration tests, blocker fix | Terra, medium or high |
-| Architecture, high-risk invariants, auth, database ownership, concurrency, L/XL decomposition, critical review | Sol, high or xhigh |
+## Delegation
 
-Escalate only after adding the missing evidence (contract, reproduction, failing assertion, or decision). Escalate once per failure category: Luna low → Terra medium → Sol high. Do not repeat the same attempt or assign routine work to Sol just because it owns the task.
+Delegate only reconnaissance, a deterministic documentation task, one coherent M
+slice, focused tests, localized debugging, or an independent diff review.
 
-## Delegation and control
+Before delegating, compile a context capsule according to
+`.agents/CONTEXT-POLICY.md`. Pass decisions and acceptance criteria as concise facts;
+do not make the worker reconstruct them from chat history or broad documentation.
 
-Delegate only independently verifiable, bounded work: reconnaissance, a single M slice, focused tests, deterministic documentation, or diff review. The orchestrator retains cross-domain decisions and merges results against the original acceptance criteria.
+- Run at most two workers concurrently by default.
+- Do not assign overlapping write scopes; one agent owns each edited file.
+- Scouts and reviewers are read-only unless explicitly authorized to edit.
+- Use `.agents/templates/CONTEXT-MANIFEST.md` for every worker.
+- Require `.agents/templates/WORKER-RESULT.md` as the return schema.
+- Use `fork_turns: "none"` for every bounded worker. Never use a full-history fork
+  for reconnaissance, implementation, tests, documentation, or review.
+- Name exact documents and files. Do not assign directory-wide reading, generic
+  repository discovery, or historical chat reconstruction.
+- Reuse the same worker for a delta review or blocker follow-up; do not repeatedly
+  create reviewers. A follow-up receives only changed files, new evidence, remaining
+  criteria, and the requested delta.
 
-After each step, record only: completed outcome, changed files, verification result, unresolved blocker, and next owner. If a blocker is fixed, perform a delta review of the blocker, changed diff, and directly related behavior; do not restart a full audit unless scope or risk changed.
+Workers stop on missing product authority, conflicting decisions, a required path
+outside the manifest allowlist, destructive/external action, or a plausible
+P0/P1 security, money, schema, data-loss, or concurrency problem.
 
-Finish when acceptance criteria hold, proportionate checks pass, the diff is in scope, and the Documentation Impact step is complete. Stop and ask for direction when a missing product choice, external authority, or irreversible action materially changes scope.
+## Model policy and escalation
+
+Prefer a `gpt-6-sol` medium primary. Use `gpt-6-luna` for bounded deterministic
+work and `gpt-6-sol` high or xhigh for difficult implementation and review.
+`gpt-6-astra` is exceptional: use it only for a narrow question still unresolved
+after a focused Sol xhigh attempt, or for an immediate credible P0/security/data-loss
+emergency. High risk or large scope alone is not an Astra trigger. Explicitly set a
+bounded worker's model and effort with `fork_turns: "none"`, so it does not inherit
+an Astra primary. See `.agents/MODEL-ROUTING.md` for the full gates.
+
+Escalate only with a packet containing new evidence: the exact decision or failure,
+authoritative references, a minimal reproduction or failing assertion, attempted
+work, and the requested decision. Use `.agents/templates/ESCALATION-PACKET.md`.
+Never resend the same broad prompt to a stronger model.
+
+## Completion
+
+Finish only when the acceptance owner confirms the criteria, proportionate checks
+pass, the diff is in scope, no blocker remains, and the `finance-docs` impact check
+is complete. After a fix, review the delta and directly coupled behavior rather
+than restarting the whole audit.

@@ -50,9 +50,19 @@ async def _postgres_enum_values(connection: AsyncConnection, name: str) -> tuple
     return tuple(result.scalars())
 
 
+async def _drop_database(admin: asyncpg.Connection, database_name: str) -> None:
+    await admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname = $1 AND pid <> pg_backend_pid()",
+        database_name,
+    )
+    await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+    await admin.close()
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
-async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> None:
+async def test_clean_previous_head_database_upgrades_to_current_head() -> None:
     assert DATABASE_URL is not None
     source_url = make_url(normalize_database_url(DATABASE_URL))
     admin_url = source_url.set(database="postgres")
@@ -132,7 +142,7 @@ async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> No
                     "ORDER BY enum_value.enumsortorder"
                 )
             )
-            assert version == "3o0001unkbasis"
+            assert version == "410001serieslinks"
             assert tuple(row["enumlabel"] for row in alias_values) == tuple(
                 item.value for item in AssetAliasProvider
             )
@@ -155,7 +165,57 @@ async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> No
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
 async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
     assert DATABASE_URL is not None
-    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    source_url = make_url(normalize_database_url(DATABASE_URL))
+    admin_url = source_url.set(drivername="postgresql", database="postgres")
+    database_name = f"finance_app_td_round_{uuid4().hex[:12]}"
+    target_url = source_url.set(database=database_name)
+    admin_dsn = admin_url.render_as_string(hide_password=False)
+    target_dsn = target_url.set(drivername="postgresql").render_as_string(hide_password=False)
+    target_database_url = target_url.render_as_string(hide_password=False)
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        await admin.execute(f'CREATE DATABASE "{database_name}"')
+        target = await asyncpg.connect(target_dsn)
+        try:
+            previous_schema = PREVIOUS_SCHEMA.read_text(encoding="utf-8").replace(
+                'CREATE SCHEMA "public";\n', "", 1
+            )
+            await target.execute(previous_schema)
+            await target.execute(
+                "CREATE TABLE public.alembic_version ("
+                "version_num varchar(32) NOT NULL, "
+                "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+            )
+            await target.execute(
+                "INSERT INTO public.alembic_version (version_num) VALUES ('3g0001liabbal')"
+            )
+        finally:
+            await target.close()
+
+        environment = os.environ.copy()
+        environment["DATABASE_URL"] = target_database_url
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(BACKEND_ROOT / "alembic.ini"),
+                "upgrade",
+                "head",
+            ],
+            cwd=BACKEND_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    except BaseException:
+        await _drop_database(admin, database_name)
+        raise
+
+    engine = create_async_engine(normalize_database_url(target_database_url))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     try:
@@ -165,7 +225,7 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
             migration = await connection.scalar(
                 text('SELECT "version_num" FROM public.alembic_version')
             )
-            assert migration == "3o0001unkbasis"
+            assert migration == "410001serieslinks"
 
             postgres_alias_values = await _postgres_enum_values(connection, "AssetAliasProvider")
             postgres_price_values = await _postgres_enum_values(connection, "PriceSource")
@@ -247,3 +307,4 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
             await session.execute(delete(AssetModel).where(AssetModel.id == ASSET_ID))
     finally:
         await engine.dispose()
+        await _drop_database(admin, database_name)

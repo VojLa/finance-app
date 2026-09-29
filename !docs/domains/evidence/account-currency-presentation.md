@@ -1,5 +1,11 @@
 ## Account-currency presentation evidence
 
+Type: historical
+Status: historical
+Owns: milestone evidence for account-currency presentation
+Code: account, snapshot and read-model implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 `Account.currency` is the intended denomination for primary account-level
 presentation. It is distinct from `User.baseCurrency`, which owns the current
 aggregate AccountSnapshot set, NetWorthSnapshot, portfolio aggregate,

@@ -301,6 +301,17 @@ export default function ImportPage() {
     }
   }
 
+  function startNewImport() {
+    if (state.status !== "failed") return
+    if (persistedRecord !== null) clearPersistedImportJob(localStorage, persistedRecord)
+    setPersistedRecord(null)
+    setPollFailures(0)
+    setActionError(null)
+    setAccountId("")
+    setFiles([])
+    setState({ status: "idle" })
+  }
+
   return (
     <div className="max-w-2xl space-y-5">
       <h1 className="text-2xl font-semibold">Import CSV</h1>
@@ -387,12 +398,23 @@ export default function ImportPage() {
         {state.status === "failed" && (
           <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-900">
             <p>{state.job.error?.message ?? "Import se nepodařilo dokončit."}</p>
+            <p className="mt-1 text-xs">
+              Fáze: {state.job.progress.phase}. Pokusů: {state.job.attempt_count} z{" "}
+              {state.job.max_attempts}.
+            </p>
             <button
               type="button"
               onClick={() => void retry()}
               className="mt-2 rounded bg-red-700 px-3 py-2 text-white"
             >
               Zkusit znovu
+            </button>
+            <button
+              type="button"
+              onClick={startNewImport}
+              className="ml-2 mt-2 rounded border border-red-700 px-3 py-2 text-red-800"
+            >
+              Nový import
             </button>
           </div>
         )}

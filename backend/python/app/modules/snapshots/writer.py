@@ -42,8 +42,8 @@ from app.modules.snapshots.writer_repository import AccountSnapshotWriterReposit
 _STATE_MESSAGE = "Account snapshot could not be persisted."
 _CONFLICT_MESSAGE = "Account snapshot conflicts with persisted state."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -80,6 +80,7 @@ class WriteAccountSnapshotCommand:
     created_at: datetime
     is_recalculated: bool
     output_currency: str | None = None
+    generation_id: str = _LEGACY_GENERATION_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +154,7 @@ def _validate_command(command: object) -> WriteAccountSnapshotCommand:
     if not isinstance(command, WriteAccountSnapshotCommand):
         raise _fail()
     account_id = _nonblank(command.account_id)
+    generation_id = _nonblank(command.generation_id)
     snapshot_timestamp = _timestamp(command.snapshot_timestamp)
     calculated_at = _timestamp(command.calculated_at)
     created_at = _timestamp(command.created_at)
@@ -181,6 +183,7 @@ def _validate_command(command: object) -> WriteAccountSnapshotCommand:
         created_at=created_at,
         is_recalculated=command.is_recalculated,
         output_currency=output_currency,
+        generation_id=generation_id,
     )
 
 
@@ -214,6 +217,7 @@ _SNAPSHOT_ATTRIBUTES = (
     "fees_by_currency",
     "taxes_by_currency",
     "exchange_rates",
+    "generation_id",
 )
 
 _ITEM_ATTRIBUTES = (
@@ -344,6 +348,7 @@ def _validate_projection_identity(
         or snapshot.calculated_at != command.calculated_at
         or snapshot.created_at != command.created_at
         or snapshot.is_recalculated is not command.is_recalculated
+        or snapshot.generation_id != command.generation_id
     ):
         raise _fail()
 
@@ -405,7 +410,13 @@ class AccountSnapshotWriter:
             )
         requires_boundary = command.granularity is SnapshotGranularity.day or (
             command.granularity is SnapshotGranularity.minute
-            and command.source is SnapshotSource.import_event
+            and command.source
+            in {
+                SnapshotSource.import_event,
+                SnapshotSource.manual_recalculation,
+                SnapshotSource.price_refresh,
+                SnapshotSource.scheduled,
+            }
         )
         if requires_boundary and account_type in _LIABILITY_ACCOUNT_TYPES:
             canonical_state = await self.repository.lock_canonical_state(command.account_id)
@@ -449,6 +460,7 @@ class AccountSnapshotWriter:
                     calculated_at=command.calculated_at,
                     created_at=command.created_at,
                     is_recalculated=command.is_recalculated,
+                    generation_id=command.generation_id,
                 ),
             )
             _validate_projection_identity(
@@ -508,6 +520,7 @@ class AccountSnapshotWriter:
                 timestamp=command.snapshot_timestamp,
                 currency=currency,
                 granularity=command.granularity,
+                generation_id=command.generation_id,
             )
             if existing is not None:
                 items = await self.repository.load_snapshot_items(existing.id)

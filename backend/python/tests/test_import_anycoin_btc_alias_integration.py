@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from support import investment_fixture_e2e as investment_support
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
@@ -37,9 +36,14 @@ from app.modules.imports.posting_service import (
     PostImportBatchCommand,
 )
 from app.modules.market_data.factory import create_production_market_evidence_service
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    market_evidence_source_policy_from_settings,
+)
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
+from tests.support import investment_fixture_e2e as investment_support
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -158,6 +162,7 @@ async def _finalize(
             return await ImportMultiFileFinalizationService(
                 session,
                 market_backed_service=market,
+                source_policy=market_evidence_source_policy_from_settings(_settings()),
             ).finalize(
                 FinalizeImportBatchesCommand(
                     principal=_principal(user_id),
@@ -275,7 +280,10 @@ async def _concurrent_onboard(
     try:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            return await AnycoinBtcAliasService(session).onboard(
+            return await AnycoinBtcAliasService(
+                session,
+                source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+            ).onboard(
                 OnboardAnycoinBtcAliasCommand(
                     account_id=account_id,
                     batch_ids=(batch_id,),

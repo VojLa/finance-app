@@ -1,5 +1,11 @@
 ## R8 clean production scenario
 
+Type: historical
+Status: historical
+Owns: milestone evidence for the R8 clean scenario
+Code: end-to-end implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R8 proves the current model from clean persisted state without introducing a
 new financial source. One CZK user owns three API-created accounts: a CZK bank
 account and EUR broker/exchange accounts. Source-format Raiffeisenbank,

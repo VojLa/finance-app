@@ -18,6 +18,7 @@ from app.db.models.enums import (
 from app.modules.holdings.persistence_projection import (
     ExpectedPersistedHoldingPlan,
     HoldingPersistenceEvent,
+    HoldingPersistenceMovement,
     HoldingPersistenceProjection,
     build_holding_delta_projection,
 )
@@ -29,6 +30,7 @@ from app.modules.snapshots.financial_metrics import (
     HistoricalMetricEvidence,
     HistoricalMetricKind,
 )
+from app.shared.canonical_arithmetic import CanonicalArithmeticError, canonical_rounded
 
 _ERROR = "Canonical forward changes cannot produce an exact current state."
 _TRANSFER_CLASSIFICATIONS = {
@@ -69,6 +71,12 @@ class CurrentInvestmentDelta:
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     historical_metrics: tuple[HistoricalMetricEvidence, ...]
     has_asset_transfer: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentInvestmentTransactionDelta:
+    cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
+    historical_metrics: tuple[HistoricalMetricEvidence, ...]
 
 
 def _fail() -> CurrentDeltaProjectionError:
@@ -152,6 +160,39 @@ def _breakdown(values: dict[str, Decimal]) -> tuple[PortfolioCurrencyAmount, ...
     return tuple(
         PortfolioCurrencyAmount(currency=currency, amount=_exact(amount))
         for currency, amount in sorted(values.items())
+    )
+
+
+def _asset_transfer_net_deposit(
+    *,
+    event: HoldingPersistenceEvent,
+    movement: HoldingPersistenceMovement,
+) -> HistoricalMetricEvidence | None:
+    price_per_unit = movement.price_per_unit
+    value_amount = movement.value_amount
+    value_currency = movement.value_currency
+    valuation = (price_per_unit, value_amount, value_currency)
+    if all(value is None for value in valuation):
+        return None
+    if any(value is None for value in valuation):
+        raise _fail()
+    assert price_per_unit is not None
+    assert value_amount is not None
+    assert value_currency is not None
+    try:
+        amount = _exact(canonical_rounded(value_amount, MONEY), positive=True)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    _exact(price_per_unit, quantity=True, positive=True)
+    direction = movement.direction
+    if direction not in {MovementDirection.incoming, MovementDirection.outgoing}:
+        raise _fail()
+    return HistoricalMetricEvidence(
+        evidence_id=f"transfer:{_text(movement.movement_id)}",
+        timestamp=event.event_date,
+        kind=HistoricalMetricKind.net_deposit,
+        currency=_currency(value_currency),
+        amount=amount if direction is MovementDirection.incoming else -amount,
     )
 
 
@@ -275,6 +316,47 @@ def apply_cash_transactions(
     return _breakdown(values)
 
 
+def apply_investment_cash_transactions(
+    *,
+    account_id: str,
+    baseline: tuple[PortfolioCurrencyAmount, ...],
+    transactions: tuple[CurrentTransaction, ...],
+) -> CurrentInvestmentTransactionDelta:
+    """Apply explicit external investment cash flows without changing investment P/L metrics."""
+    values = _breakdown_map(baseline)
+    transaction_ids: set[str] = set()
+    metrics: list[HistoricalMetricEvidence] = []
+    for transaction in sorted(transactions, key=lambda item: (item.timestamp, item.transaction_id)):
+        if (
+            not isinstance(transaction, CurrentTransaction)
+            or _text(transaction.account_id) != account_id
+            or _text(transaction.transaction_id) in transaction_ids
+            or transaction.transaction_type is not TransactionType.transfer
+            or transaction.classification is not TransactionClassification.investment_transfer
+        ):
+            raise _fail()
+        transaction_ids.add(transaction.transaction_id)
+        timestamp = _timestamp(transaction.timestamp)
+        amount = _exact(transaction.amount)
+        currency = _currency(transaction.currency)
+        if amount == 0:
+            raise _fail()
+        values[currency] = _add(values.get(currency, Decimal("0.000000")), amount)
+        metrics.append(
+            HistoricalMetricEvidence(
+                evidence_id=f"transaction:{transaction.transaction_id}",
+                timestamp=timestamp,
+                kind=HistoricalMetricKind.net_deposit,
+                currency=currency,
+                amount=amount,
+            )
+        )
+    return CurrentInvestmentTransactionDelta(
+        cash_by_currency=_breakdown(values),
+        historical_metrics=tuple(metrics),
+    )
+
+
 def apply_investment_events(
     *,
     account_id: str,
@@ -303,8 +385,6 @@ def apply_investment_events(
         if event_id in event_ids:
             raise _fail()
         event_ids.add(event_id)
-        if event.event_type is InvestmentEventType.asset_transfer:
-            has_asset_transfer = True
         if (current.realized_pnl is None) != (current.realized_pnl_currency is None):
             raise _fail()
         for movement in event.movements:
@@ -350,6 +430,19 @@ def apply_investment_events(
                         amount=amount if expected is MovementDirection.incoming else -amount,
                     )
                 )
+        if event.event_type is InvestmentEventType.asset_transfer:
+            assets = tuple(
+                movement
+                for movement in event.movements
+                if movement.kind is InvestmentMovementKind.asset
+            )
+            if len(assets) != 1:
+                raise _fail()
+            transfer_metric = _asset_transfer_net_deposit(event=event, movement=assets[0])
+            if transfer_metric is None:
+                has_asset_transfer = True
+            else:
+                metrics.append(transfer_metric)
         if current.realized_pnl is not None:
             metrics.append(
                 HistoricalMetricEvidence(
@@ -357,7 +450,7 @@ def apply_investment_events(
                     timestamp=event.event_date,
                     kind=HistoricalMetricKind.realized_pnl,
                     currency=_currency(current.realized_pnl_currency),
-                    amount=_exact(current.realized_pnl),
+                    amount=_exact(canonical_rounded(current.realized_pnl, MONEY)),
                 )
             )
     return CurrentInvestmentDelta(

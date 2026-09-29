@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from hashlib import sha256
 from pathlib import Path
@@ -21,7 +22,11 @@ from app.modules.imports.service import (
     ImportUploadStateError,
     ImportUploadTooLargeError,
 )
-from app.modules.imports.storage import ImportFileMismatchError, LocalImportStorage
+from app.modules.imports.storage import (
+    ImportFileMismatchError,
+    ImportStorageBusyError,
+    LocalImportStorage,
+)
 from app.shared.errors import ApplicationError
 
 
@@ -296,6 +301,54 @@ async def test_concurrent_identical_and_conflicting_uploads_are_safe(tmp_path: P
     assert storage.path_for("conflict").read_bytes() == valid
     assert not list(tmp_path.rglob("upload-*"))
     assert not list(tmp_path.rglob("publish.lock"))
+
+
+@pytest.mark.asyncio
+async def test_stale_publish_lock_is_recovered_after_process_crash(tmp_path: Path) -> None:
+    content = b"recoverable upload"
+    checksum = sha256(content).hexdigest()
+    storage = LocalImportStorage(tmp_path, lock_timeout_seconds=0.1, stale_lock_seconds=1)
+    destination = storage.path_for("stale-lock")
+    destination.parent.mkdir(parents=True)
+    lock_path = destination.parent / "publish.lock"
+    lock_path.write_text("dead-owner", encoding="utf-8")
+    os.utime(lock_path, (1, 1))
+
+    result = await storage.store(
+        batch_id="stale-lock",
+        chunks=_chunks(content),
+        max_bytes=100,
+        expected_size=len(content),
+        expected_checksum=checksum,
+    )
+
+    assert result.created is True
+    assert destination.read_bytes() == content
+    assert not lock_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_live_publish_lock_times_out_without_deleting_owner_lock(tmp_path: Path) -> None:
+    content = b"blocked upload"
+    checksum = sha256(content).hexdigest()
+    storage = LocalImportStorage(tmp_path, lock_timeout_seconds=0.02, stale_lock_seconds=60)
+    destination = storage.path_for("live-lock")
+    destination.parent.mkdir(parents=True)
+    lock_path = destination.parent / "publish.lock"
+    lock_path.write_text("live-owner", encoding="utf-8")
+
+    with pytest.raises(ImportStorageBusyError):
+        await storage.store(
+            batch_id="live-lock",
+            chunks=_chunks(content),
+            max_bytes=100,
+            expected_size=len(content),
+            expected_checksum=checksum,
+        )
+
+    assert lock_path.read_text(encoding="utf-8") == "live-owner"
+    assert not destination.exists()
+    assert not list(tmp_path.rglob("upload-*"))
 
 
 @pytest.mark.parametrize(

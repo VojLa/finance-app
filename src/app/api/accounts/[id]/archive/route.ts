@@ -7,7 +7,8 @@ import { normalizeAdapterError, toErrorResponse } from "@/modules/python-api/ser
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 
-export async function POST(_request: Request, { params }: { params: { id: string } }) {
+export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
   const session = await getServerSession(authOptions)
   if (!session?.user || session.user.id.trim().length === 0) {
     return NextResponse.json(
@@ -27,7 +28,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
         userId: session.user.id,
         email: session.user.email || undefined,
       },
-      params.id
+      id
     )
     return NextResponse.json(account, { headers: NO_STORE_HEADERS })
   } catch (error) {

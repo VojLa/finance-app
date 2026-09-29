@@ -21,6 +21,13 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import (
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -39,8 +46,15 @@ from app.db.models.imports import (
     ImportLogModel,
     ImportRowModel,
 )
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -157,12 +171,60 @@ async def _post(
 
 async def _cleanup_holdings(prefix: str) -> None:
     engine = posting_support._engine()
+    user_id = f"{prefix}-owner"
+    account_ids = (f"{prefix}-account", f"{prefix}-unsupported-bank")
     async with AsyncSession(engine) as session:
+        generation_ids = tuple(
+            (
+                await session.scalars(
+                    select(SnapshotGenerationTargetModel.generation_id).where(
+                        SnapshotGenerationTargetModel.user_id == user_id
+                    )
+                )
+            ).all()
+        )
+        baseline_ids = select(DailySnapshotBaselineModel.id).where(
+            DailySnapshotBaselineModel.user_id == user_id
+        )
+        await session.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.user_id == user_id)
+        )
+        await session.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.baseline_id.in_(baseline_ids)
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineModel).where(DailySnapshotBaselineModel.user_id == user_id)
+        )
+        await session.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id == user_id)
+        )
         snapshot_ids = tuple(
             (
                 await session.scalars(
                     select(AccountSnapshotModel.id).where(
-                        AccountSnapshotModel.account_id == f"{prefix}-account"
+                        AccountSnapshotModel.account_id.in_(account_ids)
                     )
                 )
             ).all()
@@ -177,13 +239,38 @@ async def _cleanup_holdings(prefix: str) -> None:
                 delete(AccountSnapshotModel).where(AccountSnapshotModel.id.in_(snapshot_ids))
             )
         await session.execute(
-            delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == f"{prefix}-owner")
+            delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == user_id)
         )
         await session.execute(
             delete(HoldingModel).where(HoldingModel.account_id == f"{prefix}-account")
         )
+        await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id == user_id
+            )
+        )
+        if generation_ids:
+            await session.execute(
+                delete(SnapshotGenerationModel).where(
+                    SnapshotGenerationModel.id.in_(generation_ids),
+                    ~SnapshotGenerationModel.id.in_(
+                        select(SnapshotGenerationTargetModel.generation_id)
+                    ),
+                )
+            )
         await session.commit()
     await engine.dispose()
+
+
+async def _seed(prefix: str, *, source: ImportSource, rows: list[dict[str, str]]) -> None:
+    # The shared posting fixture cleans only posting rows. Clear this module's
+    # snapshot projections before it attempts to remove the reused user IDs.
+    await _cleanup_holdings(prefix)
+    await _remove_unsupported_account(f"{prefix}-unsupported-bank")
+    await posting_support._cleanup(prefix)
+    await _remove_market_evidence(prefix)
+    await _remove_investment_identity(prefix)
+    await posting_support._seed(prefix, source=source, rows=rows)
 
 
 async def _seed_investment_identity(
@@ -193,7 +280,7 @@ async def _seed_investment_identity(
     price_currency: str = "EUR",
     price_at: datetime | None = None,
     with_price: bool = True,
-    price_source: PriceSource = PriceSource.broker,
+    price_source: PriceSource = PriceSource.twelve_data,
 ) -> None:
     engine = posting_support._engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
@@ -257,7 +344,7 @@ async def _add_price(prefix: str, *, currency: str = "EUR") -> None:
                 listing_id=f"{prefix}-listing",
                 price=Decimal("100"),
                 currency=currency,
-                source=PriceSource.broker,
+                source=PriceSource.twelve_data,
                 timestamp=now - timedelta(hours=1),
                 created_at=now,
             )
@@ -561,11 +648,22 @@ async def _remove_market_evidence(prefix: str) -> None:
     engine = posting_support._engine()
     async with AsyncSession(engine) as session:
         await session.execute(
-            delete(PriceSnapshotModel).where(PriceSnapshotModel.id.startswith(f"{prefix}-"))
+            delete(PriceSnapshotModel).where(PriceSnapshotModel.id == f"{prefix}-price")
         )
         await session.execute(
-            delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(f"{prefix}-"))
+            delete(ExchangeRateModel).where(ExchangeRateModel.id == f"{prefix}-rate-usd-eur")
         )
+        await session.commit()
+    await engine.dispose()
+
+
+async def _remove_investment_identity(prefix: str) -> None:
+    engine = posting_support._engine()
+    async with AsyncSession(engine) as session:
+        await session.execute(
+            delete(AssetListingModel).where(AssetListingModel.id == f"{prefix}-listing")
+        )
+        await session.execute(delete(AssetModel).where(AssetModel.id == f"{prefix}-asset"))
         await session.commit()
     await engine.dispose()
 
@@ -573,7 +671,7 @@ async def _remove_market_evidence(prefix: str) -> None:
 def test_transaction_only_account_preserves_import_and_replays_snapshots() -> None:
     async def scenario() -> None:
         prefix = "e2-transaction"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.manual,
             rows=[posting_support._manual("e2-transaction-row")],
@@ -623,7 +721,7 @@ def test_investment_import_rebuilds_holdings_and_creates_then_replays_snapshots(
     async def scenario() -> None:
         prefix = "e2-investment"
         symbol = "E2INV"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, "e2-investment-row")],
@@ -692,7 +790,7 @@ def test_investment_import_rebuilds_holdings_and_creates_then_replays_snapshots(
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -736,7 +834,7 @@ def test_holding_failure_preserves_committed_import_and_replay_recovers() -> Non
                 await engine.dispose()
                 raise HoldingRebuildUnavailableError()
 
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -789,7 +887,7 @@ def test_holding_failure_preserves_committed_import_and_replay_recovers() -> Non
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -798,7 +896,7 @@ def test_missing_price_preserves_import_and_holdings_then_replay_completes() -> 
     async def scenario() -> None:
         prefix = "e2-r1-price-recovery"
         symbol = "E2R1PRICE"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -845,7 +943,7 @@ def test_missing_price_preserves_import_and_holdings_then_replay_completes() -> 
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -854,7 +952,7 @@ def test_missing_fx_preserves_committed_stages_then_replay_completes() -> None:
     async def scenario() -> None:
         prefix = "e2-r1-fx-recovery"
         symbol = "E2R1FX"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -911,7 +1009,7 @@ def test_missing_fx_preserves_committed_stages_then_replay_completes() -> None:
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -920,7 +1018,7 @@ def test_concurrent_investment_post_processing_is_exact_and_deduplicated() -> No
     async def scenario() -> None:
         prefix = "e2-concurrent"
         symbol = "E2CON"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, "e2-concurrent-row")],
@@ -986,7 +1084,7 @@ def test_concurrent_investment_post_processing_is_exact_and_deduplicated() -> No
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -995,7 +1093,7 @@ def test_partially_completed_batch_refreshes_only_imported_targets() -> None:
     async def scenario() -> None:
         prefix = "e2-r1-partial"
         symbol = "E2R1PART"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[
@@ -1067,19 +1165,17 @@ def test_partially_completed_batch_refreshes_only_imported_targets() -> None:
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
 
-def test_supported_investment_import_includes_other_empty_account_without_exposing_identity() -> (
-    None
-):
+def test_supported_investment_import_skips_other_empty_account_without_exposing_identity() -> None:
     async def scenario() -> None:
         prefix = "e2-r1-whole-user-unsupported"
         symbol = "E2R1UNSUP"
         unsupported_id: str | None = None
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -1105,7 +1201,7 @@ def test_supported_investment_import_includes_other_empty_account_without_exposi
                             )
                         )
                     )
-                    == 2
+                    == 1
                 )
                 logs = tuple(
                     (
@@ -1135,7 +1231,7 @@ def test_supported_investment_import_includes_other_empty_account_without_exposi
                 await _remove_unsupported_account(unsupported_id)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -1144,7 +1240,7 @@ def test_immutable_snapshot_conflict_preserves_existing_snapshot_without_repair(
     async def scenario() -> None:
         prefix = "e2-r1-immutable-conflict"
         symbol = "E2R1CONFLICT"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -1194,7 +1290,7 @@ def test_immutable_snapshot_conflict_preserves_existing_snapshot_without_repair(
             await _cleanup_holdings(prefix)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -1206,7 +1302,7 @@ def test_two_financially_different_batches_in_same_minute_conflict_without_time_
         first_completed = datetime(2036, 7, 29, 14, 35, 10)
         second_completed = datetime(2036, 7, 29, 14, 35, 40)
         second_batch_id: str | None = None
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-first")],
@@ -1271,7 +1367,7 @@ def test_two_financially_different_batches_in_same_minute_conflict_without_time_
                 await _remove_additional_batch(second_batch_id)
             await posting_support._cleanup(prefix)
             await _remove_market_evidence(prefix)
-            await posting_support._remove_asset_identities({symbol})
+            await _remove_investment_identity(prefix)
 
     asyncio.run(scenario())
 
@@ -1280,7 +1376,7 @@ def test_concurrent_import_post_endpoint_requests_converge() -> None:
     async def seed() -> None:
         prefix = "e2-r1-endpoint-concurrent"
         symbol = "E2R1HTTP"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -1289,7 +1385,6 @@ def test_concurrent_import_post_endpoint_requests_converge() -> None:
         await posting_support._prepare(prefix)
 
     prefix = "e2-r1-endpoint-concurrent"
-    symbol = "E2R1HTTP"
     asyncio.run(seed())
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -1326,14 +1421,14 @@ def test_concurrent_import_post_endpoint_requests_converge() -> None:
         asyncio.run(_cleanup_holdings(prefix))
         asyncio.run(posting_support._cleanup(prefix))
         asyncio.run(_remove_market_evidence(prefix))
-        asyncio.run(posting_support._remove_asset_identities({symbol}))
+        asyncio.run(_remove_investment_identity(prefix))
 
 
 def test_import_post_endpoint_principal_isolation_prevents_post_processing() -> None:
     async def scenario() -> None:
         prefix = "e2-r1-principal-isolation"
         symbol = "E2R1ISOLATE"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.trading212,
             rows=[posting_support._trading_buy(symbol, f"{prefix}-external")],
@@ -1342,7 +1437,6 @@ def test_import_post_endpoint_principal_isolation_prevents_post_processing() -> 
         await posting_support._prepare(prefix)
 
     prefix = "e2-r1-principal-isolation"
-    symbol = "E2R1ISOLATE"
     asyncio.run(scenario())
     try:
         response = _endpoint_call(
@@ -1374,13 +1468,13 @@ def test_import_post_endpoint_principal_isolation_prevents_post_processing() -> 
         asyncio.run(_cleanup_holdings(prefix))
         asyncio.run(posting_support._cleanup(prefix))
         asyncio.run(_remove_market_evidence(prefix))
-        asyncio.run(posting_support._remove_asset_identities({symbol}))
+        asyncio.run(_remove_investment_identity(prefix))
 
 
 def test_zero_import_batch_is_post_processing_noop() -> None:
     async def scenario() -> None:
         prefix = "e2-zero"
-        await posting_support._seed(
+        await _seed(
             prefix,
             source=ImportSource.manual,
             rows=[posting_support._manual("e2-zero-row")],

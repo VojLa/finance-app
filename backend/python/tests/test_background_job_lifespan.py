@@ -63,7 +63,12 @@ def test_enabled_worker_starts_and_stops_with_application_lifespan(monkeypatch) 
 
 
 def test_enabled_worker_fails_startup_without_database() -> None:
-    settings = Settings(environment="test", background_jobs_enabled=True, _env_file=None)
+    settings = Settings(
+        environment="test",
+        background_jobs_enabled=True,
+        database_url=None,
+        _env_file=None,
+    )
 
     with pytest.raises(RuntimeError, match="configured database"):
         with TestClient(create_app(settings)):

@@ -59,3 +59,12 @@ class CurrentPasswordInvalidError(ApplicationError):
             message="The current password is invalid.",
             status_code=409,
         )
+
+
+class BaseCurrencyChangeUnavailableError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="base_currency_change_unavailable",
+            message="The base currency cannot be changed safely right now.",
+            status_code=409,
+        )

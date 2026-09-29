@@ -8,21 +8,21 @@ Update when: vznikne, zanikne nebo změní autoritu runtime subsystém
 
 ## Domény a runtime moduly
 
-| Doména | Runtime moduly a hranice |
-| --- | --- |
-| Identity and access | `auth`, společná `api`, NextAuth a session adapter |
-| Accounts | `accounts` |
-| Liabilities | `liabilities` |
-| Cash flow | `transactions`, `categories`, `budgets`, `operational_dashboard` |
-| Imports and jobs | `imports`, `jobs`, parser/provider boundaries |
-| Investments | `investments`, `canonical_state`, `holdings` |
-| Market identity and evidence | `asset_aliases`, `market_data`, `prices`, `fx` |
-| Valuation | `snapshots`, `daily_baselines`, `current_value`, `net_worth`, `snapshot_refresh` |
-| Portfolio read models | `portfolio`, `portfolio_snapshot`, `dashboard_snapshot` |
-| Portfolio history | `portfolio_history`, `portfolio_history_rebuild` |
-| Persistence platform | `db/models`, Alembic, schema artefakty, config a shared runtime |
-| Frontend platform | `src/app`, `src/modules`, adapters, generated API types a UI |
-| Experimental engine | `backend/rust/finance_engine`, bez runtime autority |
+| Doména                       | Runtime moduly a hranice                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| Identity and access          | `auth`, společná `api`, NextAuth a session adapter                               |
+| Accounts                     | `accounts`                                                                       |
+| Liabilities                  | `liabilities`                                                                    |
+| Cash flow                    | `transactions`, `categories`, `budgets`, `operational_dashboard`                 |
+| Imports and jobs             | `imports`, `jobs`, parser/provider boundaries                                    |
+| Investments                  | `investments`, `canonical_state`, `holdings`                                     |
+| Market identity and evidence | `asset_aliases`, `market_data`, `prices`, `fx`                                   |
+| Valuation                    | `snapshots`, `daily_baselines`, `current_value`, `net_worth`, `snapshot_refresh` |
+| Portfolio read models        | `portfolio`, `portfolio_snapshot`, `dashboard_snapshot`                          |
+| Portfolio history            | `portfolio_history`, `portfolio_history_rebuild`                                 |
+| Persistence platform         | `db/models`, Alembic, schema artefakty, config a shared runtime                  |
+| Frontend platform            | `src/app`, `src/modules`, adapters, generated API types a UI                     |
+| Experimental engine          | `backend/rust/finance_engine`, bez runtime autority                              |
 
 Každý řádek dostane doménový adresář nebo platformní sekci. Backendový modul
 má module card, jen pokud vlastní pravidlo, stav nebo hranici. Pasivní UI,

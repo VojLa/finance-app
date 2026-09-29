@@ -8,6 +8,7 @@ import time
 from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,8 +46,15 @@ from app.modules.snapshot_refresh.manual_service import (
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "r11g-internal-auth-secret-32-characters"
 NOW = datetime(2026, 8, 10, 12, 0, 0)
-USER_IDS = ("r11g-owner", "r11g-viewer", "r11g-foreign")
-ACCOUNT_IDS = ("r11g-account", "r11g-foreign-account")
+RUN_ID = uuid4().hex[:12]
+OWNER_ID = f"r11g-owner-{RUN_ID}"
+VIEWER_ID = f"r11g-viewer-{RUN_ID}"
+FOREIGN_ID = f"r11g-foreign-{RUN_ID}"
+ACCOUNT_ID = f"r11g-account-{RUN_ID}"
+FOREIGN_ACCOUNT_ID = f"r11g-foreign-account-{RUN_ID}"
+SYMBOL = f"R11G{RUN_ID.upper()}"
+USER_IDS = (OWNER_ID, VIEWER_ID, FOREIGN_ID)
+ACCOUNT_IDS = (ACCOUNT_ID, FOREIGN_ACCOUNT_ID)
 
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 
@@ -130,7 +138,7 @@ async def _cleanup() -> None:
                 await session.scalars(
                     select(AssetListingModel.id).where(
                         AssetListingModel.provider == PriceSource.manual,
-                        AssetListingModel.provider_symbol == "R11G",
+                        AssetListingModel.provider_symbol == SYMBOL,
                     )
                 )
             ).all()
@@ -155,7 +163,6 @@ async def _cleanup() -> None:
 async def _seed() -> None:
     engine = _engine()
     async with AsyncSession(engine) as session:
-        await _cleanup()
         for user_id in USER_IDS:
             session.add(
                 UserModel(
@@ -185,12 +192,12 @@ async def _seed() -> None:
             )
         await session.flush()
         for member_id, account_id, user_id, role in (
-            ("r11g-owner-member", "r11g-account", "r11g-owner", AccountMemberRole.owner),
-            ("r11g-viewer-member", "r11g-account", "r11g-viewer", AccountMemberRole.viewer),
+            (f"r11g-owner-member-{RUN_ID}", ACCOUNT_ID, OWNER_ID, AccountMemberRole.owner),
+            (f"r11g-viewer-member-{RUN_ID}", ACCOUNT_ID, VIEWER_ID, AccountMemberRole.viewer),
             (
-                "r11g-foreign-member",
-                "r11g-foreign-account",
-                "r11g-foreign",
+                f"r11g-foreign-member-{RUN_ID}",
+                FOREIGN_ACCOUNT_ID,
+                FOREIGN_ID,
                 AccountMemberRole.owner,
             ),
         ):
@@ -212,7 +219,7 @@ async def _seed() -> None:
 
 
 def _payload(
-    *, account_id: str = "r11g-account", key: str, action: str, **values: object
+    *, account_id: str = ACCOUNT_ID, key: str, action: str, **values: object
 ) -> dict[str, object]:
     return {
         "accountId": account_id,
@@ -227,7 +234,7 @@ async def _concurrent_replay(
     payload: dict[str, object],
 ) -> tuple[ManualInvestmentCreateResponse, ManualInvestmentCreateResponse]:
     engine = _engine()
-    principal = AuthenticatedPrincipal(user_id="r11g-owner", email="r11g-owner@example.com")
+    principal = AuthenticatedPrincipal(user_id=OWNER_ID, email=f"{OWNER_ID}@example.com")
 
     async def execute() -> ManualInvestmentCreateResponse:
         async with AsyncSession(engine) as session:
@@ -239,7 +246,7 @@ async def _concurrent_replay(
             )
 
     try:
-        first, second = await asyncio.gather(execute(), execute())
+        first, second = await asyncio.wait_for(asyncio.gather(execute(), execute()), timeout=10)
         return first, second
     finally:
         await engine.dispose()
@@ -247,7 +254,7 @@ async def _concurrent_replay(
 
 async def _counts_for_key(key: str) -> tuple[int, int]:
     engine = _engine()
-    external_id = f"manual:r11g-owner:{key}"
+    external_id = f"manual:{OWNER_ID}:{key}"
     async with AsyncSession(engine) as session:
         event_ids = tuple(
             (
@@ -275,10 +282,19 @@ async def _counts_for_key(key: str) -> tuple[int, int]:
     return result
 
 
+@pytest.fixture
+def seeded_manual_data():
+    _run(_seed())
+    try:
+        yield
+    finally:
+        _run(_cleanup())
+
+
 def test_manual_investment_command_and_symbol_detail_on_postgresql(
     monkeypatch: pytest.MonkeyPatch,
+    seeded_manual_data: None,
 ) -> None:
-    _run(_seed())
     assert DATABASE_URL is not None
     settings = Settings(
         environment="test",
@@ -297,8 +313,8 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
     buy = _payload(
         key="buy-1",
         action="buy",
-        symbol="R11G",
-        name="R11G asset",
+        symbol=SYMBOL,
+        name=f"{SYMBOL} asset",
         assetType="stock",
         quantity="10.0000000000",
         pricePerUnit="10.0000000000",
@@ -309,9 +325,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         feeCurrency="EUR",
     )
     with TestClient(app, raise_server_exceptions=False) as client:
-        created = client.post(
-            "/api/v1/investments/manual", headers=_headers("r11g-owner"), json=buy
-        )
+        created = client.post("/api/v1/investments/manual", headers=_headers(OWNER_ID), json=buy)
         assert created.status_code == 201, created.text
         assert created.json()["replayed"] is False
         assert created.json()["holdings"]["created"] == 1
@@ -321,7 +335,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
             "timestamp": "2026-08-10T12:00:00.000",
         }
 
-        replay = client.post("/api/v1/investments/manual", headers=_headers("r11g-owner"), json=buy)
+        replay = client.post("/api/v1/investments/manual", headers=_headers(OWNER_ID), json=buy)
         assert replay.status_code == 201
         assert replay.json()["replayed"] is True
         assert _run(_counts_for_key("buy-1")) == (1, 3)
@@ -330,7 +344,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         assert (
             client.post(
                 "/api/v1/investments/manual",
-                headers=_headers("r11g-owner"),
+                headers=_headers(OWNER_ID),
                 json=conflict,
             ).status_code
             == 409
@@ -338,7 +352,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         assert (
             client.post(
                 "/api/v1/investments/manual",
-                headers=_headers("r11g-viewer"),
+                headers=_headers(VIEWER_ID),
                 json=_payload(key="viewer", action="deposit", totalAmount="1", totalCurrency="EUR"),
             ).status_code
             == 403
@@ -346,12 +360,13 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
 
         sell = client.post(
             "/api/v1/investments/manual",
-            headers=_headers("r11g-owner"),
+            headers=_headers(OWNER_ID),
             json=_payload(
                 key="sell-1",
                 action="sell",
-                symbol="R11G",
-                name="R11G asset",
+                date="2026-08-11",
+                symbol=SYMBOL,
+                name=f"{SYMBOL} asset",
                 assetType="stock",
                 quantity="4.0000000000",
                 pricePerUnit="12.0000000000",
@@ -364,7 +379,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         for key, action in (("deposit-1", "deposit"), ("withdrawal-1", "withdrawal")):
             response = client.post(
                 "/api/v1/investments/manual",
-                headers=_headers("r11g-owner"),
+                headers=_headers(OWNER_ID),
                 json=_payload(
                     key=key,
                     action=action,
@@ -376,13 +391,13 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
 
         foreign = client.post(
             "/api/v1/investments/manual",
-            headers=_headers("r11g-foreign"),
+            headers=_headers(FOREIGN_ID),
             json=_payload(
-                account_id="r11g-foreign-account",
+                account_id=FOREIGN_ACCOUNT_ID,
                 key="foreign-buy",
                 action="buy",
-                symbol="R11G",
-                name="R11G asset",
+                symbol=SYMBOL,
+                name=f"{SYMBOL} asset",
                 assetType="stock",
                 quantity="2",
                 pricePerUnit="10",
@@ -393,16 +408,18 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         )
         assert foreign.status_code == 201, foreign.text
 
-        detail = client.get("/api/v1/investments/symbols/r11g", headers=_headers("r11g-owner"))
+        detail = client.get(
+            f"/api/v1/investments/symbols/{SYMBOL.lower()}", headers=_headers(OWNER_ID)
+        )
         assert detail.status_code == 200
         body = detail.json()
-        assert body["symbol"] == "R11G"
+        assert body["symbol"] == SYMBOL
         assert len(body["positions"]) == 1
-        assert body["positions"][0]["accountId"] == "r11g-account"
+        assert body["positions"][0]["accountId"] == ACCOUNT_ID
         assert body["positions"][0]["quantity"] == "6.0000000000"
         assert body["positions"][0]["avgBuyPrice"] == "10.0000000000"
         assert [event["type"] for event in body["events"]] == ["sell", "buy"]
-        assert all(event["accountId"] == "r11g-account" for event in body["events"])
+        assert all(event["accountId"] == ACCOUNT_ID for event in body["events"])
         assert body["events"][0]["totalAmount"] == "48.0000000000"
 
         original_rebuild = HoldingRebuildService.rebuild
@@ -413,7 +430,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         monkeypatch.setattr(HoldingRebuildService, "rebuild", fail_rebuild)
         rolled_back = client.post(
             "/api/v1/investments/manual",
-            headers=_headers("r11g-owner"),
+            headers=_headers(OWNER_ID),
             json=_payload(
                 key="rollback",
                 action="deposit",
@@ -434,5 +451,3 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
     first, second = _run(_concurrent_replay(concurrent_payload))
     assert {first.replayed, second.replayed} == {False, True}
     assert _run(_counts_for_key("concurrent")) == (1, 1)
-
-    _run(_cleanup())

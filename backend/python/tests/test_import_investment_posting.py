@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -12,16 +13,27 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetListingModel, AssetModel
-from app.db.models.enums import AssetType, ImportRowStatus, ImportSource, ImportStatus, PriceSource
+from app.db.models.enums import (
+    AssetType,
+    ImportRowStatus,
+    ImportSource,
+    ImportStatus,
+    InvestmentEventType,
+    PriceSource,
+)
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.modules.imports.classification import InvestmentEventPostingIntent, classify_import_row
 from app.modules.imports.investment_asset_resolution import ResolvedInvestmentAsset
 from app.modules.imports.investment_posting import (
     ImportInvestmentPostingWriter,
+    _event_matches,
     _movement_signature,
 )
-from app.modules.imports.investment_posting_plan import build_investment_posting_plan
+from app.modules.imports.investment_posting_plan import (
+    InvestmentEventPostingPlan,
+    build_investment_posting_plan,
+)
 from app.modules.imports.posting_common import ImportPostStateError
 
 
@@ -172,6 +184,52 @@ def _writer(session: _Session) -> ImportInvestmentPostingWriter:
 
 def _run(coro: object) -> Any:
     return asyncio.run(cast(Any, coro))
+
+
+def test_anycoin_trade_replay_accepts_holding_materialized_realized_pnl() -> None:
+    timestamp = datetime(2026, 7, 25, 10, 0, 0, 123000)
+    plan = SimpleNamespace(
+        account_id="account",
+        event_type=InvestmentEventType.trade,
+        date=timestamp,
+        source=ImportSource.anycoin,
+        external_id="external-1",
+        order_id=None,
+        description="Bitcoin",
+        realized_pnl=None,
+        realized_pnl_currency=None,
+        quote_currency="CZK",
+        import_batch_id="batch",
+    )
+    event = SimpleNamespace(
+        id="event",
+        account_id="account",
+        type=InvestmentEventType.trade,
+        date=timestamp,
+        source=ImportSource.anycoin,
+        external_id="external-1",
+        order_id=None,
+        description="Bitcoin",
+        realized_pnl=Decimal("125.0000000000"),
+        realized_pnl_currency="CZK",
+        import_batch_id="batch",
+        archived_at=None,
+        deleted_at=None,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+    assert _event_matches(
+        cast(InvestmentEventModel, event),
+        event_id="event",
+        plan=cast(InvestmentEventPostingPlan, plan),
+    )
+    event.realized_pnl_currency = "EUR"
+    assert not _event_matches(
+        cast(InvestmentEventModel, event),
+        event_id="event",
+        plan=cast(InvestmentEventPostingPlan, plan),
+    )
 
 
 def test_pending_write_maps_event_movements_and_transitions_only_after_flush(

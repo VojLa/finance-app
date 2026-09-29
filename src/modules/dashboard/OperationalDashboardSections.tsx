@@ -9,6 +9,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Label,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -40,6 +41,16 @@ function OperationalEmptyState({ href, label }: { href: string; label: string })
   )
 }
 
+function WidgetMoreLink({ href }: { href: string }) {
+  return (
+    <div className="mt-5 flex justify-end border-t border-gray-100 pt-4">
+      <Link href={href} className="text-sm font-medium text-blue-600 hover:underline">
+        Zobrazit více
+      </Link>
+    </div>
+  )
+}
+
 type Props = {
   data: OperationalDashboardData
 }
@@ -61,55 +72,39 @@ export function OperationalDashboardSections({ data }: Props) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 id="operational-heading" className="text-lg font-medium">
-            Provozní přehled
+            Přehled za tento měsíc
           </h2>
-          <p className="mt-1 text-sm text-gray-500">
-            Rozpočet, měsíční cash flow a transakční aktivita
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Link
-            href="/transactions"
-            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Transakce
-          </Link>
-          <Link
-            href="/budget"
-            className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-          >
-            Rozpočet
-          </Link>
         </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <p className="text-sm text-gray-500">Měsíční cash flow</p>
+        <div className="rounded-2xl bg-blue-600 p-5 text-white shadow-sm">
+          <p className="text-sm font-medium text-blue-100">Cash flow</p>
           <p
             className={`mt-2 text-2xl font-semibold tabular-nums ${
-              netIsPositive ? "text-green-600" : "text-red-600"
+              netIsPositive ? "text-white" : "text-red-100"
             }`}
           >
             {fmtCzk(data.currentMonth.net)}
           </p>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <p className="text-sm text-gray-500">Příjmy tento měsíc</p>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-gray-500">Příjmy</p>
           <p className="mt-2 text-2xl font-semibold tabular-nums text-green-600">
             {fmtCzk(data.currentMonth.income)}
           </p>
         </div>
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <p className="text-sm text-gray-500">Výdaje tento měsíc</p>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-gray-500">Výdaje</p>
           <p className="mt-2 text-2xl font-semibold tabular-nums text-red-600">
             {fmtCzk(data.currentMonth.expenses)}
           </p>
         </div>
       </div>
+      <WidgetMoreLink href="/transactions" />
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-medium">Příjmy vs výdaje</h3>
             <span className="text-xs text-gray-400">6 měsíců</span>
@@ -133,14 +128,13 @@ export function OperationalDashboardSections({ data }: Props) {
               <Bar dataKey="expenseCzk" name="Výdaje" fill="#dc2626" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+          <WidgetMoreLink href="/transactions" />
         </section>
 
-        <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-medium">Výdaje podle kategorií</h3>
-            <Link href="/transactions" className="text-sm text-blue-600 hover:underline">
-              Detail
-            </Link>
+            <span className="text-xs text-gray-400">Tento měsíc</span>
           </div>
           {pieData.length === 0 ? (
             <OperationalEmptyState href="/transactions" label="Přidat první transakci" />
@@ -158,6 +152,11 @@ export function OperationalDashboardSections({ data }: Props) {
                     {pieData.map((item) => (
                       <Cell key={item.name} fill={item.fill} />
                     ))}
+                    <Label
+                      value={fmtCzk(data.currentMonth.expenses)}
+                      position="center"
+                      className="fill-slate-900 text-sm font-semibold"
+                    />
                   </Pie>
                   <Tooltip formatter={(value: number) => fmtCzk(value)} />
                 </PieChart>
@@ -180,16 +179,25 @@ export function OperationalDashboardSections({ data }: Props) {
               </div>
             </div>
           )}
+          <WidgetMoreLink href="/transactions" />
         </section>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-        <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-medium">Průběh rozpočtu</h3>
-            <Link href="/budget" className="text-sm text-blue-600 hover:underline">
-              Upravit
-            </Link>
+            <h3 className="text-lg font-medium">Zbývá z rozpočtu</h3>
+            {data.budget && (
+              <span
+                className={
+                  data.budget.remainingCzk < 0
+                    ? "text-sm font-medium text-red-600"
+                    : "text-sm font-medium text-green-600"
+                }
+              >
+                {fmtCzk(data.budget.remainingCzk)}
+              </span>
+            )}
           </div>
           {!data.budget ? (
             <OperationalEmptyState href="/budget" label="Nastavit rozpočet" />
@@ -249,11 +257,12 @@ export function OperationalDashboardSections({ data }: Props) {
               </div>
             </div>
           )}
+          <WidgetMoreLink href="/budget" />
         </section>
 
-        <section className="rounded-lg border border-gray-200 bg-white p-5">
+        <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-medium">Měsíční trend</h3>
+            <h3 className="text-lg font-medium">Cash-flow trend</h3>
             <span className="text-xs text-gray-400">Čistý tok</span>
           </div>
           <ResponsiveContainer width="100%" height={260}>
@@ -287,15 +296,14 @@ export function OperationalDashboardSections({ data }: Props) {
               />
             </AreaChart>
           </ResponsiveContainer>
+          <WidgetMoreLink href="/transactions" />
         </section>
       </div>
 
-      <section className="rounded-lg border border-gray-200 bg-white p-5">
+      <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-medium">Nedávné transakce</h3>
-          <Link href="/transactions" className="text-sm text-blue-600 hover:underline">
-            Všechny
-          </Link>
+          <h3 className="text-lg font-medium">Poslední záznamy</h3>
+          <span className="text-xs text-gray-400">Nejnovější</span>
         </div>
         {data.recentTransactions.length === 0 ? (
           <OperationalEmptyState href="/transactions" label="Přidat transakci" />
@@ -334,6 +342,7 @@ export function OperationalDashboardSections({ data }: Props) {
             })}
           </div>
         )}
+        <WidgetMoreLink href="/transactions" />
       </section>
     </section>
   )

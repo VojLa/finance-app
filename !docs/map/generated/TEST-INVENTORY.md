@@ -5,7 +5,7 @@
 
 # Test Inventory
 
-## Frontend and adapter tests (83)
+## Frontend and adapter tests (94)
 
 - `src/app/accounts/page.test.ts`
 - `src/app/api/accounts/[id]/liability-balances/route.test.ts`
@@ -14,8 +14,12 @@
 - `src/app/api/import/jobs/import-job-routes.test.ts`
 - `src/app/api/import/route.test.ts`
 - `src/app/api/portfolio/history/route.test.ts`
+- `src/app/api/read-model-version/route.test.ts`
+- `src/app/api/snapshot-workflow/portfolio/refresh/route.test.ts`
 - `src/app/api/snapshot-workflow/route.test.ts`
 - `src/app/api/typescript-boundary.test.ts`
+- `src/app/budget/page-race.test.tsx`
+- `src/app/categories/page-state.test.tsx`
 - `src/app/dashboard/dashboard-snapshot-cutover.test.ts`
 - `src/app/dashboard/page.test.ts`
 - `src/app/frontend-ci-boundary.test.ts`
@@ -23,7 +27,9 @@
 - `src/app/portfolio/page.test.ts`
 - `src/app/portfolio/portfolio-snapshot-cutover.test.ts`
 - `src/app/r10d-current-value-invariant.test.ts`
+- `src/app/settings/page-state.test.tsx`
 - `src/app/snapshot-cutover-final-audit.test.ts`
+- `src/app/transactions/page-race.test.tsx`
 - `src/app/version-0-1-clean-main-scenario.test.ts`
 - `src/app/version-0-1-final-audit.test.ts`
 - `src/app/version-0-1-r10-final-scope.test.ts`
@@ -53,6 +59,7 @@
 - `src/modules/budgets/budget-client.test.ts`
 - `src/modules/categories/category-client.test.ts`
 - `src/modules/dashboard/dashboard-cutover-final-audit.test.ts`
+- `src/modules/dashboard/dashboard-widget-navigation.test.ts`
 - `src/modules/dashboard/operational-dashboard-model.test.ts`
 - `src/modules/dashboard/r10c-dashboard-deposited-presentation.test.ts`
 - `src/modules/dashboard/r11f-operational-cutover.test.ts`
@@ -75,6 +82,8 @@
 - `src/modules/portfolio/r6-final-audit.test.ts`
 - `src/modules/portfolio/r7-final-audit.test.ts`
 - `src/modules/portfolio/snapshot-history-client.test.ts`
+- `src/modules/portfolio/snapshot-page-client.test.ts`
+- `src/modules/portfolio/snapshot-page-format.test.ts`
 - `src/modules/portfolio/snapshot-page-model.test.ts`
 - `src/modules/portfolio/SnapshotCurrencyBreakdown.test.tsx`
 - `src/modules/portfolio/unknown-cost-basis-ui.test.ts`
@@ -83,17 +92,18 @@
 - `src/modules/python-api/server/internal-token.test.ts`
 - `src/modules/python-api/server/portfolio-history.test.ts`
 - `src/modules/python-api/server/snapshot-workflow.test.ts`
+- `src/modules/python-api/server/transport.test.ts`
 - `src/modules/python-api/snapshot-cutover-final-audit.test.ts`
 - `src/modules/python-api/snapshot-workflow-boundaries.test.ts`
 - `src/modules/python-api/version-0-1-boundary-audit.test.ts`
+- `src/modules/read-models/read-model-version-client.test.ts`
 - `src/modules/transactions/r11e-cutover.test.ts`
 - `src/modules/transactions/transaction-client.test.ts`
 - `src/prisma-runtime-removal.test.ts`
 - `src/python-api-container-runtime.test.ts`
 
-## Python backend tests (253)
+## Python backend tests (261)
 
-- `backend/python/tests/test_3q_portfolio_history_schema_migration_integration.py`
 - `backend/python/tests/test_account_access.py`
 - `backend/python/tests/test_account_invitations.py`
 - `backend/python/tests/test_account_invitations_integration.py`
@@ -118,6 +128,7 @@
 - `backend/python/tests/test_alembic_configuration.py`
 - `backend/python/tests/test_alembic_integration.py`
 - `backend/python/tests/test_anycoin_fixture_source.py`
+- `backend/python/tests/test_anycoin_transfer_valuation.py`
 - `backend/python/tests/test_anycoin_unknown_basis_publication_integration.py`
 - `backend/python/tests/test_app.py`
 - `backend/python/tests/test_asset_alias_cli.py`
@@ -126,6 +137,7 @@
 - `backend/python/tests/test_asset_alias_service.py`
 - `backend/python/tests/test_asset_alias_service_integration.py`
 - `backend/python/tests/test_auth_api.py`
+- `backend/python/tests/test_auth_base_currency.py`
 - `backend/python/tests/test_auth_credentials.py`
 - `backend/python/tests/test_auth_credentials_integration.py`
 - `backend/python/tests/test_auth_token.py`
@@ -148,9 +160,11 @@
 - `backend/python/tests/test_coingecko_price_provider.py`
 - `backend/python/tests/test_coingecko_price_snapshot_e2e_integration.py`
 - `backend/python/tests/test_coingecko_price_transport.py`
+- `backend/python/tests/test_current_value_base_currency_fail_closed.py`
 - `backend/python/tests/test_current_value_delta_projection.py`
 - `backend/python/tests/test_current_value_failed_import_version_fence_integration.py`
 - `backend/python/tests/test_current_value_market_evidence_source_policy.py`
+- `backend/python/tests/test_daily_baseline_errors.py`
 - `backend/python/tests/test_daily_baseline_publication_freeze.py`
 - `backend/python/tests/test_dashboard_snapshot_projection.py`
 - `backend/python/tests/test_database_migrate.py`
@@ -164,6 +178,7 @@
 - `backend/python/tests/test_exchange_rate_audit_script.py`
 - `backend/python/tests/test_health.py`
 - `backend/python/tests/test_historical_market_data.py`
+- `backend/python/tests/test_history_series_market_bridge.py`
 - `backend/python/tests/test_holding_persistence_projection.py`
 - `backend/python/tests/test_holding_projection.py`
 - `backend/python/tests/test_holding_rebuild_api.py`
@@ -200,6 +215,8 @@
 - `backend/python/tests/test_import_post_processing_service.py`
 - `backend/python/tests/test_import_posting_integration.py`
 - `backend/python/tests/test_import_posting_service.py`
+- `backend/python/tests/test_import_publication_boundary.py`
+- `backend/python/tests/test_import_trading212_asset_alias.py`
 - `backend/python/tests/test_import_trading212_normalization.py`
 - `backend/python/tests/test_import_transaction_posting.py`
 - `backend/python/tests/test_import_transaction_posting_integration.py`
@@ -215,6 +232,7 @@
 - `backend/python/tests/test_manual_investments.py`
 - `backend/python/tests/test_manual_investments_integration.py`
 - `backend/python/tests/test_manual_liability_balance_api.py`
+- `backend/python/tests/test_market_acquisition_cache.py`
 - `backend/python/tests/test_market_backed_snapshot_refresh.py`
 - `backend/python/tests/test_market_backed_snapshot_refresh_integration.py`
 - `backend/python/tests/test_market_data_models.py`
@@ -235,6 +253,7 @@
 - `backend/python/tests/test_net_worth_projection.py`
 - `backend/python/tests/test_net_worth_writer.py`
 - `backend/python/tests/test_net_worth_writer_integration.py`
+- `backend/python/tests/test_operational_dashboard_performance.py`
 - `backend/python/tests/test_operational_transaction_visibility_integration.py`
 - `backend/python/tests/test_portfolio_auth_api.py`
 - `backend/python/tests/test_portfolio_dashboard_final_audit.py`
@@ -242,31 +261,26 @@
 - `backend/python/tests/test_portfolio_dashboard_snapshot_api.py`
 - `backend/python/tests/test_portfolio_dashboard_snapshot_api_integration.py`
 - `backend/python/tests/test_portfolio_history_api.py`
-- `backend/python/tests/test_portfolio_history_api_integration.py`
-- `backend/python/tests/test_portfolio_history_generation_builder.py`
-- `backend/python/tests/test_portfolio_history_generation_publication_disposable_postgres.py`
-- `backend/python/tests/test_portfolio_history_generations.py`
-- `backend/python/tests/test_portfolio_history_integration.py`
+- `backend/python/tests/test_portfolio_history_import_visibility.py`
 - `backend/python/tests/test_portfolio_history_invalidation.py`
-- `backend/python/tests/test_portfolio_history_invalidation_disposable_postgres.py`
-- `backend/python/tests/test_portfolio_history_job_models.py`
-- `backend/python/tests/test_portfolio_history_jobs_disposable_postgres.py`
 - `backend/python/tests/test_portfolio_history_lattice.py`
+- `backend/python/tests/test_portfolio_history_lifespan.py`
+- `backend/python/tests/test_portfolio_history_market.py`
+- `backend/python/tests/test_portfolio_history_planning.py`
 - `backend/python/tests/test_portfolio_history_rebuild.py`
-- `backend/python/tests/test_portfolio_history_replay_repository_disposable_postgres.py`
-- `backend/python/tests/test_portfolio_history_repository.py`
-- `backend/python/tests/test_portfolio_history_scheduler.py`
-- `backend/python/tests/test_portfolio_history_scheduler_disposable_postgres.py`
-- `backend/python/tests/test_portfolio_history_selection.py`
-- `backend/python/tests/test_portfolio_history_service.py`
+- `backend/python/tests/test_portfolio_history_scheduler_runner.py`
 - `backend/python/tests/test_portfolio_service.py`
 - `backend/python/tests/test_portfolio_snapshot_aggregation.py`
 - `backend/python/tests/test_portfolio_snapshot_api.py`
 - `backend/python/tests/test_portfolio_snapshot_api_integration.py`
 - `backend/python/tests/test_portfolio_snapshot_authorized_service.py`
+- `backend/python/tests/test_portfolio_snapshot_history_reader.py`
 - `backend/python/tests/test_portfolio_snapshot_projection.py`
 - `backend/python/tests/test_portfolio_snapshot_reader.py`
 - `backend/python/tests/test_portfolio_snapshot_reader_integration.py`
+- `backend/python/tests/test_portfolio_snapshot_writer.py`
+- `backend/python/tests/test_published_snapshot_api_cache.py`
+- `backend/python/tests/test_published_snapshot_benchmark.py`
 - `backend/python/tests/test_r10_final_scope_reaudit_integration.py`
 - `backend/python/tests/test_r10b1_account_currency_evidence.py`
 - `backend/python/tests/test_r10b2_account_currency_presentation_integration.py`
@@ -282,7 +296,6 @@
 - `backend/python/tests/test_r12_3p_import_job_manifest_migration_integration.py`
 - `backend/python/tests/test_r12a_cost_basis_migration.py`
 - `backend/python/tests/test_r12f_durable_import_e2e_integration.py`
-- `backend/python/tests/test_r12f_portfolio_history_publication_database.py`
 - `backend/python/tests/test_r12f_publication_targets_database.py`
 - `backend/python/tests/test_r5_final_audit_integration.py`
 - `backend/python/tests/test_r5_remediation_reaudit_integration.py`
@@ -298,10 +311,12 @@
 - `backend/python/tests/test_raiffeisenbank_source_e2e_integration.py`
 - `backend/python/tests/test_raiffeisenbank_source_integration.py`
 - `backend/python/tests/test_request_context.py`
+- `backend/python/tests/test_scheduled_snapshot_refresh_runner.py`
 - `backend/python/tests/test_seed_defaults_integration.py`
 - `backend/python/tests/test_settings.py`
 - `backend/python/tests/test_snapshot_application_cutover_final_audit.py`
 - `backend/python/tests/test_snapshot_derived_rounding.py`
+- `backend/python/tests/test_snapshot_history_series_materializer.py`
 - `backend/python/tests/test_snapshot_market_evidence_freshness.py`
 - `backend/python/tests/test_snapshot_refresh_evidence.py`
 - `backend/python/tests/test_snapshot_refresh_evidence_integration.py`
@@ -311,9 +326,13 @@
 - `backend/python/tests/test_snapshot_refresh_manual_api.py`
 - `backend/python/tests/test_snapshot_refresh_manual_endpoint_integration.py`
 - `backend/python/tests/test_snapshot_refresh_manual_service.py`
+- `backend/python/tests/test_snapshot_refresh_metric_evidence.py`
 - `backend/python/tests/test_snapshot_refresh_plan.py`
 - `backend/python/tests/test_snapshot_refresh_read_manifest_integration.py`
 - `backend/python/tests/test_snapshot_refresh_version.py`
+- `backend/python/tests/test_snapshot_series_executor.py`
+- `backend/python/tests/test_snapshot_series_persistence.py`
+- `backend/python/tests/test_snapshot_series_schema_cutover.py`
 - `backend/python/tests/test_sqlalchemy_persistence.py`
 - `backend/python/tests/test_sqlalchemy_schema.py`
 - `backend/python/tests/test_sqlalchemy_schema_parity.py`
@@ -347,4 +366,4 @@
 - `backend/python/tests/test_yahoo_finance_provider.py`
 - `backend/python/tests/test_yahoo_finance_transport.py`
 
-**Total test files:** 336
+**Total test files:** 355

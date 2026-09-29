@@ -1,5 +1,11 @@
 # 0005 FastAPI OpenAPI is the HTTP contract source
 
+Type: historical
+Status: historical
+Owns: retained rationale for OpenAPI-derived transport contracts
+Code: FastAPI OpenAPI and TypeScript generation
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted; deterministic TypeScript client contract generation is implemented.

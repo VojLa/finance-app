@@ -33,6 +33,10 @@ from app.modules.snapshot_refresh.executor import ExecuteUserSnapshotRefreshComm
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+def unique_alias(prefix: str, coin: str = "bitcoin") -> str:
+    return f"{coin}-{prefix}"
+
+
 def coingecko_engine():
     assert DATABASE_URL is not None
     return create_async_engine(normalize_database_url(DATABASE_URL), pool_size=8)
@@ -43,7 +47,7 @@ async def seed_crypto_holding(
     *,
     event_at: datetime,
     created_at: datetime,
-    aliases: tuple[str, ...] = ("bitcoin",),
+    aliases: tuple[str, ...] | None = None,
     listing_provider_symbol: str | None = None,
 ) -> tuple[str, str, str, str]:
     user_id = f"{prefix}-user"
@@ -120,7 +124,10 @@ async def seed_crypto_holding(
                     updated_at=created_at,
                 )
             )
-            for index, alias in enumerate(aliases, start=1):
+            for index, alias in enumerate(
+                (unique_alias(prefix),) if aliases is None else aliases,
+                start=1,
+            ):
                 session.add(
                     AssetAliasModel(
                         id=f"{prefix}-alias-{index}",
@@ -139,6 +146,7 @@ async def seed_crypto_holding(
                     asset_type=AssetType.crypto,
                     quantity=Decimal("1000"),
                     avg_buy_price=Decimal("50000"),
+                    cost_basis_by_currency={"EUR": "50000000.0000000000"},
                     currency="EUR",
                     current_price=None,
                     current_value=None,

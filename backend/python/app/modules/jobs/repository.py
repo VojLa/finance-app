@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import case, exists, func, or_, select, update
+from sqlalchemy import case, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +66,26 @@ class BackgroundJobLeaseLostError(RuntimeError):
 
 class BackgroundJobPublicationStaleError(RuntimeError):
     """Anchors no longer prove a publishable canonical state; retry safely."""
+
+
+def _matches_live_publication_boundary(
+    *,
+    baseline_currency_by_user: dict[str, str],
+    base_currency_by_user: dict[str, str],
+    candidate_by_user: dict[str, dict[str, tuple[object, ...]]],
+    live_by_user: dict[str, dict[str, tuple[object, ...]]],
+) -> bool:
+    users = set(baseline_currency_by_user)
+    return (
+        bool(users)
+        and users == set(base_currency_by_user) == set(candidate_by_user) == set(live_by_user)
+        and all(
+            baseline_currency_by_user[user_id] == base_currency_by_user[user_id]
+            and bool(candidate_by_user[user_id])
+            and candidate_by_user[user_id] == live_by_user[user_id]
+            for user_id in users
+        )
+    )
 
 
 class BackgroundJobRepository:
@@ -330,8 +350,20 @@ class BackgroundJobRepository:
             .values(
                 status=BackgroundJobStatus.failed,
                 result=None,
-                error_code="background_job_attempts_exhausted",
-                error_message="Background processing could not be completed after all retries.",
+                error_code=case(
+                    (
+                        BackgroundJobModel.error_code.is_(None),
+                        "background_job_attempts_exhausted",
+                    ),
+                    else_=BackgroundJobModel.error_code,
+                ),
+                error_message=case(
+                    (
+                        BackgroundJobModel.error_message.is_(None),
+                        "Background processing could not be completed after all retries.",
+                    ),
+                    else_=BackgroundJobModel.error_message,
+                ),
                 lease_owner=None,
                 lease_expires_at=None,
                 lease_heartbeat_at=None,
@@ -452,6 +484,10 @@ class BackgroundJobRepository:
     ) -> None:
         if now.tzinfo is not None:
             raise ValueError("The completion timestamp is invalid.")
+        # Completion proves one exact publication boundary. SERIALIZABLE closes
+        # membership/account phantoms while the explicit row locks below keep
+        # the evidence stable until the terminal transition commits.
+        await self.session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
         job = await self.session.scalar(
             select(BackgroundJobModel)
             .where(BackgroundJobModel.id == lease.job_id)
@@ -510,16 +546,18 @@ class BackgroundJobRepository:
         # would release the current-value fence without an immutable baseline.
         if not targets:
             raise BackgroundJobLeaseLostError("The import publication targets are missing.")
-        affected_memberships = set(
-            (
-                await self.session.execute(
-                    select(
-                        AccountMemberModel.account_id,
-                        AccountMemberModel.user_id,
-                    ).where(AccountMemberModel.account_id.in_(affected_account_ids))
-                )
-            ).all()
+        affected_member_rows = tuple(
+            await self.session.scalars(
+                select(AccountMemberModel)
+                .where(AccountMemberModel.account_id.in_(affected_account_ids))
+                .order_by(AccountMemberModel.account_id, AccountMemberModel.user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
         )
+        affected_memberships = {
+            (membership.account_id, membership.user_id) for membership in affected_member_rows
+        }
         current_members = {user_id for _account_id, user_id in affected_memberships}
         anchor_pairs = set(
             (
@@ -569,56 +607,89 @@ class BackgroundJobRepository:
                 )
             ).all()
         )
-        anchor_account_ids = tuple(sorted({item.account_id for item in baseline_accounts}))
-        canonical_states = tuple(
+        target_user_ids = tuple(target.user_id for target in targets)
+        users = tuple(
             (
                 await self.session.scalars(
-                    select(AccountCanonicalStateModel)
-                    .where(AccountCanonicalStateModel.account_id.in_(anchor_account_ids))
-                    .order_by(AccountCanonicalStateModel.account_id)
-                    .with_for_update()
+                    select(UserModel)
+                    .where(UserModel.id.in_(target_user_ids))
+                    .order_by(UserModel.id)
                 )
             ).all()
         )
-        state_revisions = {state.account_id: state.last_revision for state in canonical_states}
-        anchor_accounts_by_user: dict[str, set[str]] = {target.user_id: set() for target in targets}
-        for item in baseline_accounts:
-            anchor = anchor_by_id.get(item.baseline_id)
-            if anchor is None or anchor.user_id not in anchor_accounts_by_user:
-                raise BackgroundJobLeaseLostError("The import publication anchors are invalid.")
-            anchor_accounts_by_user[anchor.user_id].add(item.account_id)
-            if state_revisions.get(item.account_id) != item.canonical_revision:
-                raise BackgroundJobPublicationStaleError(
-                    "The import publication canonical state changed."
-                )
-        published_memberships = set(
+        if tuple(user.id for user in users) != target_user_ids:
+            raise BackgroundJobLeaseLostError("An import publication user was removed.")
+        user_by_id = {user.id: user for user in users}
+
+        live_rows = tuple(
             (
                 await self.session.execute(
                     select(
-                        AccountMemberModel.account_id,
                         AccountMemberModel.user_id,
-                    ).where(AccountMemberModel.account_id.in_(anchor_account_ids))
+                        AccountModel.id,
+                        AccountModel.type,
+                        AccountModel.currency,
+                        AccountCanonicalStateModel.last_revision,
+                        AccountCanonicalStateModel.last_investment_revision,
+                        AccountCanonicalStateModel.holding_revision,
+                    )
+                    .join(AccountModel, AccountModel.id == AccountMemberModel.account_id)
+                    .join(
+                        AccountCanonicalStateModel,
+                        AccountCanonicalStateModel.account_id == AccountModel.id,
+                    )
+                    .where(
+                        AccountMemberModel.user_id.in_(target_user_ids),
+                        AccountModel.is_archived.is_(False),
+                        AccountModel.archived_at.is_(None),
+                        AccountCanonicalStateModel.last_revision > 0,
+                    )
+                    .order_by(AccountModel.id, AccountMemberModel.user_id)
                 )
             ).all()
         )
-        if any(
-            (account_id, user_id) not in published_memberships
-            for user_id, account_ids in anchor_accounts_by_user.items()
-            for account_id in account_ids
-        ) or any(
-            not {
-                account_id
-                for account_id, member_user_id in affected_memberships
-                if member_user_id == target.user_id
-            }.issubset(anchor_accounts_by_user[target.user_id])
-            for target in targets
-        ):
-            raise BackgroundJobLeaseLostError(
-                "The import publication account lineage is incomplete."
+        live_by_user: dict[str, dict[str, tuple[object, ...]]] = {
+            user_id: {} for user_id in target_user_ids
+        }
+        for row in live_rows:
+            live_by_user[row.user_id][row.id] = (
+                row.type,
+                row.currency,
+                row.last_revision,
+                row.last_investment_revision,
+                row.holding_revision,
             )
-        if not set(affected_account_ids).issubset(state_revisions):
+
+        boundary_by_user: dict[str, dict[str, tuple[object, ...]]] = {
+            target.user_id: {} for target in targets
+        }
+        for item in baseline_accounts:
+            anchor = anchor_by_id.get(item.baseline_id)
+            if (
+                anchor is None
+                or anchor.user_id not in boundary_by_user
+                or item.account_id in boundary_by_user[anchor.user_id]
+            ):
+                raise BackgroundJobLeaseLostError("The import publication anchors are invalid.")
+            boundary_by_user[anchor.user_id][item.account_id] = (
+                item.account_type,
+                item.account_currency,
+                item.canonical_revision,
+                0 if item.investment_revision is None else item.investment_revision,
+                item.holding_revision,
+            )
+        if not _matches_live_publication_boundary(
+            baseline_currency_by_user={
+                user_id: anchor.currency for user_id, anchor in anchor_by_user.items()
+            },
+            base_currency_by_user={
+                user_id: user_by_id[user_id].base_currency for user_id in target_user_ids
+            },
+            candidate_by_user=boundary_by_user,
+            live_by_user=live_by_user,
+        ):
             raise BackgroundJobPublicationStaleError(
-                "The import publication canonical state changed."
+                "The import publication account boundary changed."
             )
         pairs = tuple(
             (
@@ -714,6 +785,32 @@ class BackgroundJobRepository:
             raise BackgroundJobPublicationStaleError(
                 "Unexpected reconciliation evidence cannot be published."
             )
+        # The long history rebuild is separate from R12, but accepting its
+        # exact canonical effects is part of this publication transaction.
+        # Membership rows above remain locked until completion commits, so a
+        # viewer/editor cannot disappear between receipt creation and target
+        # publication. Any failure here rolls back targets, reconciliation
+        # evidence and the BackgroundJob terminal transition together.
+        from app.modules.portfolio_history.invalidation.models import HistoryDirtyReason
+        from app.modules.portfolio_history.invalidation.service import (
+            PortfolioHistoryInvalidationService,
+        )
+
+        history_invalidation = PortfolioHistoryInvalidationService(self.session)
+        canonical_effects = await history_invalidation.resolve_r12_import_effects(
+            job_id=job.id,
+            affected_account_ids=tuple(sorted(affected_account_ids)),
+            batch_ids=tuple(sorted(batch_ids)),
+        )
+        await history_invalidation.invalidate_current_members(
+            effects=canonical_effects,
+            locked_memberships=tuple(sorted(affected_memberships)),
+            reason=HistoryDirtyReason.canonical_change,
+            scope_dirty=False,
+            now=now,
+            initiating_user_id=job.user_id,
+            requested_by_background_job_id=job.id,
+        )
         for target in targets:
             target.published_at = now
         for pair in pairs:
@@ -721,6 +818,29 @@ class BackgroundJobRepository:
         for evidence in reporting_evidence:
             evidence.published_at = now
         await self.session.flush()
+        from app.modules.snapshot_refresh.series_persistence import publish_snapshot_baselines
+
+        for target in targets:
+            baseline = await self.session.scalar(
+                select(DailySnapshotBaselineModel).where(
+                    DailySnapshotBaselineModel.background_job_id == job.id,
+                    DailySnapshotBaselineModel.user_id == target.user_id,
+                )
+            )
+            if baseline is None:
+                raise BackgroundJobPublicationStaleError(
+                    "Import publication baseline is unavailable."
+                )
+            await publish_snapshot_baselines(
+                self.session,
+                user_id=target.user_id,
+                baseline_ids=(baseline.id,),
+                operation_id=f"import:{job.id}:{target.user_id}",
+                published_at=now,
+                causal_at=job.created_at,
+                allow_equivalent_supersession=True,
+                allow_dirty_import=True,
+            )
         await self._fenced_update(
             lease,
             values={

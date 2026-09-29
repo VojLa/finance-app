@@ -11,5 +11,7 @@ Update when: workflow, verification or documentation tooling changes
 - [Local development](../operations/local-development.md)
 - [Documentation workflow](documentation.md)
 - [Document types](document-types.md)
+- [Repository tooling](tooling.md)
+- [Documentation coverage](documentation-coverage.md)
 - [Deterministic documentation tools](../../scripts/docs/README.md)
-- [AI implementation workflow](../../CHATGPT/README.md)
+- [Codex implementation workflow](../../.agents/README.md)

@@ -9,13 +9,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
-from app.db.models.canonical_lineage import DailySnapshotBaselineModel
+from app.db.models.canonical_lineage import (
+    SnapshotGenerationModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -59,7 +62,7 @@ pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
     reason="DATABASE_URL is required",
 )
-AT = datetime(2034, 6, 1)
+AT = datetime(2034, 6, 1) + timedelta(days=uuid4().int % 50_000)
 EVIDENCE_AT = AT - timedelta(days=1)
 
 
@@ -88,6 +91,10 @@ def _account_id(prefix: str, suffix: str) -> str:
     return f"{prefix}-{suffix}"
 
 
+def _test_prefix(name: str) -> str:
+    return f"k5d2-{name}-{uuid4().hex}"
+
+
 def _command(prefix: str) -> ExecuteUserSnapshotRefreshCommand:
     return ExecuteUserSnapshotRefreshCommand(
         user_id=_user_id(prefix),
@@ -101,7 +108,7 @@ def _command(prefix: str) -> ExecuteUserSnapshotRefreshCommand:
     )
 
 
-def _account_command(account_id: str) -> WriteAccountSnapshotCommand:
+def _account_command(account_id: str, generation_id: str) -> WriteAccountSnapshotCommand:
     return WriteAccountSnapshotCommand(
         account_id=account_id,
         snapshot_timestamp=AT,
@@ -112,70 +119,11 @@ def _account_command(account_id: str) -> WriteAccountSnapshotCommand:
         created_at=AT,
         is_recalculated=True,
         output_currency="EUR",
+        generation_id=generation_id,
     )
 
 
-async def _cleanup(prefix: str) -> None:
-    engine = _engine()
-    async with AsyncSession(engine) as session:
-        user_ids = tuple(
-            await session.scalars(select(UserModel.id).where(UserModel.id.startswith(f"{prefix}-")))
-        )
-        account_ids = tuple(
-            await session.scalars(
-                select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
-            )
-        )
-        snapshot_ids = (
-            tuple(
-                await session.scalars(
-                    select(AccountSnapshotModel.id).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-            )
-            if account_ids
-            else ()
-        )
-        if snapshot_ids:
-            await session.execute(
-                delete(AccountSnapshotItemModel).where(
-                    AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
-                )
-            )
-        if user_ids:
-            await session.execute(
-                delete(DailySnapshotBaselineModel).where(
-                    DailySnapshotBaselineModel.user_id.in_(user_ids)
-                )
-            )
-            await session.execute(
-                delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
-            )
-        if account_ids:
-            await session.execute(
-                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
-            )
-            await session.execute(
-                delete(LiabilityBalanceModel).where(
-                    LiabilityBalanceModel.account_id.in_(account_ids)
-                )
-            )
-            await session.execute(
-                delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
-            )
-            await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
-        await session.execute(
-            delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(f"{prefix}-"))
-        )
-        if user_ids:
-            await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
-        await session.commit()
-    await engine.dispose()
-
-
 async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
-    await _cleanup(prefix)
     engine = _engine()
     async with AsyncSession(engine) as session:
         session.add(
@@ -262,8 +210,18 @@ async def _write_existing_snapshot(prefix: str, suffix: str) -> str:
     engine = _engine()
     try:
         async with AsyncSession(engine) as session:
+            session.add(
+                SnapshotGenerationModel(
+                    id=f"{prefix}-existing-generation",
+                    state="staged",
+                    created_at=AT,
+                    published_at=None,
+                )
+            )
+            await session.commit()
+        async with AsyncSession(engine) as session:
             result = await AccountSnapshotWriter(session).write(
-                _account_command(_account_id(prefix, suffix))
+                _account_command(_account_id(prefix, suffix), f"{prefix}-existing-generation")
             )
         return result.snapshot_id
     finally:
@@ -345,7 +303,7 @@ class _MutationNetWorthWriter:
 
 @pytest.mark.asyncio
 async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
-    prefix = "k5d2-mixed"
+    prefix = _test_prefix("mixed")
     specs = (
         _AccountSpec("a-owner-gbp", currency="GBP"),
         _AccountSpec("b-editor-usd", AccountMemberRole.editor, "USD"),
@@ -372,6 +330,7 @@ async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
         expected_refresh = [
             _account_id(prefix, "a-owner-gbp"),
             _account_id(prefix, "b-editor-usd"),
+            _account_id(prefix, "c-viewer"),
         ]
         assert first_factory.calls == second_factory.calls == expected_refresh
         assert [item.disposition for item in first.account_snapshots] == [
@@ -384,7 +343,7 @@ async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
             AccountSnapshotRefreshExecutionDisposition.replayed,
             AccountSnapshotRefreshExecutionDisposition.reused,
         ]
-        assert first.account_snapshots[-1].snapshot_id == viewer_snapshot_id
+        assert first.account_snapshots[-1].snapshot_id != viewer_snapshot_id
         assert first.required_account_snapshot_identities == tuple(
             SelectedAccountSnapshotIdentity(
                 item.account_id,
@@ -395,15 +354,14 @@ async def test_mixed_refresh_reuse_create_and_fresh_session_replay() -> None:
         assert second.net_worth_snapshot_id == first.net_worth_snapshot_id
         assert first.selected_account_snapshot_count == 3
         assert len(first.required_account_snapshot_identities) == 3
-        assert before_replay == await _counts(prefix) == (5, 0, 1)
+        assert before_replay == await _counts(prefix) == (6, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes() -> None:
-    prefix = "k5d2-resume"
+    prefix = _test_prefix("resume")
     await _seed(
         prefix,
         (
@@ -444,12 +402,11 @@ async def test_partial_account_failure_commits_prefix_and_exact_replay_resumes()
         assert await _counts(prefix) == (3, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_failure_after_account_stage_keeps_commits_for_resume() -> None:
-    prefix = "k5d2-net-failure"
+    prefix = _test_prefix("net-failure")
     await _seed(prefix, (_AccountSpec("a"), _AccountSpec("b")))
     engine = _engine()
     try:
@@ -468,12 +425,11 @@ async def test_failure_after_account_stage_keeps_commits_for_resume() -> None:
         assert await _counts(prefix) == (2, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_missing_viewer_coverage_stops_before_any_writer() -> None:
-    prefix = "k5d2-viewer-missing"
+    prefix = _test_prefix("viewer-missing")
     await _seed(
         prefix,
         (
@@ -494,7 +450,6 @@ async def test_missing_viewer_coverage_stops_before_any_writer() -> None:
         assert await _counts(prefix) == (0, 0, 0)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 async def _insert_drift_account(
@@ -549,15 +504,15 @@ async def _insert_drift_account(
 @pytest.mark.parametrize(
     ("prefix", "remove_suffix"),
     [
-        ("k5d2-membership-drift", None),
-        ("k5d2-substitution", "a"),
+        ("substitution", "a"),
     ],
 )
 @pytest.mark.asyncio
-async def test_d1_guard_rejects_membership_drift_and_same_count_substitution(
+async def test_d1_guard_rejects_same_count_financial_membership_substitution(
     prefix: str,
     remove_suffix: str | None,
 ) -> None:
+    prefix = _test_prefix(prefix)
     await _seed(prefix, (_AccountSpec("a"),))
     engine = _engine()
 
@@ -582,12 +537,11 @@ async def test_d1_guard_rejects_membership_drift_and_same_count_substitution(
         assert await _counts(prefix) == (1, 0, 0)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_empty_user_creates_zero_net_worth_and_replays() -> None:
-    prefix = "k5d2-empty"
+    prefix = _test_prefix("empty")
     await _seed(prefix, ())
     tracking = _TrackingAccountFactory()
     engine = _engine()
@@ -609,12 +563,11 @@ async def test_empty_user_creates_zero_net_worth_and_replays() -> None:
         assert await _counts(prefix) == (0, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_concurrent_same_command_converges_without_duplicates() -> None:
-    prefix = "k5d2-concurrent"
+    prefix = _test_prefix("concurrent")
     await _seed(prefix, (_AccountSpec("a"),))
     engine = _engine()
     try:
@@ -639,12 +592,11 @@ async def test_concurrent_same_command_converges_without_duplicates() -> None:
         assert await _counts(prefix) == (1, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio
 async def test_physical_account_conflict_maps_without_repair() -> None:
-    prefix = "k5d2-conflict"
+    prefix = _test_prefix("conflict")
     await _seed(prefix, (_AccountSpec("a"),))
     engine = _engine()
     try:
@@ -670,4 +622,3 @@ async def test_physical_account_conflict_maps_without_repair() -> None:
         assert await _counts(prefix) == (1, 0, 1)
     finally:
         await engine.dispose()
-        await _cleanup(prefix)

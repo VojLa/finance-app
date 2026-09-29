@@ -467,6 +467,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/auth/me/base-currency": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /** Change Base Currency */
+    put: operations["change_base_currency_api_v1_auth_me_base_currency_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/auth/password": {
     parameters: {
       query?: never
@@ -564,8 +581,28 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** Read Current Dashboard */
+    /**
+     * Read Current Dashboard
+     * @deprecated
+     */
     post: operations["read_current_dashboard_api_v1_dashboard_current_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/dashboard/published": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Published Dashboard */
+    post: operations["read_published_dashboard_api_v1_dashboard_published_post"]
     delete?: never
     options?: never
     head?: never
@@ -734,7 +771,10 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** Read Current Portfolio */
+    /**
+     * Read Current Portfolio
+     * @deprecated
+     */
     post: operations["read_current_portfolio_api_v1_portfolio_current_post"]
     delete?: never
     options?: never
@@ -759,6 +799,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/portfolio/published": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Published Portfolio */
+    post: operations["read_published_portfolio_api_v1_portfolio_published_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/portfolio/snapshot": {
     parameters: {
       query?: never
@@ -770,6 +827,23 @@ export interface paths {
     put?: never
     /** Read Multi Account Portfolio Snapshot */
     post: operations["read_multi_account_portfolio_snapshot_api_v1_portfolio_snapshot_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/read-model-version": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read Model Version */
+    get: operations["read_model_version_api_v1_read_model_version_get"]
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -837,6 +911,8 @@ export interface components {
     AccountCreateRequest: {
       /** Color */
       color?: string | null
+      /** Credit Limit */
+      credit_limit?: number | string | null
       /** Currency */
       currency: string
       /** Name */
@@ -988,6 +1064,8 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      /** Credit Limit */
+      credit_limit?: string | null
       /** Currency */
       currency: string
       /** Id */
@@ -1060,6 +1138,8 @@ export interface components {
     AccountUpdateRequest: {
       /** Color */
       color?: string | null
+      /** Credit Limit */
+      credit_limit?: number | string | null
       /** Currency */
       currency?: string | null
       /** Name */
@@ -1091,6 +1171,19 @@ export interface components {
      * @enum {string}
      */
     BackgroundJobStatus: "queued" | "running" | "retry_wait" | "completed" | "failed"
+    /**
+     * BaseCurrencyChangeRequest
+     * @description Exact persisted aggregate currency selected by the authenticated user.
+     */
+    BaseCurrencyChangeRequest: {
+      /** Basecurrency */
+      baseCurrency: string
+    }
+    /** BaseCurrencyChangeResponse */
+    BaseCurrencyChangeResponse: {
+      /** Basecurrency */
+      baseCurrency: string
+    }
     /** BudgetAlertResponse */
     BudgetAlertResponse: {
       /** Acknowledgedat */
@@ -1334,9 +1427,13 @@ export interface components {
       currency: string
       /** Historyanchorsnapshotid */
       historyAnchorSnapshotId: string
+      /** Isstale */
+      isStale: boolean
       summary: components["schemas"]["DashboardSnapshotSummaryResponse"]
       /** Toppositions */
       topPositions: components["schemas"]["DashboardTopPositionResponse"][]
+      /** Valuationtimestamp */
+      valuationTimestamp: string
     }
     /** CurrentPortfolioAccountResponse */
     CurrentPortfolioAccountResponse: {
@@ -1367,7 +1464,11 @@ export interface components {
       currency: string
       /** Historyanchorsnapshotid */
       historyAnchorSnapshotId: string
+      /** Isstale */
+      isStale: boolean
       summary: components["schemas"]["MultiAccountPortfolioSummaryResponse"]
+      /** Valuationtimestamp */
+      valuationTimestamp: string
     }
     /** CurrentUserResponse */
     CurrentUserResponse: {
@@ -1533,11 +1634,55 @@ export interface components {
        */
       timestamp: string
     }
+    /** GenerationPortfolioHistoryPointResponse */
+    GenerationPortfolioHistoryPointResponse: {
+      /** Cashbycurrency */
+      cashByCurrency?: components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][] | null
+      /** Cashvalue */
+      cashValue: string
+      /** Investmentbycurrency */
+      investmentByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Investmentvalue */
+      investmentValue: string
+      /** Liabilitiesbycurrency */
+      liabilitiesByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Liabilitiesvalue */
+      liabilitiesValue: string
+      /** Netinvestedbycurrency */
+      netInvestedByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Netinvestedvalue */
+      netInvestedValue?: string
+      /** Networthvalue */
+      netWorthValue: string
+      /** Portfoliosnapshotid */
+      portfolioSnapshotId?: string | null
+      /** Positions */
+      positions?: components["schemas"]["PortfolioHistoryPositionResponse"][] | null
+      /** Realizedpnlvalue */
+      realizedPnlValue?: string
+      /** Resolutionminutes */
+      resolutionMinutes: number
+      /** Timestamp */
+      timestamp: string
+      /** Unrealizedpnlvalue */
+      unrealizedPnlValue?: string
+    }
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][]
     }
+    /**
+     * HistoryPublicRange
+     * @enum {string}
+     */
+    HistoryPublicRange: "1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "5Y" | "10Y" | "ALL"
     /** HoldingRebuildResponse */
     HoldingRebuildResponse: {
       /** Account Id */
@@ -2265,32 +2410,86 @@ export interface components {
       /** Currency */
       currency: string
     }
-    /** PortfolioHistoryPointResponse */
-    PortfolioHistoryPointResponse: {
-      /** Cashvalue */
-      cashValue: string
-      /** Investmentvalue */
-      investmentValue: string
-      /** Liabilitiesvalue */
-      liabilitiesValue: string
-      /** Networthvalue */
-      netWorthValue: string
-      /** Timestamp */
-      timestamp: string
+    /** PortfolioHistoryCoverageResponse */
+    PortfolioHistoryCoverageResponse: {
+      /** End */
+      end: string
+      /** Resolutionminutes */
+      resolutionMinutes: number
+      /** Start */
+      start: string
     }
-    /**
-     * PortfolioHistoryRange
-     * @description Supported calendar ranges for public portfolio history.
-     * @enum {string}
-     */
-    PortfolioHistoryRange: "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL"
-    /** PortfolioHistoryResponse */
-    PortfolioHistoryResponse: {
+    /** PortfolioHistoryCurrencyAmountResponse */
+    PortfolioHistoryCurrencyAmountResponse: {
       /** Currency */
       currency: string
+      /** Value */
+      value: string
+    }
+    /** PortfolioHistoryPositionAccountResponse */
+    PortfolioHistoryPositionAccountResponse: {
+      /** Accountid */
+      accountId: string
+      /** Allocationpct */
+      allocationPct: string
+      /** Costbasis */
+      costBasis?: string
+      /** Quantity */
+      quantity: string
+      /** Value */
+      value: string
+    }
+    /** PortfolioHistoryPositionResponse */
+    PortfolioHistoryPositionResponse: {
+      /**
+       * Accounts
+       * @default []
+       */
+      accounts: components["schemas"]["PortfolioHistoryPositionAccountResponse"][]
+      /** Allocationpct */
+      allocationPct: string
+      /** Costbasis */
+      costBasis?: string
+      /** Listingid */
+      listingId: string
+      /** Quantity */
+      quantity: string
+      /** Symbol */
+      symbol: string
+      /** Value */
+      value: string
+    }
+    /**
+     * PortfolioHistoryReadState
+     * @enum {string}
+     */
+    PortfolioHistoryReadState: "ready" | "rebuilding" | "failed" | "empty"
+    /** PortfolioHistoryResponse */
+    PortfolioHistoryResponse: {
+      /** Coverage */
+      coverage: components["schemas"]["PortfolioHistoryCoverageResponse"][]
+      /** Coveredthrough */
+      coveredThrough?: string
+      /** Currency */
+      currency: string
+      /** Generationid */
+      generationId?: string | null
+      /** Isstale */
+      isStale?: boolean | null
       /** Points */
-      points: components["schemas"]["PortfolioHistoryPointResponse"][]
-      range: components["schemas"]["PortfolioHistoryRange"]
+      points: components["schemas"]["GenerationPortfolioHistoryPointResponse"][]
+      /** Preferredresolutionminutes */
+      preferredResolutionMinutes?: number | null
+      /** Publicationid */
+      publicationId?: string | null
+      /** Publicationversion */
+      publicationVersion?: number | null
+      range: components["schemas"]["HistoryPublicRange"]
+      /** Resolutions */
+      resolutions: number[]
+      state: components["schemas"]["PortfolioHistoryReadState"]
+      /** Valuationtimestamp */
+      valuationTimestamp?: string
     }
     /** PortfolioQuantityCurrencyAmountResponse */
     PortfolioQuantityCurrencyAmountResponse: {
@@ -2412,6 +2611,13 @@ export interface components {
       /** Warnings */
       warnings?: string[]
     }
+    /** ReadModelVersionResponse */
+    ReadModelVersionResponse: {
+      /** Scopes */
+      scopes: string[]
+      /** Version */
+      version: string
+    }
     /** ReadinessDependencies */
     ReadinessDependencies: {
       /**
@@ -2419,6 +2625,16 @@ export interface components {
        * @enum {string}
        */
       database: "available" | "unavailable"
+      /**
+       * Portfoliohistoryruntime
+       * @enum {string}
+       */
+      portfolioHistoryRuntime: "available" | "unavailable" | "disabled"
+      /**
+       * Scheduledsnapshotrefreshruntime
+       * @enum {string}
+       */
+      scheduledSnapshotRefreshRuntime: "available" | "unavailable" | "disabled"
     }
     /** ReadinessResponse */
     ReadinessResponse: {
@@ -3797,6 +4013,57 @@ export interface operations {
       }
     }
   }
+  change_base_currency_api_v1_auth_me_base_currency_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BaseCurrencyChangeRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BaseCurrencyChangeResponse"]
+        }
+      }
+      /** @description Authentication is required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Portfolio-history invalidation cannot be established safely. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
   change_password_api_v1_auth_password_put: {
     parameters: {
       query?: never
@@ -4139,6 +4406,26 @@ export interface operations {
       }
     }
   }
+  read_published_dashboard_api_v1_dashboard_published_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentDashboardResponse"]
+        }
+      }
+    }
+  }
   read_dashboard_snapshot_api_v1_dashboard_snapshot_post: {
     parameters: {
       query?: never
@@ -4443,7 +4730,8 @@ export interface operations {
   read_portfolio_history_api_v1_portfolio_history_get: {
     parameters: {
       query?: {
-        range?: components["schemas"]["PortfolioHistoryRange"]
+        range?: components["schemas"]["HistoryPublicRange"]
+        accountId?: string | null
       }
       header?: never
       path?: never
@@ -4471,6 +4759,26 @@ export interface operations {
       }
     }
   }
+  read_published_portfolio_api_v1_portfolio_published_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentPortfolioResponse"]
+        }
+      }
+    }
+  }
   read_multi_account_portfolio_snapshot_api_v1_portfolio_snapshot_post: {
     parameters: {
       query?: never
@@ -4491,6 +4799,37 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["MultiAccountPortfolioResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  read_model_version_api_v1_read_model_version_get: {
+    parameters: {
+      query?: {
+        after?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ReadModelVersionResponse"]
         }
       }
       /** @description Validation Error */

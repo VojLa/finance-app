@@ -71,5 +71,9 @@ Superseded by: none
 | [`0013-anycoin-btc-alias-onboarding.md`](0013-anycoin-btc-alias-onboarding.md)                           | Exactni onboarding Anycoin BTC aliasu                  | Accepted |
 | [`0014-anycoin-btc-display-identity.md`](0014-anycoin-btc-display-identity.md)                           | Exactni zobrazovaci identita Anycoin BTC               | Accepted |
 | [`0015-import-reconciliation-evidence-foundation.md`](0015-import-reconciliation-evidence-foundation.md) | Zaklad evidence importniho odsouhlaseni                | Accepted |
+| [`0016-portfolio-history-generations.md`](0016-portfolio-history-generations.md)                         | Verzovane generace historie portfolia                  | Accepted |
+| [`0017-credit-card-signed-ledger-balance.md`](0017-credit-card-signed-ledger-balance.md)                 | Kreditni karta jako znaménkový ucetni zustatek          | Accepted |
+| [`0018-anycoin-transfer-market-cost-basis.md`](0018-anycoin-transfer-market-cost-basis.md)               | Anycoin prevody s trzni porizovaci cenou                | Accepted |
+| [`0019-published-snapshot-navigation.md`](0019-published-snapshot-navigation.md)                         | Navigace cte publikovane snapshoty                      | Accepted |
 
 Status v tomto indexu se musi aktualizovat spolu se zmenou konkretniho ADR.

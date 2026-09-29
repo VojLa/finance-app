@@ -1,5 +1,11 @@
 # Module catalogue index
 
+Type: historical
+Status: historical
+Owns: compatibility routing to domain module maps
+Code: none
+Update when: the final legacy link is removed
+
 The large module catalogue is split into maintained [domain guides](../domains/README.md)
 and detailed architectural evidence in [architecture/modules](../architecture/modules/README.md).
 

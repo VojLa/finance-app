@@ -1,5 +1,11 @@
 # 0003 Alembic owns database schema changes
 
+Type: historical
+Status: historical
+Owns: retained rationale for Alembic schema ownership
+Code: migrations, schema artifacts and SQLAlchemy mapping
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted and implemented.

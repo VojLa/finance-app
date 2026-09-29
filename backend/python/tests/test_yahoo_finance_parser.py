@@ -49,7 +49,7 @@ def test_parser_uses_provider_price_hint_not_binary_float_tail() -> None:
 
 
 def test_parser_accepts_bounded_live_minute_quote_shape() -> None:
-    timestamps = list(range(1722859200, 1722859200 + 1_500 * 60, 60))
+    timestamps = list(range(1722859200, 1722859200 + 4_321 * 60, 60))
     document = {
         "chart": {
             "result": [
@@ -79,3 +79,28 @@ def test_parser_accepts_bounded_live_minute_quote_shape() -> None:
         maximum_price_hint=10,
     )
     assert len(chart.points) == len(timestamps)
+
+
+def test_parser_accepts_yahoo_nested_trading_period_metadata() -> None:
+    document = json.loads(_body(timestamps=[1722859200]))
+    document["chart"]["result"][0]["meta"]["tradingPeriods"] = [
+        [
+            [
+                {
+                    "timezone": "CEST",
+                    "start": 1722841200,
+                    "end": 1722873600,
+                    "gmtoffset": 7200,
+                }
+            ]
+        ]
+    ]
+
+    chart = parse_yahoo_finance_chart(
+        json.dumps(document, separators=(",", ":")).encode(),
+        expected_symbol="VUAA.MI",
+        expected_currency="EUR",
+        maximum_price_hint=10,
+    )
+
+    assert len(chart.points) == 1

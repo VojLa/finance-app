@@ -1,5 +1,11 @@
 ## Dashboard deposited presentation
 
+Type: historical
+Status: historical
+Owns: milestone evidence for dashboard deposited presentation
+Code: dashboard projection at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-C completes the existing dashboard net-deposit presentation without
 introducing a financial calculation. `DashboardSnapshotSummary` and the global
 response continue copying `netDepositsValue` from the primary portfolio

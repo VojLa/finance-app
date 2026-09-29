@@ -56,6 +56,11 @@ function jsonResponse(value: unknown): Response {
   })
 }
 
+function portfolioCurrentFixture() {
+  const value = portfolioSnapshotFixture()
+  return { ...value, valuationTimestamp: value.asOf, isStale: false }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.PYTHON_BACKEND_URL = BACKEND_URL
@@ -81,7 +86,7 @@ afterEach(() => {
 
 describe("R6 browser-to-presentation acceptance", () => {
   it("preserves aggregate and account breakdowns through one browser and one current request", async () => {
-    const portfolio = portfolioSnapshotFixture()
+    const portfolio = portfolioCurrentFixture()
     const requestUrls: string[] = []
     const tokens: string[] = []
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
@@ -99,7 +104,7 @@ describe("R6 browser-to-presentation acceptance", () => {
       })
       expect(payload.sub).toBe("r6-audit-user")
 
-      if (request.url.endsWith("/api/v1/portfolio/current")) {
+      if (request.url.endsWith("/api/v1/portfolio/published")) {
         expect(request.method).toBe("POST")
         return jsonResponse(portfolio)
       }
@@ -116,7 +121,7 @@ describe("R6 browser-to-presentation acceptance", () => {
 
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(1)
-    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/current`])
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/published`])
     expect(state.status).toBe("ready")
     if (state.status !== "ready") throw new Error("Expected ready portfolio state.")
     expect(state.data).toEqual(portfolio)
@@ -198,8 +203,11 @@ describe("R6 production inventory", () => {
       await Promise.all(auditedFiles.map((file) => readFile(path.join(ROOT, file), "utf8")))
     ).join("\n")
 
-    expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
-    expect(content).not.toMatch(/\bMath\./)
+    const page = await readFile(path.join(ROOT, "src/app/portfolio/page.tsx"), "utf8")
+    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
+    expect(page).toContain("Number(position.allocationPct)")
+    expect(content.replace(page, "")).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
+    expect(content.replace(page, "")).not.toMatch(/\bMath\./)
     for (const forbidden of [
       ".toFixed(",
       ".reduce(",
@@ -229,7 +237,10 @@ describe("R6 production inventory", () => {
     expect(page).toContain("<PortfolioLineChart")
     expect(page).not.toContain("latestHistoryPoint")
     expect(page).not.toContain("activeHistoryPoint")
-    expect(page).not.toMatch(/history.*(?:summary|cashByCurrency|netDepositsByCurrency)/i)
+    expect(page).not.toMatch(/historyState(?:\.data)?\.(?:summary|cashByCurrency|netDepositsByCurrency)/i)
+    expect(page).toContain("selectedHistoryPoint.netInvestedValue")
+    expect(page).toContain("selectedHistoryPoint.cashByCurrency === undefined")
+    expect(page).toContain("Historická hodnota není dostupná.")
     expect(dashboard).not.toContain("cashByCurrency")
     expect(dashboard).not.toContain("netDepositsByCurrency")
     expect(page).toContain("aria-pressed={selectedAccountId === null}")

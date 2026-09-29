@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import { useSession } from "next-auth/react"
 
 import { ImportClientError, requestImportJob } from "./import-client"
+import type { PythonImportJob } from "./import-contract"
 import {
   IMPORT_COMPLETED_EVENT,
   publishImportCompleted,
@@ -36,11 +37,13 @@ export function ImportJobMonitor() {
   const [pollRevision, setPollRevision] = useState(0)
   const [visible, setVisible] = useState(true)
   const [stoppedJobId, setStoppedJobId] = useState<string | null>(null)
+  const [failedJob, setFailedJob] = useState<PythonImportJob | null>(null)
 
   useEffect(() => {
     const resume = () => {
       immediate.current = true
       setStoppedJobId(null)
+      setFailedJob(null)
       setResumeRevision((value) => value + 1)
     }
     const unsubscribe = subscribeImportJobBroadcasts((message) => {
@@ -78,6 +81,7 @@ export function ImportJobMonitor() {
     setRunAfter(null)
     setFailures(0)
     setStoppedJobId(null)
+    setFailedJob(null)
     setRecord(loadLatestPersistedImportJob(localStorage, userId))
   }, [pathname, resumeRevision, userId])
 
@@ -99,11 +103,13 @@ export function ImportJobMonitor() {
           if (decision.kind === "completed") {
             clearPersistedImportJob(localStorage, record)
             setRecord(null)
+            setFailedJob(null)
             publishImportCompleted(job)
             return
           }
           if (decision.kind === "failed") {
             setStoppedJobId(job.id)
+            setFailedJob(job)
             return
           }
           setRunAfter(decision.runAfter)
@@ -133,5 +139,19 @@ export function ImportJobMonitor() {
     }
   }, [failures, pathname, pollRevision, record, runAfter, stoppedJobId, visible])
 
-  return null
+  if (pathname === "/import" || failedJob === null) return null
+  return (
+    <div
+      className="fixed bottom-4 right-4 z-50 max-w-sm rounded border border-red-300 bg-red-50 p-3 text-sm text-red-950 shadow-lg"
+      role="alert"
+    >
+      <p>Import na pozadí selhal: {failedJob.error?.message ?? "Neznámá chyba."}</p>
+      <p className="mt-1 text-xs">
+        Fáze {failedJob.progress.phase}, pokus {failedJob.attempt_count} z {failedJob.max_attempts}.
+      </p>
+      <a className="mt-2 inline-block underline" href="/import">
+        Zobrazit detail a bezpečně opakovat
+      </a>
+    </div>
+  )
 }

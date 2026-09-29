@@ -71,7 +71,7 @@ export function createAuthenticatedPythonTransport(
         headers,
         signal: controller.signal,
       })
-      if (!isJsonResponse(response)) {
+      if (response.status !== 204 && !isJsonResponse(response)) {
         throw unavailableError()
       }
       return response

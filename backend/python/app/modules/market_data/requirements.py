@@ -14,6 +14,7 @@ from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.enums import (
     AccountType,
     AssetAliasProvider,
+    AssetType,
     ExchangeRateSource,
     InvestmentMovementKind,
     PriceSource,
@@ -49,6 +50,15 @@ _INVESTMENT_ACCOUNT_TYPES = {
 class BuildMarketEvidenceRefreshPlanCommand:
     user_id: str
     snapshot_timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPriceIdentity:
+    """Exact persisted provider identity selected by the source policy."""
+
+    provider: PriceSource
+    provider_symbol: str
+    price_currency: str
 
 
 class _Repository(Protocol):
@@ -173,11 +183,40 @@ def build_price_requirement(
 ) -> PriceRequirement:
     """Resolve one trusted persisted listing identity without consulting Holdings."""
 
+    identity = resolve_price_identity(
+        listing=listing,
+        asset=asset,
+        aliases=aliases,
+        supported_sources=supported_sources,
+        source_policy=source_policy,
+    )
+    return PriceRequirement(
+        account_id=_nonblank(account_id),
+        asset_id=_nonblank(asset.id),
+        listing_id=_nonblank(listing.id),
+        listing_currency=identity.price_currency,
+        provider=identity.provider,
+        provider_symbol=identity.provider_symbol,
+        through=_timestamp(through),
+    )
+
+
+def resolve_price_identity(
+    *,
+    listing: AssetListingModel,
+    asset: AssetModel,
+    aliases: tuple[AssetAliasModel, ...],
+    supported_sources: frozenset[PriceSource],
+    source_policy: MarketEvidenceSourcePolicy | None = None,
+) -> ResolvedPriceIdentity:
+    """Resolve the provider alias without inventing a ticker or a timestamp."""
+
     if not isinstance(listing, AssetListingModel) or not isinstance(asset, AssetModel):
         raise _fail()
     if listing.asset_id != asset.id:
         raise _fail()
     expected_source: PriceSource | None = None
+    policy: MarketEvidenceSourcePolicy | None = None
     if source_policy is not None:
         policy = validate_market_evidence_source_policy(source_policy)
         if policy.price_sources != supported_sources:
@@ -206,14 +245,16 @@ def build_price_requirement(
         if len(identities) != 1:
             raise _fail()
         provider, symbol = identities[0]
-    return PriceRequirement(
-        account_id=_nonblank(account_id),
-        asset_id=_nonblank(asset.id),
-        listing_id=_nonblank(listing.id),
-        listing_currency=_currency(listing.currency),
+    price_currency = _currency(listing.currency)
+    if policy is not None and policy.mode == "local_free" and asset.asset_type is AssetType.crypto:
+        expected_symbol = f"{_nonblank(asset.symbol)}-USD"
+        if symbol != expected_symbol:
+            raise _fail()
+        price_currency = "USD"
+    return ResolvedPriceIdentity(
         provider=provider,
         provider_symbol=symbol,
-        through=_timestamp(through),
+        price_currency=price_currency,
     )
 
 

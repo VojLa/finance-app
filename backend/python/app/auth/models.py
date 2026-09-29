@@ -89,3 +89,21 @@ class AuthenticatedUserResponse(CurrentUserResponse):
 
 class PasswordChangeResponse(BaseModel):
     ok: bool
+
+
+class BaseCurrencyChangeRequest(BaseModel):
+    """Exact persisted aggregate currency selected by the authenticated user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_currency: StrictStr = Field(
+        min_length=3,
+        max_length=3,
+        pattern=r"^[A-Z]{3}$",
+        validation_alias="baseCurrency",
+        serialization_alias="baseCurrency",
+    )
+
+
+class BaseCurrencyChangeResponse(BaseModel):
+    base_currency: str = Field(serialization_alias="baseCurrency")

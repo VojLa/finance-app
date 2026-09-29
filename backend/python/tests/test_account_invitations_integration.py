@@ -33,6 +33,7 @@ from app.modules.accounts.invitations import (
     AccountInviteConflictError,
     AccountInviteCreateRequest,
 )
+from app.modules.market_data.source_policy import LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-4f-internal-auth-secret-32-characters"
@@ -231,7 +232,10 @@ async def _verify_rollbacks() -> None:
         user_id="user-owner", email="user-owner@example.com", name="Owner"
     )
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountInvitationService(session)
+        service = AccountInvitationService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         rollback = AsyncMock(wraps=session.rollback)
         with (
             patch.object(session, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))),
@@ -273,7 +277,10 @@ async def _verify_rollbacks() -> None:
         name="Rollback invitee",
     )
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountInvitationService(session)
+        service = AccountInvitationService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         with (
             patch.object(session, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))),
             pytest.raises(RuntimeError, match="commit failed"),
@@ -575,7 +582,10 @@ async def _accept_concurrently(token: str) -> list[object]:
 
     async def accept() -> object:
         async with AsyncSession(engine, expire_on_commit=False) as session:
-            return await AccountInvitationService(session).accept_invite(
+            return await AccountInvitationService(
+                session,
+                source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+            ).accept_invite(
                 principal=principal,
                 payload=AccountInviteAcceptRequest(token=token),
             )

@@ -23,6 +23,10 @@ from app.modules.canonical_state import (
     CanonicalStateError,
     CanonicalStateService,
 )
+from app.modules.portfolio_history.invalidation.service import (
+    PortfolioHistoryInvalidationService,
+    PortfolioHistoryInvalidationStateError,
+)
 from app.modules.transactions.models import (
     TransactionAccountResponse,
     TransactionCategoryResponse,
@@ -145,6 +149,8 @@ class TransactionService:
             allowed_roles=_WRITE_ROLES,
             for_update=True,
         )
+        history = PortfolioHistoryInvalidationService(self.session)
+        locked_memberships = await history.lock_current_memberships((payload.account_id,))
         key = (
             f"transaction:create:{principal.user_id}:{payload.account_id}:{payload.idempotency_key}"
         )
@@ -166,7 +172,12 @@ class TransactionService:
             if not self._matches_payload(existing, payload, amount):
                 await self.session.rollback()
                 raise TransactionConflictError("The idempotency key has already been used.")
-            await self._record(existing, replay=True)
+            await self._record(
+                existing,
+                replay=True,
+                history=history,
+                locked_memberships=locked_memberships,
+            )
             await self.session.commit()
             return await self._response(existing, category=category)
 
@@ -195,7 +206,12 @@ class TransactionService:
             created_at=now,
             updated_at=now,
         )
-        await self._record(transaction, replay=False)
+        await self._record(
+            transaction,
+            replay=False,
+            history=history,
+            locked_memberships=locked_memberships,
+        )
         self.repository.add(transaction)
         await self._commit()
         return await self._response(transaction, category=category)
@@ -226,7 +242,14 @@ class TransactionService:
             if original is None or not self._matches_update(replacement, original, payload):
                 await self.session.rollback()
                 raise TransactionConflictError("The idempotency key has already been used.")
-            await self._record(replacement, replay=True)
+            history = PortfolioHistoryInvalidationService(self.session)
+            locked_memberships = await history.lock_current_memberships((replacement.account_id,))
+            await self._record(
+                replacement,
+                replay=True,
+                history=history,
+                locked_memberships=locked_memberships,
+            )
             await self.session.commit()
             return await self._response(replacement)
 
@@ -244,6 +267,8 @@ class TransactionService:
             raise TransactionConflictError(
                 "Paired or split transactions require a dedicated edit operation."
             )
+        history = PortfolioHistoryInvalidationService(self.session)
+        locked_memberships = await history.lock_current_memberships((original.account_id,))
 
         transaction_type = payload.type or original.type
         raw_amount = payload.amount if payload.amount is not None else abs(original.amount)
@@ -292,7 +317,12 @@ class TransactionService:
         )
         original.deleted_at = now
         original.updated_at = now
-        await self._record(replacement, replay=False)
+        await self._record(
+            replacement,
+            replay=False,
+            history=history,
+            locked_memberships=locked_memberships,
+        )
         self.repository.add(replacement)
         await self._commit()
         return await self._response(replacement, category=category)
@@ -317,7 +347,14 @@ class TransactionService:
             if tombstone.deleted_at is None:
                 await self.session.rollback()
                 raise TransactionConflictError()
-            await self._record(tombstone, replay=True)
+            history = PortfolioHistoryInvalidationService(self.session)
+            locked_memberships = await history.lock_current_memberships((tombstone.account_id,))
+            await self._record(
+                tombstone,
+                replay=True,
+                history=history,
+                locked_memberships=locked_memberships,
+            )
             await self.session.commit()
             return
 
@@ -335,6 +372,8 @@ class TransactionService:
             raise TransactionConflictError(
                 "Paired or split transactions require a dedicated delete operation."
             )
+        history = PortfolioHistoryInvalidationService(self.session)
+        locked_memberships = await history.lock_current_memberships((original.account_id,))
         now = _now()
         await self.repository.ensure_canonical_state(original.account_id, now)
         original.deleted_at = now
@@ -362,7 +401,12 @@ class TransactionService:
             created_at=now,
             updated_at=now,
         )
-        await self._record(tombstone, replay=False)
+        await self._record(
+            tombstone,
+            replay=False,
+            history=history,
+            locked_memberships=locked_memberships,
+        )
         self.repository.add(tombstone)
         await self._commit()
 
@@ -391,9 +435,16 @@ class TransactionService:
             raise TransactionCategoryError()
         return category
 
-    async def _record(self, transaction: TransactionModel, *, replay: bool) -> None:
+    async def _record(
+        self,
+        transaction: TransactionModel,
+        *,
+        replay: bool,
+        history: PortfolioHistoryInvalidationService,
+        locked_memberships: tuple[tuple[str, str], ...],
+    ) -> None:
         try:
-            await CanonicalStateService(self.session).record(
+            recorded = await CanonicalStateService(self.session).record(
                 account_id=transaction.account_id,
                 kind=CanonicalChangeKind.transaction,
                 entity_id=transaction.id,
@@ -401,7 +452,12 @@ class TransactionService:
                 created_at=transaction.created_at,
                 replay=replay,
             )
-        except CanonicalStateError as exc:
+            await history.invalidate_recorded_changes(
+                changes=(recorded,),
+                locked_memberships=locked_memberships,
+                now=_now(),
+            )
+        except (CanonicalStateError, PortfolioHistoryInvalidationStateError) as exc:
             raise TransactionConflictError("Canonical transaction state is unavailable.") from exc
 
     async def _response(

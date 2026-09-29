@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import SnapshotGenerationModel
 from app.db.models.enums import (
     AccountType,
     AssetType,
@@ -44,6 +45,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 
 PREFIX = "r10b-representability"
+GENERATION_ID = f"{PREFIX}-generation"
+ACCOUNT_IDS = tuple(f"{PREFIX}-{suffix}" for suffix in "abcd")
 SNAPSHOT_AT = datetime(2036, 1, 11, 12, 0)
 CREATED_AT = datetime(2036, 1, 11, 12, 0, 0, 123000)
 
@@ -269,11 +272,12 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             await session.execute(
-                delete(AccountSnapshotModel).where(
-                    AccountSnapshotModel.account_id.startswith(PREFIX)
-                )
+                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
             )
-            await session.execute(delete(AccountModel).where(AccountModel.id.startswith(PREFIX)))
+            await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNT_IDS)))
+            await session.execute(
+                delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == GENERATION_ID)
+            )
             unique_rows = {row.account_id: row for row in rows}
             session.add_all(
                 AccountModel(
@@ -299,14 +303,26 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
                 )
             )
             await session.flush()
-            session.add_all(AccountSnapshotModel(**row.model_values()) for row in rows)
+            session.add(
+                SnapshotGenerationModel(
+                    id=GENERATION_ID,
+                    state="published",
+                    created_at=CREATED_AT,
+                    published_at=CREATED_AT,
+                )
+            )
+            await session.flush()
+            session.add_all(
+                AccountSnapshotModel(**{**row.model_values(), "generation_id": GENERATION_ID})
+                for row in rows
+            )
             await session.commit()
 
         async with AsyncSession(engine) as session:
             physical = tuple(
                 await session.scalars(
                     select(AccountSnapshotModel)
-                    .where(AccountSnapshotModel.account_id.startswith(PREFIX))
+                    .where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
                     .order_by(AccountSnapshotModel.account_id)
                 )
             )
@@ -316,7 +332,7 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
                     AccountSnapshotModel,
                     AccountSnapshotModel.account_id == AccountModel.id,
                 )
-                .where(AccountModel.id.startswith(PREFIX))
+                .where(AccountModel.id.in_(ACCOUNT_IDS))
                 .order_by(AccountModel.id, AccountSnapshotModel.currency)
             )
             currencies = tuple((row[0], row[1]) for row in currency_rows)
@@ -355,14 +371,15 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
         liability_rows = {row.currency: row for row in physical if row.account_id == f"{PREFIX}-d"}
         assert liability_rows["CZK"].liabilities_value == Decimal("2500.000000")
         assert liability_rows["EUR"].liabilities_value == Decimal("100.000000")
-        assert liability_column == 0
+        assert liability_column == 1
     finally:
         async with AsyncSession(engine) as session:
             await session.execute(
-                delete(AccountSnapshotModel).where(
-                    AccountSnapshotModel.account_id.startswith(PREFIX)
-                )
+                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
             )
-            await session.execute(delete(AccountModel).where(AccountModel.id.startswith(PREFIX)))
+            await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNT_IDS)))
+            await session.execute(
+                delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == GENERATION_ID)
+            )
             await session.commit()
         await engine.dispose()

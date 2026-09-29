@@ -35,6 +35,7 @@ from app.modules.net_worth.writer_repository import NetWorthSnapshotWriterReposi
 _STATE_MESSAGE = "Net-worth snapshot could not be persisted."
 _CONFLICT_MESSAGE = "Net-worth snapshot conflicts with persisted state."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
 _MAX_TRANSACTION_ATTEMPTS = 3
 _RETRYABLE_SQLSTATES = {"40001", "40P01", "23505"}
 
@@ -66,6 +67,7 @@ class WriteNetWorthSnapshotCommand:
     created_at: datetime
     is_recalculated: bool
     required_account_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...] | None = None
+    generation_id: str = _LEGACY_GENERATION_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +100,7 @@ class _Repository(Protocol):
         timestamp: datetime,
         currency: str,
         granularity: SnapshotGranularity,
+        generation_id: str,
     ) -> None: ...
 
     async def load_existing_snapshot(
@@ -107,6 +110,7 @@ class _Repository(Protocol):
         timestamp: datetime,
         currency: str,
         granularity: SnapshotGranularity,
+        generation_id: str,
     ) -> NetWorthSnapshotModel | None: ...
 
     async def load_snapshot_by_id(
@@ -183,6 +187,7 @@ def _validate_command(command: object) -> WriteNetWorthSnapshotCommand:
     if not isinstance(command, WriteNetWorthSnapshotCommand):
         raise _fail()
     user_id = _nonblank(command.user_id)
+    generation_id = _nonblank(command.generation_id)
     if (
         not isinstance(command.granularity, SnapshotGranularity)
         or not isinstance(command.source, SnapshotSource)
@@ -213,6 +218,7 @@ def _validate_command(command: object) -> WriteNetWorthSnapshotCommand:
         created_at=_timestamp(command.created_at),
         is_recalculated=command.is_recalculated,
         required_account_snapshot_identities=required_identities,
+        generation_id=generation_id,
     )
 
 
@@ -236,6 +242,7 @@ _PHYSICAL_ATTRIBUTES = (
     "liabilities_value_by_currency",
     "total_net_worth_by_currency",
     "exchange_rates",
+    "generation_id",
 )
 
 
@@ -269,6 +276,7 @@ def _validate_projection(
         or row.calculated_at != command.calculated_at
         or row.created_at != command.created_at
         or row.is_recalculated is not command.is_recalculated
+        or row.generation_id != command.generation_id
         or not isinstance(audit.selected_account_ids, tuple)
         or not isinstance(audit.selected_account_snapshot_ids, tuple)
         or not isinstance(audit.selected_identities, tuple)
@@ -373,6 +381,7 @@ class NetWorthSnapshotWriter:
             timestamp=command.snapshot_timestamp,
             currency=command.currency,
             granularity=command.granularity,
+            generation_id=command.generation_id,
         )
         evidence = await self.evidence_service.build(
             BuildNetWorthEvidenceCommand(
@@ -392,6 +401,7 @@ class NetWorthSnapshotWriter:
                     calculated_at=command.calculated_at,
                     created_at=command.created_at,
                     is_recalculated=command.is_recalculated,
+                    generation_id=command.generation_id,
                 ),
             ),
             command,
@@ -402,6 +412,7 @@ class NetWorthSnapshotWriter:
             timestamp=command.snapshot_timestamp,
             currency=command.currency,
             granularity=command.granularity,
+            generation_id=command.generation_id,
         )
         if existing is not None:
             if not _matches(existing, expected):

@@ -97,6 +97,12 @@
       "sessionEnforcement": "route"
     },
     {
+      "file": "src/app/api/read-model-version/route.ts",
+      "methods": ["GET"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
       "file": "src/app/api/snapshot-workflow/dashboard/route.ts",
       "methods": ["POST"],
       "classification": "authenticated_python_transport",
@@ -104,6 +110,12 @@
     },
     {
       "file": "src/app/api/snapshot-workflow/portfolio/route.ts",
+      "methods": ["POST"],
+      "classification": "authenticated_python_transport",
+      "sessionEnforcement": "route"
+    },
+    {
+      "file": "src/app/api/snapshot-workflow/portfolio/refresh/route.ts",
       "methods": ["POST"],
       "classification": "authenticated_python_transport",
       "sessionEnforcement": "route"

@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import case, exists, func, literal, or_, select
+from sqlalchemy import and_, case, exists, func, literal, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -309,10 +310,137 @@ def operational_transaction_from_values(
     )
 
 
+async def operational_transactions_for_candidates(
+    session: AsyncSession,
+    transactions: list[TransactionModel],
+) -> dict[str, OperationalTransaction]:
+    """Evaluate one bounded candidate page with set-based publication evidence reads.
+
+    This is the dashboard's recent-row path.  Other readers keep their SQL
+    predicate because they filter or aggregate over the full canonical scope.
+    """
+    if not transactions:
+        return {}
+
+    by_id = {transaction.id: transaction for transaction in transactions}
+    transaction_ids = tuple(by_id)
+    batch_ids = tuple(
+        {transaction.import_batch_id for transaction in transactions if transaction.import_batch_id}
+    )
+    manifest: dict[str, list[tuple[str, str, BackgroundJobStatus]]] = {}
+    if batch_ids:
+        for batch_id, job_id, account_id, status in (
+            await session.execute(
+                select(
+                    ImportJobBatchModel.batch_id,
+                    ImportJobBatchModel.job_id,
+                    ImportJobBatchModel.account_id,
+                    BackgroundJobModel.status,
+                )
+                .join(BackgroundJobModel, BackgroundJobModel.id == ImportJobBatchModel.job_id)
+                .where(ImportJobBatchModel.batch_id.in_(batch_ids))
+            )
+        ).all():
+            manifest.setdefault(batch_id, []).append((job_id, account_id, status))
+
+    reporting: dict[str, Decimal] = {}
+    for evidence, status in (
+        await session.execute(
+            select(TransactionReportingEvidenceModel, BackgroundJobModel.status)
+            .join(
+                BackgroundJobModel,
+                BackgroundJobModel.id == TransactionReportingEvidenceModel.background_job_id,
+            )
+            .where(TransactionReportingEvidenceModel.transaction_id.in_(transaction_ids))
+        )
+    ).all():
+        transaction = by_id[evidence.transaction_id]
+        if (
+            evidence.published_at is not None
+            and status is BackgroundJobStatus.completed
+            and evidence.source_amount == transaction.amount
+            and evidence.source_currency == transaction.currency
+            and evidence.source_event_time == transaction.date
+            and evidence.reporting_currency == _REPORTING_CURRENCY
+            and (evidence.background_job_id, transaction.account_id, status)
+            in manifest.get(transaction.import_batch_id or "", [])
+        ):
+            reporting[transaction.id] = evidence.reporting_amount
+
+    raw_pairs: dict[str, set[str]] = {transaction_id: set() for transaction_id in transaction_ids}
+    valid_pairs: dict[str, dict[str, TransactionClassification | None]] = {
+        transaction_id: {} for transaction_id in transaction_ids
+    }
+    for pair_id, transaction_id, classification, status, affected_account_id in (
+        await session.execute(
+            select(
+                TransactionPairModel.id,
+                TransactionModel.id,
+                TransactionPairModel.classification,
+                BackgroundJobModel.status,
+                ImportJobAffectedAccountModel.account_id,
+            )
+            .join(
+                TransactionModel,
+                or_(
+                    TransactionPairModel.from_transaction_id == TransactionModel.id,
+                    TransactionPairModel.to_transaction_id == TransactionModel.id,
+                ),
+            )
+            .outerjoin(
+                BackgroundJobModel,
+                BackgroundJobModel.id == TransactionPairModel.background_job_id,
+            )
+            .outerjoin(
+                ImportJobAffectedAccountModel,
+                and_(
+                    ImportJobAffectedAccountModel.job_id == BackgroundJobModel.id,
+                    ImportJobAffectedAccountModel.user_id == BackgroundJobModel.user_id,
+                    ImportJobAffectedAccountModel.account_id == TransactionModel.account_id,
+                ),
+            )
+            .where(
+                or_(
+                    TransactionPairModel.from_transaction_id.in_(transaction_ids),
+                    TransactionPairModel.to_transaction_id.in_(transaction_ids),
+                ),
+                TransactionModel.id.in_(transaction_ids),
+                TransactionPairModel.published_at.is_not(None),
+            )
+        )
+    ).all():
+        raw_pairs[transaction_id].add(pair_id)
+        if status is BackgroundJobStatus.completed and affected_account_id is not None:
+            valid_pairs[transaction_id][pair_id] = classification
+
+    visible: dict[str, OperationalTransaction] = {}
+    for transaction in transactions:
+        raw = raw_pairs[transaction.id]
+        valid = valid_pairs[transaction.id]
+        if len(raw) != len(valid) or len(raw) > 1:
+            continue
+        jobs = manifest.get(transaction.import_batch_id or "", [])
+        manifested = transaction.import_batch_id is not None and bool(jobs)
+        if manifested and (
+            any(status is not BackgroundJobStatus.completed for _, _, status in jobs)
+            or (transaction.currency != _REPORTING_CURRENCY and transaction.id not in reporting)
+        ):
+            continue
+        published_classification = next(iter(valid.values())) if valid else None
+        visible[transaction.id] = operational_transaction_from_values(
+            transaction,
+            published_classification,
+            reporting.get(transaction.id) if manifested else transaction.reporting_amount,
+            _REPORTING_CURRENCY if manifested else transaction.reporting_currency,
+        )
+    return visible
+
+
 __all__ = [
     "OperationalTransaction",
     "operational_effective_type_expression",
     "operational_projection_columns",
     "operational_transaction_from_values",
+    "operational_transactions_for_candidates",
     "operational_visibility_predicate",
 ]

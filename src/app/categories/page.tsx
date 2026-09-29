@@ -137,6 +137,8 @@ function CatFormFields({
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([])
+  const [categoryLoading, setCategoryLoading] = useState(true)
+  const [categoryLoadError, setCategoryLoadError] = useState("")
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<CatForm>(emptyForm())
   const [formLoading, setFormLoading] = useState(false)
@@ -147,7 +149,15 @@ export default function CategoriesPage() {
   const [editError, setEditError] = useState("")
 
   async function load() {
-    setCategories(await requestCategories())
+    setCategoryLoading(true)
+    setCategoryLoadError("")
+    try {
+      setCategories(await requestCategories())
+    } catch {
+      setCategoryLoadError("Kategorie se nepodařilo načíst. Zobrazuji poslední načtený stav.")
+    } finally {
+      setCategoryLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -271,6 +281,8 @@ export default function CategoriesPage() {
       )}
 
       <div className="space-y-8">
+        {categoryLoading && <p role="status" className="text-sm text-gray-500">Načítám kategorie…</p>}
+        {categoryLoadError && <p role="alert" className="text-sm text-red-700">{categoryLoadError}</p>}
         {/* Custom categories */}
         {userCats.length > 0 && (
           <div>
@@ -432,7 +444,7 @@ export default function CategoriesPage() {
           </div>
         )}
 
-        {userCats.length === 0 && !showForm && (
+        {userCats.length === 0 && !showForm && !categoryLoading && !categoryLoadError && (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-400">
             Žádné vlastní kategorie. Přidej první pomocí tlačítka výše.
           </div>

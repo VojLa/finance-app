@@ -43,7 +43,7 @@ UV = shutil.which("uv")
 USER_ID = "version-0-1-r8-user"
 USER_EMAIL = f"{USER_ID}@example.test"
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL,
+    not DATABASE_URL or DATABASE_URL.rsplit("/", 1)[-1].split("?", 1)[0] != EXPECTED_DATABASE,
     reason="The dedicated R8 PostgreSQL DATABASE_URL is required.",
 )
 

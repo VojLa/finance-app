@@ -265,6 +265,11 @@ class SnapshotSource(StrEnum):
     manual_recalculation = "manual_recalculation"
 
 
+class SnapshotSeriesJobKind(StrEnum):
+    rebuild = "rebuild"
+    capture = "capture"
+
+
 ACCOUNT_MEMBER_ROLE_DB = postgres_enum(AccountMemberRole, name="AccountMemberRole")
 ACCOUNT_RELATION_TYPE_DB = postgres_enum(AccountRelationType, name="AccountRelationType")
 ACCOUNT_INVITE_STATUS_DB = postgres_enum(AccountInviteStatus, name="AccountInviteStatus")
@@ -304,3 +309,7 @@ BACKGROUND_JOB_STATUS_DB = postgres_enum(BackgroundJobStatus, name="BackgroundJo
 BACKGROUND_JOB_KIND_DB = postgres_enum(BackgroundJobKind, name="BackgroundJobKind")
 SNAPSHOT_GRANULARITY_DB = postgres_enum(SnapshotGranularity, name="SnapshotGranularity")
 SNAPSHOT_SOURCE_DB = postgres_enum(SnapshotSource, name="SnapshotSource")
+SNAPSHOT_SERIES_JOB_KIND_DB = postgres_enum(
+    SnapshotSeriesJobKind,
+    name="SnapshotSeriesJobKind",
+)

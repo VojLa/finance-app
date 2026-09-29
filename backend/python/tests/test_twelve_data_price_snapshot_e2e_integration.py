@@ -9,13 +9,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.twelve_data_price_integration import (
-    CANONICAL_ALIAS,
-    principal,
-    seed_listed_holding,
-    snapshot_command,
-    twelve_data_engine,
-)
 
 from app.config.settings import Settings
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
@@ -43,6 +36,15 @@ from app.modules.snapshot_refresh.executor import UserSnapshotRefreshExecutor
 from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
+)
+from tests.support.investment_fixture_e2e import cleanup
+from tests.support.twelve_data_price_integration import (
+    principal,
+    seed_listed_holding,
+    snapshot_command,
+    twelve_data_engine,
+    unique_alias,
+    unique_symbol,
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -99,14 +101,15 @@ def _settings(*, with_key: bool = True) -> Settings:
 @pytest.mark.asyncio
 async def test_twelve_data_price_reaches_snapshots_and_exact_read_models() -> None:
     prefix = f"r5b2b1-e2e-{uuid4()}"
-    alias = CANONICAL_ALIAS.replace("AAPL", "MSFT")
+    symbol = unique_symbol(prefix, "MSFT")
+    alias = unique_alias(prefix, "MSFT")
     user_id, _, _, _ = await seed_listed_holding(
         prefix,
         event_at=datetime(2026, 8, 1),
         created_at=CREATED_AT,
         aliases=(alias,),
     )
-    transport, requests = _transport(symbol="MSFT")
+    transport, requests = _transport(symbol=symbol)
     engine = twelve_data_engine()
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -213,7 +216,7 @@ async def test_twelve_data_price_reaches_snapshots_and_exact_read_models() -> No
             assert net_worth.portfolio_value == Decimal("450.640000")
             assert net_worth.total_net_worth == Decimal("1450.640000")
 
-        replay_transport, replay_requests = _transport(symbol="MSFT")
+        replay_transport, replay_requests = _transport(symbol=symbol)
         async with AsyncSession(engine) as session:
             replay_market = await create_production_market_evidence_service(
                 session,
@@ -239,6 +242,7 @@ async def test_twelve_data_price_reaches_snapshots_and_exact_read_models() -> No
             assert len(replay_requests) == 1
     finally:
         await engine.dispose()
+        await cleanup(prefix)
 
 
 @pytest.mark.asyncio
@@ -315,3 +319,4 @@ async def test_quote_failure_creates_no_market_or_snapshot_graph(failure: str) -
             )
     finally:
         await engine.dispose()
+        await cleanup(prefix)

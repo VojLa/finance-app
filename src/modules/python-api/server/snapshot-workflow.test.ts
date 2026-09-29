@@ -11,7 +11,11 @@ import {
   portfolioSnapshotFixture,
 } from "@/test/portfolio-snapshot-fixture"
 import type { PythonSnapshotApi } from "./client"
-import { runDashboardSnapshotWorkflow, runPortfolioSnapshotWorkflow } from "./snapshot-workflow"
+import {
+  refreshPortfolioSnapshotWorkflow,
+  runDashboardSnapshotWorkflow,
+  runPortfolioSnapshotWorkflow,
+} from "./snapshot-workflow"
 
 const IDENTITY = { userId: "user-1", email: "user@example.test" }
 
@@ -25,6 +29,8 @@ function api(
     readDashboardSnapshot: vi.fn(),
     readCurrentPortfolio: vi.fn(async () => portfolio as never),
     readCurrentDashboard: vi.fn(async () => dashboard as never),
+    readPublishedPortfolio: vi.fn(async () => portfolio as never),
+    readPublishedDashboard: vi.fn(async () => dashboard as never),
   }
 }
 
@@ -40,15 +46,36 @@ describe("strict current portfolio workflow", () => {
     const client = api()
     const result = await runPortfolioSnapshotWorkflow(IDENTITY, client)
 
-    expect(result.data).toBe(await client.readCurrentPortfolio())
+    expect(result.data).toBe(await client.readPublishedPortfolio())
     expect(result.current).toEqual({
       asOf: portfolioSnapshotFixture().asOf,
       baselineTimestamp: portfolioSnapshotFixture().baselineTimestamp,
       historyAnchorSnapshotId: "net-worth-baseline",
       currency: "EUR",
       calculationVersion: 7,
+      valuationTimestamp: "2032-08-02T12:29:00.000",
+      isStale: false,
     })
     expect(client.recalculateSnapshotRefresh).not.toHaveBeenCalled()
+  })
+
+  it("recalculates before reading the refreshed published portfolio", async () => {
+    const calls: string[] = []
+    const client = api()
+    vi.mocked(client.recalculateSnapshotRefresh).mockImplementation(async () => {
+      calls.push("recalculate")
+      return undefined as never
+    })
+    vi.mocked(client.readPublishedPortfolio).mockImplementation(async () => {
+      calls.push("published")
+      return portfolioSnapshotFixture()
+    })
+
+    await refreshPortfolioSnapshotWorkflow(IDENTITY, client)
+
+    expect(client.recalculateSnapshotRefresh).toHaveBeenCalledOnce()
+    expect(client.readPublishedPortfolio).toHaveBeenCalledOnce()
+    expect(calls).toEqual(["recalculate", "published"])
   })
 
   it.each([
@@ -131,7 +158,7 @@ describe("strict current dashboard workflow", () => {
     const result = await runDashboardSnapshotWorkflow(IDENTITY, client)
 
     expect(result.data.accounts[0].netDepositsValue).toBe("1250.000000")
-    expect(client.readCurrentDashboard).toHaveBeenCalledOnce()
+    expect(client.readPublishedDashboard).toHaveBeenCalledOnce()
     expect(client.recalculateSnapshotRefresh).not.toHaveBeenCalled()
   })
 

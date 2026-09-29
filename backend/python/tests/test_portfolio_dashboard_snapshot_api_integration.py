@@ -7,6 +7,7 @@ import threading
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,28 +17,306 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
+    AssetType,
+    LiabilityBalanceSource,
+    PriceSource,
+    SnapshotGranularity,
+    SnapshotSource,
+    TransactionClassification,
+    TransactionType,
 )
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
+from app.db.models.transactions import TransactionModel
+from app.db.models.users import UserModel
 from app.main import create_app
-from app.modules.portfolio_snapshot.repository import PortfolioSnapshotRepository
+from app.modules.portfolio_snapshot.reader import PreloadedPortfolioSnapshotRepository
 
 _integration_support: Any = importlib.import_module("tests.test_portfolio_snapshot_api_integration")
 SNAPSHOT_AT = _integration_support.SNAPSHOT_AT
-_cleanup = _integration_support._cleanup
+CREATED_AT = _integration_support.CREATED_AT
 _engine = _integration_support._engine
 _headers = _integration_support._headers
-_prefix = _integration_support._prefix
-_seed = _integration_support._seed
 _settings = _integration_support._settings
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 PORTFOLIO_PATH = "/api/v1/portfolio/snapshot"
 DASHBOARD_PATH = "/api/v1/dashboard/snapshot"
+
+
+def _prefix(label: str) -> str:
+    return f"5lf-{uuid4().hex}-{label}"
+
+
+async def _cleanup(prefix: str) -> None:
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            account_ids = select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
+            await session.execute(
+                delete(TransactionModel).where(TransactionModel.account_id.in_(account_ids))
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
+    await _integration_support._cleanup(prefix)
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            await session.execute(
+                delete(SnapshotGenerationModel).where(
+                    SnapshotGenerationModel.id.startswith(f"{prefix}-")
+                )
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _seed(
+    prefix: str,
+    *,
+    role: AccountMemberRole = AccountMemberRole.owner,
+    account_type: AccountType = AccountType.broker,
+    archived: bool = False,
+    empty: bool = False,
+) -> tuple[str, str, str]:
+    user_id = f"{prefix}-user"
+    account_id = f"{prefix}-account"
+    snapshot_id = f"{prefix}-snapshot"
+    generation_id = f"{prefix}-generation"
+    liability = account_type in {AccountType.loan, AccountType.mortgage}
+    credit_card = account_type is AccountType.credit_card
+    with_items = not (liability or credit_card or empty)
+    investment = Decimal("100.000000") if with_items else Decimal("0.000000")
+    cost_basis = Decimal("80.000000") if with_items else Decimal("0.000000")
+    cash = (
+        Decimal("-25.000000")
+        if credit_card
+        else (Decimal("0.000000") if liability else Decimal("10.000000"))
+    )
+    liabilities = Decimal("25.000000") if liability else Decimal("0.000000")
+    evidence_id = f"{prefix}-balance" if liability else None
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            session.add(
+                UserModel(
+                    id=user_id,
+                    email=f"{user_id}@example.com",
+                    name=user_id,
+                    password_hash=None,
+                    base_currency="CZK",
+                    created_at=SNAPSHOT_AT,
+                    updated_at=SNAPSHOT_AT,
+                )
+            )
+            session.add(
+                AccountModel(
+                    id=account_id,
+                    name=f"{prefix} account",
+                    type=account_type,
+                    currency="EUR",
+                    color=None,
+                    notes=None,
+                    is_archived=archived,
+                    archived_at=CREATED_AT if archived else None,
+                    created_at=SNAPSHOT_AT,
+                    updated_at=SNAPSHOT_AT,
+                )
+            )
+            await session.flush()
+            session.add(
+                AccountMemberModel(
+                    id=f"{prefix}-member",
+                    account_id=account_id,
+                    user_id=user_id,
+                    role=role,
+                    relation_type=AccountRelationType.owner,
+                    invited_by_id=None,
+                    accepted_at=SNAPSHOT_AT,
+                    created_at=SNAPSHOT_AT,
+                    updated_at=SNAPSHOT_AT,
+                )
+            )
+            session.add(
+                SnapshotGenerationModel(
+                    id=generation_id,
+                    state="published",
+                    created_at=CREATED_AT,
+                    published_at=CREATED_AT,
+                )
+            )
+            await session.flush()
+            session.add(
+                SnapshotGenerationTargetModel(
+                    generation_id=generation_id,
+                    user_id=user_id,
+                    created_at=CREATED_AT,
+                    staged_by_job_id=None,
+                    staged_lease_version=None,
+                    staged_lease_owner=None,
+                )
+            )
+            if credit_card:
+                session.add(
+                    TransactionModel(
+                        id=f"{prefix}-purchase",
+                        account_id=account_id,
+                        date=SNAPSHOT_AT,
+                        booking_date=SNAPSHOT_AT,
+                        amount=Decimal("-25.000000"),
+                        currency="EUR",
+                        type=TransactionType.expense,
+                        classification=TransactionClassification.real_expense,
+                        description="card purchase",
+                        created_at=CREATED_AT,
+                        updated_at=CREATED_AT,
+                    )
+                )
+            elif liability:
+                session.add(
+                    LiabilityBalanceModel(
+                        id=evidence_id,
+                        account_id=account_id,
+                        effective_at=SNAPSHOT_AT,
+                        currency="EUR",
+                        outstanding_principal=Decimal("25.000000"),
+                        accrued_interest=Decimal("0.000000"),
+                        fees_outstanding=Decimal("0.000000"),
+                        total_outstanding=Decimal("25.000000"),
+                        source=LiabilityBalanceSource.manual,
+                        external_id=None,
+                        created_at=CREATED_AT,
+                    )
+                )
+            await session.flush()
+            canonical_state = await session.get(AccountCanonicalStateModel, account_id)
+            assert canonical_state is not None
+            canonical_revision = canonical_state.last_revision
+            if with_items:
+                canonical_state.holding_revision = canonical_state.last_investment_revision
+            session.add(
+                AccountSnapshotModel(
+                    id=snapshot_id,
+                    account_id=account_id,
+                    generation_id=generation_id,
+                    timestamp=SNAPSHOT_AT,
+                    granularity=SnapshotGranularity.day,
+                    source=SnapshotSource.manual_recalculation,
+                    currency="EUR",
+                    cash_value=cash,
+                    investment_value=investment,
+                    investment_cost_basis=cost_basis,
+                    liabilities_value=liabilities,
+                    total_value=cash + investment - liabilities,
+                    is_recalculated=True,
+                    calculated_at=CREATED_AT,
+                    calculation_version=1,
+                    created_at=CREATED_AT,
+                    net_deposits_value=Decimal("0.000000"),
+                    realized_pnl_value=Decimal("0.000000"),
+                    unrealized_pnl_value=investment - cost_basis,
+                    fees_value=Decimal("0.000000"),
+                    taxes_value=Decimal("0.000000"),
+                    cash_value_by_currency={"EUR": format(cash, ".6f")},
+                    investment_value_by_currency=None,
+                    investment_cost_basis_by_currency=None,
+                    net_deposits_by_currency={},
+                    realized_pnl_by_currency=None,
+                    unrealized_pnl_by_currency=None,
+                    fees_by_currency=None,
+                    taxes_by_currency=None,
+                    exchange_rates=None,
+                )
+            )
+            await session.flush()
+            session.add(
+                AccountSnapshotCanonicalBoundaryModel(
+                    snapshot_id=snapshot_id,
+                    account_id=account_id,
+                    canonical_revision=canonical_revision,
+                    investment_revision=0 if with_items else None,
+                    holding_revision=0 if with_items else None,
+                    selected_liability_balance_id=evidence_id,
+                    created_at=CREATED_AT,
+                )
+            )
+            if with_items:
+                for suffix, symbol, native_currency, value, cost, allocation in (
+                    ("a", "AAA", "USD", "60.000000", "50.0000000000", "60.0000"),
+                    ("b", "BBB", "GBP", "40.000000", "30.0000000000", "40.0000"),
+                ):
+                    asset = AssetModel(
+                        id=f"{prefix}-asset-{suffix}",
+                        symbol=symbol,
+                        isin=None,
+                        name=f"{symbol} asset",
+                        asset_type=AssetType.stock,
+                        currency=native_currency,
+                        created_at=SNAPSHOT_AT,
+                        updated_at=SNAPSHOT_AT,
+                    )
+                    listing = AssetListingModel(
+                        id=f"{prefix}-listing-{suffix}",
+                        asset_id=asset.id,
+                        symbol=symbol,
+                        exchange=None,
+                        mic=None,
+                        currency=native_currency,
+                        country=None,
+                        provider=PriceSource.manual,
+                        provider_symbol=None,
+                        is_primary=True,
+                        created_at=SNAPSHOT_AT,
+                        updated_at=SNAPSHOT_AT,
+                    )
+                    session.add(asset)
+                    await session.flush()
+                    session.add(listing)
+                    await session.flush()
+                    session.add(
+                        AccountSnapshotItemModel(
+                            id=f"{prefix}-item-{suffix}",
+                            snapshot_id=snapshot_id,
+                            asset_id=asset.id,
+                            listing_id=listing.id,
+                            symbol=symbol,
+                            quantity=Decimal("2.0000000000"),
+                            price_per_unit=Decimal(value) / Decimal(2),
+                            price_currency=native_currency,
+                            price_source=PriceSource.manual,
+                            price_timestamp=SNAPSHOT_AT,
+                            value=Decimal(value),
+                            cost_basis=Decimal(cost),
+                            cost_currency="EUR",
+                            allocation_pct=Decimal(allocation),
+                            created_at=CREATED_AT,
+                            native_value=Decimal(value),
+                            value_currency=native_currency,
+                            native_cost_basis=Decimal(cost),
+                            native_cost_currency=native_currency,
+                            native_cost_basis_by_currency={native_currency: cost},
+                            average_buy_price=Decimal(cost) / Decimal(2),
+                            average_buy_price_currency=native_currency,
+                        )
+                    )
+            await session.commit()
+    finally:
+        await engine.dispose()
+    return user_id, account_id, snapshot_id
 
 
 async def _add_access(
@@ -64,6 +343,57 @@ async def _add_access(
         )
         await session.commit()
     await engine.dispose()
+
+
+async def _assert_fixture_lineage(
+    user_id: str, account_id: str, snapshot_id: str, account_type: AccountType
+) -> None:
+    prefix = account_id.removesuffix("-account")
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, snapshot_id)
+            assert snapshot is not None
+            assert snapshot.generation_id == f"{prefix}-generation"
+            generation = await session.get(SnapshotGenerationModel, snapshot.generation_id)
+            assert generation is not None and generation.state == "published"
+            target = await session.get(
+                SnapshotGenerationTargetModel, (snapshot.generation_id, user_id)
+            )
+            assert target is not None
+            state = await session.get(AccountCanonicalStateModel, account_id)
+            boundary = await session.get(AccountSnapshotCanonicalBoundaryModel, snapshot_id)
+            assert state is not None and boundary is not None
+            assert boundary.account_id == account_id
+            assert boundary.canonical_revision == state.last_revision
+            transactions = tuple(
+                await session.scalars(
+                    select(TransactionModel).where(TransactionModel.account_id == account_id)
+                )
+            )
+            balances = tuple(
+                await session.scalars(
+                    select(LiabilityBalanceModel).where(
+                        LiabilityBalanceModel.account_id == account_id
+                    )
+                )
+            )
+            if account_type is AccountType.credit_card:
+                assert len(transactions) == 1 and transactions[0].amount == Decimal("-25")
+                assert not balances and boundary.selected_liability_balance_id is None
+                assert snapshot.cash_value == Decimal("-25")
+                assert snapshot.liabilities_value == 0
+            elif account_type in {AccountType.loan, AccountType.mortgage}:
+                assert not transactions and len(balances) == 1
+                assert balances[0].total_outstanding == Decimal("25")
+                assert boundary.selected_liability_balance_id == balances[0].id
+                assert snapshot.cash_value == 0
+                assert snapshot.liabilities_value == Decimal("25")
+            else:
+                assert not transactions and not balances
+                assert boundary.selected_liability_balance_id is None
+    finally:
+        await engine.dispose()
 
 
 async def _seed_pair(
@@ -113,6 +443,10 @@ async def _set_single_position(
                 allocation_pct=Decimal("100.0000"),
                 native_value=quantity_value,
                 native_cost_basis=quantity_cost,
+                native_cost_basis_by_currency={
+                    "USD" if item_suffix == "a" else "GBP": format(quantity_cost, ".10f")
+                },
+                average_buy_price=quantity_cost,
             )
         )
         await session.execute(
@@ -258,6 +592,34 @@ async def test_two_investments_and_investment_liability_portfolios() -> None:
         assert mixed.status_code == 200
         assert mixed.json()["summary"]["liabilitiesValue"] == "25.000000"
         assert mixed.json()["accounts"][1]["positions"] == []
+    finally:
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.broker, AccountType.loan, AccountType.credit_card],
+)
+async def test_fixture_has_published_canonical_and_account_evidence(
+    account_type: AccountType,
+) -> None:
+    prefix = _prefix(f"5lf-lineage-{account_type.value}")
+    await _cleanup(prefix)
+    try:
+        user_id, account_id, snapshot_id = await _seed(prefix, account_type=account_type)
+        await _assert_fixture_lineage(user_id, account_id, snapshot_id, account_type)
+
+        response = _call(PORTFOLIO_PATH, user_id, _body((account_id,)))
+
+        assert response.status_code == 200
+        assert response.json()["accounts"][0]["snapshotId"] == snapshot_id
+        if account_type is AccountType.credit_card:
+            assert response.json()["summary"]["cashValue"] == "-25.000000"
+            assert response.json()["summary"]["liabilitiesValue"] == "0.000000"
+        elif account_type is AccountType.loan:
+            assert response.json()["summary"]["cashValue"] == "0.000000"
+            assert response.json()["summary"]["liabilitiesValue"] == "25.000000"
     finally:
         await _cleanup(prefix)
 
@@ -594,17 +956,18 @@ async def test_duplicate_repository_candidates_return_generic_409(
 ) -> None:
     prefix = _prefix("5lf-duplicate-candidate")
     await _cleanup(prefix)
-    original = PortfolioSnapshotRepository.load_exact_snapshots
+    original = PreloadedPortfolioSnapshotRepository.load_exact_snapshots
 
     async def duplicated(
-        repository: PortfolioSnapshotRepository,
+        repository: PreloadedPortfolioSnapshotRepository,
         **kwargs: Any,
     ) -> tuple[AccountSnapshotModel, ...]:
         rows = await original(repository, **kwargs)
+        assert len(rows) == 1
         return rows + rows
 
     monkeypatch.setattr(
-        PortfolioSnapshotRepository,
+        PreloadedPortfolioSnapshotRepository,
         "load_exact_snapshots",
         duplicated,
     )
@@ -645,7 +1008,15 @@ async def test_all_financial_queries_share_one_repeatable_read_transaction_witho
         coherent_transaction = sql[isolation_index][1]
         financial = sql[isolation_index:]
         assert all(transaction == coherent_transaction for _, transaction in financial)
-        assert sum('"accountmember"' in statement for statement in normalized) == 2
+        assert sum('"accountmember"' in statement for statement in normalized) == 1
+        for table in (
+            '"account"',
+            '"accountsnapshot"',
+            '"accountsnapshotitem"',
+            '"assetlisting"',
+            '"asset"',
+        ):
+            assert any(table in statement for statement in normalized[isolation_index:])
         assert all(
             not statement.lstrip().startswith(("insert ", "update ", "delete "))
             for statement, _ in financial

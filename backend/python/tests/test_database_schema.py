@@ -16,7 +16,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 BASELINE_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 CHECKSUM_PATH = BACKEND_ROOT / "database" / "baseline" / "schema.sha256"
-CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "3p0001rbfoundation" / "schema.sql"
+CURRENT_SCHEMA_PATH = BACKEND_ROOT / "database" / "revisions" / "410001serieslinks" / "schema.sql"
 SCHEMA_REGISTRY_PATH = BACKEND_ROOT / "database" / "schema_revisions.toml"
 BASELINE_TABLE_PATTERN = re.compile(r'CREATE TABLE "public"\."([^"]+)"')
 BASELINE_ENUM_PATTERN = re.compile(r'CREATE TYPE "public"\."([^"]+)" AS ENUM')
@@ -67,6 +67,8 @@ def test_current_schema_matches_ownership_manifest() -> None:
 
     assert current_tables == set(manifest_tables)
     assert current_enums == set(manifest_enums)
+    assert len(current_tables) == 61
+    assert len(current_enums) == 31
     assert "_prisma_migrations" not in current_tables
     assert "alembic_version" not in current_tables
 
@@ -74,7 +76,7 @@ def test_current_schema_matches_ownership_manifest() -> None:
 def test_all_objects_are_alembic_owned_after_cutover() -> None:
     manifest = load_manifest()
 
-    assert manifest["schema_version"] == 17
+    assert manifest["schema_version"] == 25
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["target_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
@@ -93,8 +95,8 @@ def test_all_objects_are_alembic_owned_after_cutover() -> None:
         "state": "sole_migration_owner",
         "baseline_revision": "3d0001base",
         "cutover_revision": "3e0001cutover",
-        "head_revision": "3p0001rbfoundation",
-        "revision_count": 13,
+        "head_revision": "410001serieslinks",
+        "revision_count": 26,
         "head_count": 1,
     }
     assert manifest["prisma_runtime"] == {
@@ -156,6 +158,16 @@ def test_schema_revision_registry_preserves_inherited_baseline_and_head_snapshot
     assert registry["revisions"]["3n0001emptyhold"]["schema_change"] is True
     assert registry["revisions"]["3o0001unkbasis"]["schema_change"] is True
     assert registry["revisions"]["3p0001rbfoundation"]["schema_change"] is True
+    assert registry["revisions"]["3q0001historygen"]["schema_change"] is True
+    assert registry["revisions"]["3r0001historycleanup"]["schema_change"] is True
+    assert registry["revisions"]["3o0001creditlimit"]["schema_change"] is True
+    assert registry["revisions"]["3s0001manualbaseline"]["schema_change"] is True
+    assert registry["revisions"]["3t0001readmodelversion"]["schema_change"] is True
+    assert registry["revisions"]["3u0001snapshotgeneration"]["schema_change"] is True
+    assert registry["revisions"]["3v0001portfoliosnapshot"]["schema_change"] is True
+    assert registry["revisions"]["3w0001marketbaseline"]["schema_change"] is True
+    assert registry["revisions"]["400001anycoinvaluation"]["schema_change"] is True
+    assert registry["revisions"]["410001serieslinks"]["schema_change"] is True
 
 
 def test_normalize_database_url_removes_prisma_schema_parameter() -> None:

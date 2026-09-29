@@ -1,5 +1,6 @@
 """Authenticated current portfolio and dashboard HTTP adapters."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -22,6 +23,7 @@ from app.modules.current_value.service import (
 from app.modules.dashboard_snapshot.projection import build_dashboard_snapshot_view
 
 router = APIRouter(tags=["current-value"])
+_STALE_AFTER = timedelta(minutes=30)
 
 
 def get_current_value_clock() -> Clock:
@@ -46,6 +48,8 @@ def build_current_portfolio_response(
         history_anchor_snapshot_id=result.baseline_net_worth_snapshot_id,
         currency=result.portfolio.currency,
         calculation_version=result.portfolio.calculation_version,
+        valuation_timestamp=result.as_of,
+        is_stale=datetime.now(UTC).replace(tzinfo=None) - result.as_of > _STALE_AFTER,
         summary=result.portfolio.summary,
         accounts=tuple(
             {
@@ -88,6 +92,8 @@ def build_current_dashboard_response(
         history_anchor_snapshot_id=result.baseline_net_worth_snapshot_id,
         currency=dashboard.currency,
         calculation_version=dashboard.calculation_version,
+        valuation_timestamp=result.as_of,
+        is_stale=datetime.now(UTC).replace(tzinfo=None) - result.as_of > _STALE_AFTER,
         summary=dashboard.summary,
         accounts=tuple(
             {
@@ -117,13 +123,14 @@ def build_current_dashboard_response(
     "/portfolio/current",
     response_model=CurrentPortfolioResponse,
     response_model_by_alias=True,
+    deprecated=True,
 )
 async def read_current_portfolio(
     principal: CurrentPrincipal,
     service: Annotated[CurrentValueService, Depends(get_current_value_service)],
 ) -> CurrentPortfolioResponse:
     return build_current_portfolio_response(
-        await service.read_portfolio(ReadCurrentPortfolioCommand(principal=principal))
+        await service.read_investment_portfolio(ReadCurrentPortfolioCommand(principal=principal))
     )
 
 
@@ -131,6 +138,7 @@ async def read_current_portfolio(
     "/dashboard/current",
     response_model=CurrentDashboardResponse,
     response_model_by_alias=True,
+    deprecated=True,
 )
 async def read_current_dashboard(
     principal: CurrentPrincipal,

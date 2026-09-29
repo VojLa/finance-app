@@ -137,6 +137,26 @@ PostingIntent = TransactionPostingIntent | InvestmentEventPostingIntent | NeedsR
 
 _TRANSACTION_SOURCES: Final = frozenset({ImportSource.raiffeisenbank, ImportSource.manual})
 _INVESTMENT_SOURCES: Final = frozenset({ImportSource.trading212, ImportSource.anycoin})
+_TRADING_CARD_TRANSACTION_RULES: Final[
+    Mapping[str, tuple[int, TransactionType, TransactionClassification]]
+] = MappingProxyType(
+    {
+        # Trading Card spending is operational activity even where its
+        # provider export appears alongside broker activity.  It must
+        # therefore never acquire the investment-transfer classification
+        # that feeds the investment branch of a mixed account.
+        "card_withdrawal": (
+            -1,
+            TransactionType.expense,
+            TransactionClassification.real_expense,
+        ),
+        "card_cashback": (
+            1,
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+    }
+)
 
 _TRANSACTION_TYPE_RULES: Final[Mapping[str, tuple[TransactionType, TransactionClassification]]] = (
     MappingProxyType(
@@ -621,6 +641,34 @@ def _classify_investment(
     )
 
 
+def _classify_trading_card_transaction(
+    normalized_data: Mapping[str, object],
+) -> PostingIntent:
+    """Accept only Trading Card cash movements explicitly normalized by this importer."""
+    financial_fields = _validated_financial_fields(normalized_data)
+    if isinstance(financial_fields, NeedsReviewPostingIntent):
+        return financial_fields
+    normalized_date, amount, currency = financial_fields
+    action = normalized_data.get("action")
+    rule = _TRADING_CARD_TRANSACTION_RULES.get(action) if isinstance(action, str) else None
+    if rule is None or amount.is_zero() or (1 if amount > 0 else -1) != rule[0]:
+        return _review(
+            _issue(
+                "action",
+                PostingIntentIssueCode.invalid_investment_payload,
+                "Trading212 transaction data is not an explicit Trading Card cash movement.",
+            )
+        )
+    return TransactionPostingIntent(
+        source=ImportSource.trading212,
+        date=normalized_date,
+        amount=amount,
+        currency=currency,
+        transaction_type=rule[1],
+        transaction_classification=rule[2],
+    )
+
+
 def classify_import_row(
     *,
     source: ImportSource,
@@ -655,7 +703,11 @@ def classify_import_row(
 
     if schema_version == 2:
         if source in {ImportSource.trading212, ImportSource.anycoin}:
-            if normalized_data.get("kind") != "investment_event":
+            if normalized_data.get("kind") == "investment_event":
+                return _classify_investment(source=source, normalized_data=normalized_data)
+            if source is ImportSource.trading212 and normalized_data.get("kind") == "transaction":
+                return _classify_trading_card_transaction(normalized_data)
+            else:
                 return _review(
                     _issue(
                         "normalized_data",
@@ -663,7 +715,6 @@ def classify_import_row(
                         "Normalized data is not postable.",
                     )
                 )
-            return _classify_investment(source=source, normalized_data=normalized_data)
         return _review(
             _issue(
                 "schema_version",

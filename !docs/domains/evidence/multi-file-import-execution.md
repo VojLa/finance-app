@@ -1,5 +1,11 @@
 ## Multi-file logical import execution
 
+Type: historical
+Status: historical
+Owns: milestone evidence for multi-file import execution
+Code: import and job implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-A introduces an application-level logical execution without introducing a
 new physical entity. The persisted model remains:
 

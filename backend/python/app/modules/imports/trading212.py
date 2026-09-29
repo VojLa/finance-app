@@ -44,7 +44,6 @@ _ACTION = {
     "savings interest": "interest",
     "earn interest": "interest",
     "lending interest": "interest",
-    "spending cashback": "interest",
     "deposit": "cash_deposit",
     "fiat deposit": "cash_deposit",
     "crypto deposit": "cash_deposit",
@@ -94,7 +93,11 @@ _PROMOTIONAL = frozenset(
         "promotion shares",
     }
 )
-_LINKED_CASH = frozenset({"card debit", "card cost", "new card cost"})
+_TRADING_CARD_TRANSACTIONS = {
+    "card debit": "card_withdrawal",
+    "new card cost": "card_withdrawal",
+    "spending cashback": "card_cashback",
+}
 _FEE_FIELDS = (
     ("Currency conversion fee", "Currency (Currency conversion fee)"),
     ("Stamp duty reserve tax", "Currency (Stamp duty reserve tax)"),
@@ -234,7 +237,7 @@ def _deduplication_key(account_id: str, data: dict[str, Any]) -> str:
     identity: dict[str, Any] = {"account_id": account_id, "source": ImportSource.trading212.value}
     if external_id:
         identity["external_id"] = external_id
-    else:
+    elif data["kind"] == "investment_event":
         asset = data["asset"]
         identity.update(
             {
@@ -246,6 +249,22 @@ def _deduplication_key(account_id: str, data: dict[str, Any]) -> str:
                 "conversion": data["conversion"],
             }
         )
+    elif data["kind"] == "transaction":
+        identity.update(
+            {
+                "date": data["date"],
+                "action": data["action"],
+                "amount": data["amount"],
+                "currency": data["currency"],
+                "transaction_type": "transfer",
+                "transaction_classification": "investment_transfer",
+                "description": data["description"],
+                "counterparty": data["counterparty"],
+                "raw_action": data["raw_action"],
+            }
+        )
+    else:  # pragma: no cover - caller constructs only canonical kinds
+        raise ValueError("Unsupported Trading212 canonical kind.")
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -258,16 +277,9 @@ def normalize_trading212_import_row(
     raw_action = _optional(raw_data, errors, "raw_action", "Action")
     action_token = _key(raw_action) if raw_action else None
     promotional = action_token in _PROMOTIONAL
-    if action_token in _LINKED_CASH:
-        errors.append(
-            {
-                "field": "action",
-                "code": "unsupported_linked_cash_transaction",
-                "message": "Linked cash card transactions require review.",
-            }
-        )
+    card_action = _TRADING_CARD_TRANSACTIONS.get(action_token or "")
     action = "airdrop" if promotional else _ACTION.get(action_token or "")
-    if action is None:
+    if action is None and card_action is None:
         errors.append(
             {
                 "field": "action",
@@ -354,10 +366,34 @@ def normalize_trading212_import_row(
         raw_data, errors, "note", "Notes", "Note", "Category", "Merchant category", "Card category"
     )
 
-    _validate_action(action, asset, quantity, price, total, conversion, errors)
+    _validate_action(action or card_action, asset, quantity, price, total, conversion, errors)
     if errors:
         return NormalizedImportRow(data=None, deduplication_key=None, validation_errors=errors)
-    assert normalized_date is not None and action is not None
+    assert normalized_date is not None
+    if card_action is not None:
+        assert total is not None
+        amount = Decimal(total["amount"])
+        if card_action == "card_withdrawal":
+            amount = -amount
+        card_data = {
+            "schema_version": 2,
+            "source": ImportSource.trading212.value,
+            "kind": "transaction",
+            "date": normalized_date,
+            "action": card_action,
+            "amount": format(amount.normalize(), "f"),
+            "currency": total["currency"],
+            "external_id": external_id,
+            "raw_action": raw_action,
+            "description": name or note,
+            "counterparty": name,
+        }
+        return NormalizedImportRow(
+            data=card_data,
+            deduplication_key=_deduplication_key(account_id, card_data),
+            validation_errors=None,
+        )
+    assert action is not None
     data: dict[str, Any] = {
         "schema_version": 2,
         "source": ImportSource.trading212.value,
@@ -557,7 +593,14 @@ def _validate_action(
     elif action == "dividend":
         asset_required()
         total_required()
-    elif action in {"interest", "cash_deposit", "cash_withdrawal", "fee"}:
+    elif action in {
+        "interest",
+        "cash_deposit",
+        "cash_withdrawal",
+        "fee",
+        "card_withdrawal",
+        "card_cashback",
+    }:
         total_required()
     elif action in {"asset_transfer", "staking_reward", "airdrop"}:
         asset_required()

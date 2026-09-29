@@ -13,12 +13,15 @@ async function source(file: string): Promise<string> {
 }
 
 describe("R10-C dashboard deposited presentation", () => {
-  it("wires the visible global card to primary summary finance and base currency", async () => {
+  it("wires the visible global cards to primary summary finance and base currency", async () => {
     const summary = await source("src/modules/dashboard/SnapshotSummaryCards.tsx")
 
-    expect(summary).toContain('["Čisté vklady", model.summary.netDepositsValue]')
+    expect(summary).toContain('["Investice", model.summary.investmentValue]')
+    expect(summary).toContain('["Hotovost", model.summary.cashValue]')
+    expect(summary).toContain('["Závazky", model.summary.liabilitiesValue]')
+    expect(summary).not.toContain("netDepositsValue")
     expect(summary).toContain("formatSnapshotAmount(value, model.currency)")
-    expect(formatSnapshotAmount("123456.789012", "CZK")).toContain("123 456,789012")
+    expect(formatSnapshotAmount("123456.789012", "CZK")).toContain("123 456,79")
   })
 
   it("wires every visible account card to presentation finance and account currency", async () => {
@@ -28,12 +31,12 @@ describe("R10-C dashboard deposited presentation", () => {
     expect(accounts).toContain(
       "formatSnapshotAmount(account.netDepositsValue, account.accountCurrency)"
     )
-    expect(formatSnapshotAmount("1250.000000", "USD")).toContain("1 250,000000")
+    expect(formatSnapshotAmount("1250.000000", "USD")).toContain("1 250,00")
   })
 
   it("keeps negative net withdrawals and exact zero presentable", () => {
-    expect(formatSnapshotAmount("-50.000000", "USD")).toContain("-50,000000")
-    expect(formatSnapshotAmount("0.000000", "CZK")).toContain("0,000000")
+    expect(formatSnapshotAmount("-50.000000", "USD")).toContain("-50,00")
+    expect(formatSnapshotAmount("0.000000", "CZK")).toContain("0,00")
   })
 
   it("keeps global and account values as distinct immutable server references", () => {

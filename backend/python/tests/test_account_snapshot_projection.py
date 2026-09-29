@@ -327,6 +327,52 @@ def test_foreign_price_and_cost_currencies_use_only_direct_rates() -> None:
     ]
 
 
+def test_provider_price_quote_can_differ_from_preserved_cost_currency() -> None:
+    result = _one_holding(
+        holding=_holding(
+            cost_currency="EUR",
+            average_buy_price=Decimal("80"),
+            cost_basis_by_currency=(CurrencyAmount("EUR", Decimal("160")),),
+        ),
+        price=_price(currency="USD", price=Decimal("100")),
+        exchange_rates=(
+            _rate("EUR", value=Decimal("25")),
+            _rate("USD", value=Decimal("23")),
+        ),
+    )
+
+    item = result.items[0]
+    assert (item.price_currency, item.native_value, item.value) == (
+        "USD",
+        Decimal("200"),
+        Decimal("4600"),
+    )
+    assert (
+        item.average_buy_price,
+        item.average_buy_price_currency,
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.cost_basis,
+    ) == (Decimal("80"), "EUR", Decimal("160"), "EUR", Decimal("4000"))
+    assert [(rate.base_currency, rate.quote_currency) for rate in result.exchange_rates] == [
+        ("EUR", "CZK"),
+        ("USD", "CZK"),
+    ]
+
+
+def test_provider_price_quote_fails_closed_without_its_direct_output_rate() -> None:
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        _one_holding(
+            holding=_holding(cost_currency="EUR"),
+            price=_price(currency="USD"),
+            exchange_rates=(
+                _rate("CZK", quote="USD", value=Decimal("0.04")),
+                _rate("USD", quote="EUR", value=Decimal("0.92")),
+                _rate("EUR", value=Decimal("25")),
+            ),
+        )
+
+
 def test_multiple_holdings_are_listing_sorted_and_allocated_on_zero_to_one_hundred_scale() -> None:
     first = _holding(listing_id="listing-b", holding_id="holding-b")
     first_price = _price(listing_id="listing-b", price_id="price-b", price=Decimal("300"))
@@ -358,6 +404,40 @@ def test_multiple_holdings_are_listing_sorted_and_allocated_on_zero_to_one_hundr
         Decimal("75"),
     ]
     assert sum((item.allocation_pct for item in result.items), Decimal(0)) == Decimal(100)
+
+
+def test_repeating_allocations_distribute_rounding_remainder_deterministically() -> None:
+    holdings = tuple(
+        _holding(
+            holding_id=f"holding-{index}",
+            asset_id=f"asset-{index}",
+            listing_id=f"listing-{index}",
+            symbol=f"ETF{index}",
+            quantity=Decimal("1"),
+        )
+        for index in range(3)
+    )
+    prices = tuple(
+        _price(
+            price_id=f"price-{index}",
+            asset_id=f"asset-{index}",
+            listing_id=f"listing-{index}",
+            symbol=f"ETF{index}",
+            price=Decimal("1"),
+        )
+        for index in range(3)
+    )
+
+    result = build_account_snapshot_projection(
+        _input(holdings=holdings, prices=prices, exchange_rates=(_rate("EUR"),))
+    )
+
+    assert [item.allocation_pct for item in result.items] == [
+        Decimal("33.3334"),
+        Decimal("33.3333"),
+        Decimal("33.3333"),
+    ]
+    assert sum((item.allocation_pct for item in result.items), Decimal(0)) == Decimal("100.0000")
 
 
 def test_same_asset_on_distinct_listings_remains_two_snapshot_items() -> None:
@@ -980,7 +1060,7 @@ def test_liability_currency_must_equal_persisted_account_currency() -> None:
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 def test_liability_accounts_accept_explicit_zero_observation(
     account_type: AccountType,
@@ -997,6 +1077,19 @@ def test_liability_accounts_accept_explicit_zero_observation(
         CurrencyAmount(currency="CZK", amount=Decimal(0)),
     )
     assert result.items == ()
+
+
+def test_credit_card_preserves_a_signed_transaction_balance() -> None:
+    result = build_account_snapshot_projection(
+        _input(
+            account_type=AccountType.credit_card,
+            cash_balances=(_cash(amount=Decimal("-2500.000000")),),
+        )
+    )
+
+    assert result.cash_value == Decimal("-2500.000000")
+    assert result.liabilities_value == Decimal(0)
+    assert result.total_value == Decimal("-2500.000000")
 
 
 def test_liability_maximum_money_boundary_negates_exactly() -> None:
@@ -1164,7 +1257,7 @@ def test_multiplication_conversion_and_aggregate_overflow_fail_without_partial_o
         build_account_snapshot_projection(evidence)
 
 
-def test_nonrepresentable_allocation_fails_without_rounding_or_remainder_adjustment() -> None:
+def test_repeating_allocation_uses_exact_deterministic_remainder_adjustment() -> None:
     holdings = (
         _holding(listing_id="a", holding_id="a", quantity=Decimal("1")),
         _holding(
@@ -1185,14 +1278,19 @@ def test_nonrepresentable_allocation_fails_without_rounding_or_remainder_adjustm
             price=Decimal("2"),
         ),
     )
-    with pytest.raises(AccountSnapshotProjectionStateError):
-        build_account_snapshot_projection(
-            _input(
-                holdings=holdings,
-                prices=prices,
-                exchange_rates=(_rate("EUR"),),
-            )
+    result = build_account_snapshot_projection(
+        _input(
+            holdings=holdings,
+            prices=prices,
+            exchange_rates=(_rate("EUR"),),
         )
+    )
+
+    assert [item.allocation_pct for item in result.items] == [
+        Decimal("33.3333"),
+        Decimal("66.6667"),
+    ]
+    assert sum((item.allocation_pct for item in result.items), Decimal(0)) == Decimal("100.0000")
 
 
 def test_deferred_physical_fields_are_not_silently_zeroed_or_exposed() -> None:

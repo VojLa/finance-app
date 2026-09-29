@@ -9,6 +9,7 @@ import type { SnapshotPortfolioHistoryPoint } from "@/modules/portfolio/snapshot
 const POINTS: readonly SnapshotPortfolioHistoryPoint[] = [
   {
     timestamp: "2036-01-01T00:00:00.000",
+    resolutionMinutes: 1440,
     cashValue: "10.000000",
     investmentValue: "0.000000",
     liabilitiesValue: "5.000000",
@@ -16,6 +17,7 @@ const POINTS: readonly SnapshotPortfolioHistoryPoint[] = [
   },
   {
     timestamp: "2036-01-02T00:00:00.000",
+    resolutionMinutes: 720,
     cashValue: "20.000000",
     investmentValue: "123.456789",
     liabilitiesValue: "0.000000",
@@ -23,7 +25,7 @@ const POINTS: readonly SnapshotPortfolioHistoryPoint[] = [
   },
 ]
 
-describe("snapshot-backed portfolio history chart", () => {
+describe("generation portfolio history chart", () => {
   it("uses exact net worth strings and presentation labels without mutating input", () => {
     const before = JSON.stringify(POINTS)
 
@@ -32,6 +34,7 @@ describe("snapshot-backed portfolio history chart", () => {
     expect(points.map((point) => point.exactValue)).toEqual(["-50.123456", "143.456789"])
     expect(points[0]?.displayValue).toBe(-50.123456)
     expect(points[0]?.dateLabel).toMatch(/1/)
+    expect(points.map((point) => point.resolutionLabel)).toEqual(["1 d", "12 h"])
     expect(JSON.stringify(POINTS)).toBe(before)
   })
 
@@ -46,13 +49,13 @@ describe("snapshot-backed portfolio history chart", () => {
     expect(buildPortfolioHistoryChartPoints(POINTS.slice(0, 1), "netWorth")).toHaveLength(1)
     expect(
       buildPortfolioHistoryChartPoints(
-        Array.from({ length: 512 }, () => POINTS[0] as SnapshotPortfolioHistoryPoint),
+        Array.from({ length: 480 }, () => POINTS[0] as SnapshotPortfolioHistoryPoint),
         "investments"
       )
-    ).toHaveLength(512)
+    ).toHaveLength(480)
   })
 
-  it("keeps exact tooltip authority and one approved numeric leaf conversion", async () => {
+  it("keeps exact tooltip authority and approved chart-only numeric conversions", async () => {
     const component = await readFile(
       path.join(process.cwd(), "src/components/charts/PortfolioLineChart.tsx"),
       "utf8"
@@ -65,7 +68,7 @@ describe("snapshot-backed portfolio history chart", () => {
 
     expect(source).toContain("formatSnapshotAmount(point.exactValue, currency)")
     expect(source).toContain("new Date(`${timestamp}Z`)")
-    expect(source.match(/\bNumber\s*\(/g)).toHaveLength(1)
+    expect(source.match(/\bNumber\s*\(/g)).toHaveLength(2)
     expect(source).toContain(
       "Presentation-only conversion at the Recharts coordinate leaf boundary"
     )
@@ -78,6 +81,11 @@ describe("snapshot-backed portfolio history chart", () => {
     expect(source).not.toMatch(/netWorthValue\s*[-+]|cashValue\s*[-+]|liabilitiesValue\s*[-+]/)
     expect(component).toContain("Historický vývoj čisté hodnoty")
     expect(component).toContain("Měna historie: {currency}")
+    expect(component).toContain("Vložené prostředky")
+    expect(component).toContain('strokeDasharray="6 5"')
+    expect(component).toContain("point.netInvestedValue !== undefined")
+    expect(component).toContain("Rozlišení bodu: {point.resolutionLabel}")
+    expect(component).toContain("Preferované rozlišení:")
     expect(component).toContain("Pro zvolené období zatím nejsou dostupné žádné snapshoty.")
     expect(component).not.toMatch(/CZK|Kč|Czk/)
   })

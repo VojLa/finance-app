@@ -95,11 +95,20 @@ def _source(
     net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
 ) -> PortfolioSnapshotSource:
     liability = account_type in {
-        AccountType.credit_card,
         AccountType.loan,
         AccountType.mortgage,
     }
-    items = () if liability or empty else (_item(account_id, output_currency=output_currency),)
+    cash_only = account_type in {
+        AccountType.bank,
+        AccountType.cash,
+        AccountType.savings,
+        AccountType.credit_card,
+    }
+    items = (
+        ()
+        if liability or cash_only or empty
+        else (_item(account_id, output_currency=output_currency),)
+    )
     investment = Decimal("0.000000") if not items else Decimal("100.000000")
     cost = Decimal("0.000000") if not items else Decimal("80.000000")
     cash = (
@@ -110,7 +119,7 @@ def _source(
         else Decimal("10.000000")
     )
     liabilities = Decimal("25.000000") if liability else Decimal("0.000000")
-    structural = liability
+    structural = liability or cash_only
     deposits = (
         net_deposits_value
         if net_deposits_value is not None

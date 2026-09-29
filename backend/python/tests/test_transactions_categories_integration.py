@@ -318,6 +318,13 @@ def test_transaction_and_category_http_contract_on_postgresql() -> None:
         assert transaction.status_code == 201
         assert transaction.json()["amount"] == "-123.456789"
         transaction_id = transaction.json()["id"]
+        incompatible_category_change = client.patch(
+            f"/api/v1/categories/{category_id}",
+            headers=_headers("r11e-owner"),
+            json={"type": "income"},
+        )
+        assert incompatible_category_change.status_code == 409
+        assert incompatible_category_change.json()["error"]["code"] == "category_conflict"
         replay = client.post(
             "/api/v1/transactions",
             headers=_headers("r11e-owner"),

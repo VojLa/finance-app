@@ -40,7 +40,7 @@ TWELVE_DATA_ASSET_TYPES = frozenset(
         AssetType.other,
     }
 )
-YAHOO_FINANCE_ASSET_TYPES = TWELVE_DATA_ASSET_TYPES
+YAHOO_FINANCE_ASSET_TYPES = TWELVE_DATA_ASSET_TYPES | frozenset({AssetType.crypto})
 
 _SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,63}\Z")
 _CURRENCY = re.compile(r"[A-Z]{3}\Z")
@@ -116,6 +116,12 @@ def validate_onboard_asset_alias_command(
     ):
         raise _fail()
     if canonical_external_id(value.provider, value.external_id) != value.external_id:
+        raise _fail()
+    if (
+        value.provider is AssetAliasProvider.yahoo_finance
+        and value.expected_asset_type is AssetType.crypto
+        and value.external_id != f"{value.expected_symbol}-USD"
+    ):
         raise _fail()
     return value
 

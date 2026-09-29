@@ -170,6 +170,24 @@ def test_standalone_crypto_and_signed_fiat_directions_are_explicit() -> None:
     assert fiat_out.data["total"] == {"amount": "2", "currency": "EUR"}
 
 
+def test_distinct_overlong_transaction_ids_are_reviewed_without_heuristic_identity() -> None:
+    outcomes = _outcomes(
+        _row("first", 1, "deposit", order="", amount="2", currency="EUR", external="a" * 10_001),
+        _row("second", 2, "deposit", order="", amount="2", currency="EUR", external="b" * 10_001),
+    )
+
+    assert [outcome.status for outcome in outcomes] == [
+        ImportRowStatus.needs_review,
+        ImportRowStatus.needs_review,
+    ]
+    assert all(outcome.data is None for outcome in outcomes)
+    assert all(outcome.deduplication_key is None for outcome in outcomes)
+    assert all(
+        outcome.validation_errors and outcome.validation_errors[0]["code"] == "invalid_anycoin_row"
+        for outcome in outcomes
+    )
+
+
 def test_non_btc_crypto_does_not_receive_a_guessed_display_name() -> None:
     transfer = _outcomes(_row("eth", 1, "deposit", order="", amount="2", currency="ETH"))[0]
     assert transfer.data is not None

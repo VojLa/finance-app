@@ -168,7 +168,7 @@ async def test_usd_base_uses_yahoo_canonical_direct_symbol(
     transport = _Transport(
         _body(
             rows=f'["{rate}","{rate}"]',
-            symbol=canonical_symbol,
+            symbol=f"USD{canonical_symbol}",
             currency=to_currency,
         )
     )
@@ -191,7 +191,7 @@ async def test_usd_base_uses_yahoo_canonical_direct_symbol(
 
 
 @pytest.mark.asyncio
-async def test_usd_base_rejects_noncanonical_response_identity() -> None:
+async def test_usd_base_accepts_yahoo_explicit_response_identity() -> None:
     transport = _Transport(
         _body(
             rows='["0.92000000","0.92000000"]',
@@ -201,17 +201,21 @@ async def test_usd_base_rejects_noncanonical_response_identity() -> None:
     )
     provider = YahooFinanceExchangeRateProvider(transport)
 
-    with pytest.raises(MarketEvidenceStateError):
-        await provider.fetch(
-            ExchangeRateRequirement(
-                "USD",
-                "EUR",
-                datetime(2024, 8, 5, 12),
-                ExchangeRateSource.yahoo_finance,
-            )
+    result = await provider.fetch(
+        ExchangeRateRequirement(
+            "USD",
+            "EUR",
+            datetime(2024, 8, 5, 12),
+            ExchangeRateSource.yahoo_finance,
         )
+    )
 
     assert [call[0] for call in transport.calls] == ["EUR=X"]
+    assert (result.from_currency, result.to_currency, result.rate) == (
+        "USD",
+        "EUR",
+        Decimal("0.92000000"),
+    )
 
 
 @pytest.mark.parametrize("surface", ("portfolio", "dashboard"))
@@ -229,12 +233,12 @@ async def test_current_surfaces_share_one_direct_canonical_fx_batch_without_fall
         "EURCZK=X": _body(rows='["25.00000000","24.39000000"]'),
         "CZK=X": _body(
             rows='["22.00000000","22.50000000"]',
-            symbol="CZK=X",
+            symbol="USDCZK=X",
             currency="CZK",
         ),
         "EUR=X": _body(
             rows='["0.91000000","0.92000000"]',
-            symbol="EUR=X",
+            symbol="USDEUR=X",
             currency="EUR",
         ),
     }

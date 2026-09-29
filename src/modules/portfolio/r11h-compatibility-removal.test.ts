@@ -21,7 +21,7 @@ async function source(relativePath: string) {
 }
 
 describe("R11-H portfolio and snapshot compatibility removal", () => {
-  it("keeps only active portfolio/history/manual and two snapshot workflow routes", async () => {
+  it("keeps only active portfolio/history/manual and explicit snapshot workflow routes", async () => {
     const apiFiles = await filesBelow("src/app/api")
     const portfolioRoutes = apiFiles
       .filter((file) => /^src\/app\/api\/portfolio(?:\/.*)?\/route\.ts$/.test(file))
@@ -36,6 +36,7 @@ describe("R11-H portfolio and snapshot compatibility removal", () => {
       .sort()
     expect(workflowRoutes).toEqual([
       "src/app/api/snapshot-workflow/dashboard/route.ts",
+      "src/app/api/snapshot-workflow/portfolio/refresh/route.ts",
       "src/app/api/snapshot-workflow/portfolio/route.ts",
     ])
     expect(apiFiles).not.toContain("src/app/api/rates/route.ts")
@@ -55,6 +56,7 @@ describe("R11-H portfolio and snapshot compatibility removal", () => {
     const activeFinanceBoundary = await Promise.all(
       [
         "src/app/api/snapshot-workflow/dashboard/route.ts",
+        "src/app/api/snapshot-workflow/portfolio/refresh/route.ts",
         "src/app/api/snapshot-workflow/portfolio/route.ts",
         "src/app/api/portfolio/history/route.ts",
         "src/modules/python-api/server/snapshot-workflow.ts",

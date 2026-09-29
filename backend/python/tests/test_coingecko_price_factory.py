@@ -19,12 +19,14 @@ def _settings(**overrides: object) -> Settings:
 
 
 def test_coingecko_settings_defaults_and_safe_secret() -> None:
-    settings = _settings(coingecko_demo_api_key="demo-secret")
+    settings = _settings(coingecko_pro_api_key="pro-secret")
     assert settings.coingecko_price_base_url == ("https://api.coingecko.com/api/v3/simple/price")
+    assert settings.coingecko_history_base_url == ("https://api.coingecko.com/api/v3/coins")
     assert settings.coingecko_price_timeout_seconds == 10
     assert settings.coingecko_price_max_response_bytes == 1_048_576
     assert settings.coingecko_price_user_agent == "finance-app/0.1"
-    assert "demo-secret" not in repr(settings)
+    assert settings.coingecko_demo_api_key is None
+    assert "pro-secret" not in repr(settings)
 
 
 def test_repository_env_example_keeps_optional_coingecko_key_absent() -> None:
@@ -33,6 +35,7 @@ def test_repository_env_example_keeps_optional_coingecko_key_absent() -> None:
     settings = Settings(_env_file=env_example)
 
     assert settings.coingecko_demo_api_key is None
+    assert settings.coingecko_pro_api_key is None
 
 
 @pytest.mark.parametrize(
@@ -43,6 +46,12 @@ def test_repository_env_example_keeps_optional_coingecko_key_absent() -> None:
         {"coingecko_price_base_url": "https://example.test/price?ids=bitcoin"},
         {"coingecko_price_base_url": "https://example.test/price#fragment"},
         {"coingecko_price_base_url": "https://example.test/price path"},
+        {"coingecko_history_base_url": "http://api.coingecko.com/api/v3/coins"},
+        {"coingecko_history_base_url": "https://u:p@example.test/coins"},
+        {"coingecko_history_base_url": "https://example.test/coins?key=secret"},
+        {"coingecko_history_base_url": "https://example.test/coins#fragment"},
+        {"coingecko_history_base_url": "https://example.test/coins/"},
+        {"coingecko_history_base_url": "https://example.test/coins path"},
         {"coingecko_price_timeout_seconds": 0},
         {"coingecko_price_timeout_seconds": 121},
         {"coingecko_price_max_response_bytes": 0},
@@ -52,6 +61,15 @@ def test_repository_env_example_keeps_optional_coingecko_key_absent() -> None:
         {"coingecko_demo_api_key": ""},
         {"coingecko_demo_api_key": " unsafe"},
         {"coingecko_demo_api_key": "unsafe\r\nkey"},
+        {"coingecko_demo_api_key": "x" * 513},
+        {"coingecko_pro_api_key": ""},
+        {"coingecko_pro_api_key": " unsafe"},
+        {"coingecko_pro_api_key": "unsafe\r\nkey"},
+        {"coingecko_pro_api_key": "x" * 513},
+        {
+            "coingecko_demo_api_key": "demo-secret",
+            "coingecko_pro_api_key": "pro-secret",
+        },
     ],
 )
 def test_invalid_coingecko_settings_are_rejected(overrides: dict[str, object]) -> None:

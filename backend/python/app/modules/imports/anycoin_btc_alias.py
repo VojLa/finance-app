@@ -1,4 +1,4 @@
-"""Bounded source-owned CoinGecko alias onboarding for canonical Anycoin BTC."""
+"""Bounded source-policy-owned alias onboarding for canonical Anycoin BTC."""
 
 from __future__ import annotations
 
@@ -25,10 +25,23 @@ from app.modules.asset_aliases.models import (
     OnboardAssetAliasResult,
 )
 from app.modules.asset_aliases.service import AssetAliasWriter
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
+)
 
 _SYMBOL = "BTC"
-_EXTERNAL_ID = "bitcoin"
-_PROVIDER = AssetAliasProvider.coingecko
+
+
+def _provider_identity(
+    source_policy: MarketEvidenceSourcePolicy,
+) -> tuple[AssetAliasProvider, str]:
+    price_source = source_policy.price_source_for(AssetType.crypto)
+    if price_source is PriceSource.coingecko:
+        return AssetAliasProvider.coingecko, "bitcoin"
+    if price_source is PriceSource.yahoo_finance:
+        return AssetAliasProvider.yahoo_finance, "BTC-USD"
+    raise AssetAliasConflictError()
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +214,7 @@ def _alias_command(
     movement: _PostedAssetMovement,
     *,
     created_at: datetime,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> OnboardAssetAliasCommand | None:
     if movement.source_symbol != _SYMBOL:
         return None
@@ -223,10 +237,11 @@ def _alias_command(
     _nonblank(movement.asset_id)
     _nonblank(movement.listing_id)
     _currency(movement.listing_currency)
+    provider, external_id = _provider_identity(source_policy)
     return OnboardAssetAliasCommand(
         asset_id=movement.asset_id,
-        provider=_PROVIDER,
-        external_id=_EXTERNAL_ID,
+        provider=provider,
+        external_id=external_id,
         expected_symbol=_SYMBOL,
         expected_asset_type=AssetType.crypto,
         expected_currency=_SYMBOL,
@@ -242,10 +257,12 @@ class AnycoinBtcAliasService:
         self,
         session: AsyncSession,
         *,
+        source_policy: MarketEvidenceSourcePolicy,
         repository: _Repository | None = None,
         writer: _Writer | None = None,
     ) -> None:
         self.session = session
+        self.source_policy = validate_market_evidence_source_policy(source_policy)
         self.repository = repository or AnycoinBtcAliasRepository(session)
         self.writer = writer or AssetAliasWriter(session)
 
@@ -272,7 +289,11 @@ class AnycoinBtcAliasService:
 
         commands_by_asset: dict[str, OnboardAssetAliasCommand] = {}
         for movement in movements:
-            alias = _alias_command(movement, created_at=canonical.created_at)
+            alias = _alias_command(
+                movement,
+                created_at=canonical.created_at,
+                source_policy=self.source_policy,
+            )
             if alias is None:
                 continue
             existing = commands_by_asset.get(alias.asset_id)

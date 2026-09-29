@@ -62,7 +62,6 @@ type LiabilityActionState =
   | { status: "success"; accountId: string; message: string }
 
 const LIABILITY_ACCOUNT_TYPES = new Set<AccountPageModel["type"]>([
-  "credit_card",
   "loan",
   "mortgage",
 ])
@@ -98,11 +97,13 @@ export default function AccountsPage() {
     status: "idle",
   })
   const requestController = useRef<ReturnType<typeof createAccountRequestController> | null>(null)
+  const accountRequestId = useRef(0)
   if (requestController.current === null) {
     requestController.current = createAccountRequestController(requestAccounts)
   }
 
   const loadAccounts = useCallback(async (mode: "initial" | "reload") => {
+    const requestId = ++accountRequestId.current
     const request =
       mode === "initial"
         ? requestController.current?.initial()
@@ -113,11 +114,13 @@ export default function AccountsPage() {
     setPageState({ status: "loading" })
     try {
       const accounts = await request
+      if (requestId !== accountRequestId.current) return
       setPageState({
         status: "ready",
         accounts: accounts.map(toAccountPageModel),
       })
     } catch (error) {
+      if (requestId !== accountRequestId.current) return
       if (error instanceof AccountClientError) {
         setPageState({ status: "error", code: error.code, message: error.message })
       } else {
@@ -165,7 +168,8 @@ export default function AccountsPage() {
     setActionState({ status: "idle" })
   }
 
-  async function handleUpdate(accountId: string) {
+  async function handleUpdate(account: AccountPageModel) {
+    const accountId = account.id
     setActionState({ status: "submitting", action: "update", accountId })
     const payload: UpdateAccountRequest = {
       name: editForm.name,
@@ -403,7 +407,7 @@ export default function AccountsPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        onClick={() => void handleUpdate(account.id)}
+                        onClick={() => void handleUpdate(account)}
                         disabled={updatePending}
                         className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm disabled:opacity-50"
                       >

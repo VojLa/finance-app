@@ -16,6 +16,7 @@ export type AccountPageModel = {
   name: string
   type: PythonAccount["type"]
   currency: string
+  creditLimit: string | null
   color: string | null
   notes: string | null
   role: PythonAccount["role"]
@@ -55,6 +56,7 @@ const ACCOUNT_RESPONSE_KEYS = [
   "name",
   "type",
   "currency",
+  "credit_limit",
   "color",
   "notes",
   "is_archived",
@@ -130,11 +132,7 @@ function isIsoDateTime(value: unknown): value is string {
 }
 
 function assertExactResponseKeys(value: Record<string, unknown>): void {
-  const keys = Object.keys(value)
-  if (
-    keys.length !== ACCOUNT_RESPONSE_KEYS.length ||
-    keys.some((key) => !ACCOUNT_RESPONSE_KEY_SET.has(key))
-  ) {
+  if (Object.keys(value).some((key) => !ACCOUNT_RESPONSE_KEY_SET.has(key))) {
     throw new TypeError("Invalid Python account response.")
   }
 }
@@ -152,6 +150,11 @@ export function parsePythonAccount(value: unknown): PythonAccount {
     !isAccountType(value.type) ||
     typeof value.currency !== "string" ||
     !/^[A-Z]{3}$/.test(value.currency) ||
+    !(
+      value.credit_limit === undefined ||
+      value.credit_limit === null ||
+      typeof value.credit_limit === "string"
+    ) ||
     !isNullableString(value.color) ||
     !isNullableString(value.notes) ||
     typeof value.is_archived !== "boolean" ||
@@ -163,7 +166,7 @@ export function parsePythonAccount(value: unknown): PythonAccount {
     throw new TypeError("Invalid Python account response.")
   }
 
-  return {
+  const account: PythonAccount = {
     id: value.id,
     name: value.name,
     type: value.type,
@@ -176,6 +179,8 @@ export function parsePythonAccount(value: unknown): PythonAccount {
     created_at: value.created_at,
     updated_at: value.updated_at,
   }
+  if (value.credit_limit !== undefined) account.credit_limit = value.credit_limit
+  return account
 }
 
 export function parsePythonAccountList(value: unknown): PythonAccount[] {
@@ -198,6 +203,7 @@ export function toAccountPageModel(account: PythonAccount): AccountPageModel {
     name: account.name,
     type: account.type,
     currency: account.currency,
+    creditLimit: account.credit_limit ?? null,
     color: account.color,
     notes: account.notes,
     role: account.role,

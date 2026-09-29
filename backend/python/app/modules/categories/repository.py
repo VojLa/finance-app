@@ -1,7 +1,9 @@
-from sqlalchemy import or_, select, text
+from sqlalchemy import exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.categories import CategoryModel
+from app.db.models.enums import CategoryType, TransactionType
+from app.db.models.transactions import TransactionModel
 
 
 class CategoryRepository:
@@ -49,6 +51,32 @@ class CategoryRepository:
                 CategoryModel.is_default.is_(False),
             )
             .with_for_update()
+        )
+
+    async def has_incompatible_active_transactions(
+        self,
+        *,
+        category_id: str,
+        category_type: CategoryType,
+    ) -> bool:
+        if category_type is CategoryType.both:
+            return False
+        compatible_type = (
+            TransactionType.income
+            if category_type is CategoryType.income
+            else TransactionType.expense
+        )
+        return bool(
+            await self.session.scalar(
+                select(
+                    exists().where(
+                        TransactionModel.category_id == category_id,
+                        TransactionModel.archived_at.is_(None),
+                        TransactionModel.deleted_at.is_(None),
+                        TransactionModel.type != compatible_type,
+                    )
+                )
+            )
         )
 
     def add(self, category: CategoryModel) -> None:

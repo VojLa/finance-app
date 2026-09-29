@@ -246,6 +246,7 @@ async def _seed() -> None:
                     user_id=user_id,
                     role=role,
                     relation_type=AccountRelationType.owner,
+                    accepted_at=now,
                     created_at=now,
                     updated_at=now,
                 )

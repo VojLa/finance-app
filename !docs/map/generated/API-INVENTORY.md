@@ -5,7 +5,7 @@
 
 # API Inventory
 
-**Operations:** 57
+**Operations:** 61
 
 | Method | Path | Operation ID | Summary |
 
@@ -73,6 +73,8 @@
 
 | GET | `/api/v1/auth/me` | `get_current_user_api_v1_auth_me_get` | Get Current User |
 
+| PUT | `/api/v1/auth/me/base-currency` | `change_base_currency_api_v1_auth_me_base_currency_put` | Change Base Currency |
+
 | PUT | `/api/v1/auth/password` | `change_password_api_v1_auth_password_put` | Change Password |
 
 | POST | `/api/v1/auth/register` | `register_user_api_v1_auth_register_post` | Register User |
@@ -90,6 +92,8 @@
 | DELETE | `/api/v1/categories/{category_id}` | `delete_category_api_v1_categories__category_id__delete` | Delete Category |
 
 | POST | `/api/v1/dashboard/current` | `read_current_dashboard_api_v1_dashboard_current_post` | Read Current Dashboard |
+
+| POST | `/api/v1/dashboard/published` | `read_published_dashboard_api_v1_dashboard_published_post` | Read Published Dashboard |
 
 | POST | `/api/v1/dashboard/snapshot` | `read_dashboard_snapshot_api_v1_dashboard_snapshot_post` | Read Dashboard Snapshot |
 
@@ -113,7 +117,11 @@
 
 | GET | `/api/v1/portfolio/history` | `read_portfolio_history_api_v1_portfolio_history_get` | Read Portfolio History |
 
+| POST | `/api/v1/portfolio/published` | `read_published_portfolio_api_v1_portfolio_published_post` | Read Published Portfolio |
+
 | POST | `/api/v1/portfolio/snapshot` | `read_multi_account_portfolio_snapshot_api_v1_portfolio_snapshot_post` | Read Multi Account Portfolio Snapshot |
+
+| GET | `/api/v1/read-model-version` | `read_model_version_api_v1_read_model_version_get` | Read Model Version |
 
 | POST | `/api/v1/snapshot-refresh/recalculate` | `recalculate_user_snapshot_refresh_api_v1_snapshot_refresh_recalculate_post` | Recalculate User Snapshot Refresh |
 

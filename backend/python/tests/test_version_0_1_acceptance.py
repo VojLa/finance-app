@@ -96,7 +96,7 @@ def test_active_browser_boundaries_are_thin_python_adapters() -> None:
     assert "startImportJob" in import_handler
     assert "runPortfolioSnapshotWorkflow" in portfolio
     assert "runDashboardSnapshotWorkflow" in dashboard
-    assert "readSnapshotBackedPortfolioHistory" in history
+    assert "readGenerationPortfolioHistory" in history
     for forbidden in (
         "@/lib/prisma",
         "importCsvFilesAsync",

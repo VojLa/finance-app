@@ -263,7 +263,7 @@ async def test_stale_publication_boundary_is_retried_without_waiting_for_lease_e
 
 
 @pytest.mark.asyncio
-async def test_exhausted_retry_becomes_safe_terminal_failure(monkeypatch) -> None:
+async def test_exhausted_retry_preserves_the_actionable_terminal_cause(monkeypatch) -> None:
     factory = _SessionFactory()
     monkeypatch.setattr(
         BackgroundJobRepository,
@@ -288,7 +288,8 @@ async def test_exhausted_retry_becomes_safe_terminal_failure(monkeypatch) -> Non
     fail.assert_awaited_once()
     fail_call = fail.await_args
     assert fail_call is not None
-    assert fail_call.kwargs["error_code"] == "background_job_attempts_exhausted"
+    assert fail_call.kwargs["error_code"] == "snapshot_temporarily_unavailable"
+    assert fail_call.kwargs["error_message"] == "Snapshot evidence is temporarily unavailable."
     retry.assert_not_awaited()
 
 

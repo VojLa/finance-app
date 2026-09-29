@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -16,16 +17,20 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.main import create_app
-from app.modules.portfolio_history.api_models import PortfolioHistoryPointResponse
-from app.modules.portfolio_history.models import (
-    PortfolioHistoryPoint,
-    PortfolioHistoryRange,
-    PortfolioHistoryView,
+from app.modules.portfolio_history.api_models import PortfolioHistoryResponse
+from app.modules.portfolio_history.lattice import (
+    HistoryPublicRange,
+    HistoryResolution,
+    resolution_minutes,
 )
-from app.modules.portfolio_history.service import (
-    PortfolioHistoryUnavailableError,
-    ReadPortfolioHistoryResult,
-    SnapshotBackedPortfolioHistoryService,
+from app.modules.portfolio_snapshot.history_contracts import (
+    PortfolioHistoryReadState,
+)
+from app.modules.portfolio_snapshot.history_contracts import (
+    PortfolioSnapshotHistoryUnavailableError as GenerationPortfolioHistoryUnavailableError,
+)
+from app.modules.portfolio_snapshot.history_reader import (
+    PublishedPortfolioSnapshotHistoryReader,
 )
 
 PATH = "/api/v1/portfolio/history"
@@ -40,29 +45,62 @@ def _principal() -> AuthenticatedPrincipal:
     )
 
 
+def _preferred(history_range: HistoryPublicRange) -> int:
+    resolution = {
+        HistoryPublicRange.one_day: HistoryResolution.minutes_30,
+        HistoryPublicRange.one_week: HistoryResolution.hours_2,
+        HistoryPublicRange.one_month: HistoryResolution.hours_6,
+        HistoryPublicRange.three_months: HistoryResolution.hours_12,
+        HistoryPublicRange.six_months: HistoryResolution.day_1,
+        HistoryPublicRange.one_year: HistoryResolution.day_1,
+        HistoryPublicRange.five_years: HistoryResolution.days_4,
+        HistoryPublicRange.ten_years: HistoryResolution.days_8,
+        HistoryPublicRange.all: HistoryResolution.days_8,
+    }[history_range]
+    return resolution_minutes(resolution)
+
+
 def _result(
-    *, points: tuple[PortfolioHistoryPoint, ...] | None = None
-) -> ReadPortfolioHistoryResult:
-    history_points = (
-        (
-            PortfolioHistoryPoint(
-                timestamp=AT,
-                cash_value=Decimal("-50.000000"),
-                investment_value=Decimal("10000.000000"),
-                liabilities_value=Decimal("1000.000000"),
-                net_worth_value=Decimal("8950.000000"),
-            ),
-        )
-        if points is None
-        else points
-    )
-    return ReadPortfolioHistoryResult(
-        history=PortfolioHistoryView(
-            range=PortfolioHistoryRange.one_year,
+    *,
+    history_range: HistoryPublicRange = HistoryPublicRange.one_year,
+    state: PortfolioHistoryReadState = PortfolioHistoryReadState.ready,
+    published: bool = True,
+    actual_resolution: int | None = None,
+) -> SimpleNamespace:
+    preferred = _preferred(history_range)
+    actual = actual_resolution or preferred
+    return SimpleNamespace(
+        history=SimpleNamespace(
+            range=history_range,
+            state=state,
             currency="EUR",
-            points=history_points,
-        ),
-        selected_snapshot_ids=tuple(f"internal-{index}" for index in range(len(history_points))),
+            generation_id="generation-a" if published else None,
+            publication_version=7 if published else None,
+            covered_through=AT if published else None,
+            preferred_resolution_minutes=preferred if published else None,
+            resolutions=(actual,) if published else (),
+            coverage=(
+                SimpleNamespace(
+                    resolution_minutes=actual,
+                    start=AT - timedelta(milliseconds=1),
+                    end=AT + timedelta(milliseconds=1),
+                ),
+            )
+            if published
+            else (),
+            points=(
+                SimpleNamespace(
+                    timestamp=AT,
+                    resolution_minutes=actual,
+                    cash_value=Decimal("-50.000000"),
+                    investment_value=Decimal("10000.000000"),
+                    liabilities_value=Decimal("1000.000000"),
+                    net_worth_value=Decimal("8950.000000"),
+                ),
+            )
+            if published
+            else (),
+        )
     )
 
 
@@ -78,29 +116,50 @@ def _client(settings: Settings) -> TestClient:
     return TestClient(app)
 
 
-def test_response_model_forbids_extra_and_serializes_exact_values() -> None:
-    response = PortfolioHistoryPointResponse.model_validate(
-        _result().history.points[0],
+def test_response_model_serializes_contract_and_accepts_truthful_coarser_only() -> None:
+    response = PortfolioHistoryResponse.model_validate(_result().history, from_attributes=True)
+    assert response.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+        "range": "1Y",
+        "state": "ready",
+        "currency": "EUR",
+        "generationId": "generation-a",
+        "publicationVersion": 7,
+        "coveredThrough": "2026-08-01T00:00:00.123",
+        "preferredResolutionMinutes": 1440,
+        "resolutions": [1440],
+        "coverage": [
+            {
+                "resolutionMinutes": 1440,
+                "start": "2026-08-01T00:00:00.122",
+                "end": "2026-08-01T00:00:00.124",
+            }
+        ],
+        "points": [
+            {
+                "timestamp": "2026-08-01T00:00:00.123",
+                "resolutionMinutes": 1440,
+                "cashValue": "-50.000000",
+                "investmentValue": "10000.000000",
+                "liabilitiesValue": "1000.000000",
+                "netWorthValue": "8950.000000",
+            }
+        ],
+    }
+    coarser = PortfolioHistoryResponse.model_validate(
+        _result(
+            history_range=HistoryPublicRange.three_months,
+            actual_resolution=1440,
+        ).history,
         from_attributes=True,
     )
-    assert response.model_dump(mode="json", by_alias=True) == {
-        "timestamp": "2026-08-01T00:00:00.123",
-        "cashValue": "-50.000000",
-        "investmentValue": "10000.000000",
-        "liabilitiesValue": "1000.000000",
-        "netWorthValue": "8950.000000",
-    }
+    assert coarser.preferred_resolution_minutes == 720
+    assert coarser.resolutions == (1440,)
     with pytest.raises(ValidationError):
-        PortfolioHistoryPointResponse.model_validate(
-            {
-                "timestamp": AT,
-                "cashValue": "0.000000",
-                "investmentValue": "0.000000",
-                "liabilitiesValue": "0.000000",
-                "netWorthValue": "0.000000",
-                "snapshotId": "forbidden",
-            }
+        PortfolioHistoryResponse.model_validate(
+            {**response.model_dump(), "snapshotId": "forbidden"}
         )
+    with pytest.raises(ValidationError):
+        PortfolioHistoryResponse.model_validate({**response.model_dump(), "points": []})
 
 
 def test_endpoint_contract_auth_and_default_range(test_settings: Settings) -> None:
@@ -117,123 +176,157 @@ def test_endpoint_contract_auth_and_default_range(test_settings: Settings) -> No
             "in": "query",
             "required": False,
             "schema": {
-                "$ref": "#/components/schemas/PortfolioHistoryRange",
+                "$ref": "#/components/schemas/HistoryPublicRange",
                 "default": "1Y",
             },
-        }
+        },
+        {
+            "name": "accountId",
+            "in": "query",
+            "required": False,
+            "schema": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "title": "Accountid",
+            },
+        },
+    ]
+    assert app.openapi()["components"]["schemas"]["HistoryPublicRange"]["enum"] == [
+        "1D",
+        "1W",
+        "1M",
+        "3M",
+        "6M",
+        "1Y",
+        "5Y",
+        "10Y",
+        "ALL",
     ]
     with TestClient(app) as client:
+        assert client.get(PATH).status_code == 401
+
+
+@pytest.mark.parametrize("expected_range", tuple(HistoryPublicRange))
+def test_adapter_maps_principal_and_all_public_ranges(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    expected_range: HistoryPublicRange,
+) -> None:
+    read = AsyncMock(
+        return_value=PortfolioHistoryResponse.model_validate(
+            _result(history_range=expected_range).history, from_attributes=True
+        )
+    )
+    monkeypatch.setattr(PublishedPortfolioSnapshotHistoryReader, "read", read)
+    query = (
+        "" if expected_range is HistoryPublicRange.one_year else f"?range={expected_range.value}"
+    )
+    with _client(test_settings) as client:
+        response = client.get(f"{PATH}{query}")
+    assert response.status_code == 200
+    assert response.json()["range"] == expected_range.value
+    assert read.await_args is not None
+    assert read.await_args.kwargs == {
+        "principal": _principal(),
+        "history_range": expected_range,
+        "account_id": None,
+    }
+
+
+def test_adapter_passes_optional_selected_account_id(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read = AsyncMock(
+        return_value=PortfolioHistoryResponse.model_validate(
+            _result().history, from_attributes=True
+        )
+    )
+    monkeypatch.setattr(PublishedPortfolioSnapshotHistoryReader, "read", read)
+    with _client(test_settings) as client:
+        response = client.get(f"{PATH}?accountId=account-a")
+    assert response.status_code == 200
+    assert read.await_args is not None
+    assert read.await_args.kwargs == {
+        "principal": _principal(),
+        "history_range": HistoryPublicRange.one_year,
+        "account_id": "account-a",
+    }
+
+
+def test_exact_json_has_no_internal_lineage(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        PublishedPortfolioSnapshotHistoryReader,
+        "read",
+        AsyncMock(
+            return_value=PortfolioHistoryResponse.model_validate(
+                _result().history, from_attributes=True
+            )
+        ),
+    )
+    with _client(test_settings) as client:
         response = client.get(PATH)
-    assert response.status_code == 401
+    assert response.status_code == 200
+    assert response.json() == PortfolioHistoryResponse.model_validate(
+        _result().history, from_attributes=True
+    ).model_dump(mode="json", by_alias=True, exclude_none=True)
+    for forbidden in ("userId", "snapshotId", "accountId", "provider", "source"):
+        assert forbidden not in response.text
 
 
 @pytest.mark.parametrize(
-    ("query", "expected_range"),
+    "state",
     [
-        ("", PortfolioHistoryRange.one_year),
-        ("?range=1W", PortfolioHistoryRange.one_week),
-        ("?range=1M", PortfolioHistoryRange.one_month),
-        ("?range=3M", PortfolioHistoryRange.three_months),
-        ("?range=6M", PortfolioHistoryRange.six_months),
-        ("?range=1Y", PortfolioHistoryRange.one_year),
-        ("?range=ALL", PortfolioHistoryRange.all),
+        PortfolioHistoryReadState.empty,
+        PortfolioHistoryReadState.rebuilding,
+        PortfolioHistoryReadState.failed,
     ],
 )
-def test_adapter_maps_exact_principal_and_range(
+def test_unpublished_states_omit_generation_metadata(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
-    query: str,
-    expected_range: PortfolioHistoryRange,
-) -> None:
-    read = AsyncMock(return_value=_result())
-    monkeypatch.setattr(SnapshotBackedPortfolioHistoryService, "read", read)
-    client = _client(test_settings)
-    with client:
-        response = client.get(f"{PATH}{query}")
-    assert response.status_code == 200
-    assert read.await_args is not None
-    command = read.await_args.args[0]
-    assert command.principal == _principal()
-    assert command.range is expected_range
-
-
-def test_exact_public_json_has_no_internal_lineage(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
+    state: PortfolioHistoryReadState,
 ) -> None:
     monkeypatch.setattr(
-        SnapshotBackedPortfolioHistoryService,
+        PublishedPortfolioSnapshotHistoryReader,
         "read",
-        AsyncMock(return_value=_result()),
+        AsyncMock(
+            return_value=PortfolioHistoryResponse.model_validate(
+                _result(state=state, published=False).history, from_attributes=True
+            )
+        ),
     )
-    client = _client(test_settings)
-    with client:
+    with _client(test_settings) as client:
         response = client.get(PATH)
+    assert response.status_code == 200
     assert response.json() == {
         "range": "1Y",
+        "state": state.value,
         "currency": "EUR",
-        "points": [
-            {
-                "timestamp": "2026-08-01T00:00:00.123",
-                "cashValue": "-50.000000",
-                "investmentValue": "10000.000000",
-                "liabilitiesValue": "1000.000000",
-                "netWorthValue": "8950.000000",
-            }
-        ],
+        "resolutions": [],
+        "coverage": [],
+        "points": [],
     }
-    serialized = response.text
-    for forbidden in (
-        "userId",
-        "snapshotId",
-        "accountId",
-        "selectedAccountSnapshotIds",
-        "exchangeRates",
-        "provider",
-        "source",
-        "calculationVersion",
-        "createdAt",
-        "calculatedAt",
-    ):
-        assert forbidden not in serialized
 
 
-def test_empty_history_is_200(
+def test_invalid_range_and_unavailable_are_public_safe(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    with _client(test_settings) as client:
+        invalid = client.get(f"{PATH}?range=YEAR")
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "validation_error"
+
     monkeypatch.setattr(
-        SnapshotBackedPortfolioHistoryService,
+        PublishedPortfolioSnapshotHistoryReader,
         "read",
-        AsyncMock(return_value=_result(points=())),
+        AsyncMock(side_effect=GenerationPortfolioHistoryUnavailableError()),
     )
-    client = _client(test_settings)
-    with client:
-        response = client.get(PATH)
-    assert response.status_code == 200
-    assert response.json() == {"range": "1Y", "currency": "EUR", "points": []}
-
-
-def test_invalid_range_uses_safe_validation_error(test_settings: Settings) -> None:
-    client = _client(test_settings)
-    with client:
-        response = client.get(f"{PATH}?range=YEAR")
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
-
-
-def test_dependency_state_error_uses_generic_envelope(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        SnapshotBackedPortfolioHistoryService,
-        "read",
-        AsyncMock(side_effect=PortfolioHistoryUnavailableError()),
-    )
-    client = _client(test_settings)
-    with client:
-        response = client.get(PATH)
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "portfolio_history_unavailable"
-    assert response.json()["error"]["message"] == "Portfolio history is unavailable."
+    with _client(test_settings) as client:
+        unavailable = client.get(PATH)
+    assert unavailable.status_code == 409
+    assert unavailable.json()["error"]["code"] == "portfolio_history_unavailable"
+    assert unavailable.json()["error"]["message"] == "Portfolio history is unavailable."

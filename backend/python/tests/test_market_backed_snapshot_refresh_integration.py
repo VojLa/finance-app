@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import delete, event, func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -33,12 +33,12 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
-    AccountSnapshotItemModel,
     AccountSnapshotModel,
     NetWorthSnapshotModel,
 )
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.dashboard_snapshot.authorized_service import (
     AuthorizedDashboardSnapshotService,
 )
@@ -68,6 +68,7 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
 )
+from tests.support.investment_fixture_e2e import cleanup as cleanup_fixture
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -348,10 +349,18 @@ async def _seed_mixed_user(
                     )
                 )
             await session.flush()
-            for account_id in (broker_id, exchange_id):
+            for account_id, currency in ((broker_id, "USD"), (exchange_id, "EUR")):
+                recorded = await CanonicalStateService(session).record(
+                    account_id=account_id,
+                    kind=CanonicalChangeKind.investment_event,
+                    entity_id=f"{prefix}-event-{currency.lower()}",
+                    financial_timestamp=EVENT_AT,
+                    created_at=CREATED_AT,
+                    replay=False,
+                )
                 state = await session.get(AccountCanonicalStateModel, account_id)
                 assert state is not None
-                state.holding_revision = 0
+                state.holding_revision = recorded.revision
             await session.commit()
     finally:
         await engine.dispose()
@@ -365,98 +374,7 @@ async def _seed_mixed_user(
 
 async def _cleanup(prefix: str) -> None:
     """Remove one committed E2E graph so exact provider aliases stay isolated."""
-
-    engine = _engine()
-    try:
-        async with AsyncSession(engine) as session:
-            user_ids = tuple(
-                await session.scalars(
-                    select(UserModel.id).where(UserModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            account_ids = tuple(
-                await session.scalars(
-                    select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            asset_ids = tuple(
-                await session.scalars(
-                    select(AssetModel.id).where(AssetModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            listing_ids = tuple(
-                await session.scalars(
-                    select(AssetListingModel.id).where(
-                        AssetListingModel.id.startswith(f"{prefix}-")
-                    )
-                )
-            )
-            event_ids = tuple(
-                await session.scalars(
-                    select(InvestmentEventModel.id).where(
-                        InvestmentEventModel.account_id.in_(account_ids)
-                    )
-                )
-            )
-            snapshot_ids = tuple(
-                await session.scalars(
-                    select(AccountSnapshotModel.id).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-            )
-            if snapshot_ids:
-                await session.execute(
-                    delete(AccountSnapshotItemModel).where(
-                        AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
-                    )
-                )
-            if user_ids:
-                await session.execute(
-                    delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
-                )
-            if account_ids:
-                await session.execute(
-                    delete(AccountSnapshotModel).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-                await session.execute(
-                    delete(HoldingModel).where(HoldingModel.account_id.in_(account_ids))
-                )
-            if listing_ids:
-                await session.execute(
-                    delete(PriceSnapshotModel).where(PriceSnapshotModel.listing_id.in_(listing_ids))
-                )
-            if event_ids:
-                await session.execute(
-                    delete(InvestmentMovementModel).where(
-                        InvestmentMovementModel.event_id.in_(event_ids)
-                    )
-                )
-                await session.execute(
-                    delete(InvestmentEventModel).where(InvestmentEventModel.id.in_(event_ids))
-                )
-            if asset_ids:
-                await session.execute(
-                    delete(AssetAliasModel).where(AssetAliasModel.asset_id.in_(asset_ids))
-                )
-            if listing_ids:
-                await session.execute(
-                    delete(AssetListingModel).where(AssetListingModel.id.in_(listing_ids))
-                )
-            if asset_ids:
-                await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
-            if account_ids:
-                await session.execute(
-                    delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
-                )
-                await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
-            if user_ids:
-                await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
-            await session.commit()
-    finally:
-        await engine.dispose()
+    await cleanup_fixture(prefix)
 
 
 def _transports(
@@ -611,10 +529,11 @@ async def _counts(
 @pytest.mark.asyncio
 async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
     prefix = f"r5b3a-mixed-{uuid4()}"
-    listed_symbol = "AAPL"
-    listed_alias = '{"symbol":"AAPL","mic_code":"XNAS"}'
-    crypto_symbol = "BTC"
-    crypto_alias = "bitcoin"
+    unique = uuid4().hex[:10]
+    listed_symbol = f"T{unique.upper()}"
+    listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
+    crypto_symbol = f"C{unique.upper()}"
+    crypto_alias = f"coin-{unique}"
     user_id, account_ids, asset_ids, listing_ids = await _seed_mixed_user(
         prefix,
         listed_aliases=(listed_alias,),
@@ -656,8 +575,8 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
             combined = await service.execute(_command(user_id))
             assert not session.in_transaction()
             assert provider_calls == [
-                ("twelve_data", "AAPL"),
-                ("coingecko", "bitcoin"),
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
                 ("twelve_data_fx", "EUR/CZK@2026-08-01"),
                 ("twelve_data_fx", "EUR/CZK@2026-08-06"),
                 ("twelve_data_fx", "USD/CZK@2026-08-01"),
@@ -861,17 +780,17 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected_calls"),
+    ("failure", "expected_fx_calls"),
     [
-        ("twelve-429", 1),
-        ("coingecko-stale", 2),
-        ("fx-failure", 3),
+        ("twelve-429", 4),
+        ("coingecko-stale", 4),
+        ("fx-failure", 1),
     ],
 )
 @pytest.mark.asyncio
 async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
     failure: str,
-    expected_calls: int,
+    expected_fx_calls: int,
 ) -> None:
     unique = uuid4().hex[:10]
     prefix = f"r5b3a-{failure}-{uuid4()}"
@@ -900,7 +819,19 @@ async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
             )
             with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
                 await service.execute(_command(user_id))
-            assert len(provider_calls) == expected_calls
+            assert provider_calls == [
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
+                *[
+                    ("twelve_data_fx", identity)
+                    for identity in (
+                        "EUR/CZK@2026-08-01",
+                        "EUR/CZK@2026-08-06",
+                        "USD/CZK@2026-08-01",
+                        "USD/CZK@2026-08-06",
+                    )[:expected_fx_calls]
+                ],
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             counts = await _counts(
@@ -996,7 +927,14 @@ async def test_snapshot_failure_after_market_writer_preserves_market_evidence() 
             )
             with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
                 await service.execute(_command(user_id))
-            assert len(provider_calls) == 6
+            assert provider_calls == [
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
+                ("twelve_data_fx", "EUR/CZK@2026-08-01"),
+                ("twelve_data_fx", "EUR/CZK@2026-08-06"),
+                ("twelve_data_fx", "USD/CZK@2026-08-01"),
+                ("twelve_data_fx", "USD/CZK@2026-08-06"),
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             prices, rates, snapshots, net_worth = await _counts(

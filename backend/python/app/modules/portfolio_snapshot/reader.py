@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 
-from sqlalchemy import Numeric
+from sqlalchemy import Numeric, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +51,7 @@ from app.modules.portfolio_snapshot.repository import (
     PersistedPortfolioSnapshotItem,
     PortfolioSnapshotRepository,
 )
+from app.modules.portfolio_snapshot.writer import valuation_evidence_timestamp
 
 _ERROR_MESSAGE = "Persisted AccountSnapshot evidence cannot produce a complete portfolio view."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
@@ -118,6 +119,141 @@ class CompletePortfolioSnapshotRead:
     view: PortfolioSnapshotView
     selected_snapshot_id: str
     selected_item_ids: tuple[str, ...]
+    valuation_timestamp: datetime | None = None
+
+
+class PreloadedPortfolioSnapshotRepository(PortfolioSnapshotRepository):
+    """Set-based evidence load for a single caller-owned repeatable-read view."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        isolation: str | None,
+        accounts: tuple[AccountModel, ...],
+        snapshots: tuple[AccountSnapshotModel, ...],
+        items: tuple[PersistedPortfolioSnapshotItem, ...],
+    ) -> None:
+        super().__init__(session)
+        self.isolation = isolation
+        self.accounts = {account.id: account for account in accounts}
+        self.snapshots_by_id = {snapshot.id: snapshot for snapshot in snapshots}
+        self.snapshots: dict[
+            tuple[str, datetime, DbSnapshotGranularity, str], list[AccountSnapshotModel]
+        ] = {}
+        for snapshot in snapshots:
+            self.snapshots.setdefault(
+                (snapshot.account_id, snapshot.timestamp, snapshot.granularity, snapshot.currency),
+                [],
+            ).append(snapshot)
+        self.items: dict[str, list[PersistedPortfolioSnapshotItem]] = {}
+        for item in items:
+            self.items.setdefault(item.item.snapshot_id, []).append(item)
+
+    @classmethod
+    async def load(
+        cls,
+        session: AsyncSession,
+        *,
+        account_ids: tuple[str, ...],
+        timestamp: datetime,
+        granularity: DbSnapshotGranularity,
+        currencies: tuple[str, ...],
+    ) -> PreloadedPortfolioSnapshotRepository:
+        isolation = await PortfolioSnapshotRepository(session).load_transaction_isolation()
+        accounts = tuple(
+            (
+                await session.scalars(
+                    select(AccountModel)
+                    .where(AccountModel.id.in_(account_ids))
+                    .execution_options(autoflush=False, populate_existing=True)
+                )
+            ).all()
+        )
+        snapshots = tuple(
+            (
+                await session.scalars(
+                    select(AccountSnapshotModel)
+                    .where(
+                        AccountSnapshotModel.account_id.in_(account_ids),
+                        AccountSnapshotModel.timestamp == timestamp,
+                        AccountSnapshotModel.granularity == granularity,
+                        AccountSnapshotModel.currency.in_(currencies),
+                    )
+                    .execution_options(autoflush=False, populate_existing=True)
+                )
+            ).all()
+        )
+        snapshot_ids = tuple(snapshot.id for snapshot in snapshots)
+        items: tuple[PersistedPortfolioSnapshotItem, ...] = ()
+        if snapshot_ids:
+            rows = (
+                await session.execute(
+                    select(AccountSnapshotItemModel, AssetListingModel, AssetModel)
+                    .outerjoin(
+                        AssetListingModel,
+                        AssetListingModel.id == AccountSnapshotItemModel.listing_id,
+                    )
+                    .outerjoin(AssetModel, AssetModel.id == AssetListingModel.asset_id)
+                    .where(AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids))
+                    .execution_options(autoflush=False, populate_existing=True)
+                )
+            ).all()
+            items = tuple(
+                PersistedPortfolioSnapshotItem(item, listing, asset)
+                for item, listing, asset in rows
+            )
+        return cls(
+            session, isolation=isolation, accounts=accounts, snapshots=snapshots, items=items
+        )
+
+    async def load_transaction_isolation(self) -> str | None:
+        return self.isolation
+
+    async def load_account(self, account_id: str) -> AccountModel | None:
+        return self.accounts.get(account_id)
+
+    async def load_exact_snapshots(
+        self,
+        *,
+        account_id: str,
+        timestamp: datetime,
+        granularity: DbSnapshotGranularity,
+        currency: str,
+        required_snapshot_id: str | None = None,
+    ) -> tuple[AccountSnapshotModel, ...]:
+        snapshots = tuple(self.snapshots.get((account_id, timestamp, granularity, currency), ()))
+        if required_snapshot_id is None:
+            return snapshots
+        return tuple(snapshot for snapshot in snapshots if snapshot.id == required_snapshot_id)
+
+    async def load_snapshot_items(
+        self, snapshot_id: str
+    ) -> tuple[PersistedPortfolioSnapshotItem, ...]:
+        return tuple(self.items.get(snapshot_id, ()))
+
+    def resolve_generation_peer_snapshot_id(
+        self,
+        *,
+        primary_snapshot_id: str,
+        account_id: str,
+        timestamp: datetime,
+        granularity: DbSnapshotGranularity,
+        currency: str,
+    ) -> str | None:
+        """Resolve one presentation projection from the primary's immutable generation."""
+
+        primary = self.snapshots_by_id.get(primary_snapshot_id)
+        if primary is None:
+            return None
+        candidates = tuple(
+            snapshot
+            for snapshot in self.snapshots.get((account_id, timestamp, granularity, currency), ())
+            if snapshot.generation_id == primary.generation_id
+        )
+        if len(candidates) != 1:
+            return None
+        return candidates[0].id
 
 
 type ProjectionBuilder = Callable[[PortfolioSnapshotSource], PortfolioSnapshotView]
@@ -341,10 +477,12 @@ def _item(
     ):
         raise _fail()
     asset_name = _nonblank(asset.name)
-    listing_currency = _currency(listing.currency)
+    _currency(listing.currency)
     price_currency = _currency(item.price_currency)
     physical_value_currency = _currency(item.value_currency)
-    if price_currency != physical_value_currency or price_currency != listing_currency:
+    # Listing currency remains acquisition metadata. Persisted price/value
+    # evidence owns its explicit provider quote currency.
+    if price_currency != physical_value_currency:
         raise _fail()
     quantity = _exact(item.quantity, QUANTITY, positive=True)
     price_per_unit = _exact(item.price_per_unit, QUANTITY, positive=True)
@@ -387,9 +525,7 @@ def _item(
         if item.average_buy_price_currency is None
         else _currency(item.average_buy_price_currency)
     )
-    if cost_complete and (
-        cost_currency != snapshot.currency or average_buy_price_currency != listing_currency
-    ):
+    if cost_complete and cost_currency != snapshot.currency:
         raise _fail()
     native_cost_basis_by_currency = (
         None
@@ -509,6 +645,7 @@ class PortfolioSnapshotReader:
                 timestamp=canonical.timestamp,
                 granularity=_GRANULARITY_TO_DB[canonical.granularity],
                 currency=canonical.currency,
+                required_snapshot_id=canonical.required_snapshot_id,
             )
             if not isinstance(snapshots, tuple) or len(snapshots) != 1:
                 raise _fail()
@@ -584,6 +721,11 @@ class PortfolioSnapshotReader:
                 view=view,
                 selected_snapshot_id=snapshot.id,
                 selected_item_ids=selected_item_ids,
+                valuation_timestamp=valuation_evidence_timestamp(
+                    tuple(item.price_timestamp for item in items),
+                    snapshot.exchange_rates,
+                    snapshot.calculated_at,
+                ),
             )
         except PortfolioSnapshotReadError:
             raise

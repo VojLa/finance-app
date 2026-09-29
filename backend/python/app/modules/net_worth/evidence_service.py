@@ -278,6 +278,7 @@ def _active_accounts(
             or membership_id in membership_ids
             or membership.user_id != user_id
             or membership.account_id != account_id
+            or not isinstance(access.has_canonical_history, bool)
             or not isinstance(membership.role, AccountMemberRole)
             or not isinstance(membership.relation_type, AccountRelationType)
             or membership.accepted_at is None
@@ -301,6 +302,8 @@ def _active_accounts(
         _currency(account.currency)
         if account.type not in _SUPPORTED_ACCOUNT_TYPES:
             raise _fail()
+        if not access.has_canonical_history:
+            continue
         accounts.append(account)
     return tuple(sorted(accounts, key=lambda account: account.id))
 
@@ -477,6 +480,13 @@ class NetWorthEvidenceService:
                 if account_ids
                 else ()
             )
+            # Generation-bound callers provide the exact immutable inputs.
+            # Older generations may legitimately share this coordinate.
+            if required_identities is not None:
+                required_snapshot_ids = {identity.snapshot_id for identity in required_identities}
+                snapshots = tuple(
+                    snapshot for snapshot in snapshots if snapshot.id in required_snapshot_ids
+                )
 
             snapshots_by_account: dict[str, list[AccountSnapshotModel]] = {}
             snapshot_ids: set[str] = set()

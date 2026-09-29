@@ -18,6 +18,7 @@ class PriceSnapshotModel(Base):
     __tablename__ = "PriceSnapshot"
     __table_args__ = (
         UniqueConstraint("listingId", "timestamp", "source"),
+        UniqueConstraint("id", "listingId", name="PriceSnapshot_id_listingId_key"),
         Index(None, "assetId", "timestamp"),
         Index(None, "listingId", "timestamp"),
         Index(None, "source", "timestamp"),

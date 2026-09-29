@@ -1,5 +1,11 @@
 # Implemented decisions
 
+Type: historical
+Status: historical
+Owns: compatibility index for retained decision records
+Code: none
+Update when: a retained decision record is archived or removed
+
 These records explain decisions reflected in the current code. For proposed or
 long-lived architectural decisions, use [planning decisions](../../!planning/decisions/README.md).
 

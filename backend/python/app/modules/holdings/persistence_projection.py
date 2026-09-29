@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 from app.db.models.common import QUANTITY
 from app.db.models.enums import (
     AssetType,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     MovementDirection,
@@ -53,6 +54,16 @@ class HoldingPersistenceEvent:
     event_date: datetime
     external_id: str | None
     movements: tuple[HoldingPersistenceMovement, ...]
+    source: ImportSource | None = None
+    realized_pnl: Decimal | None = None
+    realized_pnl_currency: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedRealizedPnlPlan:
+    event_id: str
+    amount: Decimal
+    currency: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +88,7 @@ class ExpectedPersistedHoldingPlan:
 class HoldingPersistenceProjection:
     account_id: str
     holdings: tuple[ExpectedPersistedHoldingPlan, ...]
+    realized_pnl: tuple[ExpectedRealizedPnlPlan, ...] = ()
 
 
 @dataclass(slots=True)
@@ -343,7 +355,7 @@ def _acquire(
 def _dispose(
     positions: dict[str, _CostPosition],
     movement: HoldingPersistenceMovement,
-) -> None:
+) -> Decimal | None:
     if movement.listing_id is None:
         raise _fail()
     position = positions.get(movement.listing_id)
@@ -360,6 +372,14 @@ def _dispose(
         if quote_currency != position.currency:
             raise _fail()
     original_quantity = position.quantity
+    try:
+        disposed_cost = (
+            None
+            if position.average is None
+            else canonical_rounded(movement.quantity * position.average, QUANTITY)
+        )
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
     remaining = _exact(original_quantity - movement.quantity)
     if remaining == 0:
         del positions[movement.listing_id]
@@ -379,6 +399,32 @@ def _dispose(
                 scaled_cost_basis[currency] = remaining_amount
             position.cost_basis = scaled_cost_basis
         position.quantity = remaining
+    return disposed_cost
+
+
+def _expected_anycoin_realized_pnl(
+    event: HoldingPersistenceEvent,
+    asset: HoldingPersistenceMovement,
+    disposed_cost: Decimal | None,
+) -> ExpectedRealizedPnlPlan | None:
+    if disposed_cost is None:
+        # Quantity can still be projected when an earlier transfer has no
+        # acquisition basis. Realized P/L must remain explicitly unknown.
+        if event.realized_pnl is not None or event.realized_pnl_currency is not None:
+            raise _fail()
+        return None
+    _, quote_currency, proceeds, settlement_currency = _basis(asset)
+    if quote_currency != settlement_currency:
+        raise _fail()
+    try:
+        amount = canonical_rounded(proceeds - disposed_cost, QUANTITY)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    return ExpectedRealizedPnlPlan(
+        event_id=event.event_id,
+        amount=amount,
+        currency=settlement_currency,
+    )
 
 
 def build_holding_persistence_projection(
@@ -401,8 +447,13 @@ def build_holding_persistence_projection(
             or not isinstance(event.event_type, InvestmentEventType)
             or not event.movements
             or (event.external_id is not None and not isinstance(event.external_id, str))
+            or (event.source is not None and not isinstance(event.source, ImportSource))
+            or (event.realized_pnl is None) != (event.realized_pnl_currency is None)
         ):
             raise _fail()
+        if event.realized_pnl is not None:
+            _exact(event.realized_pnl)
+            _currency(event.realized_pnl_currency)
         event_ids.add(event.event_id)
         base_movements.extend(_base_movement(event, movement) for movement in event.movements)
     quantity_projection = build_holding_projection(
@@ -412,6 +463,7 @@ def build_holding_persistence_projection(
 
     ordered = sorted(events, key=lambda event: (event.event_date, event.event_id))
     positions: dict[str, _CostPosition] = {}
+    realized_pnl: list[ExpectedRealizedPnlPlan] = []
     precision = QUANTITY.precision
     if precision is None:
         raise RuntimeError("Canonical QUANTITY must define precision.")
@@ -425,7 +477,15 @@ def build_holding_persistence_projection(
                 if asset.direction is MovementDirection.incoming:
                     _acquire(positions, asset)
                 else:
-                    _dispose(positions, asset)
+                    disposed_cost = _dispose(positions, asset)
+                    if event.source is ImportSource.anycoin:
+                        expected_realized_pnl = _expected_anycoin_realized_pnl(
+                            event,
+                            asset,
+                            disposed_cost,
+                        )
+                        if expected_realized_pnl is not None:
+                            realized_pnl.append(expected_realized_pnl)
             elif event.event_type is InvestmentEventType.asset_transfer:
                 if asset.direction is MovementDirection.incoming:
                     _acquire(positions, asset)
@@ -464,7 +524,11 @@ def build_holding_persistence_projection(
     )
     if len(holdings) != len(positions):
         raise _fail()
-    return HoldingPersistenceProjection(account_id=account_id, holdings=holdings)
+    return HoldingPersistenceProjection(
+        account_id=account_id,
+        holdings=holdings,
+        realized_pnl=tuple(realized_pnl),
+    )
 
 
 def build_holding_delta_projection(

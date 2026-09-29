@@ -44,6 +44,10 @@ from app.modules.investments.models import (
     SymbolPositionResponse,
 )
 from app.modules.investments.repository import InvestmentRepository
+from app.modules.portfolio_history.invalidation.service import (
+    PortfolioHistoryInvalidationService,
+    PortfolioHistoryInvalidationStateError,
+)
 from app.modules.snapshot_refresh.manual_service import (
     RecalculateUserSnapshotRefreshCommand,
     RecalculateUserSnapshotRefreshResult,
@@ -449,6 +453,8 @@ class InvestmentService:
                 allowed_roles=_WRITE_ROLES,
                 for_update=True,
             )
+            history = PortfolioHistoryInvalidationService(self.session)
+            locked_memberships = await history.lock_current_memberships((payload.account_id,))
             await self.repository.lock_idempotency_key(scope)
             existing = await self.repository.event_for_update(event_id)
             now = _now()
@@ -504,13 +510,18 @@ class InvestmentService:
                         )
                     )
                 await self.repository.flush()
-                await CanonicalStateService(self.session).record(
+                recorded = await CanonicalStateService(self.session).record(
                     account_id=payload.account_id,
                     kind=CanonicalChangeKind.investment_event,
                     entity_id=event.id,
                     financial_timestamp=event.date,
                     created_at=event.created_at,
                     replay=False,
+                )
+                await history.invalidate_recorded_changes(
+                    changes=(recorded,),
+                    locked_memberships=locked_memberships,
+                    now=now,
                 )
                 replayed = False
             else:
@@ -533,13 +544,18 @@ class InvestmentService:
                     != Counter(_planned_signature(value) for value in plan.movements)
                 ):
                     raise ManualInvestmentConflictError()
-                await CanonicalStateService(self.session).record(
+                recorded = await CanonicalStateService(self.session).record(
                     account_id=payload.account_id,
                     kind=CanonicalChangeKind.investment_event,
                     entity_id=event.id,
                     financial_timestamp=event.date,
                     created_at=event.created_at,
                     replay=True,
+                )
+                await history.invalidate_recorded_changes(
+                    changes=(recorded,),
+                    locked_memberships=locked_memberships,
+                    now=now,
                 )
                 replayed = True
 
@@ -553,6 +569,7 @@ class InvestmentService:
             raise
         except (
             CanonicalStateError,
+            PortfolioHistoryInvalidationStateError,
             HoldingProjectionStateError,
             HoldingRebuildStateError,
             ImportPostStateError,

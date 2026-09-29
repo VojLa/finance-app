@@ -42,7 +42,20 @@ IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
 EMPTY_INVESTMENT_HOLDING_REVISION = "3n0001emptyhold"
 UNKNOWN_INVESTMENT_COST_BASIS_REVISION = "3o0001unkbasis"
 RB_SCHEMA_FOUNDATION_REVISION = "3p0001rbfoundation"
-HEAD_REVISION = RB_SCHEMA_FOUNDATION_REVISION
+HISTORY_GENERATION_REVISION = "3q0001historygen"
+HISTORY_CLEANUP_REVISION = "3r0001historycleanup"
+CREDIT_LIMIT_REVISION = "3o0001creditlimit"
+MANUAL_MINUTE_BASELINE_REVISION = "3s0001manualbaseline"
+READ_MODEL_PUBLICATION_REVISION = "3t0001readmodelversion"
+SNAPSHOT_GENERATION_REVISION = "3u0001snapshotgeneration"
+PORTFOLIO_SNAPSHOT_REVISION = "3v0001portfoliosnapshot"
+MARKET_BASELINE_REVISION = "3w0001marketbaseline"
+HISTORY_SERIES_REVISION = "3x0001historyseries"
+SNAPSHOT_SERIES_JOBS_REVISION = "3y0001snapshotjobs"
+HISTORY_DROP_REVISION = "3z0001historydrop"
+VALUATION_EVIDENCE_REVISION = "400001anycoinvaluation"
+TEMPORAL_SERIES_REVISION = "410001serieslinks"
+HEAD_REVISION = TEMPORAL_SERIES_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -88,6 +101,69 @@ RB_SCHEMA_FOUNDATION_REVISION_PATH = (
     / "migrations"
     / "versions"
     / "3p0001rbfoundation_add_reconciliation_schema_foundation.py"
+)
+HISTORY_GENERATION_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3q0001historygen_add_immutable_portfolio_history_generations.py"
+)
+HISTORY_CLEANUP_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3r0001historycleanup_add_portfolio_history_cleanup.py"
+)
+CREDIT_LIMIT_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3o0001creditlimit_add_account_credit_limit.py"
+)
+MANUAL_MINUTE_BASELINE_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3s0001manualbaseline_allow_manual_minute_baselines.py"
+)
+READ_MODEL_PUBLICATION_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3t0001readmodelversion_add_user_read_model_publication.py"
+)
+SNAPSHOT_GENERATION_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3u0001snapshotgeneration_add_staged_snapshot_generations.py"
+)
+PORTFOLIO_SNAPSHOT_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3v0001portfoliosnapshot_add_investment_portfolio_snapshots.py"
+)
+MARKET_BASELINE_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3w0001marketbaseline_allow_market_minute_baselines.py"
+)
+HISTORY_SERIES_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3x0001historyseries_allow_history_series_baselines.py"
+)
+SNAPSHOT_SERIES_JOBS_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3y0001snapshotjobs_add_snapshot_series_rebuild_orchestration.py"
+)
+HISTORY_DROP_REVISION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3z0001historydrop_remove_legacy_portfolio_history.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -245,7 +321,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 17,
+        "schema_version": 25,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -284,7 +360,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 13,
+        "revision_count": 26,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -292,8 +368,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/3p0001rbfoundation/schema.sql",
-        "checksum_source": "database/revisions/3p0001rbfoundation/schema.sha256",
+        "schema_source": "database/revisions/410001serieslinks/schema.sql",
+        "checksum_source": "database/revisions/410001serieslinks/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -333,9 +409,9 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 13:
+    if len(revisions) != 26:
         raise RuntimeError(
-            "The reconciliation schema foundation requires exactly thirteen Alembic revisions."
+            "The snapshot-only schema requires exactly twenty-six Alembic revisions."
         )
 
     by_revision = {revision.revision: revision for revision in revisions}
@@ -351,7 +427,20 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     import_publication_anchor = by_revision.get(IMPORT_PUBLICATION_ANCHOR_REVISION)
     empty_investment_holding = by_revision.get(EMPTY_INVESTMENT_HOLDING_REVISION)
     unknown_cost_basis = by_revision.get(UNKNOWN_INVESTMENT_COST_BASIS_REVISION)
-    head = by_revision.get(HEAD_REVISION)
+    reconciliation = by_revision.get(RB_SCHEMA_FOUNDATION_REVISION)
+    history_generation = by_revision.get(HISTORY_GENERATION_REVISION)
+    history_cleanup = by_revision.get(HISTORY_CLEANUP_REVISION)
+    credit_limit = by_revision.get(CREDIT_LIMIT_REVISION)
+    manual_minute_baseline = by_revision.get(MANUAL_MINUTE_BASELINE_REVISION)
+    read_model_publication = by_revision.get(READ_MODEL_PUBLICATION_REVISION)
+    snapshot_generation = by_revision.get(SNAPSHOT_GENERATION_REVISION)
+    portfolio_snapshot = by_revision.get(PORTFOLIO_SNAPSHOT_REVISION)
+    market_baseline = by_revision.get(MARKET_BASELINE_REVISION)
+    history_series = by_revision.get(HISTORY_SERIES_REVISION)
+    snapshot_series_jobs = by_revision.get(SNAPSHOT_SERIES_JOBS_REVISION)
+    history_drop = by_revision.get(HISTORY_DROP_REVISION)
+    valuation_evidence = by_revision.get(VALUATION_EVIDENCE_REVISION)
+    temporal_series = by_revision.get(TEMPORAL_SERIES_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
@@ -393,10 +482,57 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(
             "The unknown investment cost-basis revision must follow the empty-Holding head."
         )
-    if head is None or head.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION:
+    if (
+        reconciliation is None
+        or reconciliation.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION
+    ):
         raise RuntimeError(
             "The reconciliation schema foundation must follow the unknown cost-basis head."
         )
+    if (
+        history_generation is None
+        or history_generation.down_revision != RB_SCHEMA_FOUNDATION_REVISION
+    ):
+        raise RuntimeError("The history-generation schema must follow reconciliation foundation.")
+    if history_cleanup is None or history_cleanup.down_revision != HISTORY_GENERATION_REVISION:
+        raise RuntimeError("The history-cleanup schema must follow history generation.")
+    if credit_limit is None or credit_limit.down_revision != HISTORY_CLEANUP_REVISION:
+        raise RuntimeError("The credit-limit schema must follow the history-cleanup head.")
+    if (
+        manual_minute_baseline is None
+        or manual_minute_baseline.down_revision != CREDIT_LIMIT_REVISION
+    ):
+        raise RuntimeError("The manual-minute baseline schema must follow the credit-limit head.")
+    if (
+        read_model_publication is None
+        or read_model_publication.down_revision != MANUAL_MINUTE_BASELINE_REVISION
+    ):
+        raise RuntimeError("The read-model publication schema must follow manual-minute baseline.")
+    if (
+        snapshot_generation is None
+        or snapshot_generation.down_revision != READ_MODEL_PUBLICATION_REVISION
+    ):
+        raise RuntimeError("The snapshot-generation schema must follow read-model publication.")
+    if (
+        portfolio_snapshot is None
+        or portfolio_snapshot.down_revision != SNAPSHOT_GENERATION_REVISION
+    ):
+        raise RuntimeError("The portfolio-snapshot schema must follow snapshot generation.")
+    if market_baseline is None or market_baseline.down_revision != PORTFOLIO_SNAPSHOT_REVISION:
+        raise RuntimeError("The market-baseline schema must follow portfolio snapshot.")
+    if history_series is None or history_series.down_revision != MARKET_BASELINE_REVISION:
+        raise RuntimeError("The history-series schema must follow market baseline.")
+    if (
+        snapshot_series_jobs is None
+        or snapshot_series_jobs.down_revision != HISTORY_SERIES_REVISION
+    ):
+        raise RuntimeError("Snapshot-series jobs must follow the history-series schema.")
+    if history_drop is None or history_drop.down_revision != SNAPSHOT_SERIES_JOBS_REVISION:
+        raise RuntimeError("History cleanup must follow Snapshot-series jobs.")
+    if valuation_evidence is None or valuation_evidence.down_revision != HISTORY_DROP_REVISION:
+        raise RuntimeError("Investment-movement valuation evidence must follow history cleanup.")
+    if temporal_series is None or temporal_series.down_revision != VALUATION_EVIDENCE_REVISION:
+        raise RuntimeError("Temporal snapshot-series links must follow valuation evidence.")
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -683,7 +819,7 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         "data_migration": True,
     }
     for key, value in expected_reconciliation_metadata.items():
-        if getattr(head.module, key, None) != value:
+        if getattr(reconciliation.module, key, None) != value:
             raise RuntimeError(f"Reconciliation foundation metadata is invalid for {key}.")
     reconciliation_source = RB_SCHEMA_FOUNDATION_REVISION_PATH.read_text(encoding="utf-8")
     for token in (
@@ -703,6 +839,262 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
             raise RuntimeError(
                 f"Reconciliation foundation revision is missing required token {token}."
             )
+
+    expected_history_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_immutable_portfolio_history_generations",
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_history_metadata.items():
+        if getattr(history_generation.module, key, None) != value:
+            raise RuntimeError(f"History-generation revision metadata is invalid for {key}.")
+    history_source = HISTORY_GENERATION_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"PortfolioHistoryGeneration"',
+        '"PortfolioHistoryReplayCheckpoint"',
+        '"PortfolioHistoryPoint"',
+        '"netWorthOpen"',
+        '"netWorthClose"',
+        '"PortfolioHistoryAccountPoint"',
+        '"requestedByBackgroundJobId"',
+        '"requestedByHistoryJobId"',
+        "_eligible_history_change_select",
+        '"PortfolioHistoryCanonicalInvalidation"',
+        '"PortfolioHistoryDirtyState"',
+        '"PortfolioHistoryScheduleState"',
+        "1048576",
+        "PortfolioHistoryPoint_id_generation_key",
+        "cannot be downgraded automatically",
+    ):
+        if token not in history_source:
+            raise RuntimeError(f"History-generation revision is missing required token {token}.")
+
+    expected_cleanup_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_portfolio_history_cleanup_receipts",
+        "affected_tables": (
+            "PortfolioHistoryGeneration",
+            "PortfolioHistoryGenerationCleanupReceipt",
+            "PortfolioHistoryScheduleState",
+        ),
+        "prisma_schema_impact": "required",
+    }
+    for key, value in expected_cleanup_metadata.items():
+        if getattr(history_cleanup.module, key, None) != value:
+            raise RuntimeError(f"History-cleanup revision metadata is invalid for {key}.")
+    cleanup_source = HISTORY_CLEANUP_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "history_cleanup",
+        '"supersededAt"',
+        '"lastCleanedAt"',
+        '"PortfolioHistoryGenerationCleanupReceipt"',
+        "PortfolioHistoryCleanupReceipt_generation_user_fkey",
+        "PortfolioHistoryCleanupReceipt_audit_job_user_fkey",
+        '"payloadManifestHash"',
+        "cannot be downgraded automatically",
+    ):
+        if token not in cleanup_source:
+            raise RuntimeError(f"History-cleanup revision is missing required token {token}.")
+
+    expected_credit_limit_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_account_credit_limit",
+        "affected_tables": ("Account",),
+        "affected_columns": ("Account.creditLimit",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_credit_limit_metadata.items():
+        if getattr(credit_limit.module, key, None) != value:
+            raise RuntimeError(f"Credit-limit revision metadata is invalid for {key}.")
+
+    expected_manual_baseline_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "allow_manual_minute_snapshot_baseline",
+        "affected_tables": ("DailySnapshotBaseline",),
+        "affected_columns": (
+            "DailySnapshotBaseline.granularity",
+            "DailySnapshotBaseline.source",
+            "DailySnapshotBaseline.backgroundJobId",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_manual_baseline_metadata.items():
+        if getattr(manual_minute_baseline.module, key, None) != value:
+            raise RuntimeError(f"Manual baseline revision metadata is invalid for {key}.")
+    manual_baseline_source = MANUAL_MINUTE_BASELINE_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "manual_recalculation",
+        "Cannot remove manual minute baselines while evidence exists.",
+    ):
+        if token not in manual_baseline_source:
+            raise RuntimeError(f"Manual baseline revision is missing required token {token}.")
+
+    expected_read_model_publication_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "user_read_model_publication",
+        "affected_tables": ("UserReadModelPublication",),
+        "affected_columns": (
+            "UserReadModelPublication.userId",
+            "UserReadModelPublication.version",
+            "UserReadModelPublication.baselineId",
+            "UserReadModelPublication.scopes",
+            "UserReadModelPublication.publishedAt",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_read_model_publication_metadata.items():
+        if getattr(read_model_publication.module, key, None) != value:
+            raise RuntimeError(f"Read-model publication revision metadata is invalid for {key}.")
+    read_model_publication_source = READ_MODEL_PUBLICATION_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"UserReadModelPublication"',
+        '"baselineId"',
+        '"publishedAt"',
+        'INSERT INTO "public"."UserReadModelPublication"',
+        "op.drop_table",
+    ):
+        if token not in read_model_publication_source:
+            raise RuntimeError(
+                f"Read-model publication revision is missing required token {token}."
+            )
+
+    expected_snapshot_generation_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_staged_snapshot_generations",
+        "affected_tables": (
+            "SnapshotGeneration",
+            "SnapshotGenerationTarget",
+            "AccountSnapshot",
+            "NetWorthSnapshot",
+            "DailySnapshotBaseline",
+            "DailySnapshotBaselineAccount",
+            "UserReadModelPublication",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_snapshot_generation_metadata.items():
+        if getattr(snapshot_generation.module, key, None) != value:
+            raise RuntimeError(f"Snapshot-generation revision metadata is invalid for {key}.")
+    snapshot_generation_source = SNAPSHOT_GENERATION_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"SnapshotGeneration"',
+        '"SnapshotGenerationTarget"',
+        '"generationId"',
+        '"generationState"',
+        "legacy-snapshot-generation:",
+        "UserReadModelPublication_generation_published_fkey",
+        "cannot be downgraded automatically",
+    ):
+        if token not in snapshot_generation_source:
+            raise RuntimeError(f"Snapshot-generation revision is missing required token {token}.")
+    portfolio_snapshot_tables = (
+        "InvestmentAccountSnapshot",
+        "InvestmentAccountSnapshotItem",
+        "PortfolioSnapshot",
+        "PortfolioSnapshotInput",
+        "PortfolioSnapshotItem",
+        "PortfolioSnapshotItemAccount",
+    )
+    expected_portfolio_snapshot_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_investment_portfolio_snapshot_projections",
+        "affected_tables": portfolio_snapshot_tables,
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_portfolio_snapshot_metadata.items():
+        if getattr(portfolio_snapshot.module, key, None) != value:
+            raise RuntimeError(f"Portfolio-snapshot revision metadata is invalid for {key}.")
+    portfolio_snapshot_source = PORTFOLIO_SNAPSHOT_REVISION_PATH.read_text(encoding="utf-8")
+    for token in portfolio_snapshot_tables:
+        if f'"{token}"' not in portfolio_snapshot_source:
+            raise RuntimeError(f"Portfolio-snapshot revision is missing required token {token}.")
+
+    expected_market_baseline_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "allow_market_minute_snapshot_baseline",
+        "affected_tables": ("DailySnapshotBaseline",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_market_baseline_metadata.items():
+        if getattr(market_baseline.module, key, None) != value:
+            raise RuntimeError(f"Market-baseline revision metadata is invalid for {key}.")
+    market_baseline_source = MARKET_BASELINE_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "manual_recalculation",
+        "price_refresh",
+        "scheduled",
+    ):
+        if token not in market_baseline_source:
+            raise RuntimeError(f"Market-baseline revision is missing required token {token}.")
+
+    expected_history_series_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "finalize_history_series_storage",
+        "affected_tables": (
+            "AccountSnapshot",
+            "DailySnapshotBaseline",
+            "PortfolioSnapshotInput",
+            "UserReadModelPublicationWatermark",
+        ),
+        "prisma_schema_impact": "required",
+        "data_migration": True,
+    }
+    for key, value in expected_history_series_metadata.items():
+        if getattr(history_series.module, key, None) != value:
+            raise RuntimeError(f"History-series revision metadata is invalid for {key}.")
+    history_series_source = HISTORY_SERIES_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "holdings_recalculation",
+        "liabilitiesValueByCurrency",
+        "UserReadModelPublicationWatermark",
+        'INSERT INTO "public"."UserReadModelPublicationWatermark"',
+        'FROM "public"."UserReadModelPublication"',
+        "PortfolioSnapshotInput_authorized_account_user_fkey",
+    ):
+        if token not in history_series_source:
+            raise RuntimeError(f"History-series revision is missing required token {token}.")
+    expected_snapshot_jobs_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_snapshot_series_rebuild_orchestration",
+        "affected_tables": (
+            "SnapshotSeriesRebuildJob",
+            "SnapshotSeriesDirtyState",
+            "SnapshotSeriesCanonicalInvalidation",
+            "SnapshotSeriesScheduleState",
+        ),
+        "data_migration": True,
+    }
+    for key, value in expected_snapshot_jobs_metadata.items():
+        if getattr(snapshot_series_jobs.module, key, None) != value:
+            raise RuntimeError(f"Snapshot-series jobs revision metadata is invalid for {key}.")
+    history_drop_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "drop_legacy_portfolio_history_persistence",
+        "data_migration": True,
+        "destructive": True,
+        "irreversible": True,
+    }
+    for key, value in history_drop_metadata.items():
+        if getattr(history_drop.module, key, None) != value:
+            raise RuntimeError(f"History-drop revision metadata is invalid for {key}.")
+    history_drop_source = HISTORY_DROP_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        "legacy PortfolioHistory job lease is still active",
+        "SnapshotSeries migration proof",
+        "DROP TYPE",
+    ):
+        if token not in history_drop_source:
+            raise RuntimeError(f"History-drop revision is missing required safety token {token}.")
 
 
 def verify_schema_registry(

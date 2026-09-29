@@ -23,10 +23,12 @@ class Settings(BaseSettings):
     internal_auth_audience: str = "finance-app-python"
     internal_auth_clock_skew_seconds: int = 30
     coingecko_price_base_url: str = "https://api.coingecko.com/api/v3/simple/price"
+    coingecko_history_base_url: str = "https://api.coingecko.com/api/v3/coins"
     coingecko_price_timeout_seconds: float = 10.0
     coingecko_price_max_response_bytes: int = 1_048_576
     coingecko_price_user_agent: str = "finance-app/0.1"
     coingecko_demo_api_key: SecretStr | None = None
+    coingecko_pro_api_key: SecretStr | None = None
     twelve_data_quote_base_url: str = "https://api.twelvedata.com/quote"
     twelve_data_fx_base_url: str = "https://api.twelvedata.com/time_series"
     twelve_data_timeout_seconds: float = 10.0
@@ -43,6 +45,16 @@ class Settings(BaseSettings):
     background_job_lease_seconds: int = 300
     background_job_heartbeat_seconds: int = 15
     background_job_shutdown_grace_seconds: float = 5.0
+    portfolio_history_runtime_enabled: bool = False
+    portfolio_history_worker_id: str = "portfolio-history-api"
+    portfolio_history_worker_poll_seconds: float = 1.0
+    portfolio_history_worker_lease_seconds: int = 300
+    portfolio_history_worker_heartbeat_seconds: int = 15
+    portfolio_history_scheduler_poll_seconds: float = 30.0
+    portfolio_history_shutdown_grace_seconds: float = 5.0
+    scheduled_snapshot_refresh_runner_enabled: bool = False
+    scheduled_snapshot_refresh_interval_seconds: float = 300.0
+    scheduled_snapshot_refresh_shutdown_grace_seconds: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=("../../.env", ".env"),
@@ -67,6 +79,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "COINGECKO_PRICE_BASE_URL must be an absolute credential-free HTTPS URL"
             )
+        history_url = urlsplit(self.coingecko_history_base_url)
+        if (
+            history_url.scheme != "https"
+            or not history_url.hostname
+            or history_url.username is not None
+            or history_url.password is not None
+            or bool(history_url.query)
+            or bool(history_url.fragment)
+            or self.coingecko_history_base_url.endswith("/")
+            or any(character.isspace() for character in self.coingecko_history_base_url)
+        ):
+            raise ValueError(
+                "COINGECKO_HISTORY_BASE_URL must be an absolute credential-free HTTPS URL"
+            )
         if not 0 < self.coingecko_price_timeout_seconds <= 120:
             raise ValueError(
                 "COINGECKO_PRICE_TIMEOUT_SECONDS must be greater than zero and at most 120"
@@ -85,8 +111,28 @@ class Settings(BaseSettings):
             raise ValueError("COINGECKO_PRICE_USER_AGENT must be a safe non-empty value")
         if self.coingecko_demo_api_key is not None:
             demo_key = self.coingecko_demo_api_key.get_secret_value()
-            if not demo_key or demo_key != demo_key.strip() or "\r" in demo_key or "\n" in demo_key:
+            if (
+                not demo_key
+                or demo_key != demo_key.strip()
+                or "\r" in demo_key
+                or "\n" in demo_key
+                or len(demo_key) > 512
+            ):
                 raise ValueError("COINGECKO_DEMO_API_KEY must be a safe non-empty value")
+        if self.coingecko_pro_api_key is not None:
+            pro_key = self.coingecko_pro_api_key.get_secret_value()
+            if (
+                not pro_key
+                or pro_key != pro_key.strip()
+                or "\r" in pro_key
+                or "\n" in pro_key
+                or len(pro_key) > 512
+            ):
+                raise ValueError("COINGECKO_PRO_API_KEY must be a safe non-empty value")
+        if self.coingecko_demo_api_key is not None and self.coingecko_pro_api_key is not None:
+            raise ValueError(
+                "COINGECKO_DEMO_API_KEY and COINGECKO_PRO_API_KEY are mutually exclusive"
+            )
         quote_url = urlsplit(self.twelve_data_quote_base_url)
         if (
             quote_url.scheme != "https"
@@ -179,6 +225,44 @@ class Settings(BaseSettings):
             )
         if not 0 <= self.background_job_shutdown_grace_seconds <= 60:
             raise ValueError("BACKGROUND_JOB_SHUTDOWN_GRACE_SECONDS must be between zero and 60")
+        if (
+            not self.portfolio_history_worker_id
+            or self.portfolio_history_worker_id != self.portfolio_history_worker_id.strip()
+            or len(self.portfolio_history_worker_id) > 163
+            or any(character in self.portfolio_history_worker_id for character in "\r\n\0")
+        ):
+            raise ValueError("PORTFOLIO_HISTORY_WORKER_ID must be a safe non-empty value")
+        if not 0.1 <= self.portfolio_history_worker_poll_seconds <= 60:
+            raise ValueError("PORTFOLIO_HISTORY_WORKER_POLL_SECONDS must be between 0.1 and 60")
+        if not 30 <= self.portfolio_history_worker_lease_seconds <= 1800:
+            raise ValueError("PORTFOLIO_HISTORY_WORKER_LEASE_SECONDS must be between 30 and 1800")
+        if not (
+            1
+            <= self.portfolio_history_worker_heartbeat_seconds
+            < self.portfolio_history_worker_lease_seconds
+        ):
+            raise ValueError(
+                "PORTFOLIO_HISTORY_WORKER_HEARTBEAT_SECONDS must be positive and shorter "
+                "than the lease"
+            )
+        if not 0.1 <= self.portfolio_history_scheduler_poll_seconds <= 300:
+            raise ValueError("PORTFOLIO_HISTORY_SCHEDULER_POLL_SECONDS must be between 0.1 and 300")
+        if not 0 <= self.portfolio_history_shutdown_grace_seconds <= 60:
+            raise ValueError("PORTFOLIO_HISTORY_SHUTDOWN_GRACE_SECONDS must be between zero and 60")
+        if not 30 <= self.scheduled_snapshot_refresh_interval_seconds <= 3600:
+            raise ValueError(
+                "SCHEDULED_SNAPSHOT_REFRESH_INTERVAL_SECONDS must be between 30 and 3600"
+            )
+        if not 0 <= self.scheduled_snapshot_refresh_shutdown_grace_seconds <= 60:
+            raise ValueError(
+                "SCHEDULED_SNAPSHOT_REFRESH_SHUTDOWN_GRACE_SECONDS must be between zero and 60"
+            )
+        if self.portfolio_history_runtime_enabled and self.database_url is None:
+            raise ValueError(
+                "DATABASE_URL is required when the portfolio history runtime is enabled"
+            )
+        if self.scheduled_snapshot_refresh_runner_enabled and self.database_url is None:
+            raise ValueError("DATABASE_URL is required when scheduled snapshot refresh is enabled")
         if self.environment != "production":
             return self
 
@@ -199,6 +283,12 @@ class Settings(BaseSettings):
             errors.append("MARKET_EVIDENCE_SOURCE_MODE must be canonical in production")
         if self.background_jobs_enabled and self.database_url is None:
             errors.append("DATABASE_URL is required when background jobs are enabled")
+        if not self.portfolio_history_runtime_enabled:
+            errors.append("PORTFOLIO_HISTORY_RUNTIME_ENABLED must be true")
+        if not self.scheduled_snapshot_refresh_runner_enabled:
+            errors.append("SCHEDULED_SNAPSHOT_REFRESH_RUNNER_ENABLED must be true")
+        if self.scheduled_snapshot_refresh_runner_enabled and self.database_url is None:
+            errors.append("DATABASE_URL is required when scheduled snapshot refresh is enabled")
 
         if errors:
             raise ValueError("Invalid production settings: " + "; ".join(errors))

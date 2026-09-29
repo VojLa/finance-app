@@ -140,11 +140,14 @@ async def test_3o_upgrade_preserves_complete_v2_and_guards_unknown_evidence_down
         finally:
             await target.close()
 
-        upgraded = _run_alembic(target_database_url, "upgrade", "head")
+        upgraded = _run_alembic(target_database_url, "upgrade", "3o0001unkbasis")
         assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
 
         target = await asyncpg.connect(target_dsn)
         try:
+            assert await target.fetchval("SELECT version_num FROM public.alembic_version") == (
+                "3o0001unkbasis"
+            )
             complete = await target.fetchrow(
                 'SELECT "avgBuyPrice", "costBasisByCurrency" FROM public."Holding" WHERE id = $1',
                 f"{prefix}-holding",

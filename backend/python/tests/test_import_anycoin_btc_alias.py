@@ -24,6 +24,10 @@ from app.modules.imports.anycoin_btc_alias import (
     OnboardAnycoinBtcAliasResult,
     _PostedAssetMovement,
 )
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+)
 
 CREATED_AT = datetime(2026, 8, 19, 10, 30, 0, 123000)
 
@@ -79,8 +83,8 @@ class _Writer:
             return OnboardAssetAliasResult(
                 alias_id="alias-btc",
                 asset_id=command.asset_id,
-                provider=AssetAliasProvider.coingecko,
-                external_id="bitcoin",
+                provider=command.provider,
+                external_id=command.external_id,
                 disposition=(
                     AssetAliasOnboardingDisposition.created
                     if len(self.commands) == 1
@@ -130,6 +134,7 @@ async def test_exact_anycoin_btc_allowlist_writes_once_and_replay_is_idempotent(
     session = _Session()
     service = AnycoinBtcAliasService(
         session,  # type: ignore[arg-type]
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         repository=repository,
         writer=writer,
     )
@@ -143,6 +148,7 @@ async def test_exact_anycoin_btc_allowlist_writes_once_and_replay_is_idempotent(
     ]
     assert len(writer.commands) == 2
     assert all(command.external_id == "bitcoin" for command in writer.commands)
+    assert all(command.provider is AssetAliasProvider.coingecko for command in writer.commands)
     assert all(command.expected_symbol == "BTC" for command in writer.commands)
     assert repository.read_only_calls == repository.list_calls == 2
 
@@ -154,6 +160,7 @@ async def test_non_allowlisted_symbols_never_write(symbol: str) -> None:
     session = _Session()
     result = await AnycoinBtcAliasService(
         session,  # type: ignore[arg-type]
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         repository=repository,
         writer=writer,
     ).onboard(_command())
@@ -168,6 +175,7 @@ async def test_non_anycoin_source_never_reads_or_writes() -> None:
     session = _Session()
     result = await AnycoinBtcAliasService(
         session,  # type: ignore[arg-type]
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         repository=repository,
         writer=writer,
     ).onboard(_command(ImportSource.trading212))
@@ -192,6 +200,7 @@ async def test_btc_without_one_exact_canonical_identity_fails_before_writer(
     session = _Session()
     service = AnycoinBtcAliasService(
         session,  # type: ignore[arg-type]
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         repository=_Repository((movement,)),
         writer=writer,
     )
@@ -207,6 +216,7 @@ async def test_multiple_btc_assets_fail_before_writer() -> None:
     session = _Session()
     service = AnycoinBtcAliasService(
         session,  # type: ignore[arg-type]
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         repository=_Repository(
             (
                 _movement(asset_id="asset-a", listing_id="listing-a"),
@@ -229,6 +239,7 @@ async def test_concurrent_service_calls_delegate_to_writer_identity_lock_boundar
         session = _Session()
         return await AnycoinBtcAliasService(
             session,  # type: ignore[arg-type]
+            source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
             repository=_Repository((_movement(),)),
             writer=writer,
         ).onboard(_command())
@@ -243,3 +254,27 @@ async def test_concurrent_service_calls_delegate_to_writer_identity_lock_boundar
         AssetAliasOnboardingDisposition.replayed,
     }
     assert len(writer.commands) == 2
+
+
+async def test_local_free_anycoin_btc_writes_only_yahoo_btc_usd() -> None:
+    writer = _Writer()
+    result = await AnycoinBtcAliasService(
+        _Session(),  # type: ignore[arg-type]
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        repository=_Repository((_movement(),)),
+        writer=writer,
+    ).onboard(_command())
+
+    assert len(result.aliases) == 1
+    assert writer.commands == [
+        OnboardAssetAliasCommand(
+            asset_id="asset-btc",
+            provider=AssetAliasProvider.yahoo_finance,
+            external_id="BTC-USD",
+            expected_symbol="BTC",
+            expected_asset_type=AssetType.crypto,
+            expected_currency="BTC",
+            expected_isin=None,
+            created_at=CREATED_AT,
+        )
+    ]

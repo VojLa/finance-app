@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 from collections.abc import Coroutine
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 import asyncpg
 import pytest
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -52,22 +56,18 @@ from app.db.models.transactions import (
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.modules.budgets.service import month_range
+from app.modules.operational_dashboard.repository import OperationalDashboardRepository
 from app.modules.operational_dashboard.service import OperationalDashboardService
 from app.modules.transactions.service import TransactionService
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BASELINE_SCHEMA = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
 
-_SCHEMA = (
-    Path(__file__).resolve().parents[1]
-    / "database"
-    / "revisions"
-    / "3p0001rbfoundation"
-    / "schema.sql"
-)
 _NOW = datetime(2026, 8, 20, 12)
 _USER_ID = "visibility-user"
 _ACCOUNT_ID = "visibility-account"
@@ -81,21 +81,48 @@ def _run[T](awaitable: Coroutine[Any, Any, T]) -> T:
 async def _create_database() -> tuple[asyncpg.Connection, str, str]:
     assert DATABASE_URL is not None
     source_url = make_url(normalize_database_url(DATABASE_URL))
+    assert source_url.database == "finance_app_stabilization_test"
     database_name = f"finance_app_visibility_{uuid4().hex}"
     admin_url = source_url.set(drivername="postgresql", database="postgres")
     target_url = source_url.set(database=database_name)
     admin = await asyncpg.connect(admin_url.render_as_string(hide_password=False))
-    await admin.execute(f'CREATE DATABASE "{database_name}"')
-    target = await asyncpg.connect(
-        target_url.set(drivername="postgresql").render_as_string(hide_password=False)
-    )
+    target_database_url = target_url.render_as_string(hide_password=False)
     try:
-        await target.execute(
-            _SCHEMA.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
+        await admin.execute(f'CREATE DATABASE "{database_name}"')
+        target = await asyncpg.connect(
+            target_url.set(drivername="postgresql").render_as_string(hide_password=False)
         )
-    finally:
-        await target.close()
-    return admin, database_name, target_url.render_as_string(hide_password=False)
+        try:
+            baseline = BASELINE_SCHEMA.read_text(encoding="utf-8").replace(
+                'CREATE SCHEMA "public";\n', "", 1
+            )
+            await target.execute(baseline)
+        finally:
+            await target.close()
+
+        environment = os.environ.copy()
+        environment["DATABASE_URL"] = target_database_url
+        for arguments in (("stamp", "3d0001base"), ("upgrade", "head")):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "alembic",
+                    "-c",
+                    str(BACKEND_ROOT / "alembic.ini"),
+                    *arguments,
+                ],
+                cwd=BACKEND_ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+    except BaseException:
+        await _drop_database(admin, database_name)
+        raise
+    return admin, database_name, target_database_url
 
 
 async def _drop_database(admin: asyncpg.Connection, database_name: str) -> None:
@@ -671,6 +698,79 @@ async def _assert_readers(database_url: str) -> None:
             assert dashboard.expense_by_category[0].amount_czk == Decimal("185.000000")
             assert dashboard.budget is not None
             assert dashboard.budget.spent_czk == Decimal("185.000000")
+
+            statements: list[str] = []
+
+            def record_statement(
+                _connection: object, _cursor: object, statement: str, *_: object
+            ) -> None:
+                statements.append(statement)
+
+            event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+            try:
+                recent = await OperationalDashboardRepository(session).recent_transactions(
+                    account_ids=(_ACCOUNT_ID,), limit=6
+                )
+            finally:
+                event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+            assert len(recent) == 6
+            assert [row.transaction.id for row, _, _ in recent] == sorted(
+                listed_types, reverse=True
+            )[:6]
+            assert all(row.transaction.id in listed_types for row, _, _ in recent)
+            assert statements
+            assert all(statement.upper().count("SELECT ") == 1 for statement in statements)
+    finally:
+        await engine.dispose()
+
+
+async def _assert_dashboard_consistent_read(database_url: str) -> None:
+    principal = AuthenticatedPrincipal(
+        user_id=_USER_ID,
+        email="visibility@example.test",
+        name=None,
+    )
+    engine = create_async_engine(normalize_database_url(database_url))
+    original = OperationalDashboardRepository.accessible_account_ids
+    injected = False
+
+    async def publish_after_membership_read(
+        repository: OperationalDashboardRepository, user_id: str
+    ) -> tuple[str, ...]:
+        nonlocal injected
+        account_ids = await original(repository, user_id)
+        assert (await repository.session.scalar(text("SHOW transaction_isolation"))) == (
+            "repeatable read"
+        )
+        assert (await repository.session.scalar(text("SHOW transaction_read_only"))) == "on"
+        if not injected:
+            injected = True
+            async with AsyncSession(engine) as writer:
+                writer.add(
+                    _transaction(
+                        transaction_id="concurrent-income",
+                        amount=Decimal("500"),
+                        transaction_type=TransactionType.income,
+                        classification=TransactionClassification.real_income,
+                        batch_id=None,
+                    )
+                )
+                await writer.commit()
+        return account_ids
+
+    try:
+        with patch.object(
+            OperationalDashboardRepository,
+            "accessible_account_ids",
+            publish_after_membership_read,
+        ):
+            async with AsyncSession(engine) as session:
+                response = await OperationalDashboardService(session).read(
+                    principal=principal, now=_NOW
+                )
+        assert injected
+        assert response.summary.current_month_income_czk == Decimal("110.000000")
+        assert all(row.id != "concurrent-income" for row in response.recent_transactions)
     finally:
         await engine.dispose()
 
@@ -680,6 +780,7 @@ async def _exercise() -> None:
     try:
         await _seed(database_url)
         await _assert_readers(database_url)
+        await _assert_dashboard_consistent_read(database_url)
     finally:
         await _drop_database(admin, database_name)
 

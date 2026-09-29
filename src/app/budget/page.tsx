@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { fmtCzk } from "@/lib/format"
 import { requestBudget, saveBudget } from "@/modules/budgets/budget-client"
 import type { Budget } from "@/modules/budgets/budget-contract"
@@ -36,6 +36,8 @@ export default function BudgetPage() {
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const budgetRequestId = useRef(0)
+  const [lastLoadedPeriod, setLastLoadedPeriod] = useState<string | null>(null)
 
   useEffect(() => {
     requestCategories()
@@ -48,17 +50,20 @@ export default function BudgetPage() {
   }, [])
 
   async function loadBudget() {
+    const requestId = ++budgetRequestId.current
     setLoading(true)
     setError(null)
     try {
       const data = await requestBudget(month, year)
+      if (requestId !== budgetRequestId.current) return
       setBudget(data)
+      setLastLoadedPeriod(`${year}-${month}`)
       setRollover(Boolean(data?.rollover))
     } catch {
-      setBudget(null)
+      if (requestId !== budgetRequestId.current) return
       setError("Rozpočet se nepodařilo načíst.")
     } finally {
-      setLoading(false)
+      if (requestId === budgetRequestId.current) setLoading(false)
     }
   }
 
@@ -118,6 +123,7 @@ export default function BudgetPage() {
 
   const totalLimit = Number(budget?.totalLimit ?? 0)
   const totalSpent = Number(budget?.totalSpent ?? 0)
+  const periodCurrent = !loading && lastLoadedPeriod === `${year}-${month}`
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -153,6 +159,10 @@ export default function BudgetPage() {
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
+      )}
+
+      {lastLoadedPeriod !== null && lastLoadedPeriod !== `${year}-${month}` && (
+        <p role="status" className="text-sm text-amber-700">Zobrazený rozpočet je z posledního načteného měsíce ({lastLoadedPeriod}).</p>
       )}
 
       {budget && budget.items.length > 0 && (
@@ -195,7 +205,7 @@ export default function BudgetPage() {
         </div>
       )}
 
-      {loading ? (
+      {loading && budget === null ? (
         <div className="text-gray-400 py-8 text-center">Nacitam...</div>
       ) : (
         <div className="space-y-3">
@@ -217,7 +227,7 @@ export default function BudgetPage() {
                     </span>
                     <button
                       onClick={() => deleteItem(item.categoryId)}
-                      disabled={isDeleting}
+                      disabled={isDeleting || !periodCurrent}
                       title="Odebrat z rozpoctu"
                       className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none disabled:opacity-40"
                     >
@@ -298,7 +308,7 @@ export default function BudgetPage() {
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || !periodCurrent}
               className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
               {saving ? "Ukladam..." : "Pridat"}
@@ -315,6 +325,7 @@ export default function BudgetPage() {
       ) : (
         <button
           onClick={() => setShowForm(true)}
+          disabled={!periodCurrent}
           className="w-full border border-dashed border-gray-300 rounded-xl py-3 text-sm text-gray-400 hover:border-blue-400 hover:text-blue-500 transition-colors"
         >
           + Pridat kategorii do rozpoctu

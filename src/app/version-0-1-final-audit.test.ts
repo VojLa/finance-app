@@ -31,7 +31,7 @@ describe("version 0.1 current browser boundary inventory", () => {
     expect(`${importHandler}\n${importApi}`).not.toMatch(
       /runImportCanonicalWorkflow|async parseImportBatch|async normalizeImportBatch|async deduplicateImportBatch|async classifyImportBatch|async canonicalPostImportBatch|async finalizeImportBatches|requestImportFinalization/
     )
-    expect(history).toContain("readSnapshotBackedPortfolioHistory")
+    expect(history).toContain("readGenerationPortfolioHistory")
     expect(`${accounts}\n${imports}\n${importHandler}\n${importApi}\n${history}`).not.toMatch(
       /@\/lib\/prisma|importCsvFilesAsync|getPortfolioSnapshotHistory/
     )
@@ -44,7 +44,7 @@ describe("version 0.1 current browser boundary inventory", () => {
 
     expect(portfolio).toContain("runPortfolioSnapshotWorkflow")
     expect(dashboard).toContain("runDashboardSnapshotWorkflow")
-    expect(history).toContain("readSnapshotBackedPortfolioHistory")
+    expect(history).toContain("readGenerationPortfolioHistory")
   })
 
   it("keeps current acceptance independent of unavailable historical Git objects", async () => {

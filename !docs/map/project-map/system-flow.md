@@ -1,5 +1,11 @@
 # System dependency flow
 
+Type: flow
+Status: current
+Owns: top-level direction of runtime dependencies
+Code: browser, Next.js adapters, FastAPI domains, PostgreSQL and providers
+Update when: a top-level handoff or authority direction changes
+
 ```text
 Identity → Accounts
 Accounts → Cash / Imports / Investments

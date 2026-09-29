@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import Link from "next/link"
 import { fmt } from "@/lib/format"
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
@@ -254,6 +254,9 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("")
   const [searchInput, setSearchInput] = useState("")
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
+  const transactionRequestId = useRef(0)
+  const [lastLoadedQuery, setLastLoadedQuery] = useState<string | null>(null)
 
   // Create
   const [showCreate, setShowCreate] = useState(false)
@@ -269,7 +272,7 @@ export default function TransactionsPage() {
   const [editError, setEditError] = useState("")
 
   useEffect(() => {
-    void requestCategories().then(setCategories)
+    void requestCategories().then(setCategories).catch(() => setLoadError("Kategorie se nepodařilo načíst."))
     let active = true
     void requestAccounts()
       .then((data) => {
@@ -293,17 +296,28 @@ export default function TransactionsPage() {
   }, [])
 
   const load = useCallback(async () => {
+    const requestId = ++transactionRequestId.current
+    const query = JSON.stringify([page, filterType, filterCategory, search])
     setLoading(true)
-    const data = await requestTransactions({
-      page,
-      type: filterType || undefined,
-      categoryId: filterCategory || undefined,
-      q: search || undefined,
-    })
-    setTransactions(data.transactions ?? [])
-    setTotal(data.total ?? 0)
-    setPages(data.pages ?? 1)
-    setLoading(false)
+    setLoadError("")
+    try {
+      const data = await requestTransactions({
+        page,
+        type: filterType || undefined,
+        categoryId: filterCategory || undefined,
+        q: search || undefined,
+      })
+      if (requestId !== transactionRequestId.current) return
+      setTransactions(data.transactions ?? [])
+      setTotal(data.total ?? 0)
+      setPages(data.pages ?? 1)
+      setLastLoadedQuery(query)
+    } catch {
+      if (requestId !== transactionRequestId.current) return
+      setLoadError("Transakce se nepodařilo načíst. Zobrazuji poslední načtený výsledek.")
+    } finally {
+      if (requestId === transactionRequestId.current) setLoading(false)
+    }
   }, [page, filterType, filterCategory, search])
 
   useEffect(() => {
@@ -616,7 +630,11 @@ export default function TransactionsPage() {
 
         {/* Table */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          {loading ? (
+          {loadError && <p role="alert" className="p-4 text-sm text-red-700">{loadError}</p>}
+          {lastLoadedQuery !== null && lastLoadedQuery !== JSON.stringify([page, filterType, filterCategory, search]) && (
+            <p role="status" className="p-4 text-sm text-amber-700">Zobrazené transakce jsou z předchozího filtru.</p>
+          )}
+          {loading && transactions.length === 0 ? (
             <div className="py-12 text-center text-gray-400">Načítám...</div>
           ) : transactions.length === 0 ? (
             <div className="py-12 text-center text-gray-400">

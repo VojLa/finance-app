@@ -226,6 +226,7 @@ async def _seed() -> None:
                 account_id="active-owner",
                 calculated_at=now,
                 updated_at=now,
+                cost_basis_by_currency={"CZK": "100.0000000000"},
             )
         )
         session.add(

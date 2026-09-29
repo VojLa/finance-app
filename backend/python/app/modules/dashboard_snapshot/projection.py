@@ -35,10 +35,10 @@ _POSTGRES_INTEGER_MAX = 2_147_483_647
 _INVESTMENT_ACCOUNT_TYPES = frozenset(
     (AccountType.broker, AccountType.exchange, AccountType.crypto_wallet)
 )
-_CASH_ACCOUNT_TYPES = frozenset((AccountType.bank, AccountType.cash, AccountType.savings))
-_LIABILITY_ACCOUNT_TYPES = frozenset(
-    (AccountType.credit_card, AccountType.loan, AccountType.mortgage)
+_CASH_ACCOUNT_TYPES = frozenset(
+    (AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card)
 )
+_LIABILITY_ACCOUNT_TYPES = frozenset((AccountType.loan, AccountType.mortgage))
 
 
 class DashboardSnapshotProjectionError(ValueError):

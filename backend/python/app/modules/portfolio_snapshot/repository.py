@@ -48,17 +48,21 @@ class PortfolioSnapshotRepository:
         timestamp: datetime,
         granularity: SnapshotGranularity,
         currency: str,
+        required_snapshot_id: str | None = None,
     ) -> tuple[AccountSnapshotModel, ...]:
+        conditions = (
+            AccountSnapshotModel.account_id == account_id,
+            AccountSnapshotModel.timestamp == timestamp,
+            AccountSnapshotModel.granularity == granularity,
+            AccountSnapshotModel.currency == currency,
+        )
+        statement = select(AccountSnapshotModel).where(*conditions)
+        if required_snapshot_id is not None:
+            statement = statement.where(AccountSnapshotModel.id == required_snapshot_id)
         result = await self.session.scalars(
-            select(AccountSnapshotModel)
-            .where(
-                AccountSnapshotModel.account_id == account_id,
-                AccountSnapshotModel.timestamp == timestamp,
-                AccountSnapshotModel.granularity == granularity,
-                AccountSnapshotModel.currency == currency,
+            statement.order_by(AccountSnapshotModel.id).execution_options(
+                autoflush=False, populate_existing=True
             )
-            .order_by(AccountSnapshotModel.id)
-            .execution_options(autoflush=False, populate_existing=True)
         )
         return tuple(result)
 

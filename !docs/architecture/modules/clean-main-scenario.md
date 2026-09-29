@@ -1,5 +1,11 @@
 ## Clean main scenario and frontend CI
 
+Type: historical
+Status: historical
+Owns: milestone evidence for the clean main scenario
+Code: frontend boundary and CI at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R8 adds a release acceptance boundary rather than a new domain module. A
 dedicated PostgreSQL 16 database is bootstrapped through the supported
 canonical-baseline/Alembic path and proves the active production chain:

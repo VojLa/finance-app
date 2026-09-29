@@ -72,6 +72,7 @@ class ReadAuthorizedPortfolioSnapshotResult:
     """Public-safe result containing only the pure portfolio view."""
 
     view: PortfolioSnapshotView
+    valuation_timestamp: datetime | None = None
 
 
 class _Reader(Protocol):
@@ -251,7 +252,9 @@ class AuthorizedExactPortfolioSnapshotReader:
             )
             if self.session.in_transaction() is not True:
                 raise portfolio_snapshot_unavailable()
-            return ReadAuthorizedPortfolioSnapshotResult(view=view)
+            return ReadAuthorizedPortfolioSnapshotResult(
+                view=view, valuation_timestamp=read.valuation_timestamp
+            )
         except (AccountNotFoundError, AccountAccessDeniedError):
             raise
         except PortfolioSnapshotUnavailableError:

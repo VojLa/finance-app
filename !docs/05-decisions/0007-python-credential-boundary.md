@@ -1,5 +1,11 @@
 # 0007 Python owns credentials; NextAuth owns browser sessions
 
+Type: historical
+Status: historical
+Owns: retained rationale for the credential/session boundary
+Code: Python auth and NextAuth bridge
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted and implemented by R11-C.

@@ -5,7 +5,7 @@ FastAPI business backend, and PostgreSQL persistence.
 
 ## Runtime architecture
 
-- Next.js 14, React, TypeScript, Tailwind CSS, and NextAuth JWT sessions.
+- Next.js 15, React, TypeScript, Tailwind CSS, and NextAuth JWT sessions.
 - Thin same-origin Next.js API adapters forward authenticated requests to FastAPI.
 - Python owns credentials, authorization over financial data, imports, accounts,
   transactions, budgets, investments, market evidence, snapshots, and read models.
@@ -23,7 +23,7 @@ docker compose up --build
 ```
 
 The UI is at `http://localhost:3000`, FastAPI at `http://localhost:8010`, and
-PostgreSQL at `localhost:5433`.
+PostgreSQL at `localhost:5434` by default (override with `FINANCE_APP_DB_PORT`).
 
 For a new empty database:
 
@@ -93,5 +93,6 @@ the `.next` cache.
 ## Documentation
 
 Current architecture is documented in [`!docs/`](!docs/), planned scope and
-decisions in [`!planning/`](!planning/), and execution/audit records in
+decisions in [`!planning/`](!planning/), and active Codex workflow in
+[`.agents/`](.agents/). Historical execution and audit records remain in
 [`ChatGPT/`](ChatGPT/).

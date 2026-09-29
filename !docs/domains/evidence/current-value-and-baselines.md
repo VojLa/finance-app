@@ -1,5 +1,11 @@
 ## Current value versus daily-baseline delta
 
+Type: historical
+Status: historical
+Owns: milestone evidence for current value and baselines
+Code: current-value and baseline implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 The authoritative Version 0.1 invariant defines current/live value as the
 latest exact daily snapshot advanced by canonical events after that snapshot.
 The observed production model currently implements a different persisted
@@ -64,8 +70,9 @@ state row lock makes visible revision order equivalent to committed canonical
 state order and prevents sequence gaps caused by independently allocated
 numbers.
 
-Every newly created day AccountSnapshot carries one immutable
-`AccountSnapshotCanonicalBoundary`. Cash accounts retain the canonical cutoff.
+Every newly created day AccountSnapshot and every publishable minute snapshot
+(`import_event`, `manual_recalculation`, `price_refresh`, or `scheduled`) carries
+one immutable `AccountSnapshotCanonicalBoundary`. Cash accounts retain the canonical cutoff.
 Investment accounts also require equal investment and Holding watermarks.
 Liability accounts retain the exact selected LiabilityBalance ID and validate
 that its journal revision was included. A mixed-currency primary and companion
@@ -83,6 +90,11 @@ active account set, account type/currency/archive state, calculation version,
 all snapshot and boundary identities, contiguous physical journal roots,
 fresh Holdings, and liability lineage. If the newest candidate is invalid it
 fails closed and never selects an older baseline.
+
+Changing `User.baseCurrency` therefore makes every baseline in the prior currency
+unavailable immediately. Current-value repeats this exact-baseline validation in
+its read-only planning and projection transactions, so it cannot relabel the old
+aggregate while the next correctly denominated baseline is being produced.
 
 A later revision with `financialTimestamp <= baseline.timestamp` proves a
 backfill that was absent from the baseline but economically belongs at or

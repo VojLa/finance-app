@@ -4,7 +4,7 @@ import { jwtVerify } from "jose"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { PythonApiConfig } from "./config"
-import { readSnapshotBackedPortfolioHistory } from "./portfolio-history"
+import { readGenerationPortfolioHistory } from "./portfolio-history"
 
 const CONFIG: PythonApiConfig = {
   backendUrl: "https://python.example.test/base",
@@ -16,10 +16,24 @@ const CONFIG: PythonApiConfig = {
 }
 const HISTORY = {
   range: "1Y" as const,
+  state: "ready" as const,
   currency: "EUR",
+  generationId: "generation-1",
+  publicationVersion: 1,
+  coveredThrough: "2036-01-01T23:59:00.000",
+  preferredResolutionMinutes: 1440,
+  resolutions: [1440],
+  coverage: [
+    {
+      resolutionMinutes: 1440,
+      start: "2036-01-01T00:00:00.000",
+      end: "2036-01-02T00:00:00.000",
+    },
+  ],
   points: [
     {
       timestamp: "2036-01-01T00:00:00.000",
+      resolutionMinutes: 1440,
       cashValue: "10.000000",
       investmentValue: "20.000000",
       liabilitiesValue: "5.000000",
@@ -43,12 +57,12 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe("snapshot-backed portfolio history transport", () => {
+describe("generation portfolio history transport", () => {
   it("uses the generated GET operation with exact query and server identity", async () => {
     const fetchImplementation = vi.fn<typeof fetch>(async () => jsonResponse(HISTORY))
     const tokenIssuer = vi.fn(async () => "internal-token")
 
-    const result = await readSnapshotBackedPortfolioHistory(
+    const result = await readGenerationPortfolioHistory(
       { userId: "user-1", email: "user@example.test" },
       "1Y",
       { config: CONFIG, fetchImplementation, tokenIssuer }
@@ -70,6 +84,21 @@ describe("snapshot-backed portfolio history transport", () => {
     expect(fetchImplementation.mock.calls[0][1]?.cache).toBe("no-store")
   })
 
+  it("forwards a selected account identifier to Python", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => jsonResponse(HISTORY))
+
+    await readGenerationPortfolioHistory(
+      { userId: "user-1" },
+      "1Y",
+      { config: CONFIG, fetchImplementation, tokenIssuer: vi.fn(async () => "internal-token") },
+      "account-1"
+    )
+
+    expect(requestFrom(...fetchImplementation.mock.calls[0]).url).toBe(
+      "https://python.example.test/base/api/v1/portfolio/history?range=1Y&accountId=account-1"
+    )
+  })
+
   it("creates a fresh bearer token for every request", async () => {
     const fetchImplementation = vi.fn<typeof fetch>(async () => jsonResponse(HISTORY))
     const tokenIssuer = vi
@@ -77,12 +106,12 @@ describe("snapshot-backed portfolio history transport", () => {
       .mockResolvedValueOnce("token-with-jti-1")
       .mockResolvedValueOnce("token-with-jti-2")
 
-    await readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+    await readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
       config: CONFIG,
       fetchImplementation,
       tokenIssuer,
     })
-    await readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+    await readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
       config: CONFIG,
       fetchImplementation,
       tokenIssuer,
@@ -105,7 +134,7 @@ describe("snapshot-backed portfolio history transport", () => {
     })
 
     for (const range of ["1Y", "1Y"] as const) {
-      await readSnapshotBackedPortfolioHistory(
+      await readGenerationPortfolioHistory(
         { userId: "user-1", email: "user@example.test" },
         range,
         { config: CONFIG, fetchImplementation }
@@ -140,7 +169,7 @@ describe("snapshot-backed portfolio history transport", () => {
     )
 
     await expect(
-      readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+      readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
         config: CONFIG,
         fetchImplementation,
         tokenIssuer: vi.fn(async () => "token"),
@@ -167,7 +196,7 @@ describe("snapshot-backed portfolio history transport", () => {
     )
 
     await expect(
-      readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+      readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
         config: CONFIG,
         fetchImplementation,
         tokenIssuer: vi.fn(async () => "token"),
@@ -185,7 +214,7 @@ describe("snapshot-backed portfolio history transport", () => {
     )
 
     await expect(
-      readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+      readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
         config: CONFIG,
         fetchImplementation,
         tokenIssuer: vi.fn(async () => "token"),
@@ -203,7 +232,7 @@ describe("snapshot-backed portfolio history transport", () => {
     )
 
     await expect(
-      readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+      readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
         config: CONFIG,
         fetchImplementation,
         tokenIssuer: vi.fn(async () => "token"),
@@ -233,7 +262,7 @@ describe("snapshot-backed portfolio history transport", () => {
     }
 
     for (const attempt of [1, 2]) {
-      const result = readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", options)
+      const result = readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", options)
       await expect(result).rejects.toHaveProperty("message", "The Python API is unavailable.")
       await expect(result).rejects.not.toThrow(CONFIG.backendUrl)
       await expect(result).rejects.not.toThrow(token)
@@ -251,7 +280,7 @@ describe("snapshot-backed portfolio history transport", () => {
           )
         })
     )
-    const result = readSnapshotBackedPortfolioHistory({ userId: "user-1" }, "1Y", {
+    const result = readGenerationPortfolioHistory({ userId: "user-1" }, "1Y", {
       config: { ...CONFIG, timeoutMs: 1000 },
       fetchImplementation,
       tokenIssuer: vi.fn(async () => "token"),

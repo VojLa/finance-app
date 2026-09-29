@@ -233,6 +233,7 @@ def _account_evidence(
             or membership.user_id != user_id
             or not isinstance(account.type, AccountType)
             or not isinstance(account.is_archived, bool)
+            or not isinstance(value.has_canonical_history, bool)
             or not isinstance(membership.role, AccountMemberRole)
             or not isinstance(membership.relation_type, AccountRelationType)
             or membership.accepted_at is None
@@ -254,6 +255,7 @@ def _account_evidence(
                 accepted_at=accepted_at,
                 is_archived=account.is_archived,
                 archived_at=archived_at,
+                has_canonical_history=value.has_canonical_history,
             )
         )
     return tuple(mapped)
@@ -394,6 +396,7 @@ class SnapshotRefreshEvidenceService:
         reuse_ids = tuple(target.account_id for target in reuse_only_targets)
         snapshots = (
             await self.repository.load_exact_reuse_snapshots(
+                user_id=canonical.user_id,
                 account_ids=reuse_ids,
                 timestamp=plan.net_worth_target.snapshot_timestamp,
                 granularity=plan.net_worth_target.granularity,

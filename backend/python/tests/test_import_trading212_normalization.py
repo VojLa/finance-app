@@ -2,10 +2,16 @@ from decimal import Decimal
 
 import pytest
 
-from app.db.models.enums import ImportSource, InvestmentEventType
+from app.db.models.enums import (
+    ImportSource,
+    InvestmentEventType,
+    TransactionClassification,
+    TransactionType,
+)
 from app.modules.imports.classification import (
     InvestmentEventPostingIntent,
     NeedsReviewPostingIntent,
+    TransactionPostingIntent,
     classify_import_row,
 )
 from app.modules.imports.normalizers import normalize_import_row
@@ -227,7 +233,6 @@ def test_buy_preserves_filled_realized_pnl_for_classifier_review() -> None:
     ("action", "expected"),
     [
         ("Dividend (Tax Exempted)", InvestmentEventType.dividend),
-        ("Spending cashback", InvestmentEventType.interest),
         ("Deposit", InvestmentEventType.cash_deposit),
         ("Withdrawal", InvestmentEventType.cash_withdrawal),
         ("Currency conversion", InvestmentEventType.currency_conversion),
@@ -291,7 +296,70 @@ def test_directionless_trading212_asset_transfer_requires_review() -> None:
     assert intent.errors[0].code.value == "missing_asset_direction"
 
 
-@pytest.mark.parametrize("action", ["Card debit", "Card cost", "New card cost", "Unknown refund"])
+@pytest.mark.parametrize(
+    ("action", "amount"),
+    [
+        ("Card debit", "-12.5"),
+        ("New card cost", "-5"),
+        ("Spending cashback", "1.25"),
+    ],
+)
+def test_trading_card_cash_rows_remain_operational_transactions(action: str, amount: str) -> None:
+    result = _normalize(
+        Action=action,
+        Ticker="",
+        ISIN="",
+        Name="Coffee shop",
+        **{
+            "No. of shares": "",
+            "Price / share": "",
+            "Currency (Price / share)": "",
+            "Total": amount.removeprefix("-"),
+        },
+    )
+
+    assert result.validation_errors is None
+    assert result.data is not None
+    assert result.data["kind"] == "transaction"
+    assert result.data["amount"] == amount
+    assert result.data["currency"] == "EUR"
+    assert result.data["description"] == "Coffee shop"
+    assert result.data["counterparty"] == "Coffee shop"
+    intent = classify_import_row(source=ImportSource.trading212, normalized_data=result.data)
+    assert isinstance(intent, TransactionPostingIntent)
+    assert intent.amount == Decimal(amount)
+    expected_type = TransactionType.income if Decimal(amount) > 0 else TransactionType.expense
+    expected_classification = (
+        TransactionClassification.real_income
+        if Decimal(amount) > 0
+        else TransactionClassification.real_expense
+    )
+    assert intent.transaction_type is expected_type
+    assert intent.transaction_classification is expected_classification
+
+
+def test_trading_card_fallback_deduplication_distinguishes_merchants_and_actions() -> None:
+    common = {
+        "ID": "",
+        "Ticker": "",
+        "ISIN": "",
+        "No. of shares": "",
+        "Price / share": "",
+        "Currency (Price / share)": "",
+        "Total": "12.50",
+    }
+    coffee = _normalize(Action="Card debit", Name="Coffee shop", **common)
+    grocer = _normalize(Action="Card debit", Name="Grocer", **common)
+    card_cost = _normalize(Action="New card cost", Name="Coffee shop", **common)
+
+    assert coffee.validation_errors is None
+    assert grocer.validation_errors is None
+    assert card_cost.validation_errors is None
+    assert coffee.deduplication_key != grocer.deduplication_key
+    assert coffee.deduplication_key != card_cost.deduplication_key
+
+
+@pytest.mark.parametrize("action", ["Card cost", "Unknown refund"])
 def test_unsupported_actions_require_review(action: str) -> None:
     result = _normalize(Action=action)
     assert result.data is None

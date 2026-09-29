@@ -211,11 +211,10 @@ async def _seed_funded_broker_and_refresh(database_url: str, prefix: str) -> Non
                     is_recalculated=False,
                 )
             )
-            assert {item.account_id for item in refreshed.account_snapshots} == {
-                broker_id,
-                exchange_id,
-            }
-            assert refreshed.selected_account_snapshot_count == 2
+            # A new empty account has initialized Holding state but no canonical
+            # financial history, so it is not a snapshot dependency.
+            assert {item.account_id for item in refreshed.account_snapshots} == {broker_id}
+            assert refreshed.selected_account_snapshot_count == 1
 
         async with AsyncSession(engine) as session:
             snapshots = tuple(
@@ -227,10 +226,10 @@ async def _seed_funded_broker_and_refresh(database_url: str, prefix: str) -> Non
                     )
                 ).all()
             )
-            assert len(snapshots) == 2
+            assert len(snapshots) == 1
             by_account = {snapshot.account_id: snapshot for snapshot in snapshots}
             assert by_account[broker_id].total_value == Decimal("1000.000000")
-            assert by_account[exchange_id].total_value == Decimal("0.000000")
+            assert exchange_id not in by_account
             net_worth = await session.scalar(
                 select(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == user_id)
             )
@@ -272,7 +271,7 @@ async def test_previous_head_upgrade_initializes_only_proven_empty_investment_st
         finally:
             await target.close()
 
-        upgraded = _run_alembic(target_database_url, "upgrade", "head")
+        upgraded = _run_alembic(target_database_url, "upgrade", "3n0001emptyhold")
         assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
 
         target = await asyncpg.connect(target_dsn)
@@ -318,6 +317,16 @@ async def test_previous_head_upgrade_initializes_only_proven_empty_investment_st
         assert downgrade.returncode != 0
         assert (
             "Cannot remove initialized empty investment Holding revisions automatically."
+            in downgrade.stdout + downgrade.stderr
+        )
+
+        upgraded = _run_alembic(target_database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
+
+        downgrade = _run_alembic(target_database_url, "downgrade", "400001anycoinvaluation")
+        assert downgrade.returncode != 0
+        assert (
+            "Temporal snapshot-series metadata is irreversible after publication."
             in downgrade.stdout + downgrade.stderr
         )
 

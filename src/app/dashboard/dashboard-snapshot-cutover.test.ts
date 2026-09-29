@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -8,12 +7,6 @@ const ROOT = process.cwd()
 
 async function source(relativePath: string): Promise<string> {
   return readFile(path.join(ROOT, relativePath), "utf8")
-}
-
-async function sha256(relativePath: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(path.join(ROOT, relativePath)))
-    .digest("hex")
 }
 
 describe("dashboard snapshot cutover boundaries", () => {
@@ -34,6 +27,9 @@ describe("dashboard snapshot cutover boundaries", () => {
     expect(page).not.toMatch(
       /cashValueCzk|portfolioValueCzk|liabilitiesValueCzk|netWorthCzk|accountBalances/
     )
+    expect(page).toContain("financialState.current.isStale")
+    expect(page).toContain("financialState.current.valuationTimestamp")
+    expect(page).toContain("Ceny jsou starší než 30 minut")
     expect(operationalContract).not.toMatch(
       /cashValueCzk|portfolioValueCzk|liabilitiesValueCzk|netWorthCzk|accountBalances/
     )
@@ -100,18 +96,21 @@ describe("dashboard snapshot cutover boundaries", () => {
     expect(allocation).toContain("model.assetTypeAllocations.map")
   })
 
-  it("keeps dashboard presentation fixed and uses the Python operational route", async () => {
-    await expect(sha256("src/app/portfolio/page.tsx")).resolves.toBe(
-      "8778ba79c9ad72dd8e7e956864e6b1b3637537ea9299818b7a10d681a513c7f1"
-    )
+  it("keeps dashboard and portfolio routes on the Python publication boundary", async () => {
+    const portfolioPage = await source("src/app/portfolio/page.tsx")
+    expect(portfolioPage).toContain("requestPortfolioPageState")
+    expect(portfolioPage).toContain("startPortfolioHistoryRequest")
+    expect(portfolioPage).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)
+
     const route = await source("src/app/api/dashboard/route.ts")
     expect(route).toContain("createPythonOperationalDashboardApi")
     expect(route).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)
-    await expect(sha256("src/app/api/snapshot-workflow/portfolio/route.ts")).resolves.toBe(
-      "add630f02a576ea7cfb826810b050f15a0480614fe9990b5a7b9367f2c06365c"
-    )
-    await expect(sha256("src/app/api/snapshot-workflow/dashboard/route.ts")).resolves.toBe(
-      "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
+    const portfolioRoute = await source("src/app/api/snapshot-workflow/portfolio/route.ts")
+    const dashboardRoute = await source("src/app/api/snapshot-workflow/dashboard/route.ts")
+    expect(portfolioRoute).toContain("runPortfolioSnapshotWorkflow")
+    expect(dashboardRoute).toContain("runDashboardSnapshotWorkflow")
+    expect(`${portfolioRoute}\n${dashboardRoute}`).not.toMatch(
+      /@\/lib\/prisma|getCzkRates|toCzk|accountAccess/
     )
     const generated = await source("src/generated/python-api.ts")
     expect(generated).toContain("OperationalDashboardResponse")

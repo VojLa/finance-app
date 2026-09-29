@@ -58,7 +58,7 @@ class HttpxYahooFinanceChartTransport:
             or start.tzinfo is not None
             or end.tzinfo is not None
             or start >= end
-            or interval not in {"1m", "1d"}
+            or interval not in {"1m", "30m", "1d"}
         ):
             raise MarketEvidenceStateError()
         try:

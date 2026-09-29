@@ -71,7 +71,7 @@ async def _create_pre_3p_database(prefix: str) -> tuple[asyncpg.Connection, URL]
 
 async def _drop_database(admin: asyncpg.Connection, target_url: URL) -> None:
     database_name = target_url.database
-    assert database_name is not None
+    assert database_name is not None and database_name.startswith("finance_app_3p_manifest_")
     await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
     await admin.close()
 
@@ -217,6 +217,7 @@ async def _seed_completion_publication(target_url: URL, *, prefix: str, job_id: 
     )
     account_id = f"{prefix}-queued"
     user_id = f"{prefix}-user"
+    generation_id = f"{prefix}-generation"
     bucket = AT.replace(second=0, microsecond=0)
     try:
         await connection.execute(
@@ -232,63 +233,111 @@ async def _seed_completion_publication(target_url: URL, *, prefix: str, job_id: 
             """
             INSERT INTO "public"."AccountCanonicalState"
                 ("accountId", "lastRevision", "lastInvestmentRevision", "holdingRevision", "updatedAt")
-            VALUES ($1, 0, 0, NULL, $2)
-            ON CONFLICT ("accountId") DO NOTHING
+            VALUES ($1, 1, 1, 1, $2)
+            ON CONFLICT ("accountId") DO UPDATE SET
+                "lastRevision" = 1, "lastInvestmentRevision" = 1,
+                "holdingRevision" = 1, "updatedAt" = EXCLUDED."updatedAt"
             """,
             account_id,
             AT,
         )
         await connection.execute(
             """
+            INSERT INTO "public"."AccountCanonicalChange"
+                ("accountId", "revision", "kind", "entityId", "financialTimestamp", "createdAt")
+            VALUES ($1, 1, 'investment_event', $2, $3, $3)
+            """,
+            account_id,
+            f"{prefix}-canonical-seed",
+            bucket,
+        )
+        await connection.execute(
+            """
+            INSERT INTO "public"."SnapshotGeneration" ("id", "state", "createdAt", "publishedAt")
+            VALUES ($1, 'published', $2, $2)
+            """,
+            generation_id,
+            bucket,
+        )
+        await connection.execute(
+            """
+            INSERT INTO "public"."SnapshotGenerationTarget"
+                ("generationId", "userId", "createdAt")
+            VALUES ($1, $2, $3)
+            """,
+            generation_id,
+            user_id,
+            bucket,
+        )
+        await connection.execute(
+            """
             INSERT INTO "public"."NetWorthSnapshot"
                 ("id", "userId", "timestamp", "granularity", "source", "currency", "cashValue",
                  "portfolioValue", "liabilitiesValue", "totalNetWorth", "isRecalculated", "calculatedAt",
-                 "calculationVersion", "createdAt")
+                 "calculationVersion", "createdAt", "generationId")
             VALUES ($1, $2, $3, 'minute'::"public"."SnapshotGranularity",
-                    'import_event'::"public"."SnapshotSource", 'CZK', 0, 0, 0, 0, false, $3, 1, $3)
+                    'import_event'::"public"."SnapshotSource", 'CZK', 0, 0, 0, 0, false, $3, 1, $3, $4)
             """,
             f"{prefix}-net-worth",
             user_id,
             bucket,
+            generation_id,
         )
         await connection.execute(
             """
             INSERT INTO "public"."AccountSnapshot"
                 ("id", "accountId", "timestamp", "granularity", "source", "currency", "cashValue",
                  "investmentValue", "investmentCostBasis", "liabilitiesValue", "totalValue",
-                 "isRecalculated", "calculatedAt", "calculationVersion", "createdAt")
+                 "isRecalculated", "calculatedAt", "calculationVersion", "createdAt", "generationId")
             VALUES ($1, $2, $3, 'minute'::"public"."SnapshotGranularity",
-                    'import_event'::"public"."SnapshotSource", 'CZK', 0, 0, NULL, 0, 0, false, $3, 1, $3)
+                    'import_event'::"public"."SnapshotSource", 'CZK', 0, 0, NULL, 0, 0, false, $3, 1, $3, $4)
             """,
             f"{prefix}-account-snapshot",
             account_id,
+            bucket,
+            generation_id,
+        )
+        await connection.execute(
+            """
+            INSERT INTO "public"."PortfolioSnapshot"
+                ("id", "userId", "generationId", "timestamp", "valuationTimestamp", "granularity",
+                 "source", "currency", "cashValue", "investmentValue", "feesValue", "taxesValue",
+                 "calculatedAt", "calculationVersion", "createdAt")
+            VALUES ($1, $2, $3, $4, $4, 'minute'::"public"."SnapshotGranularity",
+                    'import_event'::"public"."SnapshotSource", 'CZK', 0, 0, 0, 0, $4, 1, $4)
+            """,
+            f"{prefix}-portfolio-snapshot",
+            user_id,
+            generation_id,
             bucket,
         )
         await connection.execute(
             """
             INSERT INTO "public"."DailySnapshotBaseline"
                 ("id", "userId", "netWorthSnapshotId", "timestamp", "granularity", "currency",
-                 "calculationVersion", "source", "createdAt", "backgroundJobId")
+                 "calculationVersion", "source", "createdAt", "backgroundJobId", "generationId")
             VALUES ($1, $2, $3, $4, 'minute'::"public"."SnapshotGranularity", 'CZK', 1,
-                    'import_event'::"public"."SnapshotSource", $4, $5)
+                    'import_event'::"public"."SnapshotSource", $4, $5, $6)
             """,
             f"{prefix}-baseline",
             user_id,
             f"{prefix}-net-worth",
             bucket,
             job_id,
+            generation_id,
         )
         await connection.execute(
             """
             INSERT INTO "public"."DailySnapshotBaselineAccount"
                 ("baselineId", "accountId", "accountType", "accountCurrency", "primarySnapshotId",
                  "presentationSnapshotId", "canonicalRevision", "investmentRevision", "holdingRevision",
-                 "selectedLiabilityBalanceId")
-            VALUES ($1, $2, 'bank'::"public"."AccountType", 'CZK', $3, $3, 0, NULL, NULL, NULL)
+                 "selectedLiabilityBalanceId", "generationId")
+            VALUES ($1, $2, 'bank'::"public"."AccountType", 'CZK', $3, $3, 1, 1, 1, NULL, $4)
             """,
             f"{prefix}-baseline",
             account_id,
             f"{prefix}-account-snapshot",
+            generation_id,
         )
     finally:
         await connection.close()
@@ -395,6 +444,7 @@ def test_pre_3p_noncompleted_import_jobs_receive_exact_manifest_and_remain_recov
                         lease_duration=timedelta(minutes=1),
                     )
                     assert claimed is not None and claimed.job.id == f"{prefix}-job-queued"
+                    await session.commit()
                     await repository.complete(
                         lease=claimed.lease,
                         result={
@@ -426,11 +476,51 @@ def test_pre_3p_noncompleted_import_jobs_receive_exact_manifest_and_remain_recov
                         completed is not None and completed.status is BackgroundJobStatus.completed
                     )
                     assert target is not None and target.published_at == AT + timedelta(minutes=3)
+                connection = await asyncpg.connect(
+                    target_url.set(drivername="postgresql").render_as_string(hide_password=False)
+                )
+                try:
+                    assert (
+                        await connection.fetchval(
+                            """
+                            SELECT count(*) FROM "public"."SnapshotSeriesPointLink" link
+                            JOIN "public"."DailySnapshotBaseline" baseline
+                              ON baseline."id" = link."baselineId"
+                             AND baseline."generationId" = link."generationId"
+                             AND baseline."userId" = link."userId"
+                            JOIN "public"."DailySnapshotBaselineAccount" child
+                              ON child."baselineId" = baseline."id"
+                             AND child."generationId" = baseline."generationId"
+                            JOIN "public"."AccountSnapshot" account_snapshot
+                              ON account_snapshot."id" = child."primarySnapshotId"
+                             AND account_snapshot."generationId" = child."generationId"
+                            JOIN "public"."NetWorthSnapshot" net_worth
+                              ON net_worth."id" = link."netWorthSnapshotId"
+                             AND net_worth."generationId" = link."generationId"
+                            JOIN "public"."PortfolioSnapshot" portfolio
+                              ON portfolio."id" = link."portfolioSnapshotId"
+                             AND portfolio."generationId" = link."generationId"
+                            JOIN "public"."SnapshotGenerationTarget" target
+                              ON target."generationId" = link."generationId"
+                             AND target."userId" = link."userId"
+                            JOIN "public"."SnapshotGeneration" generation
+                              ON generation."id" = target."generationId"
+                            WHERE baseline."backgroundJobId" = $1
+                              AND link."generationId" = $2
+                              AND generation."state" = 'published'
+                            """,
+                            f"{prefix}-job-queued",
+                            f"{prefix}-generation",
+                        )
+                        == 1
+                    )
+                finally:
+                    await connection.close()
             finally:
                 await engine.dispose()
             blocked = _command(target_url, "downgrade", PREVIOUS_REVISION)
             assert blocked.returncode != 0
-            assert "Cannot remove import reconciliation evidence" in (
+            assert "Temporal snapshot-series metadata is irreversible after publication" in (
                 blocked.stdout + blocked.stderr
             )
         finally:

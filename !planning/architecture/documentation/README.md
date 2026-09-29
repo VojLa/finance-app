@@ -8,13 +8,13 @@ skripty a všemi dokumentačními kořeny.
 
 ## Čtecí pořadí
 
-| Dokument | Odpovídá na otázku |
-| --- | --- |
-| [Audit and gaps](audit-and-gaps.md) | Co projekt skutečně obsahuje a co v dokumentaci chybí? |
-| [Principles and network](principles-and-network.md) | Kdo vlastní informaci a jak jsou dokumenty propojené? |
-| [File type registry](file-types.md) | Jakou strukturu má každý typ souboru? |
-| [Project coverage](project-coverage.md) | Jak budou pokryté skutečné domény, moduly a testy? |
-| [Migration plan](migration-plan.md) | V jakém pořadí se bude dokumentace převádět a ověřovat? |
+| Dokument                                            | Odpovídá na otázku                                      |
+| --------------------------------------------------- | ------------------------------------------------------- |
+| [Audit and gaps](audit-and-gaps.md)                 | Co projekt skutečně obsahuje a co v dokumentaci chybí?  |
+| [Principles and network](principles-and-network.md) | Kdo vlastní informaci a jak jsou dokumenty propojené?   |
+| [File type registry](file-types.md)                 | Jakou strukturu má každý typ souboru?                   |
+| [Project coverage](project-coverage.md)             | Jak budou pokryté skutečné domény, moduly a testy?      |
+| [Migration plan](migration-plan.md)                 | V jakém pořadí se bude dokumentace převádět a ověřovat? |
 
 ## Přijaté principy návrhu
 
@@ -26,8 +26,9 @@ skripty a všemi dokumentačními kořeny.
 - Kritická invarianta má stabilní ID, enforcement point a testovací důkaz.
 - 500 řádků je nouzový hard limit; běžný ruční soubor má mít 40–200 řádků.
 
-## Doporučený první krok
+## Stav V1
 
-Nejdřív vytvořit šablony, registry a reportovací CI kontroly. Teprve poté
-převádět jednotlivé domény po malých řezech. Staré soubory se odstraní až po
-ověření příchozích odkazů a nového vlastníka každé informace.
+Šablony, registry, reportovací kontroly a cílová dokumentační síť byly zavedeny.
+Historické cesty zůstávají pouze jako kompatibilní rozcestníky; nový aktuální
+obsah patří do sémantických cest pod `!docs/`. Další úpravy se řídí
+[`!docs/development/documentation.md`](../../../!docs/development/documentation.md).

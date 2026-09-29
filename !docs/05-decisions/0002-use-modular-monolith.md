@@ -1,5 +1,11 @@
 # 0002 Use Modular Monolith
 
+Type: historical
+Status: historical
+Owns: retained rationale for modular-monolith structure
+Code: Python domain modules
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted.

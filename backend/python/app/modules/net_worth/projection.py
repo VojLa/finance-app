@@ -23,9 +23,9 @@ _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
     AccountType.savings,
+    AccountType.credit_card,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }

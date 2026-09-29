@@ -13,6 +13,7 @@ from app.db.models.background_jobs import (
     ImportJobAffectedAccountModel,
     ImportJobBatchModel,
 )
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountType,
     ImportSource,
@@ -63,6 +64,10 @@ from app.modules.imports.raiffeisenbank_reporting_fx import (
 from app.modules.imports.raiffeisenbank_reporting_fx_factory import (
     create_raiffeisenbank_reporting_fx_service,
 )
+from app.modules.imports.trading212_asset_alias import Trading212AssetAliasService
+from app.modules.investments.anycoin_transfer_valuation_service import (
+    AnycoinTransferValuationService,
+)
 from app.modules.jobs.models import (
     ImportJobCheckpoint,
     ImportJobPayload,
@@ -83,6 +88,7 @@ from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
     SelectLiabilityBalanceCommand,
 )
+from app.modules.market_data.source_policy import market_evidence_source_policy_from_settings
 from app.modules.snapshot_refresh.market_backed_models import (
     ExecuteMarketBackedSnapshotRefreshCommand,
     MarketBackedSnapshotRefreshConflictError,
@@ -131,11 +137,7 @@ def _now_milliseconds() -> datetime:
     return value.replace(microsecond=(value.microsecond // 1_000) * 1_000)
 
 
-_LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
-    AccountType.loan,
-    AccountType.mortgage,
-}
+_LIABILITY_ACCOUNT_TYPES = {AccountType.loan, AccountType.mortgage}
 
 
 class ImportLiabilityBalanceRequiredError(RuntimeError):
@@ -459,11 +461,6 @@ class DurableImportJobExecutor:
                 )
             return ImportJobWideStageResult(job_id=job_id, stage=stage, applied=True)
         if stage is ImportExecutionStage.validate_liability_readiness:
-            affected_account_ids = await self._affected_account_ids(
-                job_id=job_id,
-                user_id=user_id,
-                fallback_account_id=account_id,
-            )
             through = _now_milliseconds().replace(second=0, microsecond=0)
             async with self.session_factory() as session:
                 async with session.begin():
@@ -471,13 +468,23 @@ class DurableImportJobExecutor:
                         (
                             await session.scalars(
                                 select(AccountModel)
-                                .where(AccountModel.id.in_(affected_account_ids))
+                                .join(
+                                    AccountMemberModel,
+                                    AccountMemberModel.account_id == AccountModel.id,
+                                )
+                                .join(
+                                    AccountCanonicalStateModel,
+                                    AccountCanonicalStateModel.account_id == AccountModel.id,
+                                )
+                                .where(
+                                    AccountMemberModel.user_id == user_id,
+                                    AccountModel.is_archived.is_(False),
+                                    AccountCanonicalStateModel.last_revision > 0,
+                                )
                                 .order_by(AccountModel.id)
                             )
                         ).all()
                     )
-                    if tuple(account.id for account in accounts) != affected_account_ids:
-                        raise RaiffeisenbankReconciliationStateError()
                     evidence = LiabilityBalanceEvidenceService(session)
                     for account in accounts:
                         if account.type not in _LIABILITY_ACCOUNT_TYPES:
@@ -647,4 +654,12 @@ class DurableImportJobExecutor:
         return ImportMultiFileFinalizationService(
             session,
             market_backed_service=MarketBackedSnapshotRefreshService(session, self.settings),
+            source_policy=market_evidence_source_policy_from_settings(self.settings),
+            anycoin_transfer_valuation_factory=lambda active_session: (
+                AnycoinTransferValuationService(active_session, self.settings)
+            ),
+            trading212_asset_alias_factory=lambda active_session: Trading212AssetAliasService(
+                active_session,
+                source_policy=market_evidence_source_policy_from_settings(self.settings),
+            ),
         )

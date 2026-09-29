@@ -1,3 +1,5 @@
+import Link from "next/link"
+
 import {
   formatSnapshotAmount,
   formatSnapshotDecimal,
@@ -21,10 +23,10 @@ type Props = {
 
 export function SnapshotTopPositions({ model }: Props) {
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-5">
+    <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h2 className="text-lg font-medium">Největší pozice</h2>
-        <span className="text-xs text-gray-400">Pořadí podle hodnoty a identity</span>
+        <span className="text-xs text-gray-400">Podle hodnoty</span>
       </div>
       {model.topPositions.length === 0 ? (
         <p className="py-12 text-center text-sm text-gray-400">Žádné investiční pozice.</p>
@@ -66,6 +68,11 @@ export function SnapshotTopPositions({ model }: Props) {
           </table>
         </div>
       )}
+      <div className="mt-5 flex justify-end border-t border-gray-100 pt-4">
+        <Link href="/portfolio" className="text-sm font-medium text-blue-600 hover:underline">
+          Zobrazit více
+        </Link>
+      </div>
     </section>
   )
 }

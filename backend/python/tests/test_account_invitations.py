@@ -1,5 +1,7 @@
 from collections.abc import AsyncIterator
-from typing import cast
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -10,10 +12,11 @@ from app.auth.dependencies import get_current_principal
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
-from app.db.models.enums import AccountMemberRole
+from app.db.models.enums import AccountInviteStatus, AccountMemberRole
 from app.main import create_app
 from app.modules.accounts.invitations import (
     AccountInvitationService,
+    AccountInviteAcceptRequest,
     AccountInviteCreateRequest,
 )
 
@@ -155,6 +158,74 @@ async def test_create_persists_only_sha256_token_hash(monkeypatch: pytest.Monkey
     assert invite.inviter_id == "user-a"
     assert response.role is AccountMemberRole.viewer
     commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_accept_invalidates_only_the_new_accepted_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2031, 4, 5, 10)
+    session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
+    history = SimpleNamespace(
+        lock_generation_users=AsyncMock(),
+        invalidate_scope_users=AsyncMock(),
+    )
+    service = AccountInvitationService(session, history=cast(Any, history))
+    candidate = SimpleNamespace(
+        id="invite-a",
+        account_id="account-a",
+        email="user-a@example.com",
+    )
+    invite = SimpleNamespace(
+        id="invite-a",
+        account_id="account-a",
+        inviter_id="owner",
+        email="user-a@example.com",
+        role=AccountMemberRole.viewer,
+        status=AccountInviteStatus.pending,
+        expires_at=now + timedelta(days=1),
+        accepted_by_id=None,
+        accepted_at=None,
+        updated_at=now,
+    )
+    monkeypatch.setattr(
+        "app.modules.accounts.invitations._now",
+        lambda: now,
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "get_active_by_token_hash",
+        AsyncMock(return_value=candidate),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "get_for_update_by_token_hash",
+        AsyncMock(return_value=invite),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "get_user_email",
+        AsyncMock(return_value="user-a@example.com"),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "lock_membership",
+        AsyncMock(return_value=None),
+    )
+    cast(AsyncMock, session.scalar).return_value = SimpleNamespace(id="account-a")
+
+    result = await service.accept_invite(
+        principal=_principal(),
+        payload=AccountInviteAcceptRequest(token="x" * 43),
+    )
+
+    assert result.account_id == "account-a"
+    history.lock_generation_users.assert_awaited_once_with(("user-a",))
+    assert history.invalidate_scope_users.await_args.kwargs == {
+        "user_ids": ("user-a",),
+        "now": now,
+    }
+    cast(AsyncMock, session.commit).assert_awaited_once()
 
 
 def test_invitation_openapi_contract(test_settings: Settings) -> None:

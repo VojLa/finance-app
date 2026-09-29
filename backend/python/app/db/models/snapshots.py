@@ -2,7 +2,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,8 +29,37 @@ from app.db.models.enums import (
 class NetWorthSnapshotModel(Base):
     __tablename__ = "NetWorthSnapshot"
     __table_args__ = (
-        UniqueConstraint("userId", "timestamp", "currency", "granularity"),
+        UniqueConstraint(
+            "userId",
+            "timestamp",
+            "currency",
+            "granularity",
+            "generationId",
+            name="NetWorthSnapshot_coordinate_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            "userId",
+            name="NetWorthSnapshot_id_generation_user_key",
+        ),
+        ForeignKeyConstraint(
+            ("generationId", "userId"),
+            (
+                "public.SnapshotGenerationTarget.generationId",
+                "public.SnapshotGenerationTarget.userId",
+            ),
+            name="NetWorthSnapshot_generation_target_fkey",
+            ondelete="RESTRICT",
+        ),
         Index(None, "userId", "granularity", "timestamp"),
+        Index(
+            "NetWorthSnapshot_generation_coordinate_idx",
+            "generationId",
+            "userId",
+            "granularity",
+            "timestamp",
+        ),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
     )
@@ -91,13 +129,39 @@ class NetWorthSnapshotModel(Base):
         JSONB,
     )
     exchange_rates: Mapped[dict[str, Any] | None] = mapped_column("exchangeRates", JSONB)
+    generation_id: Mapped[str] = mapped_column("generationId", Text, nullable=False)
 
 
 class AccountSnapshotModel(Base):
     __tablename__ = "AccountSnapshot"
     __table_args__ = (
-        UniqueConstraint("accountId", "timestamp", "currency", "granularity"),
+        UniqueConstraint(
+            "accountId",
+            "timestamp",
+            "currency",
+            "granularity",
+            "generationId",
+            name="AccountSnapshot_coordinate_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            name="AccountSnapshot_id_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            "accountId",
+            name="AccountSnapshot_id_generation_account_key",
+        ),
         Index(None, "accountId", "granularity", "timestamp"),
+        Index(
+            "AccountSnapshot_generation_coordinate_idx",
+            "generationId",
+            "accountId",
+            "granularity",
+            "timestamp",
+        ),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
     )
@@ -212,6 +276,15 @@ class AccountSnapshotModel(Base):
     )
     exchange_rates: Mapped[dict[str, Any] | None] = mapped_column(
         "exchangeRates",
+        JSONB(none_as_null=True),
+    )
+    generation_id: Mapped[str] = mapped_column(
+        "generationId",
+        ForeignKey("public.SnapshotGeneration.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    liabilities_value_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
+        "liabilitiesValueByCurrency",
         JSONB(none_as_null=True),
     )
 

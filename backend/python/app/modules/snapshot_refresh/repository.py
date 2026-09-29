@@ -9,6 +9,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    UserReadModelPublicationModel,
+)
 from app.db.models.enums import SnapshotGranularity
 from app.db.models.snapshots import AccountSnapshotModel
 from app.db.models.users import UserModel
@@ -20,6 +24,7 @@ class PersistedSnapshotRefreshAccess:
 
     account: AccountModel
     membership: AccountMemberModel
+    has_canonical_history: bool = False
 
 
 class SnapshotRefreshEvidenceRepository:
@@ -45,23 +50,36 @@ class SnapshotRefreshEvidenceRepository:
         user_id: str,
     ) -> tuple[PersistedSnapshotRefreshAccess, ...]:
         rows = await self.session.execute(
-            select(AccountModel, AccountMemberModel)
+            select(
+                AccountModel,
+                AccountMemberModel,
+                AccountCanonicalStateModel.last_revision > 0,
+            )
             .join(
                 AccountMemberModel,
                 AccountMemberModel.account_id == AccountModel.id,
+            )
+            .outerjoin(
+                AccountCanonicalStateModel,
+                AccountCanonicalStateModel.account_id == AccountModel.id,
             )
             .where(AccountMemberModel.user_id == user_id)
             .order_by(AccountModel.id, AccountMemberModel.id)
             .execution_options(autoflush=False, populate_existing=True)
         )
         return tuple(
-            PersistedSnapshotRefreshAccess(account=account, membership=membership)
-            for account, membership in rows
+            PersistedSnapshotRefreshAccess(
+                account=account,
+                membership=membership,
+                has_canonical_history=bool(has_canonical_history),
+            )
+            for account, membership, has_canonical_history in rows
         )
 
     async def load_exact_reuse_snapshots(
         self,
         *,
+        user_id: str,
         account_ids: tuple[str, ...],
         timestamp: datetime,
         granularity: SnapshotGranularity,
@@ -69,14 +87,22 @@ class SnapshotRefreshEvidenceRepository:
     ) -> tuple[AccountSnapshotModel, ...]:
         if not account_ids:
             return ()
+        published_generation_id = await self.session.scalar(
+            select(UserReadModelPublicationModel.generation_id).where(
+                UserReadModelPublicationModel.user_id == user_id
+            )
+        )
+        predicates = [
+            AccountSnapshotModel.account_id.in_(account_ids),
+            AccountSnapshotModel.timestamp == timestamp,
+            AccountSnapshotModel.granularity == granularity,
+            AccountSnapshotModel.currency == currency,
+        ]
+        if published_generation_id is not None:
+            predicates.append(AccountSnapshotModel.generation_id == published_generation_id)
         rows = await self.session.scalars(
             select(AccountSnapshotModel)
-            .where(
-                AccountSnapshotModel.account_id.in_(account_ids),
-                AccountSnapshotModel.timestamp == timestamp,
-                AccountSnapshotModel.granularity == granularity,
-                AccountSnapshotModel.currency == currency,
-            )
+            .where(*predicates)
             .order_by(AccountSnapshotModel.account_id, AccountSnapshotModel.id)
             .execution_options(autoflush=False, populate_existing=True)
         )

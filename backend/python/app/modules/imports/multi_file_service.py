@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,13 +37,50 @@ from app.modules.imports.posting_service import (
 )
 from app.modules.imports.repository import ImportBatchRepository
 from app.modules.imports.service import ImportBatchNotFoundError
+from app.modules.imports.trading212_asset_alias import (
+    OnboardTrading212AssetAliasesCommand,
+    OnboardTrading212AssetAliasesResult,
+)
+from app.modules.investments.anycoin_transfer_valuation_service import (
+    ValueAnycoinTransfersCommand,
+    ValueAnycoinTransfersResult,
+)
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
+)
 from app.shared.errors import ApplicationError
 
 _TERMINAL_STATUSES = {ImportStatus.completed, ImportStatus.partially_completed}
 _MAX_BATCHES = 10
 
 type BatchRepositoryFactory = Callable[[AsyncSession], ImportBatchRepository]
-type AnycoinBtcAliasFactory = Callable[[AsyncSession], AnycoinBtcAliasService]
+type AnycoinBtcAliasFactory = Callable[
+    [AsyncSession, MarketEvidenceSourcePolicy], AnycoinBtcAliasService
+]
+
+
+class _AnycoinTransferValuationService(Protocol):
+    async def value(self, command: ValueAnycoinTransfersCommand) -> ValueAnycoinTransfersResult: ...
+
+
+type AnycoinTransferValuationFactory = Callable[[AsyncSession], _AnycoinTransferValuationService]
+
+
+class _Trading212AssetAliasService(Protocol):
+    async def onboard(
+        self, command: OnboardTrading212AssetAliasesCommand
+    ) -> OnboardTrading212AssetAliasesResult: ...
+
+
+type Trading212AssetAliasFactory = Callable[[AsyncSession], _Trading212AssetAliasService]
+
+
+def _anycoin_btc_alias_factory(
+    session: AsyncSession,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> AnycoinBtcAliasService:
+    return AnycoinBtcAliasService(session, source_policy=source_policy)
 
 
 class ImportBatchFinalizationStateError(ApplicationError):
@@ -123,11 +161,14 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
         session: AsyncSession,
         *,
         market_backed_service: _MarketBackedRefreshService,
+        source_policy: MarketEvidenceSourcePolicy,
         posting_service_factory: PostingServiceFactory = ImportBatchPostingService,
         holding_service_factory: HoldingServiceFactory = _holding_factory,
         repository_factory: RepositoryFactory = ImportBatchPostProcessingRepository,
         batch_repository_factory: BatchRepositoryFactory = ImportBatchRepository,
-        anycoin_btc_alias_factory: AnycoinBtcAliasFactory = AnycoinBtcAliasService,
+        anycoin_btc_alias_factory: AnycoinBtcAliasFactory = _anycoin_btc_alias_factory,
+        anycoin_transfer_valuation_factory: AnycoinTransferValuationFactory | None = None,
+        trading212_asset_alias_factory: Trading212AssetAliasFactory | None = None,
     ) -> None:
         super().__init__(
             session,
@@ -136,8 +177,11 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
             holding_service_factory=holding_service_factory,
             repository_factory=repository_factory,
         )
+        self.source_policy = validate_market_evidence_source_policy(source_policy)
         self.batch_repository = batch_repository_factory(session)
         self.anycoin_btc_alias_factory = anycoin_btc_alias_factory
+        self.anycoin_transfer_valuation_factory = anycoin_transfer_valuation_factory
+        self.trading212_asset_alias_factory = trading212_asset_alias_factory
 
     async def finalize(
         self,
@@ -189,7 +233,7 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
 
         if source is None:
             raise ImportBatchFinalizationStateError()
-        alias_service = self.anycoin_btc_alias_factory(self.session)
+        alias_service = self.anycoin_btc_alias_factory(self.session, self.source_policy)
         await alias_service.onboard(
             OnboardAnycoinBtcAliasCommand(
                 account_id=canonical.account_id,
@@ -199,6 +243,35 @@ class ImportMultiFileFinalizationService(ImportBatchPostProcessingService):
             )
         )
         await self._require_idle("Anycoin BTC alias onboarding left an active transaction.")
+
+        if source is ImportSource.trading212 and self.trading212_asset_alias_factory is not None:
+            trading_alias_service = self.trading212_asset_alias_factory(self.session)
+            await trading_alias_service.onboard(
+                OnboardTrading212AssetAliasesCommand(
+                    account_id=canonical.account_id,
+                    batch_ids=canonical.batch_ids,
+                    source=source,
+                    created_at=max(posting.completed_at for posting in postings),
+                )
+            )
+            await self._require_idle(
+                "Trading 212 asset alias onboarding left an active transaction."
+            )
+
+        if (
+            source is ImportSource.anycoin
+            and any(posting.investment_event_rows_imported > 0 for posting in postings)
+            and self.anycoin_transfer_valuation_factory is not None
+        ):
+            valuation_service = self.anycoin_transfer_valuation_factory(self.session)
+            await valuation_service.value(
+                ValueAnycoinTransfersCommand(
+                    account_id=canonical.account_id,
+                    source=source,
+                    created_at=max(posting.completed_at for posting in postings),
+                )
+            )
+            await self._require_idle("Anycoin transfer valuation left an active transaction.")
 
         status = await self._finalize_postings(
             principal=canonical.principal,

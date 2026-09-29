@@ -1,31 +1,15 @@
-# Společný vývoj finance-app s AI
+# Historical execution evidence
 
-Tato složka je praktický rozcestník pro návrh, implementaci a kontrolu malých změn s co nejnižší spotřebou kreditů. Nenahrazuje `AGENTS.md`, `memory/` ani architekturu v `!planning/`; šablony na ně odkazují a doplňují je.
+Status: historical
 
-## Základní princip
+`audits/`, `steps/`, and `history/` preserve point-in-time implementation prompts,
+audit reports, and superseded working memory. They are useful for provenance but are
+not current Codex instructions and may contain obsolete architecture, commands,
+branches, model choices, or migration state.
 
-> Silný model rozhoduje jen tam, kde je rozhodnutí drahé nebo rizikové. Běžná implementace pracuje s úzkým kontextem a automatické nástroje ověřují vše, co lze ověřit deterministicky.
+Current agent guidance lives in [`.agents/`](../.agents/README.md). Current
+implemented behavior lives in [`!docs/`](../!docs/README.md), future scope and
+accepted decisions in [`!planning/`](../!planning/README.md), and persistent
+repository rules in [`memory/codex_rules.md`](../memory/codex_rules.md).
 
-## Dokumenty
-
-- [WORKFLOW.md](WORKFLOW.md) – cesta od požadavku po merge.
-- [STEP-SIZING.md](STEP-SIZING.md) – velikosti XS až XL a pravidla dělení.
-- [MODEL-SELECTION.md](MODEL-SELECTION.md) – volba modelu a eskalace.
-- [templates/STEP.md](templates/STEP.md) – zadání jednoho implementačního kroku.
-- [templates/PLAN.md](templates/PLAN.md) – návrh řešení bez implementace.
-- [templates/IMPLEMENTATION-OUTPUT.md](templates/IMPLEMENTATION-OUTPUT.md) – povinný výstup implementace.
-- [templates/REVIEW.md](templates/REVIEW.md) – kontrola diffu.
-- [templates/BUGFIX.md](templates/BUGFIX.md) – lokalizovaná oprava chyby.
-- [templates/EPIC.md](templates/EPIC.md) – rozpad velké funkce.
-
-## Rychlé použití
-
-1. Velký požadavek rozpadni pomocí `templates/EPIC.md`.
-2. Jeden krok zapiš podle `templates/STEP.md`; preferuj velikost S nebo M.
-3. Pokud existuje nejasné rozhodnutí, nejdřív použij `templates/PLAN.md`.
-4. Implementaci omez na relevantní soubory a požaduj výstup dle `templates/IMPLEMENTATION-OUTPUT.md`.
-5. Spusť projektové kontroly a modelu dej ke kontrole jen diff přes `templates/REVIEW.md`.
-
-## Povinný kontext finance-app
-
-Před prací vždy přečti `AGENTS.md`. Podle oblasti načti jen relevantní dokumenty z `memory/` a `!planning/`. U Python backendu respektuj `backend/python/README.md`. Databázový ownership se nesmí domýšlet: SQLAlchemy je kompletní runtime mapování a Alembic jediný vlastník migrací. `prisma/migrations/` je pouze neměnný historický SQL archiv bez runtime nástrojů.
+When historical evidence conflicts with those sources, follow the current owner.

@@ -1,5 +1,11 @@
 # 0004 Keep read models separate from financial history
 
+Type: historical
+Status: historical
+Owns: retained rationale for derived read models
+Code: Holdings, snapshots, portfolio and dashboard projections
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted; the basic legacy portfolio reader plus the 5L-A pure projection,

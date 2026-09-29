@@ -112,6 +112,19 @@ class CategoryService:
             parent_id=parent_id,
             category_id=category.id,
         )
+        if (
+            "type" in payload.model_fields_set
+            and payload.type is not None
+            and payload.type is not category.type
+            and await self.repository.has_incompatible_active_transactions(
+                category_id=category.id,
+                category_type=payload.type,
+            )
+        ):
+            await self.session.rollback()
+            raise CategoryConflictError(
+                "The category type conflicts with active transactions that already use it."
+            )
         for field in ("name", "icon", "color", "type", "parent_id"):
             if field in payload.model_fields_set:
                 setattr(category, field, getattr(payload, field))

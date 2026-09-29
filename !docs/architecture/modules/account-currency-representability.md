@@ -1,5 +1,11 @@
 ## Account-currency presentation representability
 
+Type: historical
+Status: historical
+Owns: milestone evidence for account-currency representability
+Code: account-currency projection at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 The R10-B evidence gate found that the current snapshot read model cannot
 truthfully expose a complete account-currency presentation summary. The
 snapshot projection validates both `Account.currency` and the caller's output

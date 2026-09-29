@@ -1,5 +1,7 @@
+from time import perf_counter
 from typing import Annotated
 
+import structlog
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -19,6 +21,7 @@ from app.db.connection import get_db_session
 from app.db.models.users import UserModel
 
 INTERNAL_AUTH_SERVICE_SUBJECT = "finance-app-next-auth-service"
+logger = structlog.get_logger(__name__)
 
 bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -42,12 +45,19 @@ def get_verified_token_claims(
     if not settings.internal_auth_secret:
         raise AuthenticationConfigurationError()
 
-    return InternalTokenVerifier(
+    started_at = perf_counter()
+    result = InternalTokenVerifier(
         secret=settings.internal_auth_secret,
         issuer=settings.internal_auth_issuer,
         audience=settings.internal_auth_audience,
         clock_skew_seconds=settings.internal_auth_clock_skew_seconds,
     ).verify(credentials.credentials)
+    logger.info(
+        "financial_read_phase",
+        phase="authentication_token",
+        duration_ms=round((perf_counter() - started_at) * 1000, 2),
+    )
+    return result
 
 
 async def get_current_principal(
@@ -65,6 +75,7 @@ async def get_current_principal(
     if session.in_transaction():
         raise AuthenticationTransactionStateError()
 
+    started_at = perf_counter()
     try:
         user = await session.scalar(select(UserModel).where(UserModel.id == claims.sub))
     except SQLAlchemyError as exc:
@@ -96,6 +107,12 @@ async def get_current_principal(
         raise AuthenticationTransactionStateError() from exc
     if session.in_transaction():
         raise AuthenticationTransactionStateError()
+
+    logger.info(
+        "financial_read_phase",
+        phase="authentication_database",
+        duration_ms=round((perf_counter() - started_at) * 1000, 2),
+    )
 
     return principal
 

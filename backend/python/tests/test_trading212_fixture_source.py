@@ -111,8 +111,19 @@ def test_issue_fixture_preserves_every_physical_data_row() -> None:
         "actual": 13,
     }
 
+    card = rows[1]
+    card_result = normalize_import_row(
+        source=ImportSource.trading212,
+        account_id="fixture-account",
+        raw_data=card.raw_data,
+    )
+    assert card_result.validation_errors is None
+    assert card_result.data is not None
+    assert card_result.data["action"] == "card_withdrawal"
+    assert card_result.data["external_id"] == "T212-FAKE-ISSUE-002"
+
     normalization_errors = []
-    for row in rows[:-2]:
+    for row in (*rows[:1], *rows[2:-2]):
         assert row.validation_errors is None
         result = normalize_import_row(
             source=ImportSource.trading212,
@@ -123,7 +134,6 @@ def test_issue_fixture_preserves_every_physical_data_row() -> None:
         normalization_errors.extend(result.validation_errors or [])
     assert {error["code"] for error in normalization_errors} >= {
         "unsupported_action",
-        "unsupported_linked_cash_transaction",
         "required",
         "invalid",
         "paired_required",

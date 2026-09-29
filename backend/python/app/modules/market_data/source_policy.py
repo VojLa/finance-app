@@ -30,6 +30,15 @@ class MarketEvidenceSourcePolicy:
     def price_source_for(self, asset_type: AssetType) -> PriceSource:
         if not isinstance(asset_type, AssetType):
             raise MarketEvidenceSourcePolicyError()
+        if self.mode == "local_free" and asset_type in {
+            AssetType.crypto,
+            AssetType.stock,
+            AssetType.etf,
+            AssetType.bond,
+            AssetType.commodity,
+            AssetType.other,
+        }:
+            return PriceSource.yahoo_finance
         if asset_type is AssetType.crypto:
             return PriceSource.coingecko
         if asset_type in {
@@ -39,9 +48,7 @@ class MarketEvidenceSourcePolicy:
             AssetType.commodity,
             AssetType.other,
         }:
-            if self.mode == "canonical":
-                return PriceSource.twelve_data
-            return PriceSource.yahoo_finance
+            return PriceSource.twelve_data
         raise MarketEvidenceSourcePolicyError()
 
 
@@ -53,7 +60,7 @@ CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY = MarketEvidenceSourcePolicy(
 
 LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY = MarketEvidenceSourcePolicy(
     mode="local_free",
-    price_sources=frozenset({PriceSource.coingecko, PriceSource.yahoo_finance}),
+    price_sources=frozenset({PriceSource.yahoo_finance}),
     fx_source=ExchangeRateSource.yahoo_finance,
 )
 

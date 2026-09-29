@@ -789,8 +789,9 @@ def test_services_have_no_financial_recalculation_or_forbidden_read_dependency()
             "HoldingModel",
             "PriceSnapshotModel",
             "ExchangeRateModel",
-            "PortfolioSnapshotReader",
         }.isdisjoint(imports)
+        if path.name == "multi_account_service.py":
+            assert "PreloadedPortfolioSnapshotRepository" in imports
         for forbidden in (
             "asyncio.gather",
             "datetime.now",

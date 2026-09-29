@@ -24,8 +24,8 @@ describe("unknown cost-basis presentation", () => {
     const anycoin = model.accounts[1]?.positions[0]?.position
     if (anycoin === undefined) throw new Error("Missing Anycoin fixture position.")
 
-    expect(formatSnapshotDecimal(anycoin.quantity)).toBe("1,0000000000")
-    expect(formatSnapshotAmount(anycoin.value, anycoin.valueCurrency)).toBe("40,000000 USD")
+    expect(formatSnapshotDecimal(anycoin.quantity)).toBe("1,00")
+    expect(formatSnapshotAmount(anycoin.value, anycoin.valueCurrency)).toBe("40,00 USD")
     expect(formatSnapshotAmount(anycoin.costBasis, anycoin.costCurrency)).toBe(
       UNAVAILABLE_COST_BASIS_LABEL
     )
@@ -46,12 +46,12 @@ describe("unknown cost-basis presentation", () => {
     if (anycoin === undefined) throw new Error("Missing Anycoin dashboard position.")
 
     expect(formatSnapshotAmount(model.summary.totalValue, model.currency)).toBe(
-      "999 999 999 999,123456 CZK"
+      "999 999 999 999,12 CZK"
     )
     expect(formatSnapshotAmount(model.summary.investmentCostBasis, model.currency)).toBe(
       UNAVAILABLE_COST_BASIS_LABEL
     )
-    expect(formatSnapshotAmount(anycoin.value, anycoin.valueCurrency)).toBe("2,000001 CZK")
+    expect(formatSnapshotAmount(anycoin.value, anycoin.valueCurrency)).toBe("2,00 CZK")
     expect(formatSnapshotAmount(anycoin.unrealizedPnl, anycoin.valueCurrency)).toBe(
       UNAVAILABLE_COST_BASIS_LABEL
     )

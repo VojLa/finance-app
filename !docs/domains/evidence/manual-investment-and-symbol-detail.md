@@ -1,5 +1,11 @@
 ## Manual investment command and symbol detail
 
+Type: historical
+Status: historical
+Owns: milestone evidence for manual investments and symbol detail
+Code: investment and portfolio UI implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R11-G defines one Python-owned manual command for buy, sell, dividend,
 interest, staking reward, deposit, withdrawal, fee, currency conversion, and
 airdrop. The command validates a complete economic shape, creates no empty

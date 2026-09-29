@@ -71,6 +71,17 @@ def _text(raw: dict[str, Any], *aliases: str) -> str | None:
     return None
 
 
+def _has_overlong_text(raw: dict[str, Any], *aliases: str) -> bool:
+    wanted = {" ".join(alias.strip().casefold().split()) for alias in aliases}
+    return any(
+        value is not None
+        and bool(str(value).strip())
+        and len(str(value).strip()) > MAX_OPTIONAL_FIELD_LENGTH
+        for key, value in raw.items()
+        if " ".join(str(key).strip().casefold().split()) in wanted
+    )
+
+
 def _parse(row: AnycoinBatchRow) -> _Parsed:
     raw_type = _text(row.raw_data, "Type", "Operation", "Transaction type")
     kind = " ".join(raw_type.casefold().split()) if raw_type else ""
@@ -79,7 +90,9 @@ def _parse(row: AnycoinBatchRow) -> _Parsed:
     raw_amount = _text(row.raw_data, "Amount", "Quantity")
     raw_currency = _text(row.raw_data, "Currency", "Asset")
     date = amount = currency = None
-    invalid = False
+    external_id_aliases = ("anycoin TX ID", "Transaction ID", "TX ID")
+    external_id = _text(row.raw_data, *external_id_aliases)
+    invalid = _has_overlong_text(row.raw_data, *external_id_aliases)
     try:
         date = _normalize_date(raw_date) if raw_date else None
     except ValueError:
@@ -104,7 +117,7 @@ def _parse(row: AnycoinBatchRow) -> _Parsed:
         date,
         amount,
         currency,
-        _text(row.raw_data, "anycoin TX ID", "Transaction ID", "TX ID"),
+        external_id,
         invalid,
     )
 

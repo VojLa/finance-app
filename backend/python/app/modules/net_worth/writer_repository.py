@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.enums import SnapshotGranularity
 from app.db.models.snapshots import NetWorthSnapshotModel
 
+_LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
+
 
 def advisory_lock_id(scope: str) -> int:
     return int.from_bytes(sha256(scope.encode()).digest()[:8], "big", signed=True)
@@ -22,6 +24,7 @@ def net_worth_snapshot_lock_scope(
     timestamp: datetime,
     currency: str,
     granularity: SnapshotGranularity,
+    generation_id: str = _LEGACY_GENERATION_ID,
 ) -> str:
     return "\0".join(
         (
@@ -30,6 +33,7 @@ def net_worth_snapshot_lock_scope(
             timestamp.isoformat(timespec="milliseconds"),
             currency,
             granularity.value,
+            *((generation_id,) if generation_id != _LEGACY_GENERATION_ID else ()),
         )
     )
 
@@ -50,12 +54,14 @@ class NetWorthSnapshotWriterRepository:
         timestamp: datetime,
         currency: str,
         granularity: SnapshotGranularity,
+        generation_id: str,
     ) -> None:
         scope = net_worth_snapshot_lock_scope(
             user_id=user_id,
             timestamp=timestamp,
             currency=currency,
             granularity=granularity,
+            generation_id=generation_id,
         )
         await self.session.execute(select(func.pg_advisory_xact_lock(advisory_lock_id(scope))))
 
@@ -66,6 +72,7 @@ class NetWorthSnapshotWriterRepository:
         timestamp: datetime,
         currency: str,
         granularity: SnapshotGranularity,
+        generation_id: str,
     ) -> NetWorthSnapshotModel | None:
         return await self.session.scalar(
             select(NetWorthSnapshotModel)
@@ -74,6 +81,7 @@ class NetWorthSnapshotWriterRepository:
                 NetWorthSnapshotModel.timestamp == timestamp,
                 NetWorthSnapshotModel.currency == currency,
                 NetWorthSnapshotModel.granularity == granularity,
+                NetWorthSnapshotModel.generation_id == generation_id,
             )
             .with_for_update()
             .execution_options(populate_existing=True)

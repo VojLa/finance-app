@@ -41,9 +41,9 @@ _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
     AccountType.savings,
+    AccountType.credit_card,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -342,7 +342,6 @@ def _position(
         or (cost_complete and cost_currency != output_currency)
         or native_value_currency != price_currency
         or (cost_complete and (average_buy_price is None or average_buy_price <= 0))
-        or (cost_complete and average_buy_price_currency != price_currency)
         or _derived_product(quantity, price_per_unit, _QUANTITY) != native_value
         or (
             cost_complete

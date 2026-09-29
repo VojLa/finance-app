@@ -16,7 +16,7 @@ Update when: před zahájením migrace nebo při přidání nového subsystému
 - Frontend, backend, databázové a dokumentační CI workflow.
 - 83 frontendových/adaptérových a 253 Python testovacích souborů v aktuálním
   generovaném inventáři.
-- `!docs`, `!planning`, `!user-docs`, `CHATGPT`, root a backend README.
+- `!docs`, `!planning`, `!user-docs`, `ChatGPT`, root a backend README.
 
 Průchod je strukturální a kontraktní: určuje vlastnictví, entry points, datové
 zdroje, testovací vrstvy a dokumentační pokrytí. Nenahrazuje budoucí
@@ -38,7 +38,7 @@ zdroje, testovací vrstvy a dokumentační pokrytí. Nenahrazuje budoucí
 - Účel, source of truth, invarianty a testy se opakují ve více souborech.
 - Milestone a auditní evidence je místy vedena jako aktuální architektura.
 - Jeden aktuální architecture evidence soubor má 498 řádků; mapa má 333.
-- Dlouhé `CHATGPT/steps` a `CHATGPT/audits` nejsou oddělené od běžné navigace.
+- Dlouhé `ChatGPT/steps` a `ChatGPT/audits` nejsou oddělené od běžné navigace.
 - `!user-docs` je zatím téměř prázdná kostra.
 
 ## Obsahové mezery

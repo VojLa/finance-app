@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.categories import CategoryModel
@@ -38,6 +39,25 @@ class OperationalDashboardService:
         *,
         principal: AuthenticatedPrincipal,
         now: datetime | None = None,
+    ) -> OperationalDashboardResponse:
+        bind = self.session.bind
+        if bind is None:
+            raise RuntimeError("Operational dashboard requires a database bind")
+        engine = bind.engine if isinstance(bind, AsyncConnection) else bind
+        async with AsyncSession(engine, autoflush=False) as read_session:
+            async with read_session.begin():
+                await read_session.execute(
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                )
+                return await OperationalDashboardService(read_session)._read_in_transaction(
+                    principal=principal, now=now
+                )
+
+    async def _read_in_transaction(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        now: datetime | None,
     ) -> OperationalDashboardResponse:
         current = now or datetime.now(UTC).replace(tzinfo=None)
         if current.tzinfo is not None:

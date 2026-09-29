@@ -44,13 +44,15 @@ class CurrentPortfolioResponse(BaseModel):
     history_anchor_snapshot_id: str = Field(serialization_alias="historyAnchorSnapshotId")
     currency: str
     calculation_version: int = Field(serialization_alias="calculationVersion")
+    valuation_timestamp: datetime = Field(serialization_alias="valuationTimestamp")
+    is_stale: bool = Field(serialization_alias="isStale")
     summary: MultiAccountPortfolioSummaryResponse
     accounts: tuple[CurrentPortfolioAccountResponse, ...]
     aggregate_positions: tuple[MultiAccountPortfolioAggregatePositionResponse, ...] = Field(
         serialization_alias="aggregatePositions"
     )
 
-    @field_serializer("as_of", "baseline_timestamp")
+    @field_serializer("as_of", "baseline_timestamp", "valuation_timestamp")
     def serialize_timestamp(self, value: datetime) -> str:
         return value.isoformat(timespec="milliseconds")
 
@@ -93,6 +95,8 @@ class CurrentDashboardResponse(BaseModel):
     history_anchor_snapshot_id: str = Field(serialization_alias="historyAnchorSnapshotId")
     currency: str
     calculation_version: int = Field(serialization_alias="calculationVersion")
+    valuation_timestamp: datetime = Field(serialization_alias="valuationTimestamp")
+    is_stale: bool = Field(serialization_alias="isStale")
     summary: DashboardSnapshotSummaryResponse
     accounts: tuple[CurrentDashboardAccountResponse, ...]
     asset_type_allocations: tuple[DashboardAssetTypeAllocationResponse, ...] = Field(
@@ -102,6 +106,6 @@ class CurrentDashboardResponse(BaseModel):
         serialization_alias="topPositions"
     )
 
-    @field_serializer("as_of", "baseline_timestamp")
+    @field_serializer("as_of", "baseline_timestamp", "valuation_timestamp")
     def serialize_timestamp(self, value: datetime) -> str:
         return value.isoformat(timespec="milliseconds")

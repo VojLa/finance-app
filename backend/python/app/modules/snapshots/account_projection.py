@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 
 from sqlalchemy import Numeric
@@ -30,6 +30,7 @@ _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
     AccountType.savings,
+    AccountType.credit_card,
 }
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
@@ -37,7 +38,6 @@ _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.crypto_wallet,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -348,6 +348,42 @@ def _sum(values: list[Decimal], numeric: Numeric) -> Decimal:
     return total
 
 
+def _allocation_percentages(values: tuple[Decimal, ...], total: Decimal) -> tuple[Decimal, ...]:
+    """Project positive values to exact PERCENTAGE units with deterministic remainders."""
+
+    if not values or total <= 0 or any(value <= 0 for value in values):
+        raise _fail()
+    try:
+        with localcontext() as context:
+            context.prec = 112
+            scale = PERCENTAGE.scale
+            if scale is None:
+                raise RuntimeError("Canonical percentage type must define a scale.")
+            quantum = Decimal(1).scaleb(-scale)
+            target = Decimal(100).quantize(quantum)
+            exact = tuple(value / total * Decimal(100) for value in values)
+            floored = tuple(value.quantize(quantum, rounding=ROUND_FLOOR) for value in exact)
+            residual_units = int((target - sum(floored, Decimal(0))) / quantum)
+    except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
+        raise _fail() from exc
+    if residual_units < 0 or residual_units > len(values):
+        raise _fail()
+    recipients = {
+        index
+        for index, _remainder in sorted(
+            enumerate(tuple(value - floor for value, floor in zip(exact, floored, strict=True))),
+            key=lambda item: (item[1].copy_negate(), item[0]),
+        )[:residual_units]
+    }
+    result = tuple(
+        _exact(floor + (quantum if index in recipients else Decimal(0)), PERCENTAGE)
+        for index, floor in enumerate(floored)
+    )
+    if _sum(list(result), PERCENTAGE) != target:
+        raise _fail()
+    return result
+
+
 def _breakdown(
     amounts: dict[str, Decimal],
     numeric: Numeric,
@@ -478,9 +514,10 @@ def _validate_prices(
             or timestamp > evidence.snapshot_timestamp
             or _nonblank(price.asset_id) != holding.asset_id
             or _currency(price.symbol) != holding.symbol
-            or _currency(price.currency) != _currency(holding.cost_currency)
         ):
             raise _fail()
+        # Provider quote currency is price lineage; Holding.cost_currency is
+        # acquisition lineage. Each is converted independently below.
         price_ids.add(price_id)
         _exact(price.price, QUANTITY, positive=True)
         _currency(price.currency)
@@ -740,23 +777,14 @@ def build_account_snapshot_projection(
         else None
     )
     if items:
+        allocations = _allocation_percentages(tuple(item.value for item in items), investment_value)
         items = [
             replace(
                 item,
-                allocation_pct=_exact(
-                    _calculated(
-                        "multiply",
-                        _calculated("divide", item.value, investment_value, PERCENTAGE),
-                        Decimal(100),
-                        PERCENTAGE,
-                    ),
-                    PERCENTAGE,
-                ),
+                allocation_pct=allocation,
             )
-            for item in items
+            for item, allocation in zip(items, allocations, strict=True)
         ]
-        if _sum([item.allocation_pct for item in items], PERCENTAGE) != Decimal(100):
-            raise _fail()
 
     cash_value, cash_breakdown, liabilities_value, liabilities_breakdown = _balances(
         evidence,

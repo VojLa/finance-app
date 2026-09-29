@@ -25,7 +25,7 @@ export function SnapshotHoldingsTable({ positions, showAccount }: Props) {
             <th className="pb-3 text-right font-medium">Hodnota</th>
             <th className="pb-3 text-right font-medium">Nákladová báze</th>
             <th className="pb-3 text-right font-medium">Nerealizované P/L</th>
-            <th className="pb-3 text-right font-medium">Alokace</th>
+            <th className="pb-3 text-right font-medium">Alokace v účtu</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-50">

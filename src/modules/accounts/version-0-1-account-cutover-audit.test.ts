@@ -112,10 +112,14 @@ describe("version 0.1 account browser-flow acceptance", () => {
         return collectionRoute.GET()
       }
       if (path === "/api/accounts/account-r1" && request.method === "PATCH") {
-        return updateRoute.PATCH(request as NextRequest, { params: { id: "account-r1" } })
+        return updateRoute.PATCH(request as NextRequest, {
+          params: Promise.resolve({ id: "account-r1" }),
+        })
       }
       if (path === "/api/accounts/account-r1/archive" && request.method === "POST") {
-        return archiveRoute.POST(request, { params: { id: "account-r1" } })
+        return archiveRoute.POST(request, {
+          params: Promise.resolve({ id: "account-r1" }),
+        })
       }
       throw new Error(`Unexpected browser path: ${path}`)
     })

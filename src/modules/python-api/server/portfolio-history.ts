@@ -42,15 +42,16 @@ function mapPythonError(status: number, value: unknown): SnapshotWorkflowAdapter
   return unavailableError()
 }
 
-export async function readSnapshotBackedPortfolioHistory(
+export async function readGenerationPortfolioHistory(
   identity: PortfolioHistoryIdentity,
   range: SnapshotPortfolioHistoryRange,
-  options: PythonApiClientOptions = {}
+  options: PythonApiClientOptions = {},
+  accountId?: string
 ): Promise<SnapshotPortfolioHistoryResponse> {
   const { client, responseData } = createAuthenticatedPythonTransport(identity, options)
   const value = await responseData(
     client.GET("/api/v1/portfolio/history", {
-      params: { query: { range } },
+      params: { query: { range, ...(accountId === undefined ? {} : { accountId }) } },
     }),
     mapPythonError
   )

@@ -12,13 +12,20 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
-from app.db.models.canonical_lineage import DailySnapshotBaselineModel
+from app.db.models.canonical_lineage import (
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -29,8 +36,28 @@ from app.db.models.enums import (
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.investment_snapshots import (
+    InvestmentAccountSnapshotItemModel,
+    InvestmentAccountSnapshotModel,
+    PortfolioSnapshotInputModel,
+    PortfolioSnapshotItemAccountModel,
+    PortfolioSnapshotItemModel,
+    PortfolioSnapshotModel,
+)
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import PriceSnapshotModel
+from app.db.models.snapshot_series_jobs import (
+    SnapshotSeriesCanonicalInvalidationModel,
+    SnapshotSeriesDirtyStateModel,
+    SnapshotSeriesRebuildJobModel,
+    SnapshotSeriesScheduleStateModel,
+)
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -105,6 +132,225 @@ def headers(user_id: str, *, binary: bool = False) -> dict[str, str]:
     return value
 
 
+async def cleanup_snapshot_publications(
+    session: AsyncSession,
+    *,
+    user_ids: tuple[str, ...],
+    account_ids: tuple[str, ...],
+) -> None:
+    """Remove only these fixtures' projections in foreign-key order."""
+    generation_ids = tuple(
+        (
+            await session.scalars(
+                select(SnapshotGenerationTargetModel.generation_id).where(
+                    SnapshotGenerationTargetModel.user_id.in_(user_ids)
+                )
+            )
+        ).all()
+    )
+    snapshot_ids = tuple(
+        (
+            await session.scalars(
+                select(AccountSnapshotModel.id).where(
+                    AccountSnapshotModel.account_id.in_(account_ids)
+                )
+            )
+        ).all()
+    )
+    if user_ids:
+        await session.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id.in_(user_ids)
+            )
+        )
+        # Published series rows cannot be deleted while User exists, while their
+        # referenced snapshots prevent deleting User first. This transaction-local
+        # test-only setting breaks that cycle for these exact fixture user IDs.
+        await session.execute(text("SET LOCAL session_replication_role = replica"))
+        await session.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id.in_(user_ids)
+            )
+        )
+        head_ids = tuple(
+            (
+                await session.scalars(
+                    select(SnapshotSeriesHeadModel.id)
+                    .where(SnapshotSeriesHeadModel.user_id.in_(user_ids))
+                    .order_by(SnapshotSeriesHeadModel.version.desc())
+                )
+            ).all()
+        )
+        for head_id in head_ids:
+            await session.execute(
+                delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.id == head_id)
+            )
+        await session.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(text("SET LOCAL session_replication_role = origin"))
+        await session.execute(
+            delete(UserReadModelPublicationWatermarkModel).where(
+                UserReadModelPublicationWatermarkModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.baseline_id.in_(
+                    select(DailySnapshotBaselineModel.id).where(
+                        DailySnapshotBaselineModel.user_id.in_(user_ids)
+                    )
+                )
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineModel).where(
+                DailySnapshotBaselineModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotItemAccountModel).where(
+                PortfolioSnapshotItemAccountModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotInputModel).where(
+                PortfolioSnapshotInputModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotItemModel).where(
+                PortfolioSnapshotItemModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id.in_(user_ids))
+        )
+    if account_ids:
+        await session.execute(
+            delete(InvestmentAccountSnapshotItemModel).where(
+                InvestmentAccountSnapshotItemModel.account_id.in_(account_ids)
+            )
+        )
+        await session.execute(
+            delete(InvestmentAccountSnapshotModel).where(
+                InvestmentAccountSnapshotModel.account_id.in_(account_ids)
+            )
+        )
+    if snapshot_ids:
+        await session.execute(
+            delete(AccountSnapshotItemModel).where(
+                AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
+            )
+        )
+    if account_ids:
+        await session.execute(
+            delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
+        )
+    if user_ids:
+        await session.execute(
+            delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
+        )
+        await session.execute(
+            delete(SnapshotSeriesCanonicalInvalidationModel).where(
+                SnapshotSeriesCanonicalInvalidationModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesDirtyStateModel).where(
+                SnapshotSeriesDirtyStateModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesScheduleStateModel).where(
+                SnapshotSeriesScheduleStateModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id.in_(user_ids)
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesRebuildJobModel).where(
+                SnapshotSeriesRebuildJobModel.user_id.in_(user_ids)
+            )
+        )
+    if generation_ids:
+        await session.execute(
+            delete(SnapshotGenerationModel).where(
+                SnapshotGenerationModel.id.in_(generation_ids),
+                ~exists().where(
+                    SnapshotGenerationTargetModel.generation_id == SnapshotGenerationModel.id
+                ),
+            )
+        )
+    user_owned = (
+        UserReadModelPublicationModel,
+        SnapshotSeriesPointLinkModel,
+        SnapshotSeriesPublicationReceiptModel,
+        SnapshotSeriesHeadModel,
+        SnapshotSeriesVersionStateModel,
+        UserReadModelPublicationWatermarkModel,
+        DailySnapshotBaselineModel,
+        PortfolioSnapshotItemAccountModel,
+        PortfolioSnapshotInputModel,
+        PortfolioSnapshotItemModel,
+        PortfolioSnapshotModel,
+        NetWorthSnapshotModel,
+        SnapshotSeriesCanonicalInvalidationModel,
+        SnapshotSeriesDirtyStateModel,
+        SnapshotSeriesScheduleStateModel,
+        SnapshotGenerationTargetModel,
+        SnapshotSeriesRebuildJobModel,
+    )
+    for model in user_owned:
+        if (
+            user_ids
+            and await session.scalar(
+                select(1).select_from(model).where(model.user_id.in_(user_ids)).limit(1)
+            )
+            is not None
+        ):
+            raise AssertionError(f"fixture cleanup left {model.__tablename__} rows")
+    account_owned = (
+        DailySnapshotBaselineAccountModel,
+        InvestmentAccountSnapshotItemModel,
+        InvestmentAccountSnapshotModel,
+        AccountSnapshotModel,
+    )
+    for account_model in account_owned:
+        if (
+            account_ids
+            and await session.scalar(
+                select(1)
+                .select_from(account_model)
+                .where(account_model.account_id.in_(account_ids))
+                .limit(1)
+            )
+            is not None
+        ):
+            raise AssertionError(f"fixture cleanup left {account_model.__tablename__} rows")
+    if (
+        snapshot_ids
+        and await session.scalar(
+            select(1)
+            .select_from(AccountSnapshotItemModel)
+            .where(AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids))
+            .limit(1)
+        )
+        is not None
+    ):
+        raise AssertionError("fixture cleanup left AccountSnapshotItem rows")
+
+
 async def cleanup(prefix: str) -> None:
     db = engine()
     async with AsyncSession(db) as session:
@@ -138,59 +384,106 @@ async def cleanup(prefix: str) -> None:
                 )
             ).all()
         )
-        snapshot_ids = tuple(
+        prefixed_asset_ids = set(
             (
                 await session.scalars(
-                    select(AccountSnapshotModel.id).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
+                    select(AssetModel.id).where(AssetModel.id.startswith(f"{prefix}-"))
                 )
             ).all()
         )
-        listing_ids = tuple(
-            value
-            for value in (
-                await session.scalars(
-                    select(InvestmentMovementModel.listing_id).where(
-                        InvestmentMovementModel.event_id.in_(event_ids)
-                    )
-                )
-            ).all()
-            if value
-        )
-        asset_ids = tuple(
+        movement_asset_ids = {
             value
             for value in (
                 await session.scalars(
                     select(InvestmentMovementModel.asset_id).where(
-                        InvestmentMovementModel.event_id.in_(event_ids)
+                        InvestmentMovementModel.account_id.in_(account_ids)
                     )
                 )
             ).all()
-            if value
+            if value is not None
+        }
+        asset_ids = tuple(sorted(prefixed_asset_ids | movement_asset_ids))
+        listing_ids = tuple(
+            (
+                await session.scalars(
+                    select(AssetListingModel.id).where(
+                        or_(
+                            AssetListingModel.id.startswith(f"{prefix}-"),
+                            AssetListingModel.asset_id.in_(asset_ids),
+                        )
+                    )
+                )
+            ).all()
         )
-        if user_ids:
-            await session.execute(
-                delete(DailySnapshotBaselineModel).where(
-                    DailySnapshotBaselineModel.user_id.in_(user_ids)
+        if asset_ids or listing_ids:
+            outside_account_use = (
+                select(1)
+                .select_from(InvestmentMovementModel)
+                .where(
+                    InvestmentMovementModel.account_id.notin_(account_ids),
+                    or_(
+                        InvestmentMovementModel.asset_id.in_(asset_ids),
+                        InvestmentMovementModel.listing_id.in_(listing_ids),
+                    ),
                 )
+                .limit(1)
             )
-        if snapshot_ids:
-            await session.execute(
-                delete(AccountSnapshotItemModel).where(
-                    AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
+            outside_holding_use = (
+                select(1)
+                .select_from(HoldingModel)
+                .where(
+                    HoldingModel.account_id.notin_(account_ids),
+                    or_(
+                        HoldingModel.asset_id.in_(asset_ids),
+                        HoldingModel.listing_id.in_(listing_ids),
+                    ),
                 )
+                .limit(1)
             )
+            outside_snapshot_use = (
+                select(1)
+                .select_from(AccountSnapshotItemModel)
+                .join(
+                    AccountSnapshotModel,
+                    AccountSnapshotItemModel.snapshot_id == AccountSnapshotModel.id,
+                )
+                .where(
+                    AccountSnapshotModel.account_id.notin_(account_ids),
+                    AccountSnapshotItemModel.listing_id.in_(listing_ids),
+                )
+                .limit(1)
+            )
+            outside_investment_snapshot_use = (
+                select(1)
+                .select_from(InvestmentAccountSnapshotItemModel)
+                .where(
+                    InvestmentAccountSnapshotItemModel.account_id.notin_(account_ids),
+                    InvestmentAccountSnapshotItemModel.listing_id.in_(listing_ids),
+                )
+                .limit(1)
+            )
+            outside_portfolio_use = (
+                select(1)
+                .select_from(PortfolioSnapshotItemModel)
+                .where(
+                    PortfolioSnapshotItemModel.user_id.notin_(user_ids),
+                    PortfolioSnapshotItemModel.listing_id.in_(listing_ids),
+                )
+                .limit(1)
+            )
+            for outside_use in (
+                outside_account_use,
+                outside_holding_use,
+                outside_snapshot_use,
+                outside_investment_snapshot_use,
+                outside_portfolio_use,
+            ):
+                if await session.scalar(outside_use) is not None:
+                    raise AssertionError("fixture asset is shared with another account or user")
+        await cleanup_snapshot_publications(session, user_ids=user_ids, account_ids=account_ids)
         if account_ids:
             await session.execute(
-                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
-            )
-            await session.execute(
                 delete(HoldingModel).where(HoldingModel.account_id.in_(account_ids))
-            )
-        if user_ids:
-            await session.execute(
-                delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
             )
         if listing_ids:
             await session.execute(
@@ -235,6 +528,25 @@ async def cleanup(prefix: str) -> None:
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
         if user_ids:
             await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+        for owned_model, column, ids in (
+            (UserModel, UserModel.id, user_ids),
+            (AccountModel, AccountModel.id, account_ids),
+            (AccountMemberModel, AccountMemberModel.account_id, account_ids),
+            (HoldingModel, HoldingModel.account_id, account_ids),
+            (InvestmentEventModel, InvestmentEventModel.account_id, account_ids),
+            (InvestmentMovementModel, InvestmentMovementModel.account_id, account_ids),
+            (ImportBatchModel, ImportBatchModel.account_id, account_ids),
+            (AssetListingModel, AssetListingModel.id, listing_ids),
+            (AssetModel, AssetModel.id, asset_ids),
+        ):
+            if (
+                ids
+                and await session.scalar(
+                    select(1).select_from(owned_model).where(column.in_(ids)).limit(1)
+                )
+                is not None
+            ):
+                raise AssertionError(f"fixture cleanup left {owned_model.__tablename__} rows")
         await session.commit()
     await db.dispose()
 
@@ -244,6 +556,7 @@ async def seed_identity(
     *,
     source: ImportSource,
     second_account: bool = False,
+    quote_currency: str = "EUR",
 ) -> tuple[str, str]:
     await cleanup(prefix)
     db = engine()
@@ -258,7 +571,7 @@ async def seed_identity(
                 email=f"{user_id}@example.com",
                 name="Synthetic fixture owner",
                 password_hash=None,
-                base_currency="EUR",
+                base_currency=quote_currency,
                 created_at=now,
                 updated_at=now,
             )
@@ -272,7 +585,7 @@ async def seed_identity(
                     id=value,
                     name=f"Synthetic {source.value} account {index + 1}",
                     type=account_type,
-                    currency="EUR",
+                    currency=quote_currency,
                     color=None,
                     notes=None,
                     is_archived=False,
@@ -301,7 +614,13 @@ async def seed_identity(
     return user_id, account_id
 
 
-async def seed_asset_listing(prefix: str, *, source: ImportSource) -> tuple[str, str]:
+async def seed_asset_listing(
+    prefix: str,
+    *,
+    source: ImportSource,
+    quote_currency: str = "EUR",
+    symbol_override: str | None = None,
+) -> tuple[str, str]:
     db = engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     if source is ImportSource.trading212:
@@ -312,11 +631,11 @@ async def seed_asset_listing(prefix: str, *, source: ImportSource) -> tuple[str,
         asset_currency = "EUR"
         provider = PriceSource.broker
     else:
-        symbol = "BTC"
+        symbol = symbol_override or "BTC"
         isin = None
-        name = "Fictitious Test Bitcoin"
+        name = "Bitcoin" if symbol_override is None else f"Synthetic {symbol} crypto"
         asset_type = AssetType.crypto
-        asset_currency = "BTC"
+        asset_currency = symbol
         provider = PriceSource.exchange
     asset_id = f"{prefix}-asset"
     listing_id = f"{prefix}-listing"
@@ -341,7 +660,7 @@ async def seed_asset_listing(prefix: str, *, source: ImportSource) -> tuple[str,
                 symbol=symbol,
                 exchange=source.value,
                 mic=None,
-                currency="EUR",
+                currency=quote_currency,
                 country=None,
                 provider=provider,
                 provider_symbol=symbol,
@@ -383,8 +702,21 @@ async def seed_price(
     return price_id
 
 
-def fixture(source: ImportSource, name: str) -> bytes:
-    return (FIXTURES / source.value / name).read_bytes()
+def fixture(
+    source: ImportSource,
+    name: str,
+    *,
+    quote_currency: str = "EUR",
+    symbol_override: str | None = None,
+) -> bytes:
+    content = (FIXTURES / source.value / name).read_bytes()
+    if quote_currency != "EUR":
+        assert source is ImportSource.anycoin
+        content = content.replace(b"EUR", quote_currency.encode("ascii"))
+    if symbol_override is not None:
+        assert source is ImportSource.anycoin
+        content = content.replace(b"BTC", symbol_override.encode("ascii"))
+    return content
 
 
 def variant(content: bytes, name: str) -> bytes:
@@ -418,7 +750,7 @@ def run_stages(
         },
     )
     assert created.status_code == 201, created.text
-    batch_id = created.json()["id"]
+    batch_id = created.json()["batch"]["id"]
     base = f"/api/v1/accounts/{account_id}/imports/{batch_id}"
     uploaded = client.put(
         f"{base}/file",

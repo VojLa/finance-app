@@ -11,9 +11,11 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.common import MONEY
 from app.db.models.enums import (
     AccountType,
     ExchangeRateSource,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
@@ -24,9 +26,18 @@ from app.db.models.enums import (
     TransactionClassification,
     TransactionType,
 )
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
+from app.modules.investments.transfer_valuation import (
+    TransferValuationStateError,
+    index_latest_transfer_valuations,
+    resolve_transfer_valuation,
+)
 from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidence as SelectedLiabilityBalanceEvidence,
 )
@@ -74,15 +85,20 @@ from app.modules.snapshots.financial_metrics import (
     exact_money,
     exact_rate,
 )
+from app.shared.canonical_arithmetic import CanonicalArithmeticError, canonical_rounded
 
-_CASH_ACCOUNT_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings}
+_CASH_ACCOUNT_TYPES = {
+    AccountType.bank,
+    AccountType.cash,
+    AccountType.savings,
+    AccountType.credit_card,
+}
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -152,6 +168,57 @@ def _nonblank(value: object) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise _fail()
     return value
+
+
+def _asset_transfer_net_deposit(
+    *,
+    event: InvestmentEventModel,
+    movement: InvestmentMovementModel,
+    evidence: InvestmentMovementValuationEvidenceModel | None = None,
+    canonical_revision: int | None = None,
+) -> HistoricalMetricEvidence | None:
+    """Classify a valued external asset transfer as a signed cash flow."""
+
+    try:
+        resolved = resolve_transfer_valuation(
+            event=event,
+            movement=movement,
+            evidence=evidence,
+            canonical_revision=canonical_revision,
+        )
+    except TransferValuationStateError as exc:
+        raise _fail() from exc
+    valuation = (
+        resolved.price_per_unit if resolved is not None else movement.price_per_unit,
+        resolved.value_amount if resolved is not None else movement.value_amount,
+        resolved.value_currency if resolved is not None else movement.value_currency,
+    )
+    if all(value is None for value in valuation):
+        return None
+    if any(value is None for value in valuation):
+        raise _fail()
+    price_per_unit, value_amount, value_currency = valuation
+    if (
+        not isinstance(price_per_unit, Decimal)
+        or not isinstance(value_amount, Decimal)
+        or not isinstance(value_currency, str)
+    ):
+        raise _fail()
+    try:
+        amount = exact_money(canonical_rounded(value_amount, MONEY))
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    if price_per_unit <= 0 or amount <= 0:
+        raise _fail()
+    if movement.direction not in {MovementDirection.incoming, MovementDirection.outgoing}:
+        raise _fail()
+    return HistoricalMetricEvidence(
+        evidence_id=f"transfer:{_nonblank(movement.id)}",
+        timestamp=event.date,
+        kind=HistoricalMetricKind.net_deposit,
+        currency=canonical_currency(value_currency),
+        amount=(amount if movement.direction is MovementDirection.incoming else -amount),
+    )
 
 
 def _aligned_snapshot_timestamp(
@@ -523,9 +590,12 @@ def _investment_history(
     *,
     account_id: str,
     snapshot_timestamp: datetime,
+    transfer_valuations: dict[str, InvestmentMovementValuationEvidenceModel] | None = None,
+    canonical_revisions: dict[str, int] | None = None,
 ) -> tuple[
     tuple[CashBalanceEvidence, ...],
     tuple[HistoricalMetricEvidence, ...],
+    bool,
     bool,
 ]:
     event_by_id: dict[str, InvestmentEventModel] = {}
@@ -546,6 +616,7 @@ def _investment_history(
     metrics: list[HistoricalMetricEvidence] = []
     movement_ids: set[str] = set()
     has_asset_transfer = False
+    has_missing_anycoin_realized_pnl = False
     grouped: dict[str, list[InvestmentMovementModel]] = {event_id: [] for event_id in event_by_id}
     for movement in movements:
         movement_id = _nonblank(movement.id)
@@ -663,7 +734,16 @@ def _investment_history(
         if event.type is InvestmentEventType.asset_transfer:
             if len(assets) != 1 or cash_movements or fees or taxes:
                 raise _fail()
-            has_asset_transfer = True
+            transfer_metric = _asset_transfer_net_deposit(
+                event=event,
+                movement=assets[0],
+                evidence=(transfer_valuations or {}).get(assets[0].id),
+                canonical_revision=(canonical_revisions or {}).get(event.id),
+            )
+            if transfer_metric is None:
+                has_asset_transfer = True
+            else:
+                metrics.append(transfer_metric)
         if event.realized_pnl is not None:
             if (
                 event.type is not InvestmentEventType.trade
@@ -677,9 +757,16 @@ def _investment_history(
                     timestamp=event.date,
                     kind=HistoricalMetricKind.realized_pnl,
                     currency=canonical_currency(event.realized_pnl_currency),
-                    amount=exact_money(event.realized_pnl),
+                    amount=exact_money(canonical_rounded(event.realized_pnl, MONEY)),
                 )
             )
+        elif (
+            event.source is ImportSource.anycoin
+            and event.type is InvestmentEventType.trade
+            and len(assets) == 1
+            and assets[0].direction is MovementDirection.outgoing
+        ):
+            has_missing_anycoin_realized_pnl = True
 
     balances = tuple(
         CashBalanceEvidence(
@@ -695,6 +782,7 @@ def _investment_history(
         balances,
         tuple(sorted(metrics, key=lambda item: (item.timestamp, item.evidence_id))),
         has_asset_transfer,
+        has_missing_anycoin_realized_pnl,
     )
 
 
@@ -884,15 +972,43 @@ class AccountSnapshotEvidenceService:
                     account_id,
                     through=snapshot_timestamp,
                 )
-                cash_balances, historical_evidence, has_asset_transfer = _investment_history(
+                load_transfer_valuations = getattr(
+                    self.repository, "load_transfer_valuations", None
+                )
+                valuation_rows = (
+                    ()
+                    if load_transfer_valuations is None
+                    else await load_transfer_valuations(
+                        tuple(movement.id for movement in movements)
+                    )
+                )
+                try:
+                    transfer_valuations = index_latest_transfer_valuations(valuation_rows)
+                except TransferValuationStateError as exc:
+                    raise _fail() from exc
+                load_revisions = getattr(self.repository, "load_investment_event_revisions", None)
+                canonical_revisions = (
+                    {}
+                    if load_revisions is None
+                    else await load_revisions(account_id, tuple(event.id for event in events))
+                )
+                (
+                    cash_balances,
+                    historical_evidence,
+                    has_asset_transfer,
+                    has_missing_anycoin_realized_pnl,
+                ) = _investment_history(
                     events,
                     movements,
                     account_id=account_id,
                     snapshot_timestamp=snapshot_timestamp,
+                    transfer_valuations=transfer_valuations,
+                    canonical_revisions=canonical_revisions,
                 )
 
             if account_type in _CASH_ACCOUNT_TYPES:
                 has_asset_transfer = False
+                has_missing_anycoin_realized_pnl = False
 
             price_candidates = await self.repository.load_price_candidates(
                 tuple(item.listing_id for item in holdings),
@@ -1024,7 +1140,9 @@ class AccountSnapshotEvidenceService:
                     UnsupportedSnapshotMetric(
                         SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
                     )
-                    if has_asset_transfer or cost_basis_unknown
+                    if (
+                        has_asset_transfer or has_missing_anycoin_realized_pnl or cost_basis_unknown
+                    )
                     else ExactSnapshotMetric(
                         value=metrics.realized_pnl_value,
                         breakdown=metrics.realized_pnl_by_currency,

@@ -20,6 +20,12 @@ describe("account page Python cutover", () => {
     expect(source).toContain('status: "error"')
   })
 
+  it("does not publish an obsolete account request", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+    expect(source).toContain("accountRequestId.current")
+    expect(source).toContain("requestId !== accountRequestId.current")
+  })
+
   it("uses generated create/update/archive client operations with explicit loading states", async () => {
     const source = await readFile(PAGE_PATH, "utf8")
 
@@ -130,6 +136,7 @@ describe("account page Python cutover", () => {
       name: "Broker",
       type: "broker",
       currency: "EUR",
+      creditLimit: null,
       color: null,
       notes: "Long term",
       role: "owner",

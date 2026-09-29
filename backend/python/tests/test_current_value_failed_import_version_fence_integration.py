@@ -48,7 +48,7 @@ pytestmark = [
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "3p0001rbfoundation" / "schema.sql"
+CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "410001serieslinks" / "schema.sql"
 
 
 def _support() -> ModuleType:
@@ -87,7 +87,6 @@ async def _publish_unsupported_v1(support: Any, *, user_id: str) -> None:
         async with AsyncSession(engine) as session:
             result = await UserSnapshotRefreshExecutor(
                 session,
-                source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
             ).execute(
                 ExecuteUserSnapshotRefreshCommand(
                     user_id=user_id,
@@ -114,7 +113,11 @@ async def _read_current(
     engine = support._engine()
     try:
         async with AsyncSession(engine) as session:
-            settings = Settings(environment="test", _env_file=None)
+            settings = Settings(
+                environment="test",
+                market_evidence_source_mode="local_free",
+                _env_file=None,
+            )
             service = CurrentValueService(
                 session,
                 settings,
@@ -222,6 +225,7 @@ async def test_failed_investment_import_retains_exact_coherent_v2_publication_on
             target_url.set(drivername="postgresql").render_as_string(hide_password=False)
         )
         try:
+            await target.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
             schema = CURRENT_SCHEMA.read_text(encoding="utf-8").replace(
                 'CREATE SCHEMA "public";\n', "", 1
             )
@@ -232,7 +236,7 @@ async def test_failed_investment_import_retains_exact_coherent_v2_publication_on
                 "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
             )
             await target.execute(
-                "INSERT INTO public.alembic_version (version_num) VALUES ('3p0001rbfoundation')"
+                "INSERT INTO public.alembic_version (version_num) VALUES ('410001serieslinks')"
             )
         finally:
             await target.close()

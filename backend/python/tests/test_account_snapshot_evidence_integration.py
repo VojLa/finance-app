@@ -545,6 +545,7 @@ async def test_persisted_investment_account_selects_price_and_fx_read_only(
                     quantity=Decimal("2"),
                     avg_buy_price=Decimal("10"),
                     currency="EUR",
+                    cost_basis_by_currency={"EUR": "20.0000000000"},
                     current_price=Decimal("999"),
                     current_value=Decimal("999"),
                     unrealized_pnl=Decimal("999"),
@@ -561,7 +562,7 @@ async def test_persisted_investment_account_selects_price_and_fx_read_only(
                         listing_id=listing_id,
                         price=Decimal("15"),
                         currency="EUR",
-                        source=PriceSource.broker,
+                        source=PriceSource.twelve_data,
                         timestamp=SNAPSHOT_AT,
                         created_at=SNAPSHOT_AT,
                     ),
@@ -571,7 +572,7 @@ async def test_persisted_investment_account_selects_price_and_fx_read_only(
                         listing_id=listing_id,
                         price=Decimal("999"),
                         currency="EUR",
-                        source=PriceSource.broker,
+                        source=PriceSource.twelve_data,
                         timestamp=datetime(2026, 7, 28),
                         created_at=SNAPSHOT_AT,
                     ),
@@ -737,7 +738,8 @@ async def test_persisted_mixed_currency_investment_uses_snapshot_and_event_time_
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     avg_buy_price=Decimal("10"),
-                    currency="USD",
+                    currency="GBP",
+                    cost_basis_by_currency={"USD": "20.0000000000"},
                     current_price=None,
                     current_value=None,
                     unrealized_pnl=None,
@@ -753,7 +755,7 @@ async def test_persisted_mixed_currency_investment_uses_snapshot_and_event_time_
                     listing_id=listing_id,
                     price=Decimal("15"),
                     currency="GBP",
-                    source=PriceSource.broker,
+                    source=PriceSource.twelve_data,
                     timestamp=SNAPSHOT_AT,
                     created_at=SNAPSHOT_AT,
                 )
@@ -931,7 +933,7 @@ async def test_persisted_mixed_currency_investment_uses_snapshot_and_event_time_
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
+async def test_latest_price_selection_uses_the_configured_provider() -> None:
     prefix = "i5b-ambiguous"
     await _cleanup(prefix)
     account_id = f"{prefix}-account"
@@ -996,6 +998,7 @@ async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
                     quantity=Decimal("1"),
                     avg_buy_price=Decimal("1"),
                     currency="EUR",
+                    cost_basis_by_currency={"EUR": "1.0000000000"},
                     current_price=None,
                     current_value=None,
                     unrealized_pnl=None,
@@ -1012,7 +1015,7 @@ async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
                         listing_id=listing_id,
                         price=Decimal("2"),
                         currency="EUR",
-                        source=PriceSource.broker,
+                        source=PriceSource.twelve_data,
                         timestamp=SNAPSHOT_AT,
                         created_at=SNAPSHOT_AT,
                     ),
@@ -1020,7 +1023,7 @@ async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
                         id=f"{prefix}-manual",
                         asset_id=asset_id,
                         listing_id=listing_id,
-                        price=Decimal("2"),
+                        price=Decimal("999"),
                         currency="EUR",
                         source=PriceSource.manual,
                         timestamp=SNAPSHOT_AT,
@@ -1031,8 +1034,9 @@ async def test_ambiguous_persisted_latest_price_fails_closed() -> None:
             await session.commit()
         async with AsyncSession(engine) as session:
             before = await _snapshot_counts(session)
-            with pytest.raises(AccountSnapshotEvidenceStateError):
-                await AccountSnapshotEvidenceService(session).build(_command(account_id))
+            result = await AccountSnapshotEvidenceService(session).build(_command(account_id))
+            assert result.valuation.investment_value == Decimal("2.000000")
+            assert result.selected_price_ids == (f"{prefix}-broker",)
             assert await _snapshot_counts(session) == before
     finally:
         await engine.dispose()
@@ -1328,7 +1332,7 @@ async def test_persisted_output_currency_rate_failures_write_nothing(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 async def test_persisted_liability_account_fails_before_projection_without_mutation(
     account_type: AccountType,

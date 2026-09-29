@@ -24,6 +24,7 @@ from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.accounts.models import AccountMemberRoleUpdateRequest
 from app.modules.accounts.service import AccountService
+from app.modules.market_data.source_policy import LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-4e-internal-auth-secret-32-characters"
@@ -186,7 +187,10 @@ async def _verify_rollback(member_id: str, *, remove: bool) -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountService(session)
+        service = AccountService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         principal = AuthenticatedPrincipal(
             user_id="user-owner",
             email="user-owner@example.com",

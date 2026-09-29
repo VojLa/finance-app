@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:${FINANCE_APP_DB_PORT:-5434}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,7 +23,7 @@ services:
     container_name: finance-app-web
     command: npm run dev
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./:/app
       - node_modules:/app/node_modules
@@ -46,11 +46,13 @@ services:
       context: .
       dockerfile: backend/python/Dockerfile
     container_name: finance-app-api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
     ports:
-      - "8010:8010"
+      - "127.0.0.1:8010:8010"
     volumes:
       - ./backend/python:/app/backend/python
+      - ./package.json:/app/package.json:ro
+      - ./.github/workflows:/app/.github/workflows:ro
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
@@ -64,6 +66,11 @@ services:
       BACKGROUND_JOB_LEASE_SECONDS: "300"
       BACKGROUND_JOB_HEARTBEAT_SECONDS: "15"
       BACKGROUND_JOB_SHUTDOWN_GRACE_SECONDS: "5"
+      # The API image and database must be deployed at the same migration head.
+      PORTFOLIO_HISTORY_RUNTIME_ENABLED: "${PORTFOLIO_HISTORY_RUNTIME_ENABLED:-true}"
+      SCHEDULED_SNAPSHOT_REFRESH_RUNNER_ENABLED: "${SCHEDULED_SNAPSHOT_REFRESH_RUNNER_ENABLED:-true}"
+      SCHEDULED_SNAPSHOT_REFRESH_INTERVAL_SECONDS: "${SCHEDULED_SNAPSHOT_REFRESH_INTERVAL_SECONDS:-300}"
+      SCHEDULED_SNAPSHOT_REFRESH_SHUTDOWN_GRACE_SECONDS: "${SCHEDULED_SNAPSHOT_REFRESH_SHUTDOWN_GRACE_SECONDS:-5}"
     depends_on:
       db:
         condition: service_healthy

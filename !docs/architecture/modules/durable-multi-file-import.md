@@ -1,5 +1,11 @@
 ## Durable logical multi-file import
 
+Type: historical
+Status: historical
+Owns: milestone evidence for durable multi-file import
+Code: import and job implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R12 separates request-lifetime upload from durable execution. The active browser
 request accepts one account, one source, and one to ten files with a 64 MiB
 aggregate bridge limit. Each accepted file retains its own `ImportBatch`; after

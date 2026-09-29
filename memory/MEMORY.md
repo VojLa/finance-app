@@ -1,3 +1,7 @@
-# Memory Index
+# Current Codex memory
 
-- [Project Overview](project_overview.md) — Next.js 14 personal finance app, early scaffold, Raiffeisenbank CSV parser, recharts + yahoo-finance2
+- [Repository rules](codex_rules.md) — the only active persistent memory in this directory.
+
+Superseded scaffold, migration, implementation, and database-audit notes were moved
+to [`ChatGPT/history/memory/`](../ChatGPT/history/memory/README.md). They are
+historical evidence and must not direct current work.

@@ -22,6 +22,7 @@ from app.db.models.enums import (
     PriceSource,
 )
 from app.db.models.holdings import HoldingModel
+from app.db.models.investment_snapshots import PortfolioSnapshotInputModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
@@ -45,6 +46,7 @@ from app.modules.imports.posting_service import (
     ImportBatchPostingService,
     PostImportBatchCommand,
 )
+from app.modules.market_data.source_policy import CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY
 from app.modules.snapshot_refresh.market_backed_models import (
     MarketBackedSnapshotRefreshUnavailableError,
 )
@@ -245,6 +247,7 @@ def test_postgresql_finalization_replays_complete_reporting_fx_lineage() -> None
                 result = await ImportMultiFileFinalizationService(
                     session,
                     market_backed_service=cast(Any, _UnavailableMarketService()),
+                    source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                 ).finalize(
                     FinalizeImportBatchesCommand(
                         principal=principal,
@@ -275,6 +278,7 @@ def test_postgresql_finalization_replays_complete_reporting_fx_lineage() -> None
                     await ImportMultiFileFinalizationService(
                         session,
                         market_backed_service=cast(Any, _ForbiddenMarketService()),
+                        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                     ).finalize(
                         FinalizeImportBatchesCommand(
                             principal=principal,
@@ -325,6 +329,25 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
             datetime(2036, 8, 7, 10, 2, 2, 456000),
             datetime(2036, 8, 7, 10, 4, 59, 999000),
         )
+
+        async def remove_snapshot_inputs() -> None:
+            engine = posting_support._engine()
+            async with AsyncSession(engine) as session:
+                await session.execute(
+                    delete(PortfolioSnapshotInputModel).where(
+                        PortfolioSnapshotInputModel.account_id == f"{prefix}-account"
+                    )
+                )
+                await session.commit()
+            await engine.dispose()
+
+        await remove_snapshot_inputs()
+        await post_processing_support._cleanup_holdings(prefix)
+        for batch_id in reversed(batch_ids[1:]):
+            await post_processing_support._remove_additional_batch(batch_id)
+        await posting_support._cleanup(prefix)
+        await post_processing_support._remove_market_evidence(prefix)
+        await posting_support._remove_asset_identities({symbol})
         await posting_support._seed(
             prefix,
             source=posting_support.ImportSource.trading212,
@@ -402,6 +425,7 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
                 unavailable = await ImportMultiFileFinalizationService(
                     session,
                     market_backed_service=cast(Any, _UnavailableMarketService()),
+                    source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                     holding_service_factory=unavailable_holding_factory,
                 ).finalize(
                     FinalizeImportBatchesCommand(
@@ -442,6 +466,7 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
                 service = ImportMultiFileFinalizationService(
                     session,
                     market_backed_service=cast(Any, _CountingMarketService()),
+                    source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                     holding_service_factory=holding_factory,
                 )
                 result = await service.finalize(
@@ -486,6 +511,7 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
                         market_backed_service=(
                             post_processing_support._SnapshotOnlyMarketBackedService(replay_session)
                         ),
+                        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                     ).finalize(
                         FinalizeImportBatchesCommand(
                             principal=principal,
@@ -505,6 +531,7 @@ def test_three_canonical_batches_have_one_logical_post_processing_phase() -> Non
             assert await _physical_counts(prefix) == (1, 1, 1)
             assert await _canonical_counts(prefix) == canonical_counts
         finally:
+            await remove_snapshot_inputs()
             await post_processing_support._cleanup_holdings(prefix)
             for batch_id in reversed(additional):
                 await post_processing_support._remove_additional_batch(batch_id)
@@ -586,6 +613,7 @@ def test_durable_executor_starts_real_finalizer_with_idle_session() -> None:
                 finalization_factory=lambda session: ImportMultiFileFinalizationService(
                     session,
                     market_backed_service=cast(Any, _UnavailableMarketService()),
+                    source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
                 ),
                 job_wide_stage_hook=non_raiffeisenbank_job_wide_stage,
             )

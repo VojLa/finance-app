@@ -16,9 +16,12 @@ from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.canonical_lineage import (
     AccountCanonicalStateModel,
-    AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
 )
 from app.db.models.enums import (
     AccountMemberRole,
@@ -40,10 +43,21 @@ from app.db.models.enums import (
     TransactionType,
 )
 from app.db.models.holdings import HoldingModel
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_jobs import (
+    SnapshotSeriesDirtyStateModel,
+    SnapshotSeriesRebuildJobModel,
+)
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
@@ -67,6 +81,7 @@ from app.modules.snapshot_refresh.executor import (
     ExecuteUserSnapshotRefreshCommand,
     UserSnapshotRefreshExecutor,
 )
+from app.modules.snapshot_refresh.series_persistence import publish_snapshot_baselines
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
@@ -84,6 +99,65 @@ async def _cleanup(prefix: str) -> None:
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
     async with AsyncSession(engine) as session:
+        generation_ids = tuple(
+            await session.scalars(
+                select(SnapshotGenerationTargetModel.generation_id).where(
+                    SnapshotGenerationTargetModel.user_id == user_id
+                )
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id == user_id
+            )
+        )
+        # Test-owned publication metadata is immutable under normal triggers.
+        await session.execute(text("SET LOCAL session_replication_role = replica"))
+        await session.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id == user_id
+            )
+        )
+        heads = tuple(
+            await session.scalars(
+                select(SnapshotSeriesHeadModel.id)
+                .where(SnapshotSeriesHeadModel.user_id == user_id)
+                .order_by(SnapshotSeriesHeadModel.version.desc())
+            )
+        )
+        for head_id in heads:
+            await session.execute(
+                delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.id == head_id)
+            )
+        await session.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationWatermarkModel).where(
+                UserReadModelPublicationWatermarkModel.user_id == user_id
+            )
+        )
+        await session.execute(text("SET LOCAL session_replication_role = origin"))
+        await session.execute(
+            delete(SnapshotSeriesDirtyStateModel).where(
+                SnapshotSeriesDirtyStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id == user_id)
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.account_id == account_id
+            )
+        )
         await session.execute(
             delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(prefix))
         )
@@ -108,6 +182,22 @@ async def _cleanup(prefix: str) -> None:
         await session.execute(
             delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id == account_id)
         )
+        await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesRebuildJobModel).where(
+                SnapshotSeriesRebuildJobModel.user_id == user_id
+            )
+        )
+        if generation_ids:
+            await session.execute(
+                delete(SnapshotGenerationModel).where(
+                    SnapshotGenerationModel.id.in_(generation_ids)
+                )
+            )
         await session.execute(
             delete(LiabilityBalanceModel).where(LiabilityBalanceModel.account_id == account_id)
         )
@@ -452,15 +542,20 @@ async def _investment_cash_deposit(
     at: datetime,
     amount: str,
     currency: str,
+    withdrawal: bool = False,
 ) -> None:
-    event_id = f"{prefix}-deposit"
+    event_id = f"{prefix}-{'withdrawal' if withdrawal else 'deposit'}-{at:%Y%m%d%H}"
     engine = _engine()
     async with AsyncSession(engine) as session, session.begin():
         session.add(
             InvestmentEventModel(
                 id=event_id,
                 account_id=account_id,
-                type=InvestmentEventType.cash_deposit,
+                type=(
+                    InvestmentEventType.cash_withdrawal
+                    if withdrawal
+                    else InvestmentEventType.cash_deposit
+                ),
                 date=at,
                 source=ImportSource.trading212,
                 external_id=event_id,
@@ -483,7 +578,9 @@ async def _investment_cash_deposit(
                 asset_id=None,
                 listing_id=None,
                 kind=InvestmentMovementKind.cash,
-                direction=MovementDirection.incoming,
+                direction=(
+                    MovementDirection.outgoing if withdrawal else MovementDirection.incoming
+                ),
                 quantity=Decimal(amount),
                 currency=currency,
                 price_per_unit=None,
@@ -543,18 +640,47 @@ async def _liability(
 async def _daily_baseline_at(user_id: str, *, at: datetime) -> None:
     engine = _engine()
     async with AsyncSession(engine) as session:
-        await UserSnapshotRefreshExecutor(session).execute(
+        # Setup writes dirty the series; this direct baseline fixture publishes
+        # an exact v3 state after those writes, as in the D1 integration tests.
+        await session.execute(
+            delete(SnapshotSeriesDirtyStateModel).where(
+                SnapshotSeriesDirtyStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesRebuildJobModel).where(
+                SnapshotSeriesRebuildJobModel.user_id == user_id
+            )
+        )
+        await session.commit()
+        refresh = await UserSnapshotRefreshExecutor(session).execute(
             ExecuteUserSnapshotRefreshCommand(
                 user_id=user_id,
                 snapshot_timestamp=at,
                 granularity=SnapshotGranularity.day,
                 source=SnapshotSource.manual_recalculation,
-                calculation_version=1,
+                calculation_version=3,
                 calculated_at=at,
                 created_at=at,
                 is_recalculated=True,
             )
         )
+        baseline = await session.scalar(
+            select(DailySnapshotBaselineModel).where(
+                DailySnapshotBaselineModel.net_worth_snapshot_id == refresh.net_worth_snapshot_id
+            )
+        )
+        assert baseline is not None
+        assert baseline.calculation_version == 3
+        assert baseline.generation_id == refresh.generation_id
+        child = await session.scalar(
+            select(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.baseline_id == baseline.id
+            )
+        )
+        assert child is not None and child.generation_id == refresh.generation_id
+        state = await session.get(AccountCanonicalStateModel, child.account_id)
+        assert state is not None and child.canonical_revision == state.last_revision
     await engine.dispose()
 
 
@@ -589,8 +715,8 @@ async def _failed_import_job(user_id: str, account_id: str, *, job_id: str) -> N
                 lease_heartbeat_at=None,
                 started_at=BASELINE_AT,
                 finished_at=BASELINE_AT,
-                created_at=BASELINE_AT,
-                updated_at=BASELINE_AT,
+                created_at=BASELINE_AT + timedelta(minutes=1),
+                updated_at=BASELINE_AT + timedelta(minutes=1),
             )
         )
     await engine.dispose()
@@ -604,6 +730,7 @@ async def _manual_retry_and_complete_import_job(
     completed_at: datetime,
 ) -> None:
     engine = _engine()
+    worker_id = "publication-freeze-worker"
     async with AsyncSession(engine) as session, session.begin():
         retried = await BackgroundJobRepository(session).retry_failed(
             user_id=user_id,
@@ -612,23 +739,19 @@ async def _manual_retry_and_complete_import_job(
             now=completed_at - timedelta(minutes=1),
         )
         assert retried is not None and retried.retried
-        claimed = await BackgroundJobRepository(session).claim_next(
-            worker_id="publication-freeze-worker",
-            now=completed_at - timedelta(seconds=30),
-            lease_duration=timedelta(minutes=1),
-        )
-        assert claimed is not None and claimed.job.id == job_id
-        state = await session.get(AccountCanonicalStateModel, account_id)
-        account = await session.get(AccountModel, account_id)
-        assert state is not None and account is not None
-        canonical_revision = state.last_revision
-        holding_revision = state.holding_revision
-        investment_revision = (
-            state.last_investment_revision if holding_revision is not None else None
-        )
-        snapshot_id = f"{job_id}-publication-anchor"
-        account_snapshot_id = f"{job_id}-publication-account"
-        baseline_id = f"{job_id}-publication-baseline"
+
+        # This fixture owns one exact job. A global claim_next may lease an
+        # unrelated queued job in a shared integration database.
+        job = retried.job
+        job.status = BackgroundJobStatus.running
+        job.lease_owner = worker_id
+        job.lease_version += 1
+        job.lease_expires_at = completed_at + timedelta(minutes=1)
+        job.lease_heartbeat_at = completed_at - timedelta(seconds=30)
+        job.attempt_count += 1
+        job.started_at = completed_at - timedelta(seconds=30)
+        job.finished_at = None
+        job.updated_at = completed_at - timedelta(seconds=30)
         session.add(
             ImportJobPublicationTargetModel(
                 job_id=job_id,
@@ -637,122 +760,91 @@ async def _manual_retry_and_complete_import_job(
                 published_at=None,
             )
         )
-        session.add(
-            NetWorthSnapshotModel(
-                id=snapshot_id,
+
+    async with AsyncSession(engine) as session:
+        refresh = await UserSnapshotRefreshExecutor(session).execute(
+            ExecuteUserSnapshotRefreshCommand(
                 user_id=user_id,
-                timestamp=completed_at,
+                snapshot_timestamp=completed_at,
                 granularity=SnapshotGranularity.minute,
                 source=SnapshotSource.import_event,
-                currency="EUR",
-                cash_value=Decimal("0"),
-                portfolio_value=Decimal("0"),
-                liabilities_value=Decimal("0"),
-                total_net_worth=Decimal("0"),
-                is_recalculated=False,
+                calculation_version=3,
                 calculated_at=completed_at,
-                calculation_version=1,
                 created_at=completed_at,
-                cash_value_by_currency={},
-                portfolio_value_by_currency={},
-                liabilities_value_by_currency={},
-                total_net_worth_by_currency={},
-                exchange_rates={},
-            )
-        )
-        session.add(
-            AccountSnapshotModel(
-                id=account_snapshot_id,
-                account_id=account_id,
-                timestamp=completed_at,
-                granularity=SnapshotGranularity.minute,
-                source=SnapshotSource.import_event,
-                currency=account.currency,
-                cash_value=Decimal("0"),
-                investment_value=Decimal("0"),
-                investment_cost_basis=Decimal("0"),
-                liabilities_value=Decimal("0"),
-                total_value=Decimal("0"),
                 is_recalculated=False,
-                calculated_at=completed_at,
-                calculation_version=1,
-                created_at=completed_at,
-                net_deposits_value=Decimal("0"),
-                realized_pnl_value=Decimal("0"),
-                unrealized_pnl_value=Decimal("0"),
-                fees_value=Decimal("0"),
-                taxes_value=Decimal("0"),
-                cash_value_by_currency={},
-                investment_value_by_currency={},
-                investment_cost_basis_by_currency={},
-                net_deposits_by_currency={},
-                realized_pnl_by_currency={},
-                unrealized_pnl_by_currency={},
-                fees_by_currency={},
-                taxes_by_currency={},
-                exchange_rates={},
+                publication_job_id=job_id,
+                publication_account_ids=(account_id,),
             )
         )
+        assert refresh.net_worth_snapshot_id
+        anchor = await session.scalar(
+            select(DailySnapshotBaselineModel).where(
+                DailySnapshotBaselineModel.background_job_id == job_id
+            )
+        )
+        assert anchor is not None and anchor.calculation_version == 3
+        assert anchor.generation_id == refresh.generation_id
+        boundary = await session.scalar(
+            select(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.baseline_id == anchor.id
+            )
+        )
+        state = await session.get(AccountCanonicalStateModel, account_id)
+        assert boundary is not None and state is not None
+        assert boundary.generation_id == refresh.generation_id
+        assert boundary.canonical_revision == state.last_revision
+
+    async with AsyncSession(engine) as session, session.begin():
+        await session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+        baseline = await session.scalar(
+            select(DailySnapshotBaselineModel).where(
+                DailySnapshotBaselineModel.background_job_id == job_id,
+                DailySnapshotBaselineModel.user_id == user_id,
+            )
+        )
+        target = await session.scalar(
+            select(ImportJobPublicationTargetModel).where(
+                ImportJobPublicationTargetModel.job_id == job_id,
+                ImportJobPublicationTargetModel.user_id == user_id,
+            )
+        )
+        completed_job = await session.get(BackgroundJobModel, job_id)
+        assert baseline is not None and target is not None and completed_job is not None
+        target.published_at = completed_at
         await session.flush()
-        session.add(
-            AccountSnapshotCanonicalBoundaryModel(
-                snapshot_id=account_snapshot_id,
-                account_id=account_id,
-                canonical_revision=canonical_revision,
-                investment_revision=investment_revision,
-                holding_revision=holding_revision,
-                selected_liability_balance_id=None,
-                created_at=completed_at,
-            )
+        # The job's fake batch has no import manifest. Publish its real v3
+        # anchor through the same temporal boundary used by job completion.
+        await publish_snapshot_baselines(
+            session,
+            user_id=user_id,
+            baseline_ids=(baseline.id,),
+            operation_id=f"import:{job_id}:{user_id}",
+            published_at=completed_at,
+            causal_at=completed_job.created_at,
+            allow_equivalent_supersession=True,
+            allow_dirty_import=True,
         )
-        session.add(
-            DailySnapshotBaselineModel(
-                id=baseline_id,
-                user_id=user_id,
-                net_worth_snapshot_id=snapshot_id,
-                timestamp=completed_at,
-                granularity=SnapshotGranularity.minute,
-                currency="EUR",
-                calculation_version=1,
-                source=SnapshotSource.import_event,
-                created_at=completed_at,
-                background_job_id=job_id,
-            )
-        )
-        await session.flush()
-        session.add(
-            DailySnapshotBaselineAccountModel(
-                baseline_id=baseline_id,
-                account_id=account_id,
-                account_type=account.type,
-                account_currency=account.currency,
-                primary_snapshot_id=account_snapshot_id,
-                presentation_snapshot_id=account_snapshot_id,
-                canonical_revision=canonical_revision,
-                investment_revision=investment_revision,
-                holding_revision=holding_revision,
-                selected_liability_balance_id=None,
-            )
-        )
-        await BackgroundJobRepository(session).complete(
-            lease=claimed.lease,
-            result=ImportJobResult(
-                batch_ids=(f"{job_id}-batch",),
-                rows_total=1,
-                rows_imported=1,
-                rows_skipped=0,
-                snapshot_refresh_status="created",
-                completed_at=completed_at,
-            ).model_dump(mode="json"),
-            progress=ImportJobProgress(
-                phase=ImportJobPhase.completed,
-                completed_units=1,
-                total_units=1,
-                completed_batches=1,
-                total_batches=1,
-            ).model_dump(mode="json"),
-            now=completed_at,
-        )
+        completed_job.status = BackgroundJobStatus.completed
+        completed_job.result = ImportJobResult(
+            batch_ids=(f"{job_id}-batch",),
+            rows_total=1,
+            rows_imported=1,
+            rows_skipped=0,
+            snapshot_refresh_status="created",
+            completed_at=completed_at,
+        ).model_dump(mode="json")
+        completed_job.progress = ImportJobProgress(
+            phase=ImportJobPhase.completed,
+            completed_units=1,
+            total_units=1,
+            completed_batches=1,
+            total_batches=1,
+        ).model_dump(mode="json")
+        completed_job.lease_owner = None
+        completed_job.lease_expires_at = None
+        completed_job.lease_heartbeat_at = None
+        completed_job.finished_at = completed_at
+        completed_job.updated_at = completed_at
     await engine.dispose()
 
 
@@ -847,8 +939,16 @@ def test_current_liability_uses_daily_baseline_then_forward_replacement_without_
             version = await session.scalar(text("select current_setting('server_version')"))
             assert isinstance(version, str) and version.startswith("16.10")
             before = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
             )
         await engine.dispose()
 
@@ -868,8 +968,16 @@ def test_current_liability_uses_daily_baseline_then_forward_replacement_without_
         engine = _engine()
         async with AsyncSession(engine) as session:
             after = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
             )
         await engine.dispose()
         assert after == before
@@ -913,8 +1021,16 @@ def test_current_cash_applies_only_forward_canonical_delta_without_snapshot_writ
         engine = _engine()
         async with AsyncSession(engine) as session:
             before = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
             )
         await engine.dispose()
 
@@ -926,8 +1042,16 @@ def test_current_cash_applies_only_forward_canonical_delta_without_snapshot_writ
         engine = _engine()
         async with AsyncSession(engine) as session:
             after = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
             )
         await engine.dispose()
         assert after == before
@@ -1050,6 +1174,27 @@ def test_forward_historical_metric_uses_event_date_fx_separately_from_current_ca
             account_currency="EUR",
             account_type=AccountType.broker,
         )
+        await _investment_cash_deposit(
+            prefix,
+            account_id=account_id,
+            at=BASELINE_AT - timedelta(days=1),
+            amount="1.0000000000",
+            currency="EUR",
+        )
+        await _investment_cash_deposit(
+            prefix,
+            account_id=account_id,
+            at=BASELINE_AT - timedelta(days=1) + timedelta(hours=1),
+            amount="1.0000000000",
+            currency="EUR",
+            withdrawal=True,
+        )
+        await _rate(
+            prefix,
+            currency="EUR",
+            at=BASELINE_AT - timedelta(days=1),
+            value="25.00000000",
+        )
         await _rebuild(account_id, at=BASELINE_AT - timedelta(hours=1))
         await _daily_baseline(user_id)
         await _investment_cash_deposit(
@@ -1069,6 +1214,7 @@ def test_forward_historical_metric_uses_event_date_fx_separately_from_current_ca
                 value="0.87500000",
             ),
             await _rate(prefix, currency="USD", at=CURRENT_AT, value="20.00000000"),
+            await _rate(prefix, currency="EUR", at=CURRENT_AT, value="24.00000000"),
             await _rate(
                 prefix,
                 currency="USD",
@@ -1090,8 +1236,12 @@ def test_forward_historical_metric_uses_event_date_fx_separately_from_current_ca
         assert presentation.currency == "EUR"
         assert presentation.summary.cash_value == Decimal("80.000000")
         assert presentation.summary.net_deposits_value == Decimal("87.500000")
-        assert primary.summary.cash_by_currency[0].amount == Decimal("100.000000")
-        assert primary.summary.net_deposits_by_currency[0].amount == Decimal("100.000000")
+        assert {item.currency: item.amount for item in primary.summary.cash_by_currency}[
+            "USD"
+        ] == Decimal("100.000000")
+        assert {item.currency: item.amount for item in primary.summary.net_deposits_by_currency}[
+            "USD"
+        ] == Decimal("100.000000")
         await _cleanup(prefix)
 
     asyncio.run(scenario())
@@ -1105,14 +1255,14 @@ def test_forward_historical_metric_uses_event_date_fx_separately_from_current_ca
             ImportSource.trading212,
             AssetType.stock,
             AssetAliasProvider.twelve_data,
-            '{"symbol":"AAA","mic_code":"XNAS"}',
+            '{"symbol":"R10D2AAA","mic_code":"XNAS"}',
         ),
         (
             "anycoin",
             ImportSource.anycoin,
             AssetType.crypto,
             AssetAliasProvider.coingecko,
-            "bitcoin",
+            "r10d2-anycoin-bitcoin",
         ),
     ),
 )
@@ -1155,9 +1305,21 @@ def test_fixture_derived_investment_delta_uses_baseline_items_and_current_price_
         engine = _engine()
         async with AsyncSession(engine) as session:
             before = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(HoldingModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(HoldingModel)
+                    .where(HoldingModel.account_id == account_id)
+                ),
             )
         await engine.dispose()
 
@@ -1178,9 +1340,21 @@ def test_fixture_derived_investment_delta_uses_baseline_items_and_current_price_
         engine = _engine()
         async with AsyncSession(engine) as session:
             after = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(HoldingModel)),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(HoldingModel)
+                    .where(HoldingModel.account_id == account_id)
+                ),
             )
         await engine.dispose()
         assert after == before

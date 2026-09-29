@@ -21,6 +21,8 @@ from app.modules.portfolio_snapshot.api import router as portfolio_snapshot_rout
 from app.modules.portfolio_snapshot.multi_account_api import (
     router as multi_account_portfolio_snapshot_router,
 )
+from app.modules.published_snapshot.api import router as published_snapshot_router
+from app.modules.published_snapshot.version_api import router as read_model_version_router
 from app.modules.snapshot_refresh.api import router as snapshot_refresh_router
 from app.modules.snapshots.api import router as snapshots_router
 from app.modules.transactions.api import router as transactions_router
@@ -44,6 +46,8 @@ api_router.include_router(portfolio_history_router)
 api_router.include_router(portfolio_snapshot_router)
 api_router.include_router(multi_account_portfolio_snapshot_router)
 api_router.include_router(dashboard_snapshot_router)
+api_router.include_router(published_snapshot_router)
+api_router.include_router(read_model_version_router)
 api_router.include_router(snapshots_router)
 api_router.include_router(snapshot_refresh_router)
 api_router.include_router(transactions_router)

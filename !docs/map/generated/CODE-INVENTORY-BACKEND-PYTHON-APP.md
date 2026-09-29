@@ -5,7 +5,7 @@
 
 # Code Inventory — backend/python/app
 
-**Files:** 319
+**Files:** 329
 
 - `backend/python/app/__init__.py`
 - `backend/python/app/api/__init__.py`
@@ -40,11 +40,13 @@
 - `backend/python/app/db/models/enums.py`
 - `backend/python/app/db/models/holdings.py`
 - `backend/python/app/db/models/imports.py`
+- `backend/python/app/db/models/investment_snapshots.py`
 - `backend/python/app/db/models/ledger.py`
 - `backend/python/app/db/models/liabilities.py`
-- `backend/python/app/db/models/portfolio_history.py`
 - `backend/python/app/db/models/prices.py`
 - `backend/python/app/db/models/publication_targets.py`
+- `backend/python/app/db/models/snapshot_series_jobs.py`
+- `backend/python/app/db/models/snapshot_series_publication.py`
 - `backend/python/app/db/models/snapshots.py`
 - `backend/python/app/db/models/transactions.py`
 - `backend/python/app/db/models/users.py`
@@ -144,18 +146,20 @@
 - `backend/python/app/modules/imports/service.py`
 - `backend/python/app/modules/imports/storage.py`
 - `backend/python/app/modules/imports/trading212.py`
+- `backend/python/app/modules/imports/trading212_asset_alias.py`
 - `backend/python/app/modules/imports/transaction_posting.py`
 - `backend/python/app/modules/investments/__init__.py`
+- `backend/python/app/modules/investments/anycoin_transfer_valuation_service.py`
 - `backend/python/app/modules/investments/api.py`
 - `backend/python/app/modules/investments/models.py`
 - `backend/python/app/modules/investments/repository.py`
 - `backend/python/app/modules/investments/service.py`
+- `backend/python/app/modules/investments/transfer_valuation.py`
 - `backend/python/app/modules/jobs/__init__.py`
 - `backend/python/app/modules/jobs/api.py`
 - `backend/python/app/modules/jobs/import_executor.py`
 - `backend/python/app/modules/jobs/lifecycle.py`
 - `backend/python/app/modules/jobs/models.py`
-- `backend/python/app/modules/jobs/publication_queries.py`
 - `backend/python/app/modules/jobs/publication_service.py`
 - `backend/python/app/modules/jobs/repository.py`
 - `backend/python/app/modules/jobs/service.py`
@@ -170,6 +174,7 @@
 - `backend/python/app/modules/liabilities/writer.py`
 - `backend/python/app/modules/liabilities/writer_repository.py`
 - `backend/python/app/modules/market_data/__init__.py`
+- `backend/python/app/modules/market_data/acquisition_cache.py`
 - `backend/python/app/modules/market_data/factory.py`
 - `backend/python/app/modules/market_data/history/__init__.py`
 - `backend/python/app/modules/market_data/history/coingecko.py`
@@ -219,14 +224,7 @@
 - `backend/python/app/modules/portfolio_history/builder/executor.py`
 - `backend/python/app/modules/portfolio_history/builder/market.py`
 - `backend/python/app/modules/portfolio_history/builder/planning.py`
-- `backend/python/app/modules/portfolio_history/builder/prefix_repository.py`
 - `backend/python/app/modules/portfolio_history/builder/replay_matrix.py`
-- `backend/python/app/modules/portfolio_history/builder/valuation.py`
-- `backend/python/app/modules/portfolio_history/compaction.py`
-- `backend/python/app/modules/portfolio_history/generations/__init__.py`
-- `backend/python/app/modules/portfolio_history/generations/models.py`
-- `backend/python/app/modules/portfolio_history/generations/repository.py`
-- `backend/python/app/modules/portfolio_history/generations/service.py`
 - `backend/python/app/modules/portfolio_history/invalidation/__init__.py`
 - `backend/python/app/modules/portfolio_history/invalidation/models.py`
 - `backend/python/app/modules/portfolio_history/invalidation/repository.py`
@@ -239,14 +237,12 @@
 - `backend/python/app/modules/portfolio_history/jobs/service.py`
 - `backend/python/app/modules/portfolio_history/jobs/worker.py`
 - `backend/python/app/modules/portfolio_history/lattice.py`
-- `backend/python/app/modules/portfolio_history/models.py`
-- `backend/python/app/modules/portfolio_history/repository.py`
+- `backend/python/app/modules/portfolio_history/runtime.py`
 - `backend/python/app/modules/portfolio_history/scheduler/__init__.py`
 - `backend/python/app/modules/portfolio_history/scheduler/models.py`
 - `backend/python/app/modules/portfolio_history/scheduler/repository.py`
+- `backend/python/app/modules/portfolio_history/scheduler/runner.py`
 - `backend/python/app/modules/portfolio_history/scheduler/service.py`
-- `backend/python/app/modules/portfolio_history/selection.py`
-- `backend/python/app/modules/portfolio_history/service.py`
 - `backend/python/app/modules/portfolio_history_rebuild/__init__.py`
 - `backend/python/app/modules/portfolio_history_rebuild/checkpoint.py`
 - `backend/python/app/modules/portfolio_history_rebuild/models.py`
@@ -261,6 +257,9 @@
 - `backend/python/app/modules/portfolio_snapshot/authorized_reader.py`
 - `backend/python/app/modules/portfolio_snapshot/authorized_service.py`
 - `backend/python/app/modules/portfolio_snapshot/currency_breakdown.py`
+- `backend/python/app/modules/portfolio_snapshot/history_api_models.py`
+- `backend/python/app/modules/portfolio_snapshot/history_contracts.py`
+- `backend/python/app/modules/portfolio_snapshot/history_reader.py`
 - `backend/python/app/modules/portfolio_snapshot/models.py`
 - `backend/python/app/modules/portfolio_snapshot/multi_account_api.py`
 - `backend/python/app/modules/portfolio_snapshot/multi_account_api_models.py`
@@ -268,6 +267,7 @@
 - `backend/python/app/modules/portfolio_snapshot/projection.py`
 - `backend/python/app/modules/portfolio_snapshot/reader.py`
 - `backend/python/app/modules/portfolio_snapshot/repository.py`
+- `backend/python/app/modules/portfolio_snapshot/writer.py`
 - `backend/python/app/modules/prices/__init__.py`
 - `backend/python/app/modules/prices/models.py`
 - `backend/python/app/modules/prices/providers/__init__.py`
@@ -287,17 +287,27 @@
 - `backend/python/app/modules/prices/providers/yahoo_finance_parser.py`
 - `backend/python/app/modules/prices/providers/yahoo_finance_transport.py`
 - `backend/python/app/modules/prices/validation.py`
+- `backend/python/app/modules/published_snapshot/__init__.py`
+- `backend/python/app/modules/published_snapshot/api.py`
+- `backend/python/app/modules/published_snapshot/version_api.py`
+- `backend/python/app/modules/snapshot_history_contracts.py`
 - `backend/python/app/modules/snapshot_refresh/__init__.py`
 - `backend/python/app/modules/snapshot_refresh/api.py`
 - `backend/python/app/modules/snapshot_refresh/evidence_service.py`
 - `backend/python/app/modules/snapshot_refresh/executor.py`
 - `backend/python/app/modules/snapshot_refresh/executor_repository.py`
+- `backend/python/app/modules/snapshot_refresh/history_series_bridge.py`
+- `backend/python/app/modules/snapshot_refresh/history_series_materializer.py`
 - `backend/python/app/modules/snapshot_refresh/manual_service.py`
 - `backend/python/app/modules/snapshot_refresh/market_backed_models.py`
 - `backend/python/app/modules/snapshot_refresh/market_backed_service.py`
+- `backend/python/app/modules/snapshot_refresh/metric_evidence.py`
 - `backend/python/app/modules/snapshot_refresh/models.py`
 - `backend/python/app/modules/snapshot_refresh/plan.py`
 - `backend/python/app/modules/snapshot_refresh/repository.py`
+- `backend/python/app/modules/snapshot_refresh/scheduled_runner.py`
+- `backend/python/app/modules/snapshot_refresh/series_executor.py`
+- `backend/python/app/modules/snapshot_refresh/series_persistence.py`
 - `backend/python/app/modules/snapshot_refresh/version.py`
 - `backend/python/app/modules/snapshots/__init__.py`
 - `backend/python/app/modules/snapshots/account_projection.py`

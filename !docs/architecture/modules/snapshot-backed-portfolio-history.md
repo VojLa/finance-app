@@ -1,11 +1,31 @@
-# Portfolio history architecture index
+# Snapshot-backed portfolio history
 
-Type: reference
-Status: historical
-Owns: compatibility routing for former milestone evidence
-Code: `portfolio_history/`, `portfolio_history_rebuild/`
-Update when: the final legacy link is removed
+Type: module
+Status: current
+Owns: published snapshot-series reads and their generation boundary
+Code: snapshot readers, rebuild worker and same-origin portfolio adapters
+Update when: snapshot projection, reader, worker or publication ownership changes
 
-Current behavior is owned by [Portfolio history](../../domains/portfolio-history/README.md).
-Exact publication rules are in [canonical and publication invariants](../invariants/canonical-and-publication.md).
-The original detailed audit remains recoverable from Git history and `CHATGPT/audits`.
+The portfolio graph is backed by one exact `UserReadModelPublication` generation.
+The reader resolves that pointer and reads the matching
+`PortfolioSnapshot`/`InvestmentAccountSnapshot`/`AccountSnapshot`/
+`NetWorthSnapshot` graph. It never assembles a series from live Holdings,
+current prices, current FX, or the private legacy history calculator.
+
+Rebuilds are staged from canonical replay. The worker writes the complete target
+manifest and all dependent snapshots before atomic pointer publication. Current
+snapshot capture is independent from historical rebuilds, and provider I/O is
+restricted to the builder/worker boundary.
+
+Every snapshot output has an explicit output currency and retains native
+currency evidence. A scalar is a derived user-output presentation value; it does
+not erase the source-currency cash, investment, cost-basis or P/L breakdowns.
+
+The legacy `PortfolioHistoryGeneration` tables and builder have been removed.
+The retained `portfolio_history` package owns only API compatibility, range
+policy and durable snapshot-series orchestration; it does not persist a second
+financial history.
+
+See [portfolio history publication](../flows/portfolio-history.md),
+[money and currency invariants](../invariants/money-and-currency.md), and
+[snapshot contracts](../../domains/evidence/snapshot-contracts.md).

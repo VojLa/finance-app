@@ -22,12 +22,15 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalChangeModel
+from app.db.models.common import QUANTITY
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
     AssetAliasProvider,
     AssetType,
+    ExchangeRateSource,
     ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
@@ -37,7 +40,12 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.db.models.holdings import HoldingModel
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
+from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -58,6 +66,7 @@ from app.modules.imports.anycoin_btc_alias import (
     AnycoinBtcAliasService,
     OnboardAnycoinBtcAliasCommand,
 )
+from app.modules.investments.transfer_valuation import transfer_valuation_fingerprint
 from app.modules.market_data.factory import create_production_market_evidence_service
 from app.modules.market_data.models import MarketEvidenceRefreshResult
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
@@ -77,6 +86,7 @@ from app.modules.snapshot_refresh.executor import (
     ExecuteUserSnapshotRefreshCommand,
     UserSnapshotRefreshExecutor,
 )
+from app.shared.canonical_arithmetic import canonical_rounded
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = [
@@ -84,7 +94,7 @@ pytestmark = [
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "3o0001unkbasis" / "schema.sql"
+CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "410001serieslinks" / "schema.sql"
 REAL_ANYCOIN_FIXTURE = (
     Path(__file__).parents[3] / "test_imports" / "AnyCoin" / "transactions (2).csv"
 )
@@ -136,11 +146,23 @@ class _YahooTransport:
                 price_hint=2,
                 points=((SNAPSHOT_AT, "60.00"),),
             ),
+            "BTC-USD": _yahoo_body(
+                symbol="BTC-USD",
+                currency="USD",
+                price_hint=2,
+                points=((SNAPSHOT_AT, "56794.4576072386"),),
+            ),
             "EURCZK=X": _yahoo_body(
                 symbol="EURCZK=X",
                 currency="CZK",
                 price_hint=8,
                 points=((event_at, "25.00000000"), (SNAPSHOT_AT, "25.00000000")),
+            ),
+            "CZK=X": _yahoo_body(
+                symbol="CZK=X",
+                currency="CZK",
+                price_hint=8,
+                points=((SNAPSHOT_AT, "25.00000000"),),
             ),
         }
 
@@ -337,11 +359,145 @@ async def _seed_known_trading_account(
     return account_id, event_at
 
 
+async def _seed_anycoin_transfer_valuation_evidence(
+    session: AsyncSession,
+    *,
+    prefix: str,
+    account_id: str,
+    created_at: datetime,
+) -> None:
+    rows = (
+        await session.execute(
+            select(InvestmentEventModel, InvestmentMovementModel)
+            .join(
+                InvestmentMovementModel,
+                InvestmentMovementModel.event_id == InvestmentEventModel.id,
+            )
+            .where(
+                InvestmentEventModel.account_id == account_id,
+                InvestmentEventModel.source == ImportSource.anycoin,
+                InvestmentEventModel.type == InvestmentEventType.asset_transfer,
+                InvestmentEventModel.archived_at.is_(None),
+                InvestmentEventModel.deleted_at.is_(None),
+                InvestmentMovementModel.kind == InvestmentMovementKind.asset,
+                InvestmentMovementModel.currency == "BTC",
+                InvestmentMovementModel.source_symbol == "BTC",
+                InvestmentMovementModel.source_asset_type == AssetType.crypto,
+                InvestmentMovementModel.price_per_unit.is_(None),
+                InvestmentMovementModel.value_amount.is_(None),
+                InvestmentMovementModel.value_currency.is_(None),
+            )
+        )
+    ).all()
+    if not rows:
+        return
+
+    event_ids = tuple(event.id for event, _movement in rows)
+    changes = {
+        row.entity_id: row
+        for row in (
+            await session.scalars(
+                select(AccountCanonicalChangeModel).where(
+                    AccountCanonicalChangeModel.account_id == account_id,
+                    AccountCanonicalChangeModel.kind == "investment_event",
+                    AccountCanonicalChangeModel.entity_id.in_(event_ids),
+                )
+            )
+        ).all()
+    }
+    timestamp_ids: dict[datetime, tuple[str, str]] = {}
+    for event, movement in rows:
+        if event.id not in changes or movement.asset_id is None or movement.listing_id is None:
+            raise AssertionError("Anycoin transfer fixture is missing canonical identity.")
+        timestamp_ids.setdefault(
+            event.date,
+            (
+                f"{prefix}-transfer-price-{len(timestamp_ids) + 1}",
+                f"{prefix}-transfer-rate-{len(timestamp_ids) + 1}",
+            ),
+        )
+
+    first_movement = rows[0][1]
+    assert first_movement.asset_id is not None and first_movement.listing_id is not None
+    for timestamp, (price_id, rate_id) in timestamp_ids.items():
+        session.add_all(
+            [
+                PriceSnapshotModel(
+                    id=price_id,
+                    asset_id=first_movement.asset_id,
+                    listing_id=first_movement.listing_id,
+                    price=Decimal("10000.0000000000"),
+                    currency="USD",
+                    source=PriceSource.yahoo_finance,
+                    timestamp=timestamp,
+                    created_at=created_at,
+                ),
+                ExchangeRateModel(
+                    id=rate_id,
+                    from_currency="USD",
+                    to_currency="CZK",
+                    rate=Decimal("25.00000000"),
+                    date=timestamp,
+                    source=ExchangeRateSource.yahoo_finance,
+                    created_at=created_at,
+                ),
+            ]
+        )
+    await session.flush()
+
+    for event, movement in rows:
+        change = changes.get(event.id)
+        assert change is not None
+        assert movement.asset_id is not None and movement.listing_id is not None
+        price_id, rate_id = timestamp_ids[event.date]
+        price_per_unit = canonical_rounded(
+            Decimal("10000.0000000000") * Decimal("25.00000000"),
+            QUANTITY,
+        )
+        value_amount = canonical_rounded(movement.quantity * price_per_unit, QUANTITY)
+        fingerprint = transfer_valuation_fingerprint(
+            movement=movement,
+            effective_at=event.date,
+            canonical_revision=change.revision,
+            price_snapshot_id=price_id,
+            exchange_rate_id=rate_id,
+            calculation_version=1,
+            selection_interval="30min",
+        )
+        session.add(
+            InvestmentMovementValuationEvidenceModel(
+                id=f"{prefix}-transfer-evidence-{movement.id}",
+                account_id=account_id,
+                movement_id=movement.id,
+                revision=1,
+                canonical_revision=change.revision,
+                effective_at=event.date,
+                calculation_version=1,
+                selection_interval="30min",
+                input_fingerprint=fingerprint,
+                price_snapshot_id=price_id,
+                exchange_rate_id=rate_id,
+                price_amount=Decimal("10000.0000000000"),
+                price_currency="USD",
+                price_source=PriceSource.yahoo_finance,
+                price_timestamp=event.date,
+                fx_rate=Decimal("25.00000000"),
+                fx_from_currency="USD",
+                fx_to_currency="CZK",
+                fx_source=ExchangeRateSource.yahoo_finance,
+                fx_timestamp=event.date,
+                price_per_unit=price_per_unit,
+                value_amount=value_amount,
+                value_currency="CZK",
+                created_at=created_at,
+            )
+        )
+    await session.flush()
+
+
 @pytest.mark.skipif(not REAL_ANYCOIN_FIXTURE.exists(), reason="Local Anycoin fixture is absent")
 @pytest.mark.asyncio
-async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullable_cost_metrics() -> (
-    None
-):
+async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cost_metrics() -> None:
     assert DATABASE_URL is not None
     support = _posting_support()
     mutable_support = cast(Any, support)
@@ -361,6 +517,7 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
         await admin.execute(f'CREATE DATABASE "{database_name}"')
         target = await asyncpg.connect(target_dsn)
         try:
+            await target.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
             current_schema = CURRENT_SCHEMA.read_text(encoding="utf-8").replace(
                 'CREATE SCHEMA "public";\n', "", 1
             )
@@ -371,7 +528,7 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
             )
             await target.execute(
-                "INSERT INTO public.alembic_version (version_num) VALUES ('3o0001unkbasis')"
+                "INSERT INTO public.alembic_version (version_num) VALUES ('410001serieslinks')"
             )
         finally:
             await target.close()
@@ -392,7 +549,7 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 anycoin_account = await session.get(AccountModel, account_id)
                 assert user is not None and anycoin_account is not None
                 user.base_currency = "CZK"
-                anycoin_account.name = "Anycoin unknown basis"
+                anycoin_account.name = "Anycoin event-date valuation"
                 anycoin_account.type = AccountType.exchange
                 await session.commit()
             await support._prepare(prefix)
@@ -400,7 +557,10 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
             assert posted.investment_event_rows_imported == 194
 
             async with AsyncSession(engine, expire_on_commit=False) as session:
-                aliases = await AnycoinBtcAliasService(session).onboard(
+                aliases = await AnycoinBtcAliasService(
+                    session,
+                    source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+                ).onboard(
                     OnboardAnycoinBtcAliasCommand(
                         account_id=account_id,
                         batch_ids=(f"{prefix}-batch",),
@@ -409,6 +569,12 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                     )
                 )
                 assert len(aliases.aliases) == 1
+                await _seed_anycoin_transfer_valuation_evidence(
+                    session,
+                    prefix=prefix,
+                    account_id=account_id,
+                    created_at=posted.completed_at,
+                )
                 rebuilt = await HoldingRebuildService(session).rebuild(
                     account_id=account_id,
                     rebuilt_at=SNAPSHOT_AT,
@@ -419,8 +585,8 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 )
                 assert holding is not None
                 assert holding.quantity > 0
-                assert holding.avg_buy_price is None
-                assert holding.cost_basis_by_currency is None
+                assert holding.avg_buy_price == Decimal("1458377.6860068004")
+                assert holding.cost_basis_by_currency == {"CZK": "29167.5537201360"}
 
                 asset = await session.get(AssetModel, holding.asset_id)
                 assert asset is not None
@@ -429,10 +595,10 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 alias = await session.scalar(
                     select(AssetAliasModel).where(
                         AssetAliasModel.asset_id == holding.asset_id,
-                        AssetAliasModel.provider == AssetAliasProvider.coingecko,
+                        AssetAliasModel.provider == AssetAliasProvider.yahoo_finance,
                     )
                 )
-                assert alias is not None and alias.external_id == "bitcoin"
+                assert alias is not None and alias.external_id == "BTC-USD"
                 # Holding rebuild participates in the caller-owned transaction.
                 # Commit the same boundary used by durable import finalization before
                 # the market planner opens its repeatable-read transaction.
@@ -479,15 +645,17 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                         created_at=SNAPSHOT_AT,
                     )
                 )
-                assert len(requests) == 1
-                assert tuple(call[0] for call in yahoo_transport.calls) == (
+                assert requests == []
+                assert {call[0] for call in yahoo_transport.calls} == {
                     "AAA",
+                    "BTC-USD",
                     "EURCZK=X",
-                )
+                    "CZK=X",
+                }
                 assert market.required_price_count == 2
-                assert market.required_fx_count == 2
+                assert market.required_fx_count == 3
                 assert market.prices_created == 2
-                assert market.rates_created == 2
+                assert market.rates_created == 3
 
                 publication = await UserSnapshotRefreshExecutor(
                     session,
@@ -520,10 +688,10 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 assert snapshot.calculation_version == 3
                 assert snapshot.investment_value > 0
                 assert snapshot.total_value == snapshot.investment_value + snapshot.cash_value
-                assert snapshot.investment_cost_basis is None
-                assert snapshot.net_deposits_value is None
-                assert snapshot.realized_pnl_value is None
-                assert snapshot.unrealized_pnl_value is None
+                assert snapshot.investment_cost_basis == Decimal("29167.553720")
+                assert snapshot.net_deposits_value == Decimal("40818.385000")
+                assert snapshot.realized_pnl_value == Decimal("-4250.322065")
+                assert snapshot.unrealized_pnl_value == Decimal("-770.323720")
                 assert snapshot.fees_value >= 0
                 assert snapshot.taxes_value >= 0
 
@@ -535,7 +703,7 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 assert item is not None
                 assert item.quantity == holding.quantity
                 assert item.value > 0
-                assert (
+                item_cost_metrics = (
                     item.native_cost_basis,
                     item.native_cost_currency,
                     item.native_cost_basis_by_currency,
@@ -543,7 +711,16 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                     item.average_buy_price_currency,
                     item.cost_basis,
                     item.cost_currency,
-                ) == (None, None, None, None, None, None, None)
+                )
+                assert item_cost_metrics == (
+                    Decimal("29167.5537201360"),
+                    "CZK",
+                    {"CZK": "29167.5537201360"},
+                    Decimal("1458377.6860068004"),
+                    "CZK",
+                    Decimal("29167.553720"),
+                    "CZK",
+                ), item_cost_metrics
                 holding_sql_null = await session.scalar(
                     text(
                         'SELECT "costBasisByCurrency" IS NULL FROM public."Holding" '
@@ -570,16 +747,16 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                         {"snapshot_id": snapshot.id},
                     )
                 ).one()
-                assert holding_sql_null is True
-                assert item_sql_null is True
-                assert tuple(snapshot_sql_nulls) == (True, True, True, True)
+                assert holding_sql_null is False
+                assert item_sql_null is False
+                assert tuple(snapshot_sql_nulls) == (False, False, False, True)
 
                 net_worth = await session.get(
                     NetWorthSnapshotModel,
                     publication.net_worth_snapshot_id,
                 )
                 assert net_worth is not None
-                assert net_worth.total_net_worth == Decimal("28897.228804")
+                assert net_worth.total_net_worth == Decimal("28897.230000")
 
                 command = ReadAuthorizedMultiAccountPortfolioSnapshotCommand(
                     principal=AuthenticatedPrincipal(
@@ -609,11 +786,11 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                 ).dashboard
                 assert portfolio.summary.total_value == dashboard.summary.total_value
                 assert portfolio.summary.investment_value == dashboard.summary.investment_value
-                assert portfolio.summary.total_value == Decimal("28897.228804")
-                assert portfolio.summary.investment_cost_basis is None
-                assert dashboard.summary.investment_cost_basis is None
+                assert portfolio.summary.total_value == Decimal("28897.230000")
+                assert portfolio.summary.investment_cost_basis == Decimal("31667.553720")
+                assert dashboard.summary.investment_cost_basis == Decimal("31667.553720")
                 assert {account.account.name for account in portfolio.accounts} == {
-                    "Anycoin unknown basis",
+                    "Anycoin event-date valuation",
                     "Trading known basis",
                 }
                 anycoin_view = next(
@@ -626,8 +803,8 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                     for account in portfolio.accounts
                     if account.account.account_id == trading_account_id
                 )
-                assert anycoin_view.positions[0].native_value == Decimal("28397.2288036193")
-                assert anycoin_view.summary.investment_cost_basis is None
+                assert anycoin_view.positions[0].native_value == Decimal("1135.8892000000")
+                assert anycoin_view.summary.investment_cost_basis == Decimal("29167.553720")
                 assert trading_view.summary.investment_cost_basis == Decimal("2500.000000")
                 assert dashboard.top_positions[0].name == "Bitcoin"
 
@@ -677,7 +854,7 @@ async def test_actual_anycoin_unknown_basis_publishes_quantity_value_and_nullabl
                     )
                 )
                 assert current.portfolio.summary.total_value == portfolio.summary.total_value
-                assert current.portfolio.summary.investment_cost_basis is None
+                assert current.portfolio.summary.investment_cost_basis == Decimal("31667.553720")
                 assert {item.account.account_id for item in current.account_presentations} == {
                     account_id,
                     trading_account_id,

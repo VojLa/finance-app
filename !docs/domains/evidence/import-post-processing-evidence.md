@@ -1,5 +1,11 @@
 ## Import post-processing outcome
 
+Type: historical
+Status: historical
+Owns: milestone evidence for import post-processing
+Code: import, Holding and snapshot implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 `ImportBatchPostingService` now returns an internal immutable terminal result
 that includes counts of imported Transaction and InvestmentEvent targets. Each
 imported row must reference exactly one target and target counts must equal

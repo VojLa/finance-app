@@ -1,7 +1,7 @@
 import type { CreateAccountRequest, UpdateAccountRequest } from "./account-contract"
 
-const CREATE_KEYS = new Set(["name", "type", "currency", "color", "notes"])
-const UPDATE_KEYS = new Set(["name", "currency", "color", "notes"])
+const CREATE_KEYS = new Set(["name", "type", "currency", "color", "notes", "credit_limit"])
+const UPDATE_KEYS = new Set(["name", "currency", "color", "notes", "credit_limit"])
 
 function requirePlainObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -43,6 +43,7 @@ export function parseCreateAccountRequest(value: unknown): CreateAccountRequest 
   const currency = requireString(object.currency)
   const color = optionalNullableString(object.color)
   const notes = optionalNullableString(object.notes)
+  const creditLimit = optionalNullableString(object.credit_limit)
 
   return {
     name,
@@ -50,6 +51,7 @@ export function parseCreateAccountRequest(value: unknown): CreateAccountRequest 
     currency,
     ...(color !== undefined ? { color } : {}),
     ...(notes !== undefined ? { notes } : {}),
+    ...(creditLimit !== undefined ? { credit_limit: creditLimit } : {}),
   }
 }
 
@@ -61,11 +63,13 @@ export function parseUpdateAccountRequest(value: unknown): UpdateAccountRequest 
   const currency = optionalNullableString(object.currency)
   const color = optionalNullableString(object.color)
   const notes = optionalNullableString(object.notes)
+  const creditLimit = optionalNullableString(object.credit_limit)
 
   return {
     ...(name !== undefined ? { name } : {}),
     ...(currency !== undefined ? { currency } : {}),
     ...(color !== undefined ? { color } : {}),
     ...(notes !== undefined ? { notes } : {}),
+    ...(creditLimit !== undefined ? { credit_limit: creditLimit } : {}),
   }
 }

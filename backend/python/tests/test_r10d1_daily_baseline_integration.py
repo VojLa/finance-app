@@ -17,6 +17,10 @@ from app.db.models.canonical_lineage import (
     AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
 )
 from app.db.models.enums import (
     AccountMemberRole,
@@ -34,9 +38,20 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.db.models.holdings import HoldingModel
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel
+from app.db.models.snapshot_series_jobs import (
+    SnapshotSeriesDirtyStateModel,
+    SnapshotSeriesRebuildJobModel,
+)
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
@@ -73,6 +88,70 @@ async def _cleanup(prefix: str) -> None:
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
     async with AsyncSession(engine) as session:
+        generation_ids = tuple(
+            await session.scalars(
+                select(SnapshotGenerationTargetModel.generation_id).where(
+                    SnapshotGenerationTargetModel.user_id == user_id
+                )
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id == user_id
+            )
+        )
+        # PostgreSQL protects committed publication metadata from ordinary
+        # mutation. This transaction-local override is limited to test-owned
+        # immutable rows; all financial evidence is removed with FKs enabled.
+        await session.execute(text("SET LOCAL session_replication_role = replica"))
+        await session.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id == user_id
+            )
+        )
+        heads = tuple(
+            await session.scalars(
+                select(SnapshotSeriesHeadModel.id)
+                .where(SnapshotSeriesHeadModel.user_id == user_id)
+                .order_by(SnapshotSeriesHeadModel.version.desc())
+            )
+        )
+        for head_id in heads:
+            await session.execute(
+                delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.id == head_id)
+            )
+        await session.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(UserReadModelPublicationWatermarkModel).where(
+                UserReadModelPublicationWatermarkModel.user_id == user_id
+            )
+        )
+        await session.execute(text("SET LOCAL session_replication_role = origin"))
+        await session.execute(
+            delete(SnapshotSeriesDirtyStateModel).where(
+                SnapshotSeriesDirtyStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id == user_id)
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineAccountModel).where(
+                DailySnapshotBaselineAccountModel.account_id == account_id
+            )
+        )
+        await session.execute(
+            delete(DailySnapshotBaselineModel).where(DailySnapshotBaselineModel.user_id == user_id)
+        )
         await session.execute(
             delete(ExchangeRateModel).where(ExchangeRateModel.id.startswith(f"{prefix}-"))
         )
@@ -86,10 +165,42 @@ async def _cleanup(prefix: str) -> None:
             delete(LiabilityBalanceModel).where(LiabilityBalanceModel.account_id == account_id)
         )
         await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesRebuildJobModel).where(
+                SnapshotSeriesRebuildJobModel.user_id == user_id
+            )
+        )
+        if generation_ids:
+            await session.execute(
+                delete(SnapshotGenerationModel).where(
+                    SnapshotGenerationModel.id.in_(generation_ids)
+                )
+            )
+        await session.execute(
             delete(AccountMemberModel).where(AccountMemberModel.account_id == account_id)
         )
         await session.execute(delete(AccountModel).where(AccountModel.id == account_id))
         await session.execute(delete(UserModel).where(UserModel.id == user_id))
+        assert await session.get(UserModel, user_id) is None
+        assert await session.get(AccountModel, account_id) is None
+        assert not tuple(
+            await session.scalars(
+                select(SnapshotSeriesPointLinkModel.id).where(
+                    SnapshotSeriesPointLinkModel.user_id == user_id
+                )
+            )
+        )
+        assert not tuple(
+            await session.scalars(
+                select(SnapshotGenerationTargetModel.generation_id).where(
+                    SnapshotGenerationTargetModel.user_id == user_id
+                )
+            )
+        )
         await session.commit()
     await engine.dispose()
 
@@ -199,13 +310,26 @@ async def _write_liability(
 async def _refresh(user_id: str, *, at: datetime = AT) -> ExecuteUserSnapshotRefreshResult:
     engine = _engine()
     async with AsyncSession(engine) as session:
+        # These tests exercise the direct baseline path after setup writes. The
+        # rebuild worker, tested separately, owns real dirty-series publication.
+        await session.execute(
+            delete(SnapshotSeriesDirtyStateModel).where(
+                SnapshotSeriesDirtyStateModel.user_id == user_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotSeriesRebuildJobModel).where(
+                SnapshotSeriesRebuildJobModel.user_id == user_id
+            )
+        )
+        await session.commit()
         result = await UserSnapshotRefreshExecutor(session).execute(
             ExecuteUserSnapshotRefreshCommand(
                 user_id=user_id,
                 snapshot_timestamp=at,
                 granularity=SnapshotGranularity.day,
                 source=SnapshotSource.manual_recalculation,
-                calculation_version=1,
+                calculation_version=3,
                 calculated_at=at,
                 created_at=at,
                 is_recalculated=True,
@@ -344,11 +468,25 @@ def test_daily_manifest_replay_and_read_are_physically_immutable() -> None:
         engine = _engine()
         async with AsyncSession(engine) as session:
             before = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(DailySnapshotBaselineModel)),
                 await session.scalar(
-                    select(func.count()).select_from(DailySnapshotBaselineAccountModel)
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(DailySnapshotBaselineModel)
+                    .where(DailySnapshotBaselineModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(DailySnapshotBaselineAccountModel)
+                    .where(DailySnapshotBaselineAccountModel.account_id == account_id)
                 ),
             )
             await session.rollback()
@@ -359,11 +497,25 @@ def test_daily_manifest_replay_and_read_are_physically_immutable() -> None:
                 selected.accounts[0].primary_snapshot_id == first.account_snapshots[0].snapshot_id
             )
             after = (
-                await session.scalar(select(func.count()).select_from(AccountSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(NetWorthSnapshotModel)),
-                await session.scalar(select(func.count()).select_from(DailySnapshotBaselineModel)),
                 await session.scalar(
-                    select(func.count()).select_from(DailySnapshotBaselineAccountModel)
+                    select(func.count())
+                    .select_from(AccountSnapshotModel)
+                    .where(AccountSnapshotModel.account_id == account_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(NetWorthSnapshotModel)
+                    .where(NetWorthSnapshotModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(DailySnapshotBaselineModel)
+                    .where(DailySnapshotBaselineModel.user_id == user_id)
+                ),
+                await session.scalar(
+                    select(func.count())
+                    .select_from(DailySnapshotBaselineAccountModel)
+                    .where(DailySnapshotBaselineAccountModel.account_id == account_id)
                 ),
             )
             assert after == before
@@ -469,7 +621,11 @@ def test_concurrent_identical_daily_refresh_converges_to_one_manifest() -> None:
                 await session.scalar(
                     select(func.count())
                     .select_from(DailySnapshotBaselineAccountModel)
-                    .join(DailySnapshotBaselineModel)
+                    .join(
+                        DailySnapshotBaselineModel,
+                        DailySnapshotBaselineAccountModel.baseline_id
+                        == DailySnapshotBaselineModel.id,
+                    )
                     .where(DailySnapshotBaselineModel.user_id == user_id)
                 )
                 == 1
@@ -691,7 +847,7 @@ def test_investment_revision_makes_holding_stale_until_atomic_rebuild() -> None:
             state = await session.get(AccountCanonicalStateModel, account_id)
             assert state is not None
             assert (state.last_revision, state.last_investment_revision) == (1, 1)
-            assert state.holding_revision is None
+            assert state.holding_revision == 0
         await engine.dispose()
 
         await rebuild(CREATED_AT)
@@ -771,9 +927,10 @@ def test_newest_invalid_baseline_never_falls_back_to_older_manifest() -> None:
 
         async with AsyncSession(engine) as session:
             with pytest.raises(DailyBaselineUnavailableError):
-                await DailySnapshotBaselineService(session).select_latest_valid(
+                await DailySnapshotBaselineService(
+                    session
+                ).select_published_manifest_for_authorized_read(
                     user_id=user_id,
-                    through=newest_at,
                 )
             assert not session.in_transaction()
         await engine.dispose()
@@ -820,6 +977,38 @@ def test_account_configuration_change_invalidates_exact_baseline() -> None:
                     user_id=user_id,
                     through=AT,
                 )
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_user_base_currency_change_invalidates_exact_baseline_without_relabeling() -> None:
+    prefix = "r10d1-user-currency"
+
+    async def scenario() -> None:
+        user_id, account_id = await _seed(prefix)
+        await _write_liability(
+            account_id,
+            effective_at=INITIAL_AT,
+            created_at=INITIAL_AT,
+            external_id="initial",
+            amount="100",
+        )
+        await _refresh(user_id)
+
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            user = await session.get(UserModel, user_id)
+            assert user is not None
+            user.base_currency = "USD"
+            await session.commit()
+        async with AsyncSession(engine) as session:
+            with pytest.raises(DailyBaselineUnavailableError):
+                await DailySnapshotBaselineService(session).select_latest_valid(
+                    user_id=user_id,
+                    through=AT,
+                )
+            assert not session.in_transaction()
         await engine.dispose()
 
     asyncio.run(scenario())

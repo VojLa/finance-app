@@ -10,10 +10,19 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.accounts import AccountModel
+from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    DailySnapshotBaselineAccountModel,
+    DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
+)
 from app.db.models.enums import (
     AccountType,
     LiabilityBalanceSource,
@@ -22,11 +31,29 @@ from app.db.models.enums import (
     TransactionClassification,
     TransactionType,
 )
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.liabilities import LiabilityBalanceModel
-from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
+from app.db.models.snapshot_series_jobs import (
+    SnapshotSeriesDirtyStateModel,
+    SnapshotSeriesRebuildJobModel,
+)
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
+from app.db.models.snapshots import (
+    AccountSnapshotItemModel,
+    AccountSnapshotModel,
+    NetWorthSnapshotModel,
+)
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.modules.canonical_state.service import CanonicalChangeKind, CanonicalStateService
+from app.modules.portfolio_history.invalidation.service import (
+    PortfolioHistoryInvalidationService,
+)
 from app.modules.snapshot_refresh.executor import (
     ExecuteUserSnapshotRefreshCommand,
     UserSnapshotRefreshExecutor,
@@ -51,14 +78,174 @@ async def _cleanup(prefix: str) -> None:
                     select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
                 )
             )
+            user_id = support._user_id(prefix)
+            generation_ids = tuple(
+                await session.scalars(
+                    select(SnapshotGenerationTargetModel.generation_id).where(
+                        SnapshotGenerationTargetModel.user_id == user_id
+                    )
+                )
+            )
+            await session.execute(
+                delete(UserReadModelPublicationModel).where(
+                    UserReadModelPublicationModel.user_id == user_id
+                )
+            )
+            # Immutable publication metadata needs a transaction-local test
+            # teardown override; restore triggers before deleting evidence.
+            await session.execute(text("SET LOCAL session_replication_role = replica"))
+            await session.execute(
+                delete(SnapshotSeriesPublicationReceiptModel).where(
+                    SnapshotSeriesPublicationReceiptModel.user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(SnapshotSeriesPointLinkModel).where(
+                    SnapshotSeriesPointLinkModel.user_id == user_id
+                )
+            )
+            heads = tuple(
+                await session.scalars(
+                    select(SnapshotSeriesHeadModel.id)
+                    .where(SnapshotSeriesHeadModel.user_id == user_id)
+                    .order_by(SnapshotSeriesHeadModel.version.desc())
+                )
+            )
+            for head_id in heads:
+                await session.execute(
+                    delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.id == head_id)
+                )
+            await session.execute(
+                delete(SnapshotSeriesVersionStateModel).where(
+                    SnapshotSeriesVersionStateModel.user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(UserReadModelPublicationWatermarkModel).where(
+                    UserReadModelPublicationWatermarkModel.user_id == user_id
+                )
+            )
+            await session.execute(text("SET LOCAL session_replication_role = origin"))
+            await session.execute(
+                delete(SnapshotSeriesDirtyStateModel).where(
+                    SnapshotSeriesDirtyStateModel.user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id == user_id)
+            )
+            if account_ids:
+                await session.execute(
+                    delete(DailySnapshotBaselineAccountModel).where(
+                        DailySnapshotBaselineAccountModel.account_id.in_(account_ids)
+                    )
+                )
+            await session.execute(
+                delete(DailySnapshotBaselineModel).where(
+                    DailySnapshotBaselineModel.user_id == user_id
+                )
+            )
             if account_ids:
                 await session.execute(
                     delete(TransactionModel).where(TransactionModel.account_id.in_(account_ids))
                 )
-                await session.commit()
+            snapshot_ids = (
+                tuple(
+                    await session.scalars(
+                        select(AccountSnapshotModel.id).where(
+                            AccountSnapshotModel.account_id.in_(account_ids)
+                        )
+                    )
+                )
+                if account_ids
+                else ()
+            )
+            if snapshot_ids:
+                await session.execute(
+                    delete(AccountSnapshotItemModel).where(
+                        AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
+                    )
+                )
+            await session.execute(
+                delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == user_id)
+            )
+            if account_ids:
+                await session.execute(
+                    delete(AccountSnapshotModel).where(
+                        AccountSnapshotModel.account_id.in_(account_ids)
+                    )
+                )
+                await session.execute(
+                    delete(LiabilityBalanceModel).where(
+                        LiabilityBalanceModel.account_id.in_(account_ids)
+                    )
+                )
+            await session.execute(
+                delete(SnapshotGenerationTargetModel).where(
+                    SnapshotGenerationTargetModel.user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(SnapshotSeriesRebuildJobModel).where(
+                    SnapshotSeriesRebuildJobModel.user_id == user_id
+                )
+            )
+            if generation_ids:
+                await session.execute(
+                    delete(SnapshotGenerationModel).where(
+                        SnapshotGenerationModel.id.in_(generation_ids)
+                    )
+                )
+            if account_ids:
+                await session.execute(
+                    delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
+                )
+                await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
+            await session.execute(delete(UserModel).where(UserModel.id == user_id))
+            assert await session.get(UserModel, user_id) is None
+            assert not tuple(
+                await session.scalars(
+                    select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
+                )
+            )
+            assert not tuple(
+                await session.scalars(
+                    select(SnapshotSeriesPointLinkModel.id).where(
+                        SnapshotSeriesPointLinkModel.user_id == user_id
+                    )
+                )
+            )
+            assert not tuple(
+                await session.scalars(
+                    select(SnapshotGenerationTargetModel.generation_id).where(
+                        SnapshotGenerationTargetModel.user_id == user_id
+                    )
+                )
+            )
+            await session.commit()
     finally:
         await engine.dispose()
-    await support._cleanup(prefix)
+
+
+async def _clear_setup_invalidation(prefix: str) -> None:
+    """Leave direct-publication fixtures clean after their setup evidence writes."""
+    engine = support._engine()
+    try:
+        async with AsyncSession(engine) as session:
+            user_id = support._user_id(prefix)
+            await session.execute(
+                delete(SnapshotSeriesDirtyStateModel).where(
+                    SnapshotSeriesDirtyStateModel.user_id == user_id
+                )
+            )
+            await session.execute(
+                delete(SnapshotSeriesRebuildJobModel).where(
+                    SnapshotSeriesRebuildJobModel.user_id == user_id
+                )
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
 
 
 async def _seed_bank(prefix: str) -> str:
@@ -94,6 +281,7 @@ async def _add_transaction(
     event_at: datetime,
     created_at: datetime,
     amount: str,
+    invalidate: bool = False,
 ) -> None:
     engine = support._engine()
     try:
@@ -123,12 +311,32 @@ async def _add_transaction(
                     updated_at=created_at,
                 )
             )
+            await session.flush()
+            invalidation = PortfolioHistoryInvalidationService(session)
+            memberships = (
+                await invalidation.lock_current_memberships((account_id,)) if invalidate else ()
+            )
+            recorded = await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.transaction,
+                entity_id=f"{prefix}-transaction-{suffix}",
+                financial_timestamp=event_at,
+                created_at=created_at,
+                replay=False,
+            )
+            if invalidate:
+                await invalidation.invalidate_recorded_changes(
+                    changes=(recorded,),
+                    locked_memberships=memberships,
+                    now=created_at,
+                )
             await session.commit()
     finally:
         await engine.dispose()
 
 
 async def _write_daily(prefix: str) -> None:
+    await _clear_setup_invalidation(prefix)
     engine = support._engine()
     try:
         async with AsyncSession(engine) as session:
@@ -138,7 +346,7 @@ async def _write_daily(prefix: str) -> None:
                     snapshot_timestamp=DAY,
                     granularity=SnapshotGranularity.day,
                     source=SnapshotSource.scheduled,
-                    calculation_version=1,
+                    calculation_version=3,
                     calculated_at=DAY,
                     created_at=DAY,
                     is_recalculated=False,
@@ -175,6 +383,30 @@ async def _rows(
         await engine.dispose()
 
 
+async def _publication(prefix: str) -> tuple[str, str, str] | None:
+    engine = support._engine()
+    try:
+        async with AsyncSession(engine) as session:
+            pointer = await session.get(UserReadModelPublicationModel, support._user_id(prefix))
+            if pointer is None:
+                return None
+            return pointer.baseline_id, pointer.generation_id, pointer.series_head_id
+    finally:
+        await engine.dispose()
+
+
+async def _is_dirty(prefix: str) -> bool:
+    engine = support._engine()
+    try:
+        async with AsyncSession(engine) as session:
+            return (
+                await session.get(SnapshotSeriesDirtyStateModel, support._user_id(prefix))
+                is not None
+            )
+    finally:
+        await engine.dispose()
+
+
 def test_current_workflow_succeeds_without_any_daily_baseline() -> None:
     prefix = f"r10d-no-day-{support.uuid4()}"
     try:
@@ -189,6 +421,7 @@ def test_current_workflow_succeeds_without_any_daily_baseline() -> None:
                 amount="100.000000",
             )
         )
+        asyncio.run(_clear_setup_invalidation(prefix))
 
         response = support._call(prefix)
         account_rows, net_rows = asyncio.run(_rows(prefix))
@@ -204,7 +437,7 @@ def test_current_workflow_succeeds_without_any_daily_baseline() -> None:
         asyncio.run(_cleanup(prefix))
 
 
-def test_daily_baseline_and_later_event_produce_a_new_complete_minute_graph() -> None:
+def test_daily_baseline_and_later_clean_event_produce_complete_minute_graph() -> None:
     prefix = f"r10d-day-event-{support.uuid4()}"
     try:
         account_id = asyncio.run(_seed_bank(prefix))
@@ -235,6 +468,7 @@ def test_daily_baseline_and_later_event_produce_a_new_complete_minute_graph() ->
         account_rows, net_rows = asyncio.run(_rows(prefix))
 
         assert response.status_code == 200
+        assert len(before[0]) == len(before[1]) == 1
         assert tuple(row.granularity for row in account_rows) == (
             SnapshotGranularity.day,
             SnapshotGranularity.minute,
@@ -243,7 +477,6 @@ def test_daily_baseline_and_later_event_produce_a_new_complete_minute_graph() ->
             Decimal("100.000000"),
             Decimal("150.000000"),
         )
-        assert len(before[0]) == len(before[1]) == 1
         assert len(account_rows) == len(net_rows) == 2
         assert response.json()["accounts"] == [
             {"accountId": account_id, "snapshotId": account_rows[1].id}
@@ -253,7 +486,7 @@ def test_daily_baseline_and_later_event_produce_a_new_complete_minute_graph() ->
         asyncio.run(_cleanup(prefix))
 
 
-def test_post_baseline_backfill_has_no_persisted_inclusion_watermark() -> None:
+def test_post_baseline_backfill_does_not_publish_staged_minute_graph() -> None:
     prefix = f"r10d-backfill-{support.uuid4()}"
     try:
         account_id = asyncio.run(_seed_bank(prefix))
@@ -268,6 +501,7 @@ def test_post_baseline_backfill_has_no_persisted_inclusion_watermark() -> None:
             )
         )
         asyncio.run(_write_daily(prefix))
+        published_before = asyncio.run(_publication(prefix))
         asyncio.run(
             _add_transaction(
                 prefix,
@@ -276,24 +510,27 @@ def test_post_baseline_backfill_has_no_persisted_inclusion_watermark() -> None:
                 event_at=DAY - timedelta(minutes=1),
                 created_at=DAY + timedelta(hours=1),
                 amount="25.000000",
+                invalidate=True,
             )
         )
+        assert asyncio.run(_is_dirty(prefix))
+        before = asyncio.run(_rows(prefix))
 
         response = support._call(prefix)
-        account_rows, _ = asyncio.run(_rows(prefix))
+        account_rows, net_rows = asyncio.run(_rows(prefix))
 
-        assert response.status_code == 200
-        assert tuple(row.cash_value for row in account_rows) == (
-            Decimal("100.000000"),
-            Decimal("125.000000"),
-        )
-        assert account_rows[0].timestamp == DAY
-        assert account_rows[1].timestamp == CURRENT
+        assert response.status_code == 409
+        assert len(before[0]) == len(before[1]) == 1
+        assert any(row.id == before[0][0].id for row in account_rows)
+        assert any(row.id == before[1][0].id for row in net_rows)
+        assert before[0][0].cash_value == Decimal("100.000000")
+        assert before[0][0].timestamp == DAY
+        assert asyncio.run(_publication(prefix)) == published_before
     finally:
         asyncio.run(_cleanup(prefix))
 
 
-def test_liability_current_value_uses_a_later_point_not_a_persisted_delta() -> None:
+def test_later_liability_point_requires_rebuild_before_publication() -> None:
     prefix = f"r10d-liability-{support.uuid4()}"
     try:
         asyncio.run(
@@ -313,13 +550,13 @@ def test_liability_current_value_uses_a_later_point_not_a_persisted_delta() -> N
                         .where(LiabilityBalanceModel.account_id == account_id)
                         .values(effective_at=INITIAL, created_at=INITIAL)
                     )
-                    await CanonicalStateService(session).record(
-                        account_id=account_id,
-                        kind=CanonicalChangeKind.liability_balance,
-                        entity_id=f"{prefix}-balance-loan",
-                        financial_timestamp=INITIAL,
-                        created_at=INITIAL,
-                        replay=False,
+                    await session.execute(
+                        update(AccountCanonicalChangeModel)
+                        .where(
+                            AccountCanonicalChangeModel.account_id == account_id,
+                            AccountCanonicalChangeModel.entity_id == f"{prefix}-balance-loan",
+                        )
+                        .values(financial_timestamp=INITIAL, created_at=INITIAL)
                     )
                     await session.commit()
             finally:
@@ -327,6 +564,7 @@ def test_liability_current_value_uses_a_later_point_not_a_persisted_delta() -> N
 
         asyncio.run(prepare())
         asyncio.run(_write_daily(prefix))
+        published_before = asyncio.run(_publication(prefix))
 
         async def add_later_balance() -> None:
             engine = support._engine()
@@ -347,22 +585,38 @@ def test_liability_current_value_uses_a_later_point_not_a_persisted_delta() -> N
                             created_at=LATER,
                         )
                     )
+                    await session.flush()
+                    invalidation = PortfolioHistoryInvalidationService(session)
+                    memberships = await invalidation.lock_current_memberships((account_id,))
+                    recorded = await CanonicalStateService(session).record(
+                        account_id=account_id,
+                        kind=CanonicalChangeKind.liability_balance,
+                        entity_id=f"{prefix}-balance-later",
+                        financial_timestamp=LATER,
+                        created_at=LATER,
+                        replay=False,
+                    )
+                    await invalidation.invalidate_recorded_changes(
+                        changes=(recorded,),
+                        locked_memberships=memberships,
+                        now=LATER,
+                    )
                     await session.commit()
             finally:
                 await engine.dispose()
 
         asyncio.run(add_later_balance())
+        assert asyncio.run(_is_dirty(prefix))
+        before = asyncio.run(_rows(prefix))
         response = support._call(prefix)
-        account_rows, _ = asyncio.run(_rows(prefix))
+        account_rows, net_rows = asyncio.run(_rows(prefix))
 
-        assert response.status_code == 200
-        assert tuple(row.liabilities_value for row in account_rows) == (
-            Decimal("100.000000"),
-            Decimal("140.000000"),
-        )
-        assert tuple(row.granularity for row in account_rows) == (
-            SnapshotGranularity.day,
-            SnapshotGranularity.minute,
-        )
+        assert response.status_code == 409
+        assert len(before[0]) == len(before[1]) == 1
+        assert any(row.id == before[0][0].id for row in account_rows)
+        assert any(row.id == before[1][0].id for row in net_rows)
+        assert before[0][0].liabilities_value == Decimal("100.000000")
+        assert before[0][0].granularity is SnapshotGranularity.day
+        assert asyncio.run(_publication(prefix)) == published_before
     finally:
         asyncio.run(_cleanup(prefix))

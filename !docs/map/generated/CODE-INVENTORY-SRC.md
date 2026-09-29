@@ -5,7 +5,7 @@
 
 # Code Inventory — src
 
-**Files:** 208
+**Files:** 222
 
 - `src/app/(auth)/login/page.tsx`
 - `src/app/(auth)/register/page.tsx`
@@ -33,12 +33,18 @@
 - `src/app/api/portfolio/history/route.test.ts`
 - `src/app/api/portfolio/history/route.ts`
 - `src/app/api/portfolio/transactions/route.ts`
+- `src/app/api/read-model-version/route.test.ts`
+- `src/app/api/read-model-version/route.ts`
 - `src/app/api/snapshot-workflow/dashboard/route.ts`
+- `src/app/api/snapshot-workflow/portfolio/refresh/route.test.ts`
+- `src/app/api/snapshot-workflow/portfolio/refresh/route.ts`
 - `src/app/api/snapshot-workflow/portfolio/route.ts`
 - `src/app/api/snapshot-workflow/route.test.ts`
 - `src/app/api/transactions/route.ts`
 - `src/app/api/typescript-boundary.test.ts`
+- `src/app/budget/page-race.test.tsx`
 - `src/app/budget/page.tsx`
+- `src/app/categories/page-state.test.tsx`
 - `src/app/categories/page.tsx`
 - `src/app/dashboard/dashboard-snapshot-cutover.test.ts`
 - `src/app/dashboard/page.test.ts`
@@ -56,8 +62,10 @@
 - `src/app/portfolio/portfolio-snapshot-cutover.test.ts`
 - `src/app/providers.tsx`
 - `src/app/r10d-current-value-invariant.test.ts`
+- `src/app/settings/page-state.test.tsx`
 - `src/app/settings/page.tsx`
 - `src/app/snapshot-cutover-final-audit.test.ts`
+- `src/app/transactions/page-race.test.tsx`
 - `src/app/transactions/page.tsx`
 - `src/app/version-0-1-clean-main-scenario.test.ts`
 - `src/app/version-0-1-final-audit.test.ts`
@@ -129,6 +137,7 @@
 - `src/modules/categories/category-contract.ts`
 - `src/modules/categories/server/category-api.ts`
 - `src/modules/dashboard/dashboard-cutover-final-audit.test.ts`
+- `src/modules/dashboard/dashboard-widget-navigation.test.ts`
 - `src/modules/dashboard/operational-dashboard-client.ts`
 - `src/modules/dashboard/operational-dashboard-contract.ts`
 - `src/modules/dashboard/operational-dashboard-model.test.ts`
@@ -177,7 +186,9 @@
 - `src/modules/portfolio/snapshot-history-client.test.ts`
 - `src/modules/portfolio/snapshot-history-client.ts`
 - `src/modules/portfolio/snapshot-history-contract.ts`
+- `src/modules/portfolio/snapshot-page-client.test.ts`
 - `src/modules/portfolio/snapshot-page-client.ts`
+- `src/modules/portfolio/snapshot-page-format.test.ts`
 - `src/modules/portfolio/snapshot-page-format.ts`
 - `src/modules/portfolio/snapshot-page-model.test.ts`
 - `src/modules/portfolio/snapshot-page-model.ts`
@@ -197,11 +208,14 @@
 - `src/modules/python-api/server/portfolio-history.ts`
 - `src/modules/python-api/server/snapshot-workflow.test.ts`
 - `src/modules/python-api/server/snapshot-workflow.ts`
+- `src/modules/python-api/server/transport.test.ts`
 - `src/modules/python-api/server/transport.ts`
 - `src/modules/python-api/snapshot-cutover-final-audit.test.ts`
 - `src/modules/python-api/snapshot-workflow-boundaries.test.ts`
 - `src/modules/python-api/snapshot-workflow-contract.ts`
 - `src/modules/python-api/version-0-1-boundary-audit.test.ts`
+- `src/modules/read-models/read-model-version-client.test.ts`
+- `src/modules/read-models/read-model-version-client.ts`
 - `src/modules/transactions/r11e-cutover.test.ts`
 - `src/modules/transactions/server/transaction-api.ts`
 - `src/modules/transactions/transaction-client.test.ts`

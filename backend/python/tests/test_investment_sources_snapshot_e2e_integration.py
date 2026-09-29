@@ -10,8 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from support import investment_fixture_e2e as support
 
+from app.db.models.assets import AssetListingModel
 from app.db.models.enums import ImportSource, PriceSource, SnapshotGranularity, SnapshotSource
 from app.db.models.holdings import HoldingModel
 from app.db.models.prices import PriceSnapshotModel
@@ -26,6 +26,7 @@ from app.modules.snapshot_refresh.executor import (
     UserSnapshotRefreshExecutor,
 )
 from app.modules.snapshot_refresh.models import UserSnapshotRefreshRecalculateResponse
+from tests.support import investment_fixture_e2e as support
 
 pytestmark = pytest.mark.skipif(
     not support.DATABASE_URL,
@@ -34,6 +35,30 @@ pytestmark = pytest.mark.skipif(
 
 PORTFOLIO_PATH = "/api/v1/portfolio/snapshot"
 DASHBOARD_PATH = "/api/v1/dashboard/snapshot"
+ANYCOIN_SYMBOL = "R3BTC"
+
+
+async def _unrelated_btc_eur_listings(prefix: str) -> tuple[tuple[str, str, str | None], ...]:
+    db = support.engine()
+    try:
+        async with AsyncSession(db) as session:
+            rows = (
+                await session.execute(
+                    select(
+                        AssetListingModel.id,
+                        AssetListingModel.asset_id,
+                        AssetListingModel.exchange,
+                    ).where(
+                        AssetListingModel.provider == PriceSource.exchange,
+                        AssetListingModel.provider_symbol == "BTC",
+                        AssetListingModel.currency == "EUR",
+                        AssetListingModel.id != f"{prefix}-listing",
+                    )
+                )
+            ).all()
+            return tuple(sorted(row._tuple() for row in rows))
+    finally:
+        await db.dispose()
 
 
 async def _snapshot_counts(user_id: str, account_id: str) -> tuple[int, int]:
@@ -182,7 +207,7 @@ async def _snapshot_evidence(
             "history.csv",
             "60000",
             {
-                "symbol": "BTC",
+                "symbol": ANYCOIN_SYMBOL,
                 "quantity": Decimal("0.01"),
                 "cash": Decimal("-490"),
                 "investment": Decimal("600"),
@@ -204,6 +229,10 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prefix = f"r3-snapshot-{source.value}"
+    symbol_override = ANYCOIN_SYMBOL if source is ImportSource.anycoin else None
+    unrelated_listings = (
+        asyncio.run(_unrelated_btc_eur_listings(prefix)) if source is ImportSource.anycoin else None
+    )
     user_id, account_id = asyncio.run(support.seed_identity(prefix, source=source))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / source.value))
     bucket = datetime(2026, 7, 26)
@@ -215,11 +244,13 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
                 source=source,
                 user_id=user_id,
                 account_id=account_id,
-                content=support.fixture(source, filename),
+                content=support.fixture(source, filename, symbol_override=symbol_override),
                 filename=filename,
                 post=False,
             )
-            asyncio.run(support.seed_asset_listing(prefix, source=source))
+            asyncio.run(
+                support.seed_asset_listing(prefix, source=source, symbol_override=symbol_override)
+            )
             posted = support.post_batch(
                 client,
                 user_id=user_id,
@@ -287,6 +318,8 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
         _assert_persisted_snapshot(evidence=evidence, expected=expected)
     finally:
         asyncio.run(support.cleanup(prefix))
+        if unrelated_listings is not None:
+            assert asyncio.run(_unrelated_btc_eur_listings(prefix)) == unrelated_listings
 
 
 def _assert_persisted_snapshot(

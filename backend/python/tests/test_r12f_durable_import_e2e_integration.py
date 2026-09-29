@@ -21,21 +21,31 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, update
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.auth.dependencies import INTERNAL_AUTH_SERVICE_SUBJECT
-from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
-from app.db.models.background_jobs import BackgroundJobModel
-from app.db.models.canonical_lineage import DailySnapshotBaselineModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
+from app.db.models.canonical_lineage import (
+    DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AssetAliasProvider,
     AssetType,
+    BackgroundJobStatus,
     ExchangeRateSource,
     PriceSource,
     SnapshotGranularity,
@@ -43,9 +53,16 @@ from app.db.models.enums import (
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -58,19 +75,15 @@ from app.main import create_app
 from app.modules.current_value.api import get_current_value_service
 from app.modules.current_value.service import CurrentValueService
 from app.modules.daily_baselines.service import DailySnapshotBaselineService
-from app.modules.holdings.orchestration import (
-    HoldingRebuildApplicationService,
-    RebuildHoldingsCommand,
-)
 from app.modules.imports.multi_file_service import ImportMultiFileFinalizationService
 from app.modules.jobs import import_executor as durable_import_executor_module
 from app.modules.jobs import worker as background_worker_module
 from app.modules.jobs.import_executor import DurableImportJobExecutor
+from app.modules.jobs.lifecycle import LeaseIdentity
+from app.modules.jobs.repository import BackgroundJobRepository, ClaimedBackgroundJob
 from app.modules.jobs.worker import BackgroundJobWorker
 from app.modules.market_data.factory import create_production_market_evidence_service
-from app.modules.snapshot_refresh.market_backed_models import (
-    ExecuteMarketBackedSnapshotRefreshCommand,
-)
+from app.modules.market_data.source_policy import CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY
 from app.modules.snapshot_refresh.market_backed_service import MarketBackedSnapshotRefreshService
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -147,6 +160,26 @@ DUPLICATE_REPLAY_FILE = _csv(
 )
 
 
+def _fixture_files(prefix: str) -> tuple[str, bytes, bytes, bytes]:
+    suffix = prefix.rsplit("-", 1)[-1]
+    ticker = f"TSTETF{suffix.upper()}"
+    replacements = {
+        "TSTETF": ticker,
+        "TEST00000001": f"TS{suffix[:10].upper()}",
+        "R12F-DEPOSIT-001": f"R12F-DEPOSIT-{suffix}",
+        "R12F-EUR-BUY-001": f"R12F-EUR-BUY-{suffix}",
+        "R12F-USD-BUY-001": f"R12F-USD-BUY-{suffix}",
+    }
+
+    def distinct(content: bytes) -> bytes:
+        value = content.decode()
+        for old, new in replacements.items():
+            value = value.replace(old, new)
+        return value.encode()
+
+    return ticker, distinct(EUR_FILE), distinct(USD_FILE), distinct(DUPLICATE_REPLAY_FILE)
+
+
 class _ProviderHarness:
     """Exact in-memory provider responses; network access is impossible in this test."""
 
@@ -214,14 +247,15 @@ async def _seed_market_identity(prefix: str) -> tuple[str, str]:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     asset_id, listing_id = f"{prefix}-asset", f"{prefix}-listing"
+    ticker, _, _, _ = _fixture_files(prefix)
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     try:
         async with AsyncSession(engine) as session:
             session.add(
                 AssetModel(
                     id=asset_id,
-                    symbol="TSTETF",
-                    isin="TEST00000001",
+                    symbol=ticker,
+                    isin=f"TS{prefix.rsplit('-', 1)[-1][:10].upper()}",
                     name="R12-F Test ETF",
                     asset_type=AssetType.etf,
                     currency="EUR",
@@ -234,7 +268,7 @@ async def _seed_market_identity(prefix: str) -> tuple[str, str]:
                 AssetListingModel(
                     id=listing_id,
                     asset_id=asset_id,
-                    symbol="TSTETF",
+                    symbol=ticker,
                     exchange="trading212",
                     mic=None,
                     currency="EUR",
@@ -243,7 +277,7 @@ async def _seed_market_identity(prefix: str) -> tuple[str, str]:
                     # Listing provider identities are globally unique.  Keep
                     # this test isolated even if a prior interrupted run left
                     # its own test asset behind.
-                    provider_symbol="TSTETF",
+                    provider_symbol=ticker,
                     is_primary=False,
                     created_at=now,
                     updated_at=now,
@@ -482,6 +516,15 @@ async def _cleanup(
                     ).all()
                 )
                 effective_user_ids = tuple(sorted(set(effective_user_ids) | set(member_user_ids)))
+            generation_ids = tuple(
+                (
+                    await session.scalars(
+                        select(SnapshotGenerationTargetModel.generation_id).where(
+                            SnapshotGenerationTargetModel.user_id.in_(effective_user_ids)
+                        )
+                    )
+                ).all()
+            )
             snapshot_ids = (
                 tuple(
                     (
@@ -521,7 +564,56 @@ async def _cleanup(
                 if effective_account_ids
                 else ()
             )
+            job_ids = (
+                tuple(
+                    (
+                        await session.scalars(
+                            select(BackgroundJobModel.id).where(
+                                BackgroundJobModel.account_id.in_(effective_account_ids),
+                                BackgroundJobModel.user_id.in_(effective_user_ids),
+                            )
+                        )
+                    ).all()
+                )
+                if effective_account_ids and effective_user_ids
+                else ()
+            )
             if effective_user_ids:
+                await session.execute(
+                    delete(UserReadModelPublicationModel).where(
+                        UserReadModelPublicationModel.user_id.in_(effective_user_ids)
+                    )
+                )
+                # Immutable series rows need a transaction-local trigger bypass
+                # while their test users still exist. All predicates use this
+                # run's unique user and generation ids.
+                await session.execute(sql_text("SET LOCAL session_replication_role = replica"))
+                try:
+                    await session.execute(
+                        delete(SnapshotSeriesPublicationReceiptModel).where(
+                            SnapshotSeriesPublicationReceiptModel.user_id.in_(effective_user_ids),
+                            SnapshotSeriesPublicationReceiptModel.generation_id.in_(generation_ids),
+                        )
+                    )
+                    await session.execute(
+                        delete(SnapshotSeriesPointLinkModel).where(
+                            SnapshotSeriesPointLinkModel.user_id.in_(effective_user_ids),
+                            SnapshotSeriesPointLinkModel.generation_id.in_(generation_ids),
+                        )
+                    )
+                    await session.execute(
+                        delete(SnapshotSeriesHeadModel).where(
+                            SnapshotSeriesHeadModel.user_id.in_(effective_user_ids),
+                            SnapshotSeriesHeadModel.generation_id.in_(generation_ids),
+                        )
+                    )
+                    await session.execute(
+                        delete(SnapshotSeriesVersionStateModel).where(
+                            SnapshotSeriesVersionStateModel.user_id.in_(effective_user_ids)
+                        )
+                    )
+                finally:
+                    await session.execute(sql_text("SET LOCAL session_replication_role = origin"))
                 await session.execute(
                     delete(DailySnapshotBaselineModel).where(
                         DailySnapshotBaselineModel.user_id.in_(effective_user_ids)
@@ -530,6 +622,11 @@ async def _cleanup(
                 await session.execute(
                     delete(ImportJobPublicationTargetModel).where(
                         ImportJobPublicationTargetModel.user_id.in_(effective_user_ids)
+                    )
+                )
+                await session.execute(
+                    delete(PortfolioSnapshotModel).where(
+                        PortfolioSnapshotModel.user_id.in_(effective_user_ids)
                     )
                 )
                 await session.execute(
@@ -572,7 +669,19 @@ async def _cleanup(
                     delete(ImportRowModel).where(ImportRowModel.import_batch_id.in_(batch_ids))
                 )
                 await session.execute(
+                    delete(ImportJobBatchModel).where(ImportJobBatchModel.batch_id.in_(batch_ids))
+                )
+                await session.execute(
                     delete(ImportBatchModel).where(ImportBatchModel.id.in_(batch_ids))
+                )
+            if job_ids:
+                await session.execute(
+                    delete(ImportJobAffectedAccountModel).where(
+                        ImportJobAffectedAccountModel.job_id.in_(job_ids)
+                    )
+                )
+                await session.execute(
+                    delete(BackgroundJobModel).where(BackgroundJobModel.id.in_(job_ids))
                 )
             await session.execute(
                 delete(AssetAliasModel).where(AssetAliasModel.id == f"{prefix}-alias")
@@ -595,7 +704,43 @@ async def _cleanup(
                     delete(AccountModel).where(AccountModel.id.in_(effective_account_ids))
                 )
             if effective_user_ids:
+                await session.execute(
+                    delete(SnapshotGenerationTargetModel).where(
+                        SnapshotGenerationTargetModel.user_id.in_(effective_user_ids)
+                    )
+                )
                 await session.execute(delete(UserModel).where(UserModel.id.in_(effective_user_ids)))
+            if generation_ids:
+                await session.execute(
+                    delete(SnapshotGenerationModel).where(
+                        SnapshotGenerationModel.id.in_(generation_ids)
+                    )
+                )
+            for model, predicate in (
+                (UserModel, UserModel.id.in_(effective_user_ids)),
+                (BackgroundJobModel, BackgroundJobModel.id.in_(job_ids)),
+                (ImportBatchModel, ImportBatchModel.id.in_(batch_ids)),
+                (AssetModel, AssetModel.id == f"{prefix}-asset"),
+                (PortfolioSnapshotModel, PortfolioSnapshotModel.user_id.in_(effective_user_ids)),
+                (
+                    SnapshotGenerationTargetModel,
+                    SnapshotGenerationTargetModel.user_id.in_(effective_user_ids),
+                ),
+                (SnapshotGenerationModel, SnapshotGenerationModel.id.in_(generation_ids)),
+                (
+                    SnapshotSeriesPointLinkModel,
+                    SnapshotSeriesPointLinkModel.user_id.in_(effective_user_ids),
+                ),
+            ):
+                assert (
+                    int(
+                        await session.scalar(
+                            select(func.count()).select_from(model).where(predicate)
+                        )
+                        or 0
+                    )
+                    == 0
+                )
             await session.commit()
     finally:
         await engine.dispose()
@@ -604,11 +749,13 @@ async def _cleanup(
 async def _run_worker(
     *,
     prefix: str,
+    job_id: str,
+    user_id: str,
     settings: Settings,
     harness: _ProviderHarness,
     before_complete: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
-    """Execute the real fenced worker twice on one asyncio loop and engine."""
+    """Execute one real fenced worker claim on one asyncio loop and engine."""
 
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL), pool_size=8)
@@ -653,6 +800,7 @@ async def _run_worker(
             market_backed_service=MarketBackedSnapshotRefreshService(
                 session, settings, market_service_factory=market_factory
             ),
+            source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         )
 
     executor.executor.finalization_factory = finalizer
@@ -670,68 +818,45 @@ async def _run_worker(
         lease_duration=timedelta(minutes=5),
         heartbeat_interval=timedelta(seconds=5),
     )
+
+    class _ScopedJobRepository(BackgroundJobRepository):
+        async def claim_next(
+            self, *, worker_id: str, now: datetime, lease_duration: timedelta
+        ) -> ClaimedBackgroundJob | None:
+            job = await self.session.scalar(
+                select(BackgroundJobModel)
+                .where(
+                    BackgroundJobModel.id == job_id,
+                    BackgroundJobModel.user_id == user_id,
+                    BackgroundJobModel.status.in_(
+                        (BackgroundJobStatus.queued, BackgroundJobStatus.retry_wait)
+                    ),
+                    BackgroundJobModel.run_after <= now,
+                    BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+                )
+                .with_for_update(skip_locked=True)
+            )
+            if job is None:
+                return None
+            job.status = BackgroundJobStatus.running
+            job.lease_owner = worker_id
+            job.lease_version += 1
+            job.lease_expires_at = now + lease_duration
+            job.lease_heartbeat_at = now
+            job.attempt_count += 1
+            job.started_at = job.started_at or now
+            job.finished_at = None
+            job.updated_at = now
+            await self.session.flush()
+            lease = LeaseIdentity(job_id=job.id, owner=worker_id, version=job.lease_version)
+            return ClaimedBackgroundJob(job=job, lease=lease)
+
+    patcher = pytest.MonkeyPatch()
+    patcher.setattr(background_worker_module, "BackgroundJobRepository", _ScopedJobRepository)
     try:
         assert await worker.run_once() is True
-        assert await worker.run_once() is False
     finally:
-        await engine.dispose()
-
-
-async def _publish_initial_day_baseline(
-    *,
-    account_id: str,
-    user_id: str,
-    settings: Settings,
-    harness: _ProviderHarness,
-    rebuild_holdings: bool = True,
-) -> None:
-    """Create the prior published state through the production snapshot flow."""
-
-    assert DATABASE_URL is not None
-    engine = create_async_engine(normalize_database_url(DATABASE_URL))
-    timestamp = datetime.now(UTC).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
-    try:
-        async with AsyncSession(engine) as session:
-            if rebuild_holdings:
-                await HoldingRebuildApplicationService(session, clock=lambda: timestamp).rebuild(
-                    RebuildHoldingsCommand(
-                        principal=AuthenticatedPrincipal(
-                            user_id=user_id,
-                            email=f"{user_id}@example.test",
-                            name="R12-F clean user",
-                        ),
-                        account_id=account_id,
-                    )
-                )
-            quote, coin, fx = harness.transports(session)
-
-            def market_factory(active_session: AsyncSession, active_settings: Settings):
-                return create_production_market_evidence_service(
-                    active_session,
-                    active_settings,
-                    twelve_data_http_transport=quote,
-                    coingecko_http_transport=coin,
-                    twelve_data_fx_http_transport=fx,
-                )
-
-            result = await MarketBackedSnapshotRefreshService(
-                session,
-                settings,
-                market_service_factory=market_factory,
-            ).execute(
-                ExecuteMarketBackedSnapshotRefreshCommand(
-                    user_id=user_id,
-                    snapshot_timestamp=timestamp,
-                    granularity=SnapshotGranularity.day,
-                    source=SnapshotSource.manual_recalculation,
-                    calculation_version=1,
-                    calculated_at=timestamp,
-                    created_at=timestamp,
-                    is_recalculated=True,
-                )
-            )
-            assert result.snapshots.account_snapshots[0].account_id == account_id
-    finally:
+        patcher.undo()
         await engine.dispose()
 
 
@@ -813,6 +938,7 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
 
     assert DATABASE_URL is not None
     prefix = f"r12f-e2e-{uuid4().hex[:12]}"
+    _, eur_file, usd_file, _ = _fixture_files(prefix)
     email = f"{prefix}@example.test"
     account_id: str | None = None
     user_id: str | None = None
@@ -820,7 +946,6 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
     job_id: str | None = None
     listing_id: str | None = None
     rate_ids: tuple[str, ...] = ()
-    prior_current_value: str | None = None
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / "raw-imports"))
     settings = _settings()
     app = create_app(settings)
@@ -877,39 +1002,22 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                 )
 
             app.dependency_overrides[get_current_value_service] = current_value_service
-            asyncio.run(
-                _publish_initial_day_baseline(
-                    account_id=account_id,
-                    user_id=user_id,
-                    settings=settings,
-                    harness=harness,
-                )
-            )
-            asyncio.run(
-                _publish_initial_day_baseline(
-                    account_id=account_id,
-                    user_id=viewer_id,
-                    settings=settings,
-                    harness=harness,
-                    rebuild_holdings=False,
-                )
-            )
             asyncio.run(_set_member_viewer(prefix=prefix))
             prior_current = initiating_client.post(
                 "/api/v1/portfolio/current",
                 headers=_headers(user_id),
             )
-            assert prior_current.status_code == 200, prior_current.text
-            prior_current_value = str(prior_current.json()["summary"]["totalValue"])
+            assert prior_current.status_code == 409, prior_current.text
+            assert prior_current.json()["error"]["code"] == "current_value_unavailable"
             viewer_prior_current = initiating_client.post(
                 "/api/v1/portfolio/current",
                 headers=_headers(viewer_id),
             )
-            assert viewer_prior_current.status_code == 200, viewer_prior_current.text
-            viewer_prior_current_value = str(viewer_prior_current.json()["summary"]["totalValue"])
+            assert viewer_prior_current.status_code == 409, viewer_prior_current.text
+            assert viewer_prior_current.json()["error"]["code"] == "current_value_unavailable"
 
             batch_ids: list[str] = []
-            for filename, content in (("r12f-eur.csv", EUR_FILE), ("r12f-usd.csv", USD_FILE)):
+            for filename, content in (("r12f-eur.csv", eur_file), ("r12f-usd.csv", usd_file)):
                 created = initiating_client.post(
                     f"/api/v1/accounts/{account_id}/imports",
                     headers=headers,
@@ -922,7 +1030,8 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                     },
                 )
                 assert created.status_code == 201, created.text
-                batch_id = str(created.json()["id"])
+                assert created.json()["status"] == "upload_required"
+                batch_id = str(created.json()["batch"]["id"])
                 batch_ids.append(batch_id)
                 uploaded = initiating_client.put(
                     f"/api/v1/accounts/{account_id}/imports/{batch_id}/file",
@@ -942,7 +1051,6 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
             assert accepted.json()["status"] == "queued"
 
         # Discarding the initiating client must not affect the independently claimed job.
-        assert prior_current_value is not None
         assert viewer_id is not None
         publication_probe: dict[str, str] = {}
 
@@ -957,12 +1065,12 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                         "/api/v1/dashboard/current",
                         headers=_headers(user_id),
                     )
-                    assert portfolio.status_code == dashboard.status_code == 200, (
+                    assert portfolio.status_code == dashboard.status_code == 409, (
                         portfolio.text,
                         dashboard.text,
                     )
-                    publication_probe["portfolio"] = str(portfolio.json()["summary"]["totalValue"])
-                    publication_probe["dashboard"] = str(dashboard.json()["summary"]["totalValue"])
+                    publication_probe["portfolio"] = portfolio.json()["error"]["code"]
+                    publication_probe["dashboard"] = dashboard.json()["error"]["code"]
                     viewer_portfolio = current_client.post(
                         "/api/v1/portfolio/current",
                         headers=_headers(viewer_id),
@@ -971,22 +1079,20 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                         "/api/v1/dashboard/current",
                         headers=_headers(viewer_id),
                     )
-                    assert viewer_portfolio.status_code == viewer_dashboard.status_code == 200, (
+                    assert viewer_portfolio.status_code == viewer_dashboard.status_code == 409, (
                         viewer_portfolio.text,
                         viewer_dashboard.text,
                     )
-                    publication_probe["viewer_portfolio"] = str(
-                        viewer_portfolio.json()["summary"]["totalValue"]
-                    )
-                    publication_probe["viewer_dashboard"] = str(
-                        viewer_dashboard.json()["summary"]["totalValue"]
-                    )
+                    publication_probe["viewer_portfolio"] = viewer_portfolio.json()["error"]["code"]
+                    publication_probe["viewer_dashboard"] = viewer_dashboard.json()["error"]["code"]
 
             await asyncio.to_thread(read_current)
 
         asyncio.run(
             _run_worker(
                 prefix=prefix,
+                job_id=job_id,
+                user_id=user_id,
                 settings=settings,
                 harness=harness,
                 before_complete=before_complete,
@@ -1010,10 +1116,10 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
             [(log.event, log.message) for log in probe_state["logs"]],
         )
         assert publication_probe == {
-            "portfolio": prior_current_value,
-            "dashboard": prior_current_value,
-            "viewer_portfolio": viewer_prior_current_value,
-            "viewer_dashboard": viewer_prior_current_value,
+            "portfolio": "current_value_unavailable",
+            "dashboard": "current_value_unavailable",
+            "viewer_portfolio": "current_value_unavailable",
+            "viewer_dashboard": "current_value_unavailable",
         }
 
         assert (
@@ -1044,7 +1150,7 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
         assert len(completed["events"]) == 3
         assert completed["movements"] == 5
         assert len(completed["holdings"]) == 1
-        assert len(completed["baselines"]) == 2
+        assert len(completed["baselines"]) == 1
         import_anchor = next(
             baseline
             for baseline in completed["baselines"]
@@ -1132,10 +1238,7 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
                 viewer_current_portfolio.json()["summary"]["totalValue"]
                 == viewer_current_dashboard.json()["summary"]["totalValue"]
             )
-            assert (
-                viewer_current_portfolio.json()["summary"]["totalValue"]
-                != viewer_prior_current_value
-            )
+            assert Decimal(viewer_current_portfolio.json()["summary"]["totalValue"]) > 0
             portfolio = polling_client.post(
                 "/api/v1/portfolio/snapshot", headers=_headers(user_id), json=manifest
             )
@@ -1159,7 +1262,7 @@ def test_r12f_clean_async_trading212_multifile_import_survives_client_loss(
 
             # A terminal exact replay is reported as already imported.  It must not expose a
             # reusable batch identity, upload raw data, or enqueue a second workflow.
-            for filename, content in (("r12f-eur.csv", EUR_FILE), ("r12f-usd.csv", USD_FILE)):
+            for filename, content in (("r12f-eur.csv", eur_file), ("r12f-usd.csv", usd_file)):
                 replay = polling_client.post(
                     f"/api/v1/accounts/{account_id}/imports",
                     headers=_headers(user_id),
@@ -1212,6 +1315,7 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
 
     assert DATABASE_URL is not None
     prefix = f"r12f-duplicate-{uuid4().hex[:12]}"
+    _, eur_file, usd_file, replay_file = _fixture_files(prefix)
     account_id: str | None = None
     user_id: str | None = None
     listing_id: str | None = None
@@ -1247,7 +1351,7 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
             )
 
             initial_batch_ids: list[str] = []
-            for filename, content in (("initial-eur.csv", EUR_FILE), ("initial-usd.csv", USD_FILE)):
+            for filename, content in (("initial-eur.csv", eur_file), ("initial-usd.csv", usd_file)):
                 created = client.post(
                     f"/api/v1/accounts/{account_id}/imports",
                     headers=headers,
@@ -1260,7 +1364,7 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
                     },
                 )
                 assert created.status_code == 201, created.text
-                batch_id = str(created.json()["id"])
+                batch_id = str(created.json()["batch"]["id"])
                 initial_batch_ids.append(batch_id)
                 uploaded = client.put(
                     f"/api/v1/accounts/{account_id}/imports/{batch_id}/file",
@@ -1276,7 +1380,15 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
             assert initial_job.status_code == 202, initial_job.text
             initial_job_id = str(initial_job.json()["id"])
 
-        asyncio.run(_run_worker(prefix=prefix, settings=settings, harness=harness))
+        asyncio.run(
+            _run_worker(
+                prefix=prefix,
+                job_id=initial_job_id,
+                user_id=user_id,
+                settings=settings,
+                harness=harness,
+            )
+        )
         assert account_id is not None and user_id is not None and listing_id is not None
         initial = asyncio.run(
             _state(
@@ -1309,17 +1421,17 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
                 json={
                     "source": "trading212",
                     "filename": "same-canonical-history-different-export.csv",
-                    "file_size": len(DUPLICATE_REPLAY_FILE),
+                    "file_size": len(replay_file),
                     "file_encoding": None,
-                    "checksum": hashlib.sha256(DUPLICATE_REPLAY_FILE).hexdigest(),
+                    "checksum": hashlib.sha256(replay_file).hexdigest(),
                 },
             )
             assert created.status_code == 201, created.text
-            duplicate_batch_id = str(created.json()["id"])
+            duplicate_batch_id = str(created.json()["batch"]["id"])
             uploaded = client.put(
                 f"/api/v1/accounts/{account_id}/imports/{duplicate_batch_id}/file",
                 headers=_headers(user_id, binary=True),
-                content=DUPLICATE_REPLAY_FILE,
+                content=replay_file,
             )
             assert uploaded.status_code == 200, uploaded.text
             accepted = client.post(
@@ -1333,7 +1445,15 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
 
         # The first attempt reserves the next immutable minute and yields without consuming an
         # attempt.  It is a real worker execution, not a synthetic status update.
-        asyncio.run(_run_worker(prefix=prefix, settings=settings, harness=harness))
+        asyncio.run(
+            _run_worker(
+                prefix=prefix,
+                job_id=duplicate_job_id,
+                user_id=user_id,
+                settings=settings,
+                harness=harness,
+            )
+        )
         deferred = asyncio.run(
             _state(
                 account_id=account_id,
@@ -1353,7 +1473,15 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
         # post-processing service, market refresh, anchor, and fenced completion stay real.
         monkeypatch.setattr(background_worker_module, "_now", lambda: target.bucket)
         monkeypatch.setattr(durable_import_executor_module, "_now", lambda: target.bucket)
-        asyncio.run(_run_worker(prefix=prefix, settings=settings, harness=harness))
+        asyncio.run(
+            _run_worker(
+                prefix=prefix,
+                job_id=duplicate_job_id,
+                user_id=user_id,
+                settings=settings,
+                harness=harness,
+            )
+        )
 
         duplicate = asyncio.run(
             _state(

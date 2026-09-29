@@ -4,6 +4,8 @@ export const dashboardSnapshotFixture = {
   asOf: "2026-07-31T10:15:00.000",
   baselineTimestamp: "2026-07-31T00:00:00.000",
   historyAnchorSnapshotId: "net-worth-baseline",
+  valuationTimestamp: "2026-07-31T10:14:00.000",
+  isStale: false,
   currency: "CZK",
   calculationVersion: 7,
   summary: {

@@ -126,7 +126,7 @@ def test_provider_identity_validation_is_shared_exact_and_type_limited() -> None
             AssetType.other,
         }
     )
-    assert YAHOO_FINANCE_ASSET_TYPES == TWELVE_DATA_ASSET_TYPES
+    assert YAHOO_FINANCE_ASSET_TYPES == TWELVE_DATA_ASSET_TYPES | frozenset({AssetType.crypto})
 
 
 def test_operator_cli_validates_provider_before_database_composition() -> None:

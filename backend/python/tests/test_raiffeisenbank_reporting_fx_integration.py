@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -47,13 +49,9 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
-SCHEMA = (
-    Path(__file__).resolve().parents[1]
-    / "database"
-    / "revisions"
-    / "3p0001rbfoundation"
-    / "schema.sql"
-)
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+BASELINE = PYTHON_ROOT / "database" / "baseline" / "schema.sql"
+ALEMBIC = PYTHON_ROOT / "alembic.ini"
 CREATED_AT = datetime(2026, 8, 19, 22)
 
 
@@ -258,15 +256,29 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
             target_url.set(drivername="postgresql").render_as_string(hide_password=False)
         )
         try:
-            schema = SCHEMA.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
-            await target.execute(schema)
+            await target.execute(
+                BASELINE.read_text(encoding="utf-8").replace('CREATE SCHEMA "public";\n', "", 1)
+            )
         finally:
             await target.close()
+        migration_env = os.environ.copy()
+        migration_env["DATABASE_URL"] = target_database_url
+        for action in (("stamp", "3d0001base"), ("upgrade", "head")):
+            subprocess.run(
+                [sys.executable, "-m", "alembic", "-c", str(ALEMBIC), *action],
+                cwd=PYTHON_ROOT,
+                env=migration_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
         first_at = datetime(2026, 1, 15, 14, 30)
+        create_prefix = f"rbfx-create-{uuid4().hex}"
+        create_transaction_id = f"{create_prefix}-tx-a"
         user_id, job_id = await _seed(
             target_database_url,
-            "rbfx-create",
+            create_prefix,
             events=(("a", first_at, "-10.005000", "EUR"),),
         )
         provider = _Provider({first_at: (Decimal("25.12345678"), datetime(2026, 1, 15))})
@@ -282,7 +294,7 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
                     job_id,
                     user_id,
                     "CZK",
-                    ("rbfx-create-tx-a",),
+                    (create_transaction_id,),
                     CREATED_AT,
                 )
                 created = await service.acquire(command)
@@ -292,8 +304,10 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
                 assert (replayed.rates_replayed, replayed.evidence_replayed) == (1, 1)
                 assert len(provider.calls) == 1
             async with AsyncSession(engine) as session:
-                transaction = await session.get(TransactionModel, "rbfx-create-tx-a")
-                evidence = await session.get(TransactionReportingEvidenceModel, "rbfx-create-tx-a")
+                transaction = await session.get(TransactionModel, create_transaction_id)
+                evidence = await session.get(
+                    TransactionReportingEvidenceModel, create_transaction_id
+                )
                 assert transaction is not None and evidence is not None
                 assert transaction.reporting_amount == Decimal("-251.360185")
                 assert evidence.source_event_time == first_at
@@ -306,9 +320,10 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
 
             conflict_first_at = datetime(2026, 1, 17, 14, 30)
             conflict_second_at = datetime(2026, 1, 18, 9)
+            conflict_prefix = f"rbfx-conflict-{uuid4().hex}"
             conflict_user, conflict_job = await _seed(
                 target_database_url,
-                "rbfx-conflict",
+                conflict_prefix,
                 events=(
                     ("a", conflict_first_at, "-1.000000", "EUR"),
                     ("b", conflict_second_at, "-2.000000", "EUR"),
@@ -366,8 +381,8 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
                             conflict_user,
                             "CZK",
                             (
-                                "rbfx-conflict-tx-a",
-                                "rbfx-conflict-tx-b",
+                                f"{conflict_prefix}-tx-a",
+                                f"{conflict_prefix}-tx-b",
                             ),
                             CREATED_AT,
                         )
@@ -380,7 +395,7 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
                         .select_from(TransactionReportingEvidenceModel)
                         .where(
                             TransactionReportingEvidenceModel.transaction_id.like(
-                                "rbfx-conflict-tx-%"
+                                f"{conflict_prefix}-tx-%"
                             )
                         )
                     )
@@ -389,7 +404,7 @@ async def test_disposable_postgresql_create_replay_lineage_and_atomic_conflict()
                 conflict_rows = tuple(
                     await session.scalars(
                         select(TransactionModel).where(
-                            TransactionModel.id.like("rbfx-conflict-tx-%")
+                            TransactionModel.id.like(f"{conflict_prefix}-tx-%")
                         )
                     )
                 )

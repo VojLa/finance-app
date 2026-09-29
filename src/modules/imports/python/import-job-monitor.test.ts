@@ -16,5 +16,8 @@ describe("global import job monitor", () => {
     expect(monitor).toContain("resolveImportPollJob(job)")
     expect(monitor).toContain("publishImportCompleted(job)")
     expect(monitor).toContain('decision.kind === "failed"')
+    expect(monitor).toContain("setFailedJob(job)")
+    expect(monitor).toContain('href="/import"')
+    expect(monitor).toContain("Import na pozadí selhal")
   })
 })

@@ -1,5 +1,11 @@
 ## Strict current-value projection
 
+Type: historical
+Status: historical
+Owns: milestone evidence for strict current-value projection
+Code: current-value projection at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-D2 makes current portfolio and dashboard finance an ephemeral Python read
 model. The authenticated browser adapters call `/api/v1/portfolio/current` and
 `/api/v1/dashboard/current`; they no longer create a minute snapshot graph.

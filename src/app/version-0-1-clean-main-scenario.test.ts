@@ -53,17 +53,26 @@ describe("version 0.1 clean main browser call graph", () => {
   it("keeps portfolio, dashboard and history on exact snapshot-backed workflows", async () => {
     const workflow = await source("src/modules/python-api/server/snapshot-workflow.ts")
     const portfolioRoute = await source("src/app/api/snapshot-workflow/portfolio/route.ts")
+    const portfolioRefreshRoute = await source(
+      "src/app/api/snapshot-workflow/portfolio/refresh/route.ts"
+    )
     const dashboardRoute = await source("src/app/api/snapshot-workflow/dashboard/route.ts")
     const historyRoute = await source("src/app/api/portfolio/history/route.ts")
     const historyAdapter = await source("src/modules/python-api/server/portfolio-history.ts")
-    const active = `${workflow}\n${portfolioRoute}\n${dashboardRoute}\n${historyRoute}\n${historyAdapter}`
+    const active = `${workflow}\n${portfolioRoute}\n${portfolioRefreshRoute}\n${dashboardRoute}\n${historyRoute}\n${historyAdapter}`
 
     expect(portfolioRoute).toContain("runPortfolioSnapshotWorkflow")
     expect(dashboardRoute).toContain("runDashboardSnapshotWorkflow")
-    expect(workflow).toContain("readCurrentPortfolio")
-    expect(workflow).toContain("readCurrentDashboard")
-    expect(workflow).not.toContain("recalculateSnapshotRefresh")
-    expect(historyRoute).toContain("readSnapshotBackedPortfolioHistory")
+    expect(workflow).toContain("readPublishedPortfolio")
+    expect(workflow).toContain("readPublishedDashboard")
+    const readWorkflow = workflow.slice(
+      workflow.indexOf("export async function runPortfolioSnapshotWorkflow"),
+      workflow.indexOf("export async function refreshPortfolioSnapshotWorkflow")
+    )
+    expect(readWorkflow).not.toContain("recalculateSnapshotRefresh")
+    expect(workflow).toContain("await api.recalculateSnapshotRefresh()")
+    expect(portfolioRefreshRoute).toContain("refreshPortfolioSnapshotWorkflow")
+    expect(historyRoute).toContain("readGenerationPortfolioHistory")
     expect(historyAdapter).toContain('client.GET("/api/v1/portfolio/history"')
     expect(active).not.toMatch(
       /@\/lib\/prisma|@\/modules\/snapshots|\/api\/rates|getPortfolioSnapshotHistory/

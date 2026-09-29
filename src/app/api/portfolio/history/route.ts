@@ -3,28 +3,47 @@ import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth"
 
 import { authOptions } from "@/lib/auth"
-import type { SnapshotPortfolioHistoryRange } from "@/modules/portfolio/snapshot-history-contract"
+import {
+  SNAPSHOT_PORTFOLIO_HISTORY_RANGES,
+  type SnapshotPortfolioHistoryRange,
+} from "@/modules/portfolio/snapshot-history-contract"
 import {
   normalizeAdapterError,
   toErrorResponse,
   validationError,
 } from "@/modules/python-api/server/errors"
-import { readSnapshotBackedPortfolioHistory } from "@/modules/python-api/server/portfolio-history"
+import { readGenerationPortfolioHistory } from "@/modules/python-api/server/portfolio-history"
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
-const RANGES = new Set<SnapshotPortfolioHistoryRange>(["1W", "1M", "3M", "6M", "1Y", "ALL"])
+const RANGES = new Set<SnapshotPortfolioHistoryRange>(SNAPSHOT_PORTFOLIO_HISTORY_RANGES)
 
-function parseRange(request: NextRequest): SnapshotPortfolioHistoryRange {
-  const entries = [...request.nextUrl.searchParams.entries()]
-  if (entries.length === 0) return "1Y"
-  if (entries.length !== 1 || entries[0]?.[0] !== "range") {
+type HistoryRequest = Readonly<{
+  range: SnapshotPortfolioHistoryRange
+  accountId?: string
+}>
+
+function parseRequest(request: NextRequest): HistoryRequest {
+  const parameters = request.nextUrl.searchParams
+  if ([...parameters].length === 0) return { range: "1Y" }
+
+  const ranges = parameters.getAll("range")
+  const accountIds = parameters.getAll("accountId")
+  if (
+    ranges.length !== 1 ||
+    accountIds.length > 1 ||
+    [...parameters.keys()].some((key) => key !== "range" && key !== "accountId")
+  ) {
     throw validationError()
   }
-  const value = entries[0][1]
+  const value = ranges[0]
   if (!RANGES.has(value as SnapshotPortfolioHistoryRange)) {
     throw validationError()
   }
-  return value as SnapshotPortfolioHistoryRange
+  const accountId = accountIds[0]
+  if (accountId !== undefined && (accountId.length === 0 || accountId.trim() !== accountId)) {
+    throw validationError()
+  }
+  return { range: value as SnapshotPortfolioHistoryRange, accountId }
 }
 
 export async function GET(request: NextRequest) {
@@ -42,12 +61,15 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const history = await readSnapshotBackedPortfolioHistory(
+    const historyRequest = parseRequest(request)
+    const history = await readGenerationPortfolioHistory(
       {
         userId: session.user.id,
         email: session.user.email || undefined,
       },
-      parseRange(request)
+      historyRequest.range,
+      undefined,
+      historyRequest.accountId
     )
     return NextResponse.json(history, { headers: NO_STORE_HEADERS })
   } catch (error) {

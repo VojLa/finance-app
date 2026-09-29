@@ -61,6 +61,7 @@ class RefreshMarketEvidenceCommand:
     user_id: str
     snapshot_timestamp: datetime
     created_at: datetime
+    reuse_persisted_fx_on_conflict: bool = False
 
 
 class _Planner(Protocol):
@@ -510,6 +511,7 @@ class MarketEvidenceRefreshService:
                 price_observations=coalesced_prices,
                 exchange_rate_observations=coalesced_rates,
                 created_at=created_at,
+                reuse_persisted_fx_on_conflict=command.reuse_persisted_fx_on_conflict,
             )
         )
         return MarketEvidenceRefreshResult(

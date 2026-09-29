@@ -26,7 +26,11 @@ from app.modules.holdings.projection import (
     build_holding_projection,
 )
 from app.modules.imports.anycoin import AnycoinBatchRow, normalize_anycoin_batch
-from app.modules.imports.classification import InvestmentEventPostingIntent, classify_import_row
+from app.modules.imports.classification import (
+    InvestmentEventPostingIntent,
+    TransactionPostingIntent,
+    classify_import_row,
+)
 from app.modules.imports.investment_posting_plan import (
     InvestmentEventPostingPlan,
     build_investment_posting_plan,
@@ -511,20 +515,21 @@ def test_trading212_buy_sell_dividend_conversion_and_cash_only_match_b1_b3_contr
         ),
         source=ImportSource.trading212,
     )
-    interest = _posting_plan(
-        _normalized_trading(
-            "Spending cashback",
-            date="2026-07-27T10:00:00Z",
-            external_id="interest",
-        ),
-        source=ImportSource.trading212,
+    operational_cashback = _normalized_trading(
+        "Spending cashback",
+        date="2026-07-27T10:00:00Z",
+        external_id="interest",
     )
+    operational_intent = classify_import_row(
+        source=ImportSource.trading212,
+        normalized_data=operational_cashback,
+    )
+    assert isinstance(operational_intent, TransactionPostingIntent)
     movements = (
         *_persisted_movements(buy, event_id="buy"),
         *_persisted_movements(sell, event_id="sell"),
         *_persisted_movements(dividend, event_id="dividend"),
         *_persisted_movements(conversion, event_id="conversion"),
-        *_persisted_movements(interest, event_id="interest"),
     )
     assert _projection(*movements).holdings == ()
 

@@ -1,23 +1,13 @@
-"""Snapshot-backed portfolio history read model."""
+"""Public snapshot-backed portfolio-history contracts."""
 
-from app.modules.portfolio_history.models import (
-    PortfolioHistoryPoint,
-    PortfolioHistoryRange,
-    PortfolioHistoryView,
-)
-from app.modules.portfolio_history.service import (
-    PortfolioHistoryUnavailableError,
-    ReadPortfolioHistoryCommand,
-    ReadPortfolioHistoryResult,
-    SnapshotBackedPortfolioHistoryService,
+from app.modules.portfolio_history.lattice import HistoryPublicRange
+from app.modules.portfolio_snapshot.history_contracts import (
+    PortfolioHistoryReadState,
+    PortfolioSnapshotHistoryUnavailableError,
 )
 
 __all__ = [
-    "PortfolioHistoryPoint",
-    "PortfolioHistoryRange",
-    "PortfolioHistoryUnavailableError",
-    "PortfolioHistoryView",
-    "ReadPortfolioHistoryCommand",
-    "ReadPortfolioHistoryResult",
-    "SnapshotBackedPortfolioHistoryService",
+    "HistoryPublicRange",
+    "PortfolioHistoryReadState",
+    "PortfolioSnapshotHistoryUnavailableError",
 ]

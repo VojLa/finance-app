@@ -5,7 +5,7 @@
 
 # Module Inventory
 
-## `backend/python/app/modules/` (25)
+## `backend/python/app/modules/` (26)
 
 - `backend/python/app/modules/accounts`
 - `backend/python/app/modules/asset_aliases`
@@ -29,11 +29,12 @@
 - `backend/python/app/modules/portfolio_history_rebuild`
 - `backend/python/app/modules/portfolio_snapshot`
 - `backend/python/app/modules/prices`
+- `backend/python/app/modules/published_snapshot`
 - `backend/python/app/modules/snapshot_refresh`
 - `backend/python/app/modules/snapshots`
 - `backend/python/app/modules/transactions`
 
-## `src/modules/` (18)
+## `src/modules/` (19)
 
 - `src/modules/accounts`
 - `src/modules/analytics`
@@ -49,6 +50,7 @@
 - `src/modules/portfolio`
 - `src/modules/pricing`
 - `src/modules/python-api`
+- `src/modules/read-models`
 - `src/modules/snapshots`
 - `src/modules/transactions`
 - `src/modules/users`

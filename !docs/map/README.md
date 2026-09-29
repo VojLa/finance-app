@@ -1,5 +1,11 @@
 # Documentation map
 
+Type: reference
+Status: current
+Owns: routing between project, domain and generated maps
+Code: whole repository and documentation generators
+Update when: a map layer or generated inventory changes
+
 This directory is the L0/L1 navigation layer for Codex and contributors.
 
 - [`project-map/`](project-map/README.md) contains the L0 project maps.

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import ImportJobBatchModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -25,7 +26,7 @@ from app.db.models.enums import (
     ImportSource,
     ImportStatus,
 )
-from app.db.models.imports import ImportBatchModel, ImportLogModel
+from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
@@ -34,8 +35,14 @@ from app.modules.imports.storage import LocalImportStorage
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5b-internal-auth-secret-32-characters"
-USERS = ["user-owner", "user-admin", "user-editor", "user-viewer", "user-foreign"]
-ACCOUNTS = ["account-active", "account-foreign", "account-archived"]
+USERS = [
+    "upload-user-owner",
+    "upload-user-admin",
+    "upload-user-editor",
+    "upload-user-viewer",
+    "upload-user-foreign",
+]
+ACCOUNTS = ["upload-account-active", "upload-account-foreign", "upload-account-archived"]
 
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 
@@ -81,24 +88,33 @@ async def _seed() -> dict[str, bytes]:
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     now = datetime.now(UTC).replace(tzinfo=None)
     batches = {
-        "batch-owner": b"owner raw import\n",
-        "batch-admin": b"admin raw import\n",
-        "batch-editor": b"editor raw import\n",
-        "batch-viewer": b"viewer raw import\n",
-        "batch-foreign": b"foreign raw import\n",
-        "batch-archived": b"archived raw import\n",
-        "batch-completed": b"completed raw import\n",
-        "batch-partially-completed": b"partially completed raw import\n",
-        "batch-wrong": b"registered bytes",
-        "batch-short": b"registered longer bytes",
-        "batch-long": b"abc",
-        "batch-empty": b"",
-        "batch-unknown": b"unknown sized import",
-        "batch-concurrent": b"concurrent verified bytes",
+        "upload-batch-owner": b"owner raw import\n",
+        "upload-batch-admin": b"admin raw import\n",
+        "upload-batch-editor": b"editor raw import\n",
+        "upload-batch-viewer": b"viewer raw import\n",
+        "upload-batch-foreign": b"foreign raw import\n",
+        "upload-batch-archived": b"archived raw import\n",
+        "upload-batch-completed": b"completed raw import\n",
+        "upload-batch-partially-completed": b"partially completed raw import\n",
+        "upload-batch-wrong": b"registered bytes",
+        "upload-batch-short": b"registered longer bytes",
+        "upload-batch-long": b"abc",
+        "upload-batch-empty": b"",
+        "upload-batch-unknown": b"unknown sized import",
+        "upload-batch-concurrent": b"concurrent verified bytes",
     }
     async with AsyncSession(engine) as session:
-        await session.execute(delete(ImportLogModel))
-        await session.execute(delete(ImportBatchModel))
+        batch_ids = tuple(batches)
+        await session.execute(
+            delete(ImportJobBatchModel).where(ImportJobBatchModel.batch_id.in_(batch_ids))
+        )
+        await session.execute(
+            delete(ImportRowModel).where(ImportRowModel.import_batch_id.in_(batch_ids))
+        )
+        await session.execute(
+            delete(ImportLogModel).where(ImportLogModel.import_batch_id.in_(batch_ids))
+        )
+        await session.execute(delete(ImportBatchModel).where(ImportBatchModel.id.in_(batch_ids)))
         await session.execute(
             delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(ACCOUNTS))
         )
@@ -118,9 +134,9 @@ async def _seed() -> dict[str, bytes]:
             )
         await session.flush()
         for account_id, archived in [
-            ("account-active", False),
-            ("account-foreign", False),
-            ("account-archived", True),
+            ("upload-account-active", False),
+            ("upload-account-foreign", False),
+            ("upload-account-archived", True),
         ]:
             session.add(
                 AccountModel(
@@ -139,12 +155,42 @@ async def _seed() -> dict[str, bytes]:
         await session.flush()
         for index, (member_id, user_id, account_id, role) in enumerate(
             [
-                ("member-owner", "user-owner", "account-active", AccountMemberRole.owner),
-                ("member-admin", "user-admin", "account-active", AccountMemberRole.admin),
-                ("member-editor", "user-editor", "account-active", AccountMemberRole.editor),
-                ("member-viewer", "user-viewer", "account-active", AccountMemberRole.viewer),
-                ("member-foreign", "user-foreign", "account-foreign", AccountMemberRole.owner),
-                ("member-archived", "user-owner", "account-archived", AccountMemberRole.owner),
+                (
+                    "upload-member-owner",
+                    "upload-user-owner",
+                    "upload-account-active",
+                    AccountMemberRole.owner,
+                ),
+                (
+                    "upload-member-admin",
+                    "upload-user-admin",
+                    "upload-account-active",
+                    AccountMemberRole.admin,
+                ),
+                (
+                    "upload-member-editor",
+                    "upload-user-editor",
+                    "upload-account-active",
+                    AccountMemberRole.editor,
+                ),
+                (
+                    "upload-member-viewer",
+                    "upload-user-viewer",
+                    "upload-account-active",
+                    AccountMemberRole.viewer,
+                ),
+                (
+                    "upload-member-foreign",
+                    "upload-user-foreign",
+                    "upload-account-foreign",
+                    AccountMemberRole.owner,
+                ),
+                (
+                    "upload-member-archived",
+                    "upload-user-owner",
+                    "upload-account-archived",
+                    AccountMemberRole.owner,
+                ),
             ]
         ):
             timestamp = now + timedelta(milliseconds=index)
@@ -163,12 +209,12 @@ async def _seed() -> dict[str, bytes]:
             )
         await session.flush()
         for batch_id, content in batches.items():
-            if batch_id == "batch-foreign":
-                account_id, user_id = "account-foreign", "user-foreign"
-            elif batch_id == "batch-archived":
-                account_id, user_id = "account-archived", "user-owner"
+            if batch_id == "upload-batch-foreign":
+                account_id, user_id = "upload-account-foreign", "upload-user-foreign"
+            elif batch_id == "upload-batch-archived":
+                account_id, user_id = "upload-account-archived", "upload-user-owner"
             else:
-                account_id, user_id = "account-active", "user-owner"
+                account_id, user_id = "upload-account-active", "upload-user-owner"
             session.add(
                 ImportBatchModel(
                     id=batch_id,
@@ -176,15 +222,15 @@ async def _seed() -> dict[str, bytes]:
                     account_id=account_id,
                     source=ImportSource.raiffeisenbank,
                     filename="fixture.csv",
-                    file_size=None if batch_id == "batch-unknown" else len(content),
+                    file_size=None if batch_id == "upload-batch-unknown" else len(content),
                     file_encoding="utf-8",
                     checksum=_digest(content),
                     status=(
                         ImportStatus.completed
-                        if batch_id == "batch-completed"
+                        if batch_id == "upload-batch-completed"
                         else (
                             ImportStatus.partially_completed
-                            if batch_id == "batch-partially-completed"
+                            if batch_id == "upload-batch-partially-completed"
                             else ImportStatus.pending
                         )
                     ),
@@ -194,7 +240,8 @@ async def _seed() -> dict[str, bytes]:
                     created_at=now,
                     completed_at=(
                         now
-                        if batch_id in {"batch-completed", "batch-partially-completed"}
+                        if batch_id
+                        in {"upload-batch-completed", "upload-batch-partially-completed"}
                         else None
                     ),
                     retain_until=None,
@@ -206,14 +253,26 @@ async def _seed() -> dict[str, bytes]:
     return batches
 
 
-async def _database_state() -> tuple[dict[str, ImportStatus], int, int]:
+async def _database_state(batch_ids: tuple[str, ...]) -> tuple[dict[str, ImportStatus], int, int]:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine) as session:
-        rows = await session.execute(select(ImportBatchModel.id, ImportBatchModel.status))
+        rows = await session.execute(
+            select(ImportBatchModel.id, ImportBatchModel.status).where(
+                ImportBatchModel.id.in_(batch_ids)
+            )
+        )
         statuses: dict[str, ImportStatus] = {batch_id: status for batch_id, status in rows.tuples()}
-        batches = await session.scalar(select(func.count()).select_from(ImportBatchModel))
-        logs = await session.scalar(select(func.count()).select_from(ImportLogModel))
+        batches = await session.scalar(
+            select(func.count())
+            .select_from(ImportBatchModel)
+            .where(ImportBatchModel.id.in_(batch_ids))
+        )
+        logs = await session.scalar(
+            select(func.count())
+            .select_from(ImportLogModel)
+            .where(ImportLogModel.import_batch_id.in_(batch_ids))
+        )
     await engine.dispose()
     return statuses, int(batches or 0), int(logs or 0)
 
@@ -229,7 +288,7 @@ async def _concurrent_uploads(storage_root: Path, content: bytes) -> list[object
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     principal = AuthenticatedPrincipal(
-        user_id="user-owner", email="user-owner@example.com", name="Owner"
+        user_id="upload-user-owner", email="upload-user-owner@example.com", name="Owner"
     )
 
     async def upload(payload: bytes) -> object:
@@ -239,8 +298,8 @@ async def _concurrent_uploads(storage_root: Path, content: bytes) -> list[object
                 storage=LocalImportStorage(storage_root),
             ).upload_file(
                 principal=principal,
-                account_id="account-active",
-                batch_id="batch-concurrent",
+                account_id="upload-account-active",
+                batch_id="upload-batch-concurrent",
                 content_type="application/octet-stream",
                 chunks=_chunks(payload),
             )
@@ -268,15 +327,16 @@ def test_raw_upload_workflow_against_postgresql(
         )
     )
     storage = LocalImportStorage(tmp_path)
-    initial_state = _run(_database_state())
+    batch_ids = tuple(batches)
+    initial_state = _run(_database_state(batch_ids))
     with TestClient(app, raise_server_exceptions=False) as client:
         for user_id, batch_id in [
-            ("user-owner", "batch-owner"),
-            ("user-admin", "batch-admin"),
-            ("user-editor", "batch-editor"),
+            ("upload-user-owner", "upload-batch-owner"),
+            ("upload-user-admin", "upload-batch-admin"),
+            ("upload-user-editor", "upload-batch-editor"),
         ]:
             response = client.put(
-                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
+                f"/api/v1/accounts/upload-account-active/imports/{batch_id}/file",
                 headers=_headers(user_id, "Application/Octet-Stream; charset=binary"),
                 content=batches[batch_id],
             )
@@ -288,56 +348,56 @@ def test_raw_upload_workflow_against_postgresql(
             assert storage.path_for(batch_id).read_bytes() == batches[batch_id]
 
         retry = client.put(
-            "/api/v1/accounts/account-active/imports/batch-owner/file",
-            headers=_headers("user-owner"),
-            content=batches["batch-owner"],
+            "/api/v1/accounts/upload-account-active/imports/upload-batch-owner/file",
+            headers=_headers("upload-user-owner"),
+            content=batches["upload-batch-owner"],
         )
         assert retry.status_code == 200
         assert retry.json()["idempotent"] is True
 
         rejected = [
             client.put(
-                "/api/v1/accounts/account-active/imports/batch-viewer/file",
-                headers=_headers("user-viewer"),
-                content=batches["batch-viewer"],
+                "/api/v1/accounts/upload-account-active/imports/upload-batch-viewer/file",
+                headers=_headers("upload-user-viewer"),
+                content=batches["upload-batch-viewer"],
             ),
             client.put(
-                "/api/v1/accounts/account-foreign/imports/batch-foreign/file",
-                headers=_headers("user-owner"),
-                content=batches["batch-foreign"],
+                "/api/v1/accounts/upload-account-foreign/imports/upload-batch-foreign/file",
+                headers=_headers("upload-user-owner"),
+                content=batches["upload-batch-foreign"],
             ),
             client.put(
-                "/api/v1/accounts/account-archived/imports/batch-archived/file",
-                headers=_headers("user-owner"),
-                content=batches["batch-archived"],
+                "/api/v1/accounts/upload-account-archived/imports/upload-batch-archived/file",
+                headers=_headers("upload-user-owner"),
+                content=batches["upload-batch-archived"],
             ),
         ]
         assert [response.status_code for response in rejected] == [403, 404, 404]
-        assert not storage.path_for("batch-viewer").exists()
-        assert not storage.path_for("batch-foreign").exists()
-        assert not storage.path_for("batch-archived").exists()
+        assert not storage.path_for("upload-batch-viewer").exists()
+        assert not storage.path_for("upload-batch-foreign").exists()
+        assert not storage.path_for("upload-batch-archived").exists()
 
         cross = client.put(
-            "/api/v1/accounts/account-active/imports/batch-foreign/file",
-            headers=_headers("user-owner"),
-            content=batches["batch-foreign"],
+            "/api/v1/accounts/upload-account-active/imports/upload-batch-foreign/file",
+            headers=_headers("upload-user-owner"),
+            content=batches["upload-batch-foreign"],
         )
         assert cross.status_code == 404
         assert cross.json()["error"]["code"] == "import_batch_not_found"
 
         mismatch_cases = [
-            ("batch-wrong", b"incorrect bytes!", 422, "import_upload_mismatch"),
-            ("batch-short", b"short", 422, "import_upload_mismatch"),
-            ("batch-long", b"abcd", 413, "import_upload_too_large"),
+            ("upload-batch-wrong", b"incorrect bytes!", 422, "import_upload_mismatch"),
+            ("upload-batch-short", b"short", 422, "import_upload_mismatch"),
+            ("upload-batch-long", b"abcd", 413, "import_upload_too_large"),
             (
-                "batch-completed",
-                batches["batch-completed"],
+                "upload-batch-completed",
+                batches["upload-batch-completed"],
                 409,
                 "import_batch_already_imported",
             ),
             (
-                "batch-partially-completed",
-                batches["batch-partially-completed"],
+                "upload-batch-partially-completed",
+                batches["upload-batch-partially-completed"],
                 409,
                 "import_batch_already_imported",
             ),
@@ -345,8 +405,8 @@ def test_raw_upload_workflow_against_postgresql(
         ]
         for batch_id, content, expected_status, code in mismatch_cases:
             response = client.put(
-                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
-                headers=_headers("user-owner"),
+                f"/api/v1/accounts/upload-account-active/imports/{batch_id}/file",
+                headers=_headers("upload-user-owner"),
                 content=content,
             )
             assert response.status_code == expected_status
@@ -354,42 +414,45 @@ def test_raw_upload_workflow_against_postgresql(
             assert not storage.path_for(batch_id).exists()
 
         wrong_type = client.put(
-            "/api/v1/accounts/account-active/imports/batch-wrong/file",
-            headers=_headers("user-owner", "text/csv"),
-            content=batches["batch-wrong"],
+            "/api/v1/accounts/upload-account-active/imports/upload-batch-wrong/file",
+            headers=_headers("upload-user-owner", "text/csv"),
+            content=batches["upload-batch-wrong"],
         )
         assert wrong_type.status_code == 415
         assert wrong_type.json()["error"]["code"] == "import_upload_content_type_invalid"
 
         empty = client.put(
-            "/api/v1/accounts/account-active/imports/batch-empty/file",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/upload-account-active/imports/upload-batch-empty/file",
+            headers=_headers("upload-user-owner"),
             content=b"",
         )
         assert empty.status_code == 200
         assert empty.json()["size"] == 0
         unknown = client.put(
-            "/api/v1/accounts/account-active/imports/batch-unknown/file",
-            headers=_headers("user-owner"),
-            content=batches["batch-unknown"],
+            "/api/v1/accounts/upload-account-active/imports/upload-batch-unknown/file",
+            headers=_headers("upload-user-owner"),
+            content=batches["upload-batch-unknown"],
         )
         assert unknown.status_code == 200
 
-    assert _run(_database_state()) == initial_state
+    assert _run(_database_state(batch_ids)) == initial_state
     assert not list(tmp_path.rglob("upload-*"))
     assert not list(tmp_path.rglob("publish.lock"))
 
-    identical = _run(_concurrent_uploads(tmp_path, batches["batch-concurrent"]))
+    identical = _run(_concurrent_uploads(tmp_path, batches["upload-batch-concurrent"]))
     assert len([result for result in identical if not isinstance(result, BaseException)]) == 2
-    assert storage.path_for("batch-concurrent").read_bytes() == batches["batch-concurrent"]
+    assert (
+        storage.path_for("upload-batch-concurrent").read_bytes()
+        == batches["upload-batch-concurrent"]
+    )
 
-    storage.remove("batch-concurrent")
+    storage.remove("upload-batch-concurrent")
 
     async def conflicting() -> list[object]:
         assert DATABASE_URL is not None
         engine = create_async_engine(normalize_database_url(DATABASE_URL))
         principal = AuthenticatedPrincipal(
-            user_id="user-owner", email="user-owner@example.com", name="Owner"
+            user_id="upload-user-owner", email="upload-user-owner@example.com", name="Owner"
         )
 
         async def upload(payload: bytes) -> object:
@@ -399,14 +462,14 @@ def test_raw_upload_workflow_against_postgresql(
                     storage=LocalImportStorage(tmp_path),
                 ).upload_file(
                     principal=principal,
-                    account_id="account-active",
-                    batch_id="batch-concurrent",
+                    account_id="upload-account-active",
+                    batch_id="upload-batch-concurrent",
                     content_type="application/octet-stream",
                     chunks=_chunks(payload),
                 )
 
         results = await asyncio.gather(
-            upload(batches["batch-concurrent"]),
+            upload(batches["upload-batch-concurrent"]),
             upload(b"invalid concurrent bytes"),
             return_exceptions=True,
         )
@@ -423,5 +486,8 @@ def test_raw_upload_workflow_against_postgresql(
         )
         == 1
     )
-    assert storage.path_for("batch-concurrent").read_bytes() == batches["batch-concurrent"]
+    assert (
+        storage.path_for("upload-batch-concurrent").read_bytes()
+        == batches["upload-batch-concurrent"]
+    )
     assert not list(tmp_path.rglob("upload-*"))

@@ -17,6 +17,7 @@ from app.modules.current_value.delta_projection import (
     CurrentInvestmentEvent,
     CurrentTransaction,
     apply_cash_transactions,
+    apply_investment_cash_transactions,
     apply_investment_events,
 )
 from app.modules.holdings.persistence_projection import (
@@ -141,6 +142,39 @@ def test_cash_delta_rejects_noncanonical_transfer() -> None:
         )
 
 
+def test_investment_cash_transactions_change_cash_and_net_deposits_only() -> None:
+    result = apply_investment_cash_transactions(
+        account_id="account-1",
+        baseline=(_amount("USD", "100.000000"),),
+        transactions=(
+            CurrentTransaction(
+                transaction_id="card-debit",
+                account_id="account-1",
+                timestamp=AT,
+                amount=Decimal("-12.000000"),
+                currency="USD",
+                transaction_type=TransactionType.transfer,
+                classification=TransactionClassification.investment_transfer,
+            ),
+            CurrentTransaction(
+                transaction_id="cashback",
+                account_id="account-1",
+                timestamp=AT,
+                amount=Decimal("4.000000"),
+                currency="USD",
+                transaction_type=TransactionType.transfer,
+                classification=TransactionClassification.investment_transfer,
+            ),
+        ),
+    )
+
+    assert result.cash_by_currency == (_amount("USD", "92.000000"),)
+    assert [(item.kind.value, item.amount) for item in result.historical_metrics] == [
+        ("net_deposit", Decimal("-12.000000")),
+        ("net_deposit", Decimal("4.000000")),
+    ]
+
+
 def test_investment_delta_advances_baseline_quantity_cost_and_cash() -> None:
     event = CurrentInvestmentEvent(
         event=HoldingPersistenceEvent(
@@ -228,6 +262,51 @@ def test_unknown_basis_baseline_remains_unknown_across_forward_transfer() -> Non
     assert holding.avg_buy_price is None
     assert holding.cost_basis_by_currency is None
     assert result.has_asset_transfer is True
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        (MovementDirection.incoming, Decimal("30.000000")),
+        (MovementDirection.outgoing, Decimal("-30.000000")),
+    ],
+)
+def test_valued_asset_transfer_is_signed_external_cash_flow(
+    direction: MovementDirection,
+    expected: Decimal,
+) -> None:
+    asset = _movement(
+        "asset",
+        kind=InvestmentMovementKind.asset,
+        direction=direction,
+        quantity="1.0000000000",
+    )
+    event = CurrentInvestmentEvent(
+        event=HoldingPersistenceEvent(
+            event_id="event-1",
+            account_id="account-1",
+            event_type=InvestmentEventType.asset_transfer,
+            event_date=AT,
+            external_id="external-1",
+            movements=(asset,),
+        ),
+        realized_pnl=None,
+        realized_pnl_currency=None,
+    )
+
+    result = apply_investment_events(
+        account_id="account-1",
+        baseline_positions=(_position(),),
+        baseline_cash=(),
+        events=(event,),
+    )
+
+    assert result.has_asset_transfer is False
+    assert len(result.historical_metrics) == 1
+    metric = result.historical_metrics[0]
+    assert metric.kind.value == "net_deposit"
+    assert metric.currency == "USD"
+    assert metric.amount == expected
 
 
 def test_investment_delta_can_fully_close_a_baseline_position() -> None:

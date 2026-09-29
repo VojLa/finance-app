@@ -124,7 +124,7 @@ describe("in-process dashboard browser flow", () => {
       tokenIds.push(String(payload.jti))
       expect(request.headers.has("Cookie")).toBe(false)
 
-      if (request.url === `${BACKEND_URL}/api/v1/dashboard/current`) {
+      if (request.url === `${BACKEND_URL}/api/v1/dashboard/published`) {
         expect(await request.text()).toBe("")
         return jsonResponse(dashboard)
       }
@@ -138,7 +138,7 @@ describe("in-process dashboard browser flow", () => {
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(getSession).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(1)
-    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/dashboard/current`])
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/dashboard/published`])
     expect(tokens).toHaveLength(1)
     expect(new Set(tokens).size).toBe(1)
     expect(new Set(tokenIds).size).toBe(1)
@@ -163,7 +163,7 @@ describe("in-process dashboard browser flow", () => {
   it("fails closed without a baseline while operational data remains independent", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      expect(request.url).toBe(`${BACKEND_URL}/api/v1/dashboard/current`)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/dashboard/published`)
       return jsonResponse(
         { error: { code: "current_value_unavailable", message: "Unavailable." } },
         409

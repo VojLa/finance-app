@@ -18,6 +18,8 @@ const CURRENT = {
   asOf: portfolioSnapshotFixture().asOf,
   baselineTimestamp: portfolioSnapshotFixture().baselineTimestamp,
   historyAnchorSnapshotId: portfolioSnapshotFixture().historyAnchorSnapshotId,
+  valuationTimestamp: portfolioSnapshotFixture().valuationTimestamp,
+  isStale: portfolioSnapshotFixture().isStale,
   currency: portfolioSnapshotFixture().currency,
   calculationVersion: portfolioSnapshotFixture().calculationVersion,
 }
@@ -227,24 +229,38 @@ describe("portfolio page snapshot workflow", () => {
     expect(current.accounts[0]?.positions[0]?.value).toBe("123.456789")
   })
 
+  it("never uses current monetary breakdowns for a pinned historical point", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
+    expect(page).not.toMatch(/selectedHistoryPoint\?\.cashByCurrency\?\.map[\s\S]*?\?\? view\.summary\.cashByCurrency/)
+    expect(page).not.toMatch(/selectedHistoryPoint\?\.netInvestedByCurrency\?\.map[\s\S]*?\?\? view\.summary\.netDepositsByCurrency/)
+    expect(page).toContain("Historická hodnota není dostupná")
+  })
+
   it("guards the mount request and does not render a manifest or raw error fields", async () => {
     const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
 
     expect(page).toContain("initialLoadStarted.current")
     expect(page).toContain("void loadPortfolio()")
-    expect(page).toContain("requestPortfolioPageState()")
-    expect(page).toContain('state.status === "ready" ? state.data.currency : null')
+    expect(page).toContain("requestPortfolioPageState(globalThis.fetch, activeRefresh)")
+    expect(page).toContain('import("@/components/charts/PortfolioLineChart")')
+    expect(page).toContain("selectedAccount?.currency ?? state.data.currency")
     expect(page).toContain("state.current.historyAnchorSnapshotId")
-    expect(page).toContain("startPortfolioHistoryRequest(historyRange, historyCurrency")
-    expect(page).toContain("[historyCurrency, historyRange, historySnapshotId]")
+    expect(page).toContain("startPortfolioHistoryRequest(")
+    expect(page).toContain("selectedAccountId")
+    expect(page).toContain("[historyCurrency, historyRange, historySnapshotId, selectedAccountId]")
     expect(page).toContain('historyState.status === "loading"')
     expect(page).toContain('historyState.status === "empty"')
+    expect(page).toContain('historyState.status === "rebuilding"')
+    expect(page).toContain('historyState.status === "failed"')
     expect(page).toContain('historyState.status === "error"')
     expect(page).toContain('historyState.status === "ready"')
     expect(page).toContain("Historie celého portfolia")
+    expect(page).toContain("Historie odpovídá právě vybranému účtu.")
     expect(page).toContain("Načítám historii portfolia…")
     expect(page).toContain("historyState.data.points")
     expect(page).toContain("historyState.data.currency")
+    expect(page).toContain("historyState.data.preferredResolutionMinutes")
+    expect(page).toContain("historyState.data.coverage")
     expect(page).toContain("view.summary.totalValue")
     expect(page).toContain("view.summary.netDepositsValue")
     expect(page).toContain("view.summary.cashByCurrency")

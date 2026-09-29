@@ -315,10 +315,10 @@ def test_liability_account_currency_is_persisted_as_companion_scalar() -> None:
     )
     assert persisted.currency == "CZK"
     assert persisted.liabilities_value == Decimal("2500.000000")
-    assert "liabilities_value_by_currency" not in {
+    assert "liabilities_value_by_currency" in {
         field.name for field in fields(ExpectedAccountSnapshotRow)
     }
-    assert "liabilities_value_by_currency" not in persisted.model_values()
+    assert persisted.model_values()["liabilities_value_by_currency"] == {"EUR": "100.000000"}
 
     companion_valuation = build_account_snapshot_projection(
         AccountSnapshotProjectionInput(

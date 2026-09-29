@@ -26,7 +26,11 @@ from app.main import create_app
 DATABASE_URL = os.getenv("DATABASE_URL")
 PREFIX = "version-0-1-acceptance"
 USER_ID = f"{PREFIX}-user"
-pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
+EXPECTED_DATABASE = "finance_app_version_0_1_acceptance"
+pytestmark = pytest.mark.skipif(
+    not DATABASE_URL or DATABASE_URL.rsplit("/", 1)[-1].split("?", 1)[0] != EXPECTED_DATABASE,
+    reason="The dedicated version 0.1 acceptance database is required.",
+)
 
 
 def _run[T](awaitable: Coroutine[Any, Any, T]) -> T:
@@ -111,7 +115,7 @@ def test_real_postgresql_version_and_migration_state() -> None:
 
     version, database, migration = _run(inspect_database())
     assert version.startswith("PostgreSQL 16.")
-    assert database == "finance_app_version_0_1_acceptance"
+    assert database == EXPECTED_DATABASE
     assert migration == "3o0001unkbasis"
 
 

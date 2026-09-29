@@ -8,20 +8,20 @@ Update when: změní se dokumentační autorita, síť nebo životní cyklus
 
 ## Jeden fakt, jeden vlastník
 
-| Informace | Autoritativní vlastník |
-| --- | --- |
-| Aktuální business význam | doménový `README.md` |
-| Přesné znění invarianty | invariant catalog |
-| Hranice runtime modulu | module card |
-| Průchod přes více modulů | flow dokument |
-| Soubory, routy, modely a testy | generated inventory |
-| Testovací záměr a riziko | doménový test matrix |
-| Přesný HTTP kontrakt | OpenAPI |
-| Fyzické DB objekty | Alembic, SQLAlchemy a DB inventory |
-| Důvod dlouhodobého rozhodnutí | ADR |
-| Budoucí stav | `!planning/` |
-| Postup pro uživatele | `!user-docs/` |
-| Milestone a auditní důkaz | historie |
+| Informace                      | Autoritativní vlastník             |
+| ------------------------------ | ---------------------------------- |
+| Aktuální business význam       | doménový `README.md`               |
+| Přesné znění invarianty        | invariant catalog                  |
+| Hranice runtime modulu         | module card                        |
+| Průchod přes více modulů       | flow dokument                      |
+| Soubory, routy, modely a testy | generated inventory                |
+| Testovací záměr a riziko       | doménový test matrix               |
+| Přesný HTTP kontrakt           | OpenAPI                            |
+| Fyzické DB objekty             | Alembic, SQLAlchemy a DB inventory |
+| Důvod dlouhodobého rozhodnutí  | ADR                                |
+| Budoucí stav                   | `!planning/`                       |
+| Postup pro uživatele           | `!user-docs/`                      |
+| Milestone a auditní důkaz      | historie                           |
 
 Doména může shrnout dopad invarianty jednou větou, ale odkazuje na její jediné
 přesné znění. Module card neudržuje úplný file list. Test matrix nevyjmenovává
@@ -32,7 +32,8 @@ všechny testovací soubory.
 - `!docs/` popisuje pouze implementovaný systém.
 - `!planning/` obsahuje návrhy, roadmapu a neimplementované scope.
 - `!user-docs/` vysvětluje produkt bez interních implementačních detailů.
-- `CHATGPT/` nebo budoucí archiv obsahuje pracovní a auditní historii.
+- `ChatGPT/` obsahuje historickou pracovní a auditní evidenci; aktivní Codex
+  workflow vlastní `.agents/`.
 - `!docs/map/generated/` obsahuje pouze deterministické výstupy.
 
 `Status: proposed` je povolen pouze v `!planning`. Historický dokument nesmí být
@@ -55,13 +56,13 @@ Stabilní ID používají prefixy `DOM`, `MOD`, `FLOW`, `INV`, `TEST`, `RUN` a
 
 ## Délka
 
-| Typ | Cíl | Rozdělit při |
-| --- | ---: | ---: |
-| README | 40–100 | 120 řádcích |
-| Project/domain mapa | 80–160 | 200 řádcích |
-| Domain nebo module | 60–180 | 220 řádcích |
-| Flow, invariant, testing | 80–160 | 200 řádcích |
-| Runbook nebo ADR | 80–200 | 250 řádcích |
+| Typ                      |    Cíl | Rozdělit při |
+| ------------------------ | -----: | -----------: |
+| README                   | 40–100 |  120 řádcích |
+| Project/domain mapa      | 80–160 |  200 řádcích |
+| Domain nebo module       | 60–180 |  220 řádcích |
+| Flow, invariant, testing | 80–160 |  200 řádcích |
+| Runbook nebo ADR         | 80–200 |  250 řádcích |
 
 500 řádků zůstává hard limit. Dokument se dělí podle vlastníka a tématu, ne
 pouze mechanicky podle délky.

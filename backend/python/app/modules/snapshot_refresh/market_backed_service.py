@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
@@ -385,6 +387,9 @@ class MarketBackedSnapshotRefreshService:
                     user_id=canonical.user_id,
                     snapshot_timestamp=canonical.snapshot_timestamp,
                     created_at=canonical.created_at,
+                    reuse_persisted_fx_on_conflict=(
+                        canonical.source is SnapshotSource.manual_recalculation
+                    ),
                 )
             )
         except MarketEvidenceConflictError as exc:
@@ -429,6 +434,26 @@ class MarketBackedSnapshotRefreshService:
             await self._dependency_must_leave_idle("snapshot")
             raise _conflict() from exc
         except SnapshotRefreshExecutionStateError as exc:
+            cause = exc.__cause__
+            cause_frames = traceback.extract_tb(cause.__traceback__) if cause is not None else ()
+            cause_frame = next(
+                (
+                    frame
+                    for frame in reversed(cause_frames)
+                    if "/daily_baselines/" in frame.filename.replace("\\", "/")
+                    and frame.name != "_fail"
+                ),
+                None,
+            )
+            structlog.get_logger(__name__).warning(
+                "snapshot_refresh_execution_state",
+                user_id=canonical.user_id,
+                publication_job_id=canonical.publication_job_id,
+                cause_type=type(cause).__name__ if cause is not None else None,
+                cause_location=(
+                    f"{cause_frame.name}:{cause_frame.lineno}" if cause_frame is not None else None
+                ),
+            )
             await self._dependency_must_leave_idle("snapshot")
             raise _unavailable() from exc
         except Exception:

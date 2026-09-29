@@ -1,5 +1,11 @@
 ## Account-currency presentation reads
 
+Type: historical
+Status: historical
+Owns: milestone evidence for account-currency reads
+Code: authorized snapshot/read-model implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-B2 keeps `build_multi_account_portfolio_view(primary_views)` unchanged as
 the user-base aggregate authority. The authorized multi-account service reads
 all primary manifest identities and all required account-currency companions

@@ -13,13 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.enums import (
     AssetType,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     MovementDirection,
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
-from app.modules.holdings.persistence_projection import ExpectedPersistedHoldingPlan
+from app.modules.holdings.persistence_projection import (
+    ExpectedPersistedHoldingPlan,
+    ExpectedRealizedPnlPlan,
+)
 from app.modules.holdings.rebuild_service import (
     CurrentHoldingState,
     HoldingCreatePlan,
@@ -28,6 +32,7 @@ from app.modules.holdings.rebuild_service import (
     HoldingRebuildStateError,
     adapt_persisted_history,
     build_holding_rebuild_plan,
+    materialize_realized_pnl,
     stable_holding_id,
     validate_current_holdings,
 )
@@ -132,9 +137,13 @@ def _event_models() -> tuple[
             account_id="account",
             type=InvestmentEventType.trade,
             date=NOW,
+            source=ImportSource.anycoin,
             external_id="external",
+            realized_pnl=None,
+            realized_pnl_currency=None,
             archived_at=None,
             deleted_at=None,
+            updated_at=NOW,
         ),
     )
     asset = cast(
@@ -222,6 +231,45 @@ def test_adapter_uses_persisted_join_evidence_and_is_deterministic() -> None:
     linked = next(item for item in result[0].movements if item.asset_id)
     assert linked.listing_asset_id == "asset"
     assert linked.listing_currency == "USD"
+    assert result[0].source is ImportSource.anycoin
+
+
+def test_realized_pnl_materialization_is_idempotent_and_conflicts_fail_closed() -> None:
+    event, _, _ = _event_models()
+    expected = (
+        ExpectedRealizedPnlPlan(
+            event_id=event.id,
+            amount=Decimal("-50.0000000000"),
+            currency="CZK",
+        ),
+    )
+
+    assert (
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
+        is True
+    )
+    assert event.realized_pnl == Decimal("-50.0000000000")
+    assert event.realized_pnl_currency == "CZK"
+    assert (
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
+        is False
+    )
+
+    event.realized_pnl = Decimal("1.0000000000")
+    with pytest.raises(HoldingRebuildStateError):
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
 
 
 @pytest.mark.parametrize(

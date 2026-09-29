@@ -9,12 +9,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.coingecko_price_integration import (
-    coingecko_engine,
-    principal,
-    seed_crypto_holding,
-    snapshot_command,
-)
 
 from app.config.settings import Settings
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
@@ -41,6 +35,14 @@ from app.modules.snapshot_refresh.executor import UserSnapshotRefreshExecutor
 from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
+)
+from tests.support import investment_fixture_e2e as investment_support
+from tests.support.coingecko_price_integration import (
+    coingecko_engine,
+    principal,
+    seed_crypto_holding,
+    snapshot_command,
+    unique_alias,
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -81,13 +83,14 @@ def _transport(
 @pytest.mark.asyncio
 async def test_coingecko_price_reaches_snapshots_and_exact_read_models() -> None:
     prefix = f"r5b2a-e2e-{uuid4()}"
+    provider_symbol = unique_alias(prefix, "ethereum")
     user_id, _account_id, _, _ = await seed_crypto_holding(
         prefix,
         event_at=datetime(2026, 8, 1),
         created_at=CREATED_AT,
-        aliases=("ethereum",),
+        aliases=(provider_symbol,),
     )
-    transport, requests = _transport()
+    transport, requests = _transport(provider_symbol=provider_symbol)
     engine = coingecko_engine()
     settings = Settings(environment="test", _env_file=None)
     try:
@@ -199,7 +202,7 @@ async def test_coingecko_price_reaches_snapshots_and_exact_read_models() -> None
             assert net_worth.portfolio_value == Decimal("61234123.456789")
             assert net_worth.total_net_worth == Decimal("61235123.456789")
 
-        replay_transport, replay_requests = _transport()
+        replay_transport, replay_requests = _transport(provider_symbol=provider_symbol)
         async with AsyncSession(engine) as session:
             replay_market = await create_production_market_evidence_service(
                 session,
@@ -225,6 +228,7 @@ async def test_coingecko_price_reaches_snapshots_and_exact_read_models() -> None
             assert len(replay_requests) == 1
     finally:
         await engine.dispose()
+        await investment_support.cleanup(prefix)
 
 
 @pytest.mark.asyncio

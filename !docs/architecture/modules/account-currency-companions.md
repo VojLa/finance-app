@@ -1,5 +1,11 @@
 ## Persisted account-currency valuation companions
 
+Type: historical
+Status: historical
+Owns: milestone evidence for account-currency companion snapshots
+Code: snapshot and account-currency implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 R10-B1 uses the existing physical `AccountSnapshot` currency identity instead
 of adding parallel summary columns or a companion table. A refresh for an
 account with `Account.currency != User.baseCurrency` builds a primary snapshot

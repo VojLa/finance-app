@@ -18,6 +18,9 @@ from app.db.models.canonical_lineage import (
     AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
 )
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import (
@@ -44,15 +47,17 @@ from app.modules.net_worth.persistence_projection import (
     NetWorthSnapshotPersistenceProjectionError,
     build_net_worth_snapshot_persistence_projection,
 )
+from app.shared.errors import ApplicationError
 
 _BASELINE_NAMESPACE = UUID("f391a7b0-8d0c-5dd9-9db3-72f8064dbebf")
 _STATE_MESSAGE = "Daily snapshot baseline evidence is unavailable."
 _BIGINT_MAX = 9_223_372_036_854_775_807
 _INVESTMENT_TYPES = {AccountType.broker, AccountType.exchange, AccountType.crypto_wallet}
-_LIABILITY_TYPES = {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
+_LIABILITY_TYPES = {AccountType.loan, AccountType.mortgage}
 _SUPPORTED_TYPES = set(AccountType)
 _RETRYABLE_SQLSTATES = {"40001", "40P01", "23505"}
 _MAX_TRANSACTION_ATTEMPTS = 3
+_READ_MODEL_SCOPES = ["portfolio", "dashboard"]
 
 
 class DailyBaselineError(RuntimeError):
@@ -60,8 +65,15 @@ class DailyBaselineError(RuntimeError):
         super().__init__(_STATE_MESSAGE)
 
 
-class DailyBaselineUnavailableError(DailyBaselineError):
-    pass
+class DailyBaselineUnavailableError(DailyBaselineError, ApplicationError):
+    def __init__(self) -> None:
+        DailyBaselineError.__init__(self)
+        ApplicationError.__init__(
+            self,
+            code="daily_snapshot_baseline_unavailable",
+            message=_STATE_MESSAGE,
+            status_code=409,
+        )
 
 
 class DailyBaselineDisposition(StrEnum):
@@ -81,6 +93,7 @@ class PersistDailySnapshotBaselineCommand:
     primary_snapshot_identities: tuple[SelectedAccountSnapshotIdentity, ...]
     granularity: SnapshotGranularity = SnapshotGranularity.day
     publication_job_id: str | None = None
+    publish_read_model: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,7 +221,13 @@ def _publication_granularity(
         raise _fail()
     if granularity is SnapshotGranularity.day:
         return granularity
-    if granularity is SnapshotGranularity.minute and source is SnapshotSource.import_event:
+    if granularity is SnapshotGranularity.minute and source in {
+        SnapshotSource.import_event,
+        SnapshotSource.manual_recalculation,
+        SnapshotSource.price_refresh,
+        SnapshotSource.scheduled,
+        SnapshotSource.holdings_recalculation,
+    }:
         return granularity
     raise _fail()
 
@@ -217,13 +236,23 @@ def _publication_job_id(
     value: object,
     *,
     granularity: SnapshotGranularity,
+    source: SnapshotSource,
 ) -> str | None:
     if granularity is SnapshotGranularity.day:
         if value is not None:
             raise _fail()
         return None
-    if granularity is SnapshotGranularity.minute:
+    if granularity is SnapshotGranularity.minute and source is SnapshotSource.import_event:
         return _text(value)
+    if granularity is SnapshotGranularity.minute and source in {
+        SnapshotSource.manual_recalculation,
+        SnapshotSource.price_refresh,
+        SnapshotSource.scheduled,
+        SnapshotSource.holdings_recalculation,
+    }:
+        if value is not None:
+            raise _fail()
+        return None
     raise _fail()
 
 
@@ -239,7 +268,7 @@ def _aligned_publication_timestamp(
     raise _fail()
 
 
-def _published_baseline_query(*, user_id: str, through: datetime):
+def _published_baselines_query(*, user_id: str, through: datetime | None):
     return (
         select(DailySnapshotBaselineModel)
         .outerjoin(
@@ -253,7 +282,7 @@ def _published_baseline_query(*, user_id: str, through: datetime):
         )
         .where(
             DailySnapshotBaselineModel.user_id == user_id,
-            DailySnapshotBaselineModel.timestamp <= through,
+            *(() if through is None else (DailySnapshotBaselineModel.timestamp <= through,)),
             (DailySnapshotBaselineModel.background_job_id.is_(None))
             | (
                 (BackgroundJobModel.status == BackgroundJobStatus.completed)
@@ -264,8 +293,121 @@ def _published_baseline_query(*, user_id: str, through: datetime):
             DailySnapshotBaselineModel.timestamp.desc(),
             DailySnapshotBaselineModel.id.desc(),
         )
-        .limit(1)
     )
+
+
+def _published_baseline_query(*, user_id: str, through: datetime | None):
+    return _published_baselines_query(user_id=user_id, through=through).limit(1)
+
+
+def _boundary_identity(row: DailySnapshotBaselineAccountModel) -> tuple[object, ...]:
+    return (
+        row.account_id,
+        row.account_type,
+        row.account_currency,
+        row.canonical_revision,
+        row.investment_revision,
+        row.holding_revision,
+        row.selected_liability_balance_id,
+    )
+
+
+async def _is_equivalent_superseding_publication(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    candidate: DailySnapshotBaselineModel,
+    publication: UserReadModelPublicationModel | None,
+    watermark: UserReadModelPublicationWatermarkModel,
+) -> bool:
+    if (
+        watermark.kind != "published"
+        or watermark.generation_id is None
+        or publication is None
+        or publication.user_id != user_id
+        or publication.generation_id != watermark.generation_id
+        or publication.generation_state != "published"
+        or publication.scopes != _READ_MODEL_SCOPES
+        or candidate.user_id != user_id
+    ):
+        return False
+    current = await session.scalar(
+        select(DailySnapshotBaselineModel).where(
+            DailySnapshotBaselineModel.id == publication.baseline_id,
+            DailySnapshotBaselineModel.user_id == user_id,
+            DailySnapshotBaselineModel.generation_id == publication.generation_id,
+        )
+    )
+    current_generation = await session.get(
+        SnapshotGenerationModel,
+        publication.generation_id,
+    )
+    if (
+        current is None
+        or current_generation is None
+        or current_generation.state != "published"
+        or current_generation.published_at is None
+        or current.currency != candidate.currency
+        or current.calculation_version != candidate.calculation_version
+    ):
+        return False
+    current_rows = tuple(
+        (
+            await session.scalars(
+                select(DailySnapshotBaselineAccountModel)
+                .where(DailySnapshotBaselineAccountModel.baseline_id == current.id)
+                .order_by(DailySnapshotBaselineAccountModel.account_id)
+            )
+        ).all()
+    )
+    candidate_rows = tuple(
+        (
+            await session.scalars(
+                select(DailySnapshotBaselineAccountModel)
+                .where(DailySnapshotBaselineAccountModel.baseline_id == candidate.id)
+                .order_by(DailySnapshotBaselineAccountModel.account_id)
+            )
+        ).all()
+    )
+    return bool(current_rows) and tuple(map(_boundary_identity, current_rows)) == tuple(
+        map(_boundary_identity, candidate_rows)
+    )
+
+
+async def _publish_read_model_version(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    baseline_id: str,
+    published_at: datetime,
+    causal_at: datetime | None = None,
+    allow_equivalent_supersession: bool = False,
+) -> None:
+    """Publish one baseline through the temporal series boundary.
+
+    ``persist`` opens a SERIALIZABLE transaction before calling this helper.
+    The deterministic operation identity makes direct/manual baseline replay
+    administrative-only after the first committed publication.
+    """
+
+    from app.modules.snapshot_refresh.series_executor import SnapshotSeriesExecutionStateError
+    from app.modules.snapshot_refresh.series_persistence import (
+        SnapshotSeriesPersistenceError,
+        publish_snapshot_baselines,
+    )
+
+    try:
+        await publish_snapshot_baselines(
+            session,
+            user_id=user_id,
+            baseline_ids=(baseline_id,),
+            operation_id=f"direct:{uuid5(_BASELINE_NAMESPACE, f'{user_id}\0{baseline_id}')}",
+            published_at=published_at,
+            causal_at=published_at if causal_at is None else causal_at,
+            allow_equivalent_supersession=allow_equivalent_supersession,
+        )
+    except (SnapshotSeriesExecutionStateError, SnapshotSeriesPersistenceError) as exc:
+        raise _fail() from exc
 
 
 def _lock_id(scope: str) -> int:
@@ -399,6 +541,7 @@ async def _validate_net_worth_graph(
                 calculated_at=net_worth.calculated_at,
                 created_at=net_worth.created_at,
                 is_recalculated=net_worth.is_recalculated,
+                generation_id=net_worth.generation_id,
             ),
         ).snapshot
     except (NetWorthEvidenceStateError, NetWorthSnapshotPersistenceProjectionError) as exc:
@@ -446,7 +589,17 @@ class DailySnapshotBaselineService:
         publication_job_id = _publication_job_id(
             command.publication_job_id,
             granularity=granularity,
+            source=command.source,
         )
+        if (
+            not isinstance(command.publish_read_model, bool)
+            or (publication_job_id is not None and not command.publish_read_model)
+            or (
+                command.source is SnapshotSource.holdings_recalculation
+                and command.publish_read_model
+            )
+        ):
+            raise _fail()
         timestamp = _aligned_publication_timestamp(command.timestamp, granularity)
         created_at = _timestamp(command.created_at)
         currency = _currency(command.currency)
@@ -482,20 +635,34 @@ class DailySnapshotBaselineService:
             raise _fail()
 
         account_rows = (
-            await self.session.scalars(
-                select(AccountModel)
+            await self.session.execute(
+                select(
+                    AccountModel,
+                    AccountCanonicalStateModel.last_revision > 0,
+                )
                 .join(AccountMemberModel, AccountMemberModel.account_id == AccountModel.id)
+                .outerjoin(
+                    AccountCanonicalStateModel,
+                    AccountCanonicalStateModel.account_id == AccountModel.id,
+                )
                 .where(
                     AccountMemberModel.user_id == user_id,
                     AccountModel.is_archived.is_(False),
                     AccountModel.archived_at.is_(None),
                 )
                 .order_by(AccountModel.id)
-                .with_for_update(read=True)
+                .with_for_update(of=AccountModel, read=True)
                 .execution_options(populate_existing=True)
             )
         ).all()
-        accounts = tuple(account_rows)
+        # An active account without canonical history has no financial evidence
+        # to snapshot.  It must not make an otherwise complete import
+        # publication fail, and must stay out of the net-worth identity set.
+        accounts = tuple(
+            account
+            for account, has_canonical_history in account_rows
+            if bool(has_canonical_history)
+        )
         account_ids = tuple(account.id for account in accounts)
         if publication_job_id is not None:
             job = await self.session.get(BackgroundJobModel, publication_job_id)
@@ -535,6 +702,7 @@ class DailySnapshotBaselineService:
                 or primary.currency != currency
                 or primary.calculation_version != version
                 or primary.source is not command.source
+                or primary.generation_id != net_worth.generation_id
             ):
                 raise _fail()
             presentation = primary
@@ -546,6 +714,7 @@ class DailySnapshotBaselineService:
                         AccountSnapshotModel.timestamp == timestamp,
                         AccountSnapshotModel.granularity == granularity,
                         AccountSnapshotModel.currency == account_currency,
+                        AccountSnapshotModel.generation_id == net_worth.generation_id,
                     )
                 )
                 if (
@@ -636,8 +805,16 @@ class DailySnapshotBaselineService:
                 source=command.source,
                 created_at=created_at,
                 accounts=tuple(manifest_accounts),
+                generation_id=net_worth.generation_id,
             ):
                 raise _fail()
+            if publication_job_id is None and command.publish_read_model:
+                await _publish_read_model_version(
+                    self.session,
+                    user_id=user_id,
+                    baseline_id=baseline_id,
+                    published_at=created_at,
+                )
             return PersistDailySnapshotBaselineResult(
                 baseline_id=baseline_id,
                 net_worth_snapshot_id=net_worth_id,
@@ -664,6 +841,7 @@ class DailySnapshotBaselineService:
                 source=command.source,
                 background_job_id=publication_job_id,
                 created_at=created_at,
+                generation_id=net_worth.generation_id,
             )
         )
         await self.session.flush()
@@ -680,11 +858,19 @@ class DailySnapshotBaselineService:
                     investment_revision=item.investment_revision,
                     holding_revision=item.holding_revision,
                     selected_liability_balance_id=item.selected_liability_balance_id,
+                    generation_id=net_worth.generation_id,
                 )
                 for item in manifest_accounts
             ]
         )
         await self.session.flush()
+        if publication_job_id is None and command.publish_read_model:
+            await _publish_read_model_version(
+                self.session,
+                user_id=user_id,
+                baseline_id=baseline_id,
+                published_at=created_at,
+            )
         return PersistDailySnapshotBaselineResult(
             baseline_id=baseline_id,
             net_worth_snapshot_id=net_worth_id,
@@ -707,6 +893,7 @@ class DailySnapshotBaselineService:
         source: SnapshotSource,
         created_at: datetime,
         accounts: tuple[DailyBaselineAccount, ...],
+        generation_id: str,
     ) -> bool:
         if (
             root.user_id != user_id
@@ -718,6 +905,7 @@ class DailySnapshotBaselineService:
             or root.calculation_version != version
             or root.source is not source
             or root.created_at != created_at
+            or root.generation_id != generation_id
             or len(children) != len(accounts)
         ):
             return False
@@ -734,6 +922,7 @@ class DailySnapshotBaselineService:
                     persisted.holding_revision != expected.holding_revision,
                     persisted.selected_liability_balance_id
                     != expected.selected_liability_balance_id,
+                    persisted.generation_id != generation_id,
                 )
             ):
                 return False
@@ -755,21 +944,160 @@ class DailySnapshotBaselineService:
                 await self.session.execute(
                     text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 )
-                root = await self.session.scalar(
-                    _published_baseline_query(
-                        user_id=canonical_user,
-                        through=canonical_through,
-                    )
+                roots = tuple(
+                    (
+                        await self.session.scalars(
+                            _published_baselines_query(
+                                user_id=canonical_user,
+                                through=canonical_through,
+                            )
+                        )
+                    ).all()
                 )
-                if root is None:
-                    raise DailyBaselineUnavailableError()
-                return await self._validate_selected(
-                    root,
-                    through=canonical_through,
-                    frozen_account_ids=frozen_account_ids,
-                )
+                for root in roots:
+                    try:
+                        return await self._validate_selected(
+                            root,
+                            through=canonical_through,
+                            frozen_account_ids=frozen_account_ids,
+                        )
+                    except DailyBaselineError:
+                        # A failed or partial import publication can leave an
+                        # older immutable baseline behind. It is not usable,
+                        # but must not hide the newest complete baseline.
+                        continue
+                raise DailyBaselineUnavailableError()
         except DailyBaselineUnavailableError:
             raise
+        except (DailyBaselineError, SQLAlchemyError) as exc:
+            raise DailyBaselineUnavailableError() from exc
+
+    async def select_published_manifest_for_authorized_read(
+        self,
+        *,
+        user_id: str,
+    ) -> DailySnapshotBaseline:
+        """Read an already-published manifest without replaying financial evidence.
+
+        Publication validates the complete baseline before atomically advancing the
+        per-user read-model token.  An ordinary read still verifies the current
+        membership set, but never scans canonical changes or reconstructs money.
+        """
+
+        if self.session.in_transaction():
+            raise DailyBaselineUnavailableError()
+        canonical_user = _text(user_id)
+        try:
+            async with self.session.begin():
+                await self.session.execute(
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                )
+                publication = await self.session.get(
+                    UserReadModelPublicationModel,
+                    canonical_user,
+                )
+                if (
+                    publication is None
+                    or publication.user_id != canonical_user
+                    or publication.baseline_id != _text(publication.baseline_id)
+                    or not isinstance(publication.scopes, list)
+                    or not {"portfolio", "dashboard"}.issubset(publication.scopes)
+                ):
+                    raise _fail()
+                root = await self.session.get(DailySnapshotBaselineModel, publication.baseline_id)
+                if root is None or root.user_id != canonical_user:
+                    raise _fail()
+                current_rows = tuple(
+                    (
+                        await self.session.execute(
+                            select(
+                                AccountModel,
+                                AccountCanonicalStateModel.last_revision > 0,
+                            )
+                            .join(
+                                AccountMemberModel,
+                                AccountMemberModel.account_id == AccountModel.id,
+                            )
+                            .outerjoin(
+                                AccountCanonicalStateModel,
+                                AccountCanonicalStateModel.account_id == AccountModel.id,
+                            )
+                            .where(
+                                AccountMemberModel.user_id == canonical_user,
+                                AccountModel.is_archived.is_(False),
+                                AccountModel.archived_at.is_(None),
+                            )
+                            .order_by(AccountModel.id)
+                        )
+                    ).all()
+                )
+                current_accounts = tuple(
+                    account
+                    for account, has_canonical_history in current_rows
+                    if bool(has_canonical_history)
+                )
+                children = tuple(
+                    (
+                        await self.session.scalars(
+                            select(DailySnapshotBaselineAccountModel)
+                            .where(DailySnapshotBaselineAccountModel.baseline_id == root.id)
+                            .order_by(DailySnapshotBaselineAccountModel.account_id)
+                        )
+                    ).all()
+                )
+                if tuple(account.id for account in current_accounts) != tuple(
+                    child.account_id for child in children
+                ):
+                    raise _fail()
+                accounts = tuple(
+                    DailyBaselineAccount(
+                        account_id=_text(child.account_id),
+                        account_type=child.account_type,
+                        account_currency=_currency(child.account_currency),
+                        primary_snapshot_id=_text(child.primary_snapshot_id),
+                        presentation_snapshot_id=_text(child.presentation_snapshot_id),
+                        canonical_revision=_revision(child.canonical_revision),
+                        investment_revision=(
+                            None
+                            if child.investment_revision is None
+                            else _revision(child.investment_revision)
+                        ),
+                        holding_revision=(
+                            None
+                            if child.holding_revision is None
+                            else _revision(child.holding_revision)
+                        ),
+                        selected_liability_balance_id=(
+                            None
+                            if child.selected_liability_balance_id is None
+                            else _text(child.selected_liability_balance_id)
+                        ),
+                    )
+                    for child in children
+                )
+                if any(
+                    child.account_type is not account.type
+                    or child.account_currency != _currency(account.currency)
+                    for account, child in zip(current_accounts, children, strict=True)
+                ):
+                    raise _fail()
+                return DailySnapshotBaseline(
+                    baseline_id=_text(root.id),
+                    user_id=_text(root.user_id),
+                    net_worth_snapshot_id=_text(root.net_worth_snapshot_id),
+                    timestamp=_timestamp(root.timestamp),
+                    currency=_currency(root.currency),
+                    calculation_version=_version(root.calculation_version),
+                    source=root.source,
+                    accounts=accounts,
+                    post_baseline_changes=(),
+                    granularity=_publication_granularity(root.granularity, root.source),
+                    publication_job_id=_publication_job_id(
+                        root.background_job_id,
+                        granularity=root.granularity,
+                        source=root.source,
+                    ),
+                )
         except (DailyBaselineError, SQLAlchemyError) as exc:
             raise DailyBaselineUnavailableError() from exc
 
@@ -796,22 +1124,29 @@ class DailySnapshotBaselineService:
             or read_only != "on"
         ):
             raise DailyBaselineUnavailableError()
-        newest = await self.session.scalar(
-            _published_baseline_query(
-                user_id=canonical_user,
-                through=canonical_through,
-            )
+        roots = tuple(
+            (
+                await self.session.scalars(
+                    _published_baselines_query(
+                        user_id=canonical_user,
+                        through=canonical_through,
+                    )
+                )
+            ).all()
         )
-        if newest is None or newest.id != canonical_baseline_id:
-            raise DailyBaselineUnavailableError()
-        try:
-            return await self._validate_selected(
-                newest,
-                through=canonical_through,
-                frozen_account_ids=frozen_account_ids,
-            )
-        except DailyBaselineError as exc:
-            raise DailyBaselineUnavailableError() from exc
+        for root in roots:
+            try:
+                selected = await self._validate_selected(
+                    root,
+                    through=canonical_through,
+                    frozen_account_ids=frozen_account_ids,
+                )
+            except DailyBaselineError:
+                continue
+            if selected.baseline_id != canonical_baseline_id:
+                raise DailyBaselineUnavailableError()
+            return selected
+        raise DailyBaselineUnavailableError()
 
     async def _validate_selected(
         self,
@@ -839,6 +1174,7 @@ class DailySnapshotBaselineService:
             or _publication_job_id(
                 root.background_job_id,
                 granularity=root.granularity,
+                source=root.source,
             )
             != root.background_job_id
             or root.timestamp != net_worth.timestamp
@@ -850,11 +1186,18 @@ class DailySnapshotBaselineService:
             or root.source is not net_worth.source
         ):
             raise _fail()
-        current_accounts = tuple(
+        current_account_rows = tuple(
             (
-                await self.session.scalars(
-                    select(AccountModel)
+                await self.session.execute(
+                    select(
+                        AccountModel,
+                        AccountCanonicalStateModel.last_revision > 0,
+                    )
                     .join(AccountMemberModel, AccountMemberModel.account_id == AccountModel.id)
+                    .outerjoin(
+                        AccountCanonicalStateModel,
+                        AccountCanonicalStateModel.account_id == AccountModel.id,
+                    )
                     .where(
                         AccountMemberModel.user_id == root.user_id,
                         AccountModel.is_archived.is_(False),
@@ -863,6 +1206,11 @@ class DailySnapshotBaselineService:
                     .order_by(AccountModel.id)
                 )
             ).all()
+        )
+        current_accounts = tuple(
+            account
+            for account, has_canonical_history in current_account_rows
+            if bool(has_canonical_history)
         )
         if root.background_job_id is not None:
             publication_job = await self.session.get(

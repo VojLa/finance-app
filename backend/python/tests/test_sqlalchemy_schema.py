@@ -6,8 +6,138 @@ from scripts.sqlalchemy_schema import compare_snapshots, local_snapshot, normali
 def test_local_snapshot_contains_complete_schema() -> None:
     snapshot = local_snapshot()
 
-    assert len(snapshot["tables"]) == 42
-    assert len(snapshot["enums"]) == 30
+    assert len(snapshot["tables"]) == 61
+    assert len(snapshot["enums"]) == 31
+    generation = snapshot["tables"]["SnapshotGeneration"]
+    assert [column["name"] for column in generation["columns"]] == [
+        "id",
+        "state",
+        "createdAt",
+        "publishedAt",
+    ]
+    target = snapshot["tables"]["SnapshotGenerationTarget"]
+    assert [column["name"] for column in target["columns"]] == [
+        "generationId",
+        "userId",
+        "createdAt",
+        "stagedByJobId",
+        "stagedLeaseVersion",
+        "stagedLeaseOwner",
+    ]
+    schedule = snapshot["tables"]["SnapshotSeriesScheduleState"]
+    assert [column["name"] for column in schedule["columns"]][-4:] == [
+        "nextCaptureAt",
+        "lastCapturedBucket",
+        "lastDirtyEpoch",
+        "updatedAt",
+    ]
+    investment = snapshot["tables"]["InvestmentAccountSnapshot"]
+    assert [column["name"] for column in investment["columns"][:5]] == [
+        "id",
+        "accountSnapshotId",
+        "accountId",
+        "generationId",
+        "timestamp",
+    ]
+    assert ["accountSnapshotId"] in investment["unique_constraints"]
+    assert {
+        "cashValueByCurrency",
+        "investmentValueByCurrency",
+        "investmentCostBasisByCurrency",
+        "netDepositsByCurrency",
+        "realizedPnlByCurrency",
+        "unrealizedPnlByCurrency",
+        "feesByCurrency",
+        "taxesByCurrency",
+        "priceEvidence",
+        "exchangeRates",
+    } <= {column["name"] for column in investment["columns"]}
+    assert {
+        "columns": ["accountSnapshotId", "generationId", "accountId"],
+        "referred_schema": "public",
+        "referred_table": "AccountSnapshot",
+        "referred_columns": ["id", "generationId", "accountId"],
+        "ondelete": "CASCADE",
+    } in investment["foreign_keys"]
+    portfolio = snapshot["tables"]["PortfolioSnapshot"]
+    assert ["id", "generationId", "userId"] in portfolio["unique_constraints"]
+    assert {
+        "cashValueByCurrency",
+        "investmentValueByCurrency",
+        "investmentCostBasisByCurrency",
+        "netDepositsByCurrency",
+        "realizedPnlByCurrency",
+        "unrealizedPnlByCurrency",
+        "feesByCurrency",
+        "taxesByCurrency",
+        "priceEvidence",
+        "exchangeRates",
+    } <= {column["name"] for column in portfolio["columns"]}
+    assert {
+        "columns": ["generationId", "userId"],
+        "referred_schema": "public",
+        "referred_table": "SnapshotGenerationTarget",
+        "referred_columns": ["generationId", "userId"],
+        "ondelete": "RESTRICT",
+    } in portfolio["foreign_keys"]
+    input_link = snapshot["tables"]["PortfolioSnapshotInput"]
+    assert {
+        "columns": ["accountId", "userId"],
+        "referred_schema": "public",
+        "referred_table": "AccountMember",
+        "referred_columns": ["accountId", "userId"],
+        "ondelete": "RESTRICT",
+    } not in input_link["foreign_keys"]
+    account_breakdown = snapshot["tables"]["PortfolioSnapshotItemAccount"]
+    assert {
+        "columns": [
+            "portfolioSnapshotItemId",
+            "portfolioSnapshotId",
+            "generationId",
+            "userId",
+            "listingId",
+        ],
+        "referred_schema": "public",
+        "referred_table": "PortfolioSnapshotItem",
+        "referred_columns": ["id", "portfolioSnapshotId", "generationId", "userId", "listingId"],
+        "ondelete": "CASCADE",
+    } in account_breakdown["foreign_keys"]
+    valuation_evidence = snapshot["tables"]["InvestmentMovementValuationEvidence"]
+    assert [column["name"] for column in valuation_evidence["columns"]] == [
+        "id",
+        "accountId",
+        "movementId",
+        "revision",
+        "canonicalRevision",
+        "effectiveAt",
+        "calculationVersion",
+        "selectionInterval",
+        "inputFingerprint",
+        "priceSnapshotId",
+        "exchangeRateId",
+        "priceAmount",
+        "priceCurrency",
+        "priceSource",
+        "priceTimestamp",
+        "fxRate",
+        "fxFromCurrency",
+        "fxToCurrency",
+        "fxSource",
+        "fxTimestamp",
+        "pricePerUnit",
+        "valueAmount",
+        "valueCurrency",
+        "createdAt",
+    ]
+    assert ["movementId", "revision"] in valuation_evidence["unique_constraints"]
+    assert ["movementId", "inputFingerprint"] in valuation_evidence["unique_constraints"]
+    assert {
+        "columns": ["movementId"],
+        "referred_schema": "public",
+        "referred_table": "InvestmentMovement",
+        "referred_columns": ["id"],
+        "ondelete": "RESTRICT",
+    } in valuation_evidence["foreign_keys"]
 
 
 def test_schema_comparison_accepts_identical_snapshots(capsys) -> None:

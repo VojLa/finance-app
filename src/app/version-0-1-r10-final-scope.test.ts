@@ -28,15 +28,22 @@ describe("Version 0.1 R10 final active current-value browser boundary", () => {
     const workflow = source("src/modules/python-api/server/snapshot-workflow.ts")
     const client = source("src/modules/python-api/server/client.ts")
 
-    expect(workflow).toContain("api.readCurrentPortfolio()")
-    expect(workflow).toContain("api.readCurrentDashboard()")
-    expect(client).toContain('"/api/v1/portfolio/current"')
-    expect(client).toContain('"/api/v1/dashboard/current"')
+    expect(workflow).toContain("api.readPublishedPortfolio()")
+    expect(workflow).toContain("api.readPublishedDashboard()")
+    expect(client).toContain('"/api/v1/portfolio/published"')
+    expect(client).toContain('"/api/v1/dashboard/published"')
 
     const activeWorkflows = workflow.slice(
-      workflow.indexOf("export async function runPortfolioSnapshotWorkflow")
+      workflow.indexOf("export async function runPortfolioSnapshotWorkflow"),
+      workflow.indexOf("export async function refreshPortfolioSnapshotWorkflow")
     )
     expect(activeWorkflows).not.toContain("recalculateSnapshotRefresh")
     expect(activeWorkflows).not.toContain("snapshot-refresh/recalculate")
+
+    const refreshRoute = source("src/app/api/snapshot-workflow/portfolio/refresh/route.ts")
+    expect(refreshRoute).toContain("export async function POST")
+    expect(refreshRoute).toContain("refreshPortfolioSnapshotWorkflow")
+    expect(refreshRoute).not.toMatch(/export\s+(?:async\s+)?function\s+GET/)
+    expect(workflow).toContain("await api.recalculateSnapshotRefresh()")
   })
 })

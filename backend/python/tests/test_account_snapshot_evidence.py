@@ -16,6 +16,7 @@ from app.db.models.enums import (
     AccountType,
     AssetType,
     ExchangeRateSource,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
@@ -432,7 +433,7 @@ async def test_malformed_persisted_account_fails_closed(corruption: str) -> None
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.bank, AccountType.cash, AccountType.savings],
+    [AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card],
 )
 async def test_cash_account_balance_uses_complete_signed_transaction_history(
     account_type: AccountType,
@@ -1030,7 +1031,7 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 async def test_liability_accounts_use_selected_canonical_balance_once(
     account_type: AccountType,
@@ -1345,6 +1346,45 @@ async def test_asset_transfer_with_unknown_basis_keeps_value_and_marks_only_unsu
     )
     assert result.fees == ExactSnapshotMetric(Decimal(0), ())
     assert result.taxes == ExactSnapshotMetric(Decimal(0), ())
+
+
+@pytest.mark.asyncio
+async def test_missing_anycoin_sell_realized_pnl_fails_closed_instead_of_publishing_zero() -> None:
+    event = _event(InvestmentEventType.trade)
+    event.id = "event-sell"
+    event.source = ImportSource.anycoin
+    asset = _movement()
+    asset.id = "movement-asset"
+    asset.event_id = event.id
+    asset.kind = InvestmentMovementKind.asset
+    asset.direction = MovementDirection.outgoing
+    asset.quantity = Decimal("1")
+    asset.currency = "ABC"
+    asset.asset_id = "asset-1"
+    asset.listing_id = "listing-1"
+    asset.price_per_unit = Decimal("10")
+    asset.value_amount = Decimal("10")
+    asset.value_currency = "EUR"
+    asset.source_symbol = "ABC"
+    asset.source_asset_type = AssetType.stock
+    cash = _movement()
+    cash.id = "movement-cash"
+    cash.event_id = event.id
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=_repository(
+            load_account=_account(AccountType.exchange, currency="EUR"),
+            load_holdings=_holding_rows(),
+            load_active_events=(event,),
+            load_active_movements=(asset, cash),
+            load_price_candidates=(_price("price", "15", NOW),),
+        ),
+    ).build(_command(output_currency="EUR", calculation_version=3))
+
+    assert result.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
 
 
 def _empty_valuation() -> ExpectedAccountSnapshotValuation:

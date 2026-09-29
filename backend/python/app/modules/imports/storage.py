@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -24,10 +26,29 @@ class ImportFileMismatchError(Exception):
     pass
 
 
+class ImportStorageBusyError(Exception):
+    pass
+
+
 class LocalImportStorage:
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        lock_timeout_seconds: float = 5.0,
+        stale_lock_seconds: float = 30.0,
+    ) -> None:
+        if (
+            lock_timeout_seconds <= 0
+            or lock_timeout_seconds > 60
+            or stale_lock_seconds <= lock_timeout_seconds
+            or stale_lock_seconds > 300
+        ):
+            raise ValueError("Import storage lock timing is invalid.")
         configured = os.getenv("IMPORT_STORAGE_ROOT", ".data/imports")
         self.root = root or Path(configured)
+        self.lock_timeout_seconds = lock_timeout_seconds
+        self.stale_lock_seconds = stale_lock_seconds
 
     def path_for(self, batch_id: str) -> Path:
         safe_id = sha256(batch_id.encode("utf-8")).hexdigest()
@@ -77,6 +98,8 @@ class LocalImportStorage:
 
         lock_path = destination.parent / "publish.lock"
         lock_descriptor: int | None = None
+        lock_token = uuid4().hex
+        lock_deadline = time.monotonic() + self.lock_timeout_seconds
         try:
             while lock_descriptor is None:
                 try:
@@ -85,7 +108,18 @@ class LocalImportStorage:
                         os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                         0o600,
                     )
+                    os.write(lock_descriptor, lock_token.encode("ascii"))
+                    os.fsync(lock_descriptor)
                 except FileExistsError:
+                    try:
+                        lock_age = time.time() - lock_path.stat().st_mtime
+                        if lock_age >= self.stale_lock_seconds:
+                            lock_path.unlink()
+                            continue
+                    except FileNotFoundError:
+                        continue
+                    if time.monotonic() >= lock_deadline:
+                        raise ImportStorageBusyError() from None
                     await asyncio.sleep(0.01)
 
             if destination.exists():
@@ -103,7 +137,11 @@ class LocalImportStorage:
             temporary_path.unlink(missing_ok=True)
             if lock_descriptor is not None:
                 os.close(lock_descriptor)
-                lock_path.unlink(missing_ok=True)
+                try:
+                    if lock_path.read_text(encoding="ascii") == lock_token:
+                        lock_path.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
 
     def remove(self, batch_id: str) -> None:
         self.path_for(batch_id).unlink(missing_ok=True)

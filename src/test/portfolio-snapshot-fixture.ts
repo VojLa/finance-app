@@ -5,6 +5,8 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
     asOf: "2032-08-02T12:30:00.000",
     baselineTimestamp: "2032-08-02T00:00:00.000",
     historyAnchorSnapshotId: "net-worth-baseline",
+    valuationTimestamp: "2032-08-02T12:29:00.000",
+    isStale: false,
     currency: "EUR",
     calculationVersion: 7,
     summary: {

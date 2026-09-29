@@ -115,7 +115,6 @@ def _source(
     snapshot_source: SnapshotSource = SnapshotSource.manual_recalculation,
 ) -> PortfolioSnapshotSource:
     liability = account_type in {
-        AccountType.credit_card,
         AccountType.loan,
         AccountType.mortgage,
     }
@@ -123,6 +122,7 @@ def _source(
         AccountType.bank,
         AccountType.cash,
         AccountType.savings,
+        AccountType.credit_card,
     }
     if items is None:
         items = (
@@ -235,7 +235,7 @@ def test_full_pipeline_projects_exact_dashboard_summary() -> None:
         (AccountType.bank, 0, 0),
         (AccountType.cash, 0, 0),
         (AccountType.savings, 0, 0),
-        (AccountType.credit_card, 0, 1),
+        (AccountType.credit_card, 0, 0),
         (AccountType.loan, 0, 1),
         (AccountType.mortgage, 0, 1),
     ],

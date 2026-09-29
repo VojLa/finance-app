@@ -25,6 +25,7 @@ from app.modules.net_worth.projection import (
 _ERROR_MESSAGE = "Net-worth evidence is not physically persistable."
 _SNAPSHOT_ID_NAMESPACE = UUID("1fc1e31d-af26-5769-872b-97496885d97d")
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
     AccountType.exchange,
@@ -34,9 +35,9 @@ _CASH_ACCOUNT_TYPES = {
     AccountType.bank,
     AccountType.cash,
     AccountType.savings,
+    AccountType.credit_card,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -68,6 +69,7 @@ class NetWorthSnapshotPersistenceMetadata:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    generation_id: str = _LEGACY_GENERATION_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +93,7 @@ class ExpectedNetWorthSnapshotRow:
     liabilities_value_by_currency: CanonicalNetWorthJsonObject | None
     total_net_worth_by_currency: CanonicalNetWorthJsonObject | None
     exchange_rates: CanonicalNetWorthJsonObject | None
+    generation_id: str = _LEGACY_GENERATION_ID
 
     def model_values(self) -> dict[str, object]:
         return {
@@ -113,6 +116,7 @@ class ExpectedNetWorthSnapshotRow:
             "liabilities_value_by_currency": _json(self.liabilities_value_by_currency),
             "total_net_worth_by_currency": _json(self.total_net_worth_by_currency),
             "exchange_rates": _json(self.exchange_rates),
+            "generation_id": self.generation_id,
         }
 
 
@@ -594,15 +598,17 @@ def _snapshot_id(
     timestamp: datetime,
     currency: str,
     granularity: SnapshotGranularity,
+    generation_id: str,
 ) -> str:
-    payload = "\0".join(
-        (
-            user_id,
-            timestamp.isoformat(timespec="milliseconds"),
-            currency,
-            granularity.value,
-        )
+    identity: tuple[str, ...] = (
+        user_id,
+        timestamp.isoformat(timespec="milliseconds"),
+        currency,
+        granularity.value,
     )
+    if generation_id != _LEGACY_GENERATION_ID:
+        identity = (*identity, generation_id)
+    payload = "\0".join(identity)
     return str(uuid5(_SNAPSHOT_ID_NAMESPACE, payload))
 
 
@@ -627,6 +633,7 @@ def build_net_worth_snapshot_persistence_projection(
             raise _fail()
         calculated_at = _timestamp(metadata.calculated_at)
         created_at = _timestamp(metadata.created_at)
+        generation_id = _nonblank(metadata.generation_id)
         (
             projection,
             accounts,
@@ -642,6 +649,7 @@ def build_net_worth_snapshot_persistence_projection(
                 timestamp=projection.timestamp,
                 currency=projection.currency,
                 granularity=projection.granularity,
+                generation_id=generation_id,
             ),
             user_id=projection.user_id,
             timestamp=projection.timestamp,
@@ -661,6 +669,7 @@ def build_net_worth_snapshot_persistence_projection(
             liabilities_value_by_currency=liability_breakdown,
             total_net_worth_by_currency=total_breakdown,
             exchange_rates=None,
+            generation_id=generation_id,
         )
         return ExpectedNetWorthSnapshotPersistence(snapshot=snapshot, audit=audit)
     except NetWorthSnapshotPersistenceProjectionError:

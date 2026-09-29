@@ -20,6 +20,7 @@ from app.modules.canonical_state import (
     CanonicalChangeKind,
     CanonicalStateError,
     CanonicalStateService,
+    RecordedCanonicalChange,
 )
 from app.modules.liabilities.validation import (
     LIABILITY_ACCOUNT_TYPES,
@@ -34,6 +35,10 @@ from app.modules.liabilities.validation import (
 from app.modules.liabilities.writer_repository import (
     LiabilityBalanceWriterRepository,
     identity_lock_ids,
+)
+from app.modules.portfolio_history.invalidation.service import (
+    PortfolioHistoryInvalidationService,
+    PortfolioHistoryInvalidationStateError,
 )
 
 _STATE_MESSAGE = "Liability balance could not be persisted."
@@ -138,6 +143,20 @@ class _Repository(Protocol):
     async def flush(self) -> None: ...
 
     async def reload(self, balance_id: str) -> LiabilityBalanceModel | None: ...
+
+
+class _HistoryInvalidation(Protocol):
+    async def lock_current_memberships(
+        self, account_ids: tuple[str, ...]
+    ) -> tuple[tuple[str, str], ...]: ...
+
+    async def invalidate_recorded_changes(
+        self,
+        *,
+        changes: tuple[RecordedCanonicalChange, ...],
+        locked_memberships: tuple[tuple[str, str], ...],
+        now: datetime,
+    ) -> object: ...
 
 
 def _fail() -> LiabilityBalanceWriteStateError:
@@ -300,10 +319,14 @@ class LiabilityBalanceWriter:
         *,
         repository: _Repository | None = None,
         canonical_state: CanonicalStateService | None = None,
+        history_invalidation: _HistoryInvalidation | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or LiabilityBalanceWriterRepository(session)
         self.canonical_state = canonical_state or CanonicalStateService(session)
+        self.history_invalidation = history_invalidation or PortfolioHistoryInvalidationService(
+            session
+        )
 
     async def write(
         self,
@@ -326,6 +349,9 @@ class LiabilityBalanceWriter:
     ) -> LiabilityBalanceWriteResult:
         account = await self.repository.load_account_for_share(expected.account_id)
         _validate_account(account, expected)
+        locked_memberships = await self.history_invalidation.lock_current_memberships(
+            (expected.account_id,)
+        )
         await self.repository.acquire_identity_locks(
             identity_lock_ids(
                 account_id=expected.account_id,
@@ -359,7 +385,7 @@ class LiabilityBalanceWriter:
             if not _matches(existing, expected):
                 raise LiabilityBalanceWriteConflictError()
             try:
-                await self.canonical_state.record(
+                recorded = await self.canonical_state.record(
                     account_id=expected.account_id,
                     kind=CanonicalChangeKind.liability_balance,
                     entity_id=expected.id,
@@ -367,7 +393,12 @@ class LiabilityBalanceWriter:
                     created_at=expected.created_at,
                     replay=True,
                 )
-            except CanonicalStateError as exc:
+                await self.history_invalidation.invalidate_recorded_changes(
+                    changes=(recorded,),
+                    locked_memberships=locked_memberships,
+                    now=expected.created_at,
+                )
+            except (CanonicalStateError, PortfolioHistoryInvalidationStateError) as exc:
                 raise _fail() from exc
             return _result(expected, LiabilityBalanceWriteDisposition.replayed)
 
@@ -375,7 +406,7 @@ class LiabilityBalanceWriter:
         if id_conflict is not None:
             raise LiabilityBalanceWriteConflictError()
         try:
-            await self.canonical_state.record(
+            recorded = await self.canonical_state.record(
                 account_id=expected.account_id,
                 kind=CanonicalChangeKind.liability_balance,
                 entity_id=expected.id,
@@ -383,7 +414,12 @@ class LiabilityBalanceWriter:
                 created_at=expected.created_at,
                 replay=False,
             )
-        except CanonicalStateError as exc:
+            await self.history_invalidation.invalidate_recorded_changes(
+                changes=(recorded,),
+                locked_memberships=locked_memberships,
+                now=expected.created_at,
+            )
+        except (CanonicalStateError, PortfolioHistoryInvalidationStateError) as exc:
             raise _fail() from exc
         self.repository.add(LiabilityBalanceModel(**expected.model_values()))
         await self.repository.flush()

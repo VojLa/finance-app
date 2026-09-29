@@ -413,7 +413,9 @@ def test_exact_production_route_inventory(test_settings: Settings) -> None:
         ("POST", PORTFOLIO_PATH),
         ("POST", DASHBOARD_PATH),
         ("POST", "/api/v1/portfolio/current"),
+        ("POST", "/api/v1/portfolio/published"),
         ("POST", "/api/v1/dashboard/current"),
+        ("POST", "/api/v1/dashboard/published"),
         ("GET", "/api/v1/operational-dashboard"),
     }
 
@@ -678,7 +680,7 @@ def test_supported_investment_account_shapes(account_type: AccountType) -> None:
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 def test_supported_liability_account_shapes(account_type: AccountType) -> None:
     view = build_portfolio_snapshot_view(
@@ -997,9 +999,9 @@ def test_no_latest_fallback_live_finance_or_implicit_discovery_dependencies() ->
         "float(",
         "round(",
         "ORDER BY timestamp DESC",
-        "AccountMemberModel",
     ):
         assert forbidden not in source
+    assert "AccountMemberModel.accepted_at.is_not(None)" in source
     assert "latest" not in source.lower()
     assert "fallback" not in source.lower()
 

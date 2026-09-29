@@ -9,7 +9,9 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -20,10 +22,14 @@ from app.db.models.background_jobs import (
     ImportJobBatchModel,
 )
 from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
     AccountCanonicalStateModel,
     AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
 )
 from app.db.models.enums import (
     AccountMemberRole,
@@ -37,7 +43,14 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.db.models.imports import ImportBatchModel
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
@@ -45,6 +58,7 @@ from app.modules.canonical_state.service import CanonicalChangeKind, CanonicalSt
 from app.modules.current_value.repository import CurrentValueRepository
 from app.modules.imports.models import ImportBatchCreateRequest, ImportRegistrationResponse
 from app.modules.imports.service import ImportBatchAlreadyImportedError
+from app.modules.jobs.lifecycle import LeaseIdentity
 from app.modules.jobs.publication_service import (
     ImportJobPublicationService,
     ImportPublicationTarget,
@@ -155,13 +169,27 @@ async def _claim(
                 )
             )
             await session.flush()
-        claimed = await BackgroundJobRepository(session).claim_next(
-            worker_id=worker_id,
-            now=now,
-            lease_duration=LEASE,
+        job = await session.scalar(
+            select(BackgroundJobModel).where(BackgroundJobModel.id == job_id).with_for_update()
+        )
+        assert job is not None
+        assert job.status in {BackgroundJobStatus.queued, BackgroundJobStatus.retry_wait}
+        assert job.run_after <= now and job.attempt_count < job.max_attempts
+        job.status = BackgroundJobStatus.running
+        job.lease_owner = worker_id
+        job.lease_version += 1
+        job.lease_expires_at = now + LEASE
+        job.lease_heartbeat_at = now
+        job.attempt_count += 1
+        job.started_at = job.started_at or now
+        job.finished_at = None
+        job.updated_at = now
+        await session.flush()
+        claimed = ClaimedBackgroundJob(
+            job=job,
+            lease=LeaseIdentity(job_id=job_id, owner=worker_id, version=job.lease_version),
         )
         await session.commit()
-    assert claimed is not None
     assert claimed.job.id == job_id
     return claimed
 
@@ -174,18 +202,34 @@ async def _insert_import_anchor(
     account_id: str,
     bucket: datetime,
     suffix: str,
-    canonical_revision: int = 0,
+    canonical_revision: int = 1,
 ) -> None:
     async with engine.begin() as connection:
         snapshot_id = f"publication-net-worth-{suffix}"
-        account_snapshot_id = f"publication-account-{account_id}-{bucket:%Y%m%d%H%M}"
+        account_snapshot_id = f"publication-account-{account_id}-{bucket:%Y%m%d%H%M}-{suffix}"
         baseline_id = f"publication-baseline-{suffix}"
-        state = await connection.scalar(
-            select(AccountCanonicalStateModel).where(
+        generation_id = f"publication-generation-{suffix}"
+        await connection.execute(
+            insert(SnapshotGenerationModel).values(
+                id=generation_id,
+                state="published",
+                created_at=bucket,
+                published_at=bucket,
+            )
+        )
+        await connection.execute(
+            insert(SnapshotGenerationTargetModel).values(
+                generation_id=generation_id,
+                user_id=user_id,
+                created_at=bucket,
+            )
+        )
+        last_revision = await connection.scalar(
+            select(AccountCanonicalStateModel.last_revision).where(
                 AccountCanonicalStateModel.account_id == account_id
             )
         )
-        if state is None:
+        if last_revision is None:
             await connection.execute(
                 insert(AccountCanonicalStateModel).values(
                     account_id=account_id,
@@ -195,9 +239,38 @@ async def _insert_import_anchor(
                     updated_at=bucket,
                 )
             )
+        elif last_revision < canonical_revision:
+            await connection.execute(
+                update(AccountCanonicalStateModel)
+                .where(AccountCanonicalStateModel.account_id == account_id)
+                .values(
+                    last_revision=canonical_revision,
+                    last_investment_revision=canonical_revision,
+                    holding_revision=canonical_revision,
+                    updated_at=bucket,
+                )
+            )
+        elif last_revision == canonical_revision:
+            await connection.execute(
+                update(AccountCanonicalStateModel)
+                .where(AccountCanonicalStateModel.account_id == account_id)
+                .values(holding_revision=canonical_revision, updated_at=bucket)
+            )
+        if last_revision is None or last_revision < canonical_revision:
+            await connection.execute(
+                insert(AccountCanonicalChangeModel).values(
+                    account_id=account_id,
+                    revision=canonical_revision,
+                    kind="investment_event",
+                    entity_id=f"publication-seed-{account_id}",
+                    financial_timestamp=bucket,
+                    created_at=bucket,
+                )
+            )
         existing_account_snapshot = await connection.scalar(
             select(AccountSnapshotModel.id).where(
                 AccountSnapshotModel.account_id == account_id,
+                AccountSnapshotModel.generation_id == generation_id,
                 AccountSnapshotModel.timestamp == bucket,
                 AccountSnapshotModel.currency == "CZK",
                 AccountSnapshotModel.granularity == SnapshotGranularity.minute,
@@ -208,6 +281,7 @@ async def _insert_import_anchor(
                 insert(AccountSnapshotModel).values(
                     id=account_snapshot_id,
                     account_id=account_id,
+                    generation_id=generation_id,
                     timestamp=bucket,
                     granularity=SnapshotGranularity.minute,
                     source=SnapshotSource.import_event,
@@ -254,6 +328,7 @@ async def _insert_import_anchor(
             insert(NetWorthSnapshotModel).values(
                 id=snapshot_id,
                 user_id=user_id,
+                generation_id=generation_id,
                 timestamp=bucket,
                 granularity=SnapshotGranularity.minute,
                 source=SnapshotSource.import_event,
@@ -274,9 +349,43 @@ async def _insert_import_anchor(
             )
         )
         await connection.execute(
+            insert(PortfolioSnapshotModel).values(
+                id=f"publication-portfolio-{suffix}",
+                user_id=user_id,
+                generation_id=generation_id,
+                timestamp=bucket,
+                valuation_timestamp=bucket,
+                granularity=SnapshotGranularity.minute,
+                source=SnapshotSource.import_event,
+                currency="CZK",
+                cash_value=Decimal("0"),
+                investment_value=Decimal("0"),
+                investment_cost_basis=Decimal("0"),
+                net_deposits_value=Decimal("0"),
+                realized_pnl_value=Decimal("0"),
+                unrealized_pnl_value=Decimal("0"),
+                fees_value=Decimal("0"),
+                taxes_value=Decimal("0"),
+                cash_value_by_currency={},
+                investment_value_by_currency={},
+                investment_cost_basis_by_currency={},
+                net_deposits_by_currency={},
+                realized_pnl_by_currency={},
+                unrealized_pnl_by_currency={},
+                fees_by_currency={},
+                taxes_by_currency={},
+                price_evidence={},
+                exchange_rates={},
+                calculated_at=bucket,
+                calculation_version=1,
+                created_at=bucket,
+            )
+        )
+        await connection.execute(
             insert(DailySnapshotBaselineModel).values(
                 id=baseline_id,
                 user_id=user_id,
+                generation_id=generation_id,
                 net_worth_snapshot_id=snapshot_id,
                 timestamp=bucket,
                 granularity=SnapshotGranularity.minute,
@@ -291,6 +400,7 @@ async def _insert_import_anchor(
             insert(DailySnapshotBaselineAccountModel).values(
                 baseline_id=baseline_id,
                 account_id=account_id,
+                generation_id=generation_id,
                 account_type=AccountType.broker,
                 account_currency="CZK",
                 primary_snapshot_id=account_snapshot_id,
@@ -311,6 +421,50 @@ async def _cleanup(
     user_ids: tuple[str, ...],
 ) -> None:
     async with engine.begin() as connection:
+        generation_ids = tuple(
+            (
+                await connection.scalars(
+                    select(SnapshotGenerationTargetModel.generation_id).where(
+                        SnapshotGenerationTargetModel.user_id.in_(user_ids)
+                    )
+                )
+            ).all()
+        )
+        await connection.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id.in_(user_ids)
+            )
+        )
+        # Published series rows are immutable while their user exists. This
+        # transaction-local bypass is limited to this test's unique users and
+        # generation ids; ordinary FK enforcement resumes before snapshot cleanup.
+        await connection.execute(sql_text("SET LOCAL session_replication_role = replica"))
+        try:
+            await connection.execute(
+                delete(SnapshotSeriesPublicationReceiptModel).where(
+                    SnapshotSeriesPublicationReceiptModel.user_id.in_(user_ids),
+                    SnapshotSeriesPublicationReceiptModel.generation_id.in_(generation_ids),
+                )
+            )
+            await connection.execute(
+                delete(SnapshotSeriesPointLinkModel).where(
+                    SnapshotSeriesPointLinkModel.user_id.in_(user_ids),
+                    SnapshotSeriesPointLinkModel.generation_id.in_(generation_ids),
+                )
+            )
+            await connection.execute(
+                delete(SnapshotSeriesHeadModel).where(
+                    SnapshotSeriesHeadModel.user_id.in_(user_ids),
+                    SnapshotSeriesHeadModel.generation_id.in_(generation_ids),
+                )
+            )
+            await connection.execute(
+                delete(SnapshotSeriesVersionStateModel).where(
+                    SnapshotSeriesVersionStateModel.user_id.in_(user_ids)
+                )
+            )
+        finally:
+            await connection.execute(sql_text("SET LOCAL session_replication_role = origin"))
         await connection.execute(
             delete(DailySnapshotBaselineModel).where(
                 DailySnapshotBaselineModel.background_job_id.in_(job_ids)
@@ -320,8 +474,22 @@ async def _cleanup(
             delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
         )
         await connection.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id.in_(user_ids))
+        )
+        await connection.execute(
             delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
         )
+        await connection.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.user_id.in_(user_ids)
+            )
+        )
+        if generation_ids:
+            await connection.execute(
+                delete(SnapshotGenerationModel).where(
+                    SnapshotGenerationModel.id.in_(generation_ids)
+                )
+            )
         await connection.execute(
             delete(ImportJobPublicationTargetModel).where(
                 ImportJobPublicationTargetModel.job_id.in_(job_ids)
@@ -340,6 +508,21 @@ async def _cleanup(
         )
         await connection.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
         await connection.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+        for model, predicate in (
+            (UserModel, UserModel.id.in_(user_ids)),
+            (SnapshotGenerationModel, SnapshotGenerationModel.id.in_(generation_ids)),
+            (SnapshotGenerationTargetModel, SnapshotGenerationTargetModel.user_id.in_(user_ids)),
+            (SnapshotSeriesPointLinkModel, SnapshotSeriesPointLinkModel.user_id.in_(user_ids)),
+            (
+                SnapshotSeriesPublicationReceiptModel,
+                SnapshotSeriesPublicationReceiptModel.user_id.in_(user_ids),
+            ),
+            (PortfolioSnapshotModel, PortfolioSnapshotModel.user_id.in_(user_ids)),
+        ):
+            assert (
+                await connection.scalar(select(func.count()).select_from(model).where(predicate))
+                == 0
+            )
 
 
 async def _seed_single_publication(
@@ -455,14 +638,20 @@ async def test_registration_does_not_deadlock_with_completion_lock_boundary() ->
         claimed = await _claim(sessions, job_id=job_id, worker_id="registration-race", now=NOW)
 
         async def complete() -> None:
-            async with sessions() as session:
-                await BackgroundJobRepository(session).complete(
-                    lease=claimed.lease,
-                    result={"published": True},
-                    progress=_complete_progress(),
-                    now=NOW + timedelta(seconds=1),
-                )
-                await session.commit()
+            for attempt in range(3):
+                try:
+                    async with sessions() as session:
+                        await BackgroundJobRepository(session).complete(
+                            lease=claimed.lease,
+                            result={"published": True},
+                            progress=_complete_progress(),
+                            now=NOW + timedelta(seconds=1),
+                        )
+                        await session.commit()
+                    return
+                except DBAPIError as exc:
+                    if getattr(exc.orig, "sqlstate", None) != "40001" or attempt == 2:
+                        raise
 
         async def register() -> ImportRegistrationResponse | ImportBatchAlreadyImportedError:
             async with sessions() as session:
@@ -1052,7 +1241,7 @@ async def test_canonical_change_after_anchor_defers_then_retires_stale_anchor_fo
             account_id=account_id,
             bucket=NOW,
             suffix=f"stale-old-{suffix}",
-            canonical_revision=0,
+            canonical_revision=1,
         )
 
         # A real committed, backdated canonical change arrives after the
@@ -1067,7 +1256,7 @@ async def test_canonical_change_after_anchor_defers_then_retires_stale_anchor_fo
                     created_at=NOW,
                     replay=False,
                 )
-        assert change.revision == 1
+        assert change.revision == 2
         async with sessions() as session:
             with pytest.raises(BackgroundJobPublicationStaleError):
                 await BackgroundJobRepository(session).complete(
@@ -1113,7 +1302,7 @@ async def test_canonical_change_after_anchor_defers_then_retires_stale_anchor_fo
             account_id=account_id,
             bucket=retry_at,
             suffix=f"stale-new-{suffix}",
-            canonical_revision=1,
+            canonical_revision=2,
         )
         async with sessions() as session:
             await BackgroundJobRepository(session).complete(
@@ -1170,6 +1359,7 @@ async def test_manual_snapshot_after_unused_target_retargets_without_deleting_ma
     )
     advanced = NOW + timedelta(minutes=1)
     manual_snapshot_id = f"manual-net-worth-{suffix}"
+    manual_generation_id = f"manual-generation-{suffix}"
     try:
         await _seed_single_publication(
             engine, user_id=user_id, account_id=account_id, job_id=job_id
@@ -1183,9 +1373,25 @@ async def test_manual_snapshot_after_unused_target_retargets_without_deleting_ma
         # An unrelated user-visible manual snapshot arrives after the target.
         async with engine.begin() as connection:
             await connection.execute(
+                insert(SnapshotGenerationModel).values(
+                    id=manual_generation_id,
+                    state="published",
+                    created_at=NOW,
+                    published_at=NOW,
+                )
+            )
+            await connection.execute(
+                insert(SnapshotGenerationTargetModel).values(
+                    generation_id=manual_generation_id,
+                    user_id=user_id,
+                    created_at=NOW,
+                )
+            )
+            await connection.execute(
                 insert(NetWorthSnapshotModel).values(
                     id=manual_snapshot_id,
                     user_id=user_id,
+                    generation_id=manual_generation_id,
                     timestamp=NOW,
                     granularity=SnapshotGranularity.minute,
                     source=SnapshotSource.manual_recalculation,

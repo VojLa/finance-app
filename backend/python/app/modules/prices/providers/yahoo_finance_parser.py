@@ -13,12 +13,15 @@ from app.modules.prices.providers.yahoo_finance_models import (
     YahooFinanceChartPoint,
 )
 
-_MAX_DEPTH = 8
-# A three-day 1m chart has roughly 1,500 timestamps and Yahoo's one quote
-# record carries close/open/high/low/volume arrays. Keep the parser bounded
-# while allowing that legitimate live payload shape.
-_MAX_ITEMS = 32_768
+_MAX_DEPTH = 12
+# A 72-hour 1m chart can contain 4,321 points for continuously traded assets,
+# and Yahoo's quote carries close/open/high/low/volume plus optional adjusted
+# close arrays.  Keep the parser bounded while accepting that live shape and
+# Yahoo's optional nested trading-period metadata.
+_MAX_ITEMS = 65_536
+_MAX_TIMESTAMPS = 4_500
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+_USD_BASE_SHORT_FX = re.compile(r"[A-Z]{3}=X\Z")
 
 
 def _fail() -> MarketEvidenceStateError:
@@ -114,12 +117,27 @@ def _price(value: object, *, price_hint: int) -> Decimal:
     return result
 
 
+def _matches_expected_symbol(actual: object, expected: str) -> bool:
+    if actual == expected:
+        return True
+    # Yahoo accepts the documented short USD-base ticker (for example
+    # ``CZK=X``), but currently canonicalizes the response metadata to the
+    # explicit ``USDCZK=X`` identity.  Accept only that exact, derivable alias;
+    # price tickers and non-USD FX pairs remain strict equality checks.
+    return (
+        isinstance(actual, str)
+        and _USD_BASE_SHORT_FX.fullmatch(expected) is not None
+        and actual == f"USD{expected}"
+    )
+
+
 def parse_yahoo_finance_chart(
     body: bytes,
     *,
     expected_symbol: str,
     expected_currency: str,
     maximum_price_hint: int,
+    expected_data_granularity: str | None = None,
 ) -> YahooFinanceChart:
     if not isinstance(body, bytes) or not body:
         raise _fail()
@@ -154,11 +172,15 @@ def parse_yahoo_finance_chart(
     indicators = result.get("indicators")
     if (
         not isinstance(meta, dict)
-        or meta.get("symbol") != expected_symbol
+        or not _matches_expected_symbol(meta.get("symbol"), expected_symbol)
         or meta.get("currency") != expected_currency
+        or (
+            expected_data_granularity is not None
+            and meta.get("dataGranularity") != expected_data_granularity
+        )
         or not isinstance(timestamps, list)
         or not timestamps
-        or len(timestamps) > 4_096
+        or len(timestamps) > _MAX_TIMESTAMPS
         or not isinstance(indicators, dict)
         or not {"quote"} <= set(indicators) <= {"quote", "adjclose"}
     ):

@@ -44,6 +44,8 @@ function validateCurrent(value: Record<string, unknown>): CurrentValueSummary {
     !text(value.asOf) ||
     !text(value.baselineTimestamp) ||
     !text(value.historyAnchorSnapshotId) ||
+    !text(value.valuationTimestamp) ||
+    typeof value.isStale !== "boolean" ||
     !currency(value.currency) ||
     !count(value.calculationVersion) ||
     value.calculationVersion === 0
@@ -56,6 +58,8 @@ function validateCurrent(value: Record<string, unknown>): CurrentValueSummary {
     historyAnchorSnapshotId: value.historyAnchorSnapshotId,
     currency: value.currency,
     calculationVersion: value.calculationVersion,
+    valuationTimestamp: value.valuationTimestamp,
+    isStale: value.isStale,
   }
 }
 
@@ -317,14 +321,22 @@ export async function runPortfolioSnapshotWorkflow(
   identity: ServerIdentity,
   api: PythonSnapshotApi = createPythonSnapshotApi(identity)
 ): Promise<SnapshotWorkflowResult<PortfolioSnapshotData>> {
-  const data = validatePortfolio(await api.readCurrentPortfolio())
+  const data = validatePortfolio(await api.readPublishedPortfolio())
   return { status: "ready", current: validateCurrent(data), data }
+}
+
+export async function refreshPortfolioSnapshotWorkflow(
+  identity: ServerIdentity,
+  api: PythonSnapshotApi = createPythonSnapshotApi(identity)
+): Promise<SnapshotWorkflowResult<PortfolioSnapshotData>> {
+  await api.recalculateSnapshotRefresh()
+  return runPortfolioSnapshotWorkflow(identity, api)
 }
 
 export async function runDashboardSnapshotWorkflow(
   identity: ServerIdentity,
   api: PythonSnapshotApi = createPythonSnapshotApi(identity)
 ): Promise<SnapshotWorkflowResult<DashboardSnapshotData>> {
-  const data = validateDashboard(await api.readCurrentDashboard())
+  const data = validateDashboard(await api.readPublishedDashboard())
   return { status: "ready", current: validateCurrent(data), data }
 }

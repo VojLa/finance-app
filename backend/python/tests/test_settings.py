@@ -15,6 +15,10 @@ def test_development_defaults() -> None:
     assert settings.internal_auth_audience == "finance-app-python"
     assert settings.background_jobs_enabled is False
     assert settings.background_job_lease_seconds == 300
+    assert settings.portfolio_history_runtime_enabled is False
+    assert settings.portfolio_history_worker_id == "portfolio-history-api"
+    assert settings.scheduled_snapshot_refresh_runner_enabled is False
+    assert settings.scheduled_snapshot_refresh_interval_seconds == 300
 
 
 def test_test_environment_starts_without_auth_secret() -> None:
@@ -47,6 +51,42 @@ def test_invalid_background_job_timing_is_rejected(overrides: dict[str, object])
         Settings.model_validate(overrides)
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"portfolio_history_worker_id": "x" * 164},
+        {"portfolio_history_worker_poll_seconds": 0},
+        {"portfolio_history_worker_lease_seconds": 29},
+        {"portfolio_history_worker_heartbeat_seconds": 300},
+        {"portfolio_history_scheduler_poll_seconds": 301},
+        {"portfolio_history_shutdown_grace_seconds": 61},
+        {"scheduled_snapshot_refresh_interval_seconds": 29},
+        {"scheduled_snapshot_refresh_shutdown_grace_seconds": 61},
+    ],
+)
+def test_invalid_portfolio_history_runtime_configuration_is_rejected(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate(overrides)
+
+
+def test_enabled_portfolio_history_runtime_requires_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        Settings(portfolio_history_runtime_enabled=True, _env_file=None)
+
+
+def test_enabled_scheduled_snapshot_refresh_requires_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(ValidationError, match="DATABASE_URL"):
+        Settings(scheduled_snapshot_refresh_runner_enabled=True, _env_file=None)
+
+
 def test_production_requires_safe_configuration() -> None:
     with pytest.raises(ValidationError, match="Invalid production settings"):
         Settings.model_validate({"environment": "production"})
@@ -75,6 +115,8 @@ def test_valid_production_configuration() -> None:
             "internal_auth_secret": "production-secret-with-at-least-32-characters",
             "twelve_data_api_key": "production-twelve-data-server-key",
             "market_evidence_source_mode": "canonical",
+            "portfolio_history_runtime_enabled": True,
+            "scheduled_snapshot_refresh_runner_enabled": True,
         }
     )
 
@@ -82,4 +124,6 @@ def test_valid_production_configuration() -> None:
     assert settings.log_json is True
     assert settings.docs_enabled is False
     assert settings.market_evidence_source_mode == "canonical"
+    assert settings.portfolio_history_runtime_enabled is True
+    assert settings.scheduled_snapshot_refresh_runner_enabled is True
     assert "production-twelve-data-server-key" not in repr(settings)

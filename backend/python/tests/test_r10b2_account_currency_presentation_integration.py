@@ -58,6 +58,7 @@ async def _add_usd_companion(
         companion = AccountSnapshotModel(
             id=companion_id,
             account_id=account_id,
+            generation_id=primary.generation_id,
             timestamp=primary.timestamp,
             granularity=primary.granularity,
             source=primary.source,

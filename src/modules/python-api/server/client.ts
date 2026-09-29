@@ -33,6 +33,8 @@ export type PythonSnapshotApi = {
   ): Promise<LegacyDashboardSnapshotData>
   readCurrentPortfolio(): Promise<PythonCurrentPortfolioResponse>
   readCurrentDashboard(): Promise<PythonCurrentDashboardResponse>
+  readPublishedPortfolio(): Promise<PythonCurrentPortfolioResponse>
+  readPublishedDashboard(): Promise<PythonCurrentDashboardResponse>
 }
 
 function mapPythonError(status: number, value: unknown): SnapshotWorkflowAdapterError {
@@ -79,6 +81,12 @@ export function createPythonSnapshotApi(
     },
     readCurrentDashboard() {
       return responseData(client.POST("/api/v1/dashboard/current", {}), mapPythonError)
+    },
+    readPublishedPortfolio() {
+      return responseData(client.POST("/api/v1/portfolio/published", {}), mapPythonError)
+    },
+    readPublishedDashboard() {
+      return responseData(client.POST("/api/v1/dashboard/published", {}), mapPythonError)
     },
   }
 }

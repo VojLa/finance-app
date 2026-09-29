@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID, uuid5
 
-from sqlalchemy import select
+import structlog
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.db.models.accounts import AccountMemberModel
 from app.db.models.background_jobs import (
@@ -54,6 +56,12 @@ from app.modules.net_worth.writer import (
     NetWorthSnapshotWriteStateError,
     WriteNetWorthSnapshotCommand,
 )
+from app.modules.portfolio_snapshot.writer import (
+    PortfolioSnapshotWriteError,
+    PortfolioSnapshotWriter,
+    PortfolioSnapshotWriteResult,
+    WritePortfolioSnapshotCommand,
+)
 from app.modules.snapshot_refresh.evidence_service import (
     BuildSnapshotRefreshCoverageCommand,
     CompleteSnapshotRefreshCoverage,
@@ -88,6 +96,7 @@ from app.modules.snapshots.writer import (
 _STATE_MESSAGE = "Coordinated snapshot refresh could not be completed."
 _CONFLICT_MESSAGE = "Coordinated snapshot refresh conflicts with persisted state."
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_GENERATION_NAMESPACE = UUID("65793e32-457f-58af-8b54-23a2238347b0")
 _SUPPORTED_ACCOUNT_TYPES = frozenset(
     {
         AccountType.bank,
@@ -173,6 +182,8 @@ class ExecuteUserSnapshotRefreshResult:
     replayed_account_snapshot_count: int
     reused_account_snapshot_count: int
     selected_account_snapshot_count: int
+    generation_id: str = "legacy-snapshot-generation:3u0001"
+    portfolio_snapshot_id: str | None = None
 
 
 class _CoverageService(Protocol):
@@ -180,6 +191,26 @@ class _CoverageService(Protocol):
         self,
         command: BuildSnapshotRefreshCoverageCommand,
     ) -> CompleteSnapshotRefreshCoverage: ...
+
+
+def _generation_id(command: ExecuteUserSnapshotRefreshCommand) -> str:
+    return str(
+        uuid5(
+            _GENERATION_NAMESPACE,
+            "\0".join(
+                (
+                    command.user_id,
+                    command.snapshot_timestamp.isoformat(timespec="milliseconds"),
+                    command.granularity.value,
+                    command.source.value,
+                    str(command.calculation_version),
+                    command.calculated_at.isoformat(timespec="milliseconds"),
+                    command.created_at.isoformat(timespec="milliseconds"),
+                    command.publication_job_id or "",
+                )
+            ),
+        )
+    )
 
 
 class _AccountWriter(Protocol):
@@ -196,6 +227,13 @@ class _NetWorthWriter(Protocol):
     ) -> NetWorthSnapshotWriteResult: ...
 
 
+class _PortfolioWriter(Protocol):
+    async def write(
+        self,
+        command: WritePortfolioSnapshotCommand,
+    ) -> PortfolioSnapshotWriteResult: ...
+
+
 class _DailyBaselineWriter(Protocol):
     async def persist(
         self,
@@ -206,6 +244,7 @@ class _DailyBaselineWriter(Protocol):
 type CoverageServiceFactory = Callable[[AsyncSession], _CoverageService]
 type AccountSnapshotWriterFactory = Callable[[AsyncSession], _AccountWriter]
 type NetWorthSnapshotWriterFactory = Callable[[AsyncSession], _NetWorthWriter]
+type PortfolioSnapshotWriterFactory = Callable[[AsyncSession], _PortfolioWriter]
 type DailyBaselineWriterFactory = Callable[[AsyncSession], _DailyBaselineWriter]
 
 
@@ -428,10 +467,6 @@ def _validated_coverage(
         validated_targets.append(target)
 
     plan_targets = tuple(validated_targets)
-    if not set(command.publication_account_ids).issubset(
-        {target.account_id for target in plan_targets}
-    ):
-        raise _fail()
     plan_account_ids = tuple(target.account_id for target in plan_targets)
     expected_refresh = tuple(
         target for target in plan_targets if target.mode is AccountSnapshotRefreshMode.refresh
@@ -501,7 +536,17 @@ def _validate_account_result(
 
 def _execution_disposition(
     value: AccountSnapshotWriteDisposition,
+    *,
+    mode: AccountSnapshotRefreshMode,
 ) -> AccountSnapshotRefreshExecutionDisposition:
+    if mode is AccountSnapshotRefreshMode.reuse_only and value in {
+        AccountSnapshotWriteDisposition.created,
+        AccountSnapshotWriteDisposition.replayed,
+    }:
+        # The physical snapshot is generation-local, but financially it is the
+        # exact unchanged snapshot selected by coverage.  Public disposition
+        # describes that financial decision rather than the clone insert.
+        return AccountSnapshotRefreshExecutionDisposition.reused
     if value is AccountSnapshotWriteDisposition.created:
         return AccountSnapshotRefreshExecutionDisposition.created
     if value is AccountSnapshotWriteDisposition.replayed:
@@ -574,6 +619,7 @@ class UserSnapshotRefreshExecutor:
         account_writer_factory: AccountSnapshotWriterFactory | None = None,
         source_policy: MarketEvidenceSourcePolicy = CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
         net_worth_writer_factory: NetWorthSnapshotWriterFactory = (NetWorthSnapshotWriter),
+        portfolio_writer_factory: PortfolioSnapshotWriterFactory = (PortfolioSnapshotWriter),
         daily_baseline_writer_factory: DailyBaselineWriterFactory = (DailySnapshotBaselineService),
     ) -> None:
         self.session = session
@@ -590,6 +636,7 @@ class UserSnapshotRefreshExecutor:
             )
         )
         self.net_worth_writer_factory = net_worth_writer_factory
+        self.portfolio_writer_factory = portfolio_writer_factory
         self.daily_baseline_writer_factory = daily_baseline_writer_factory
 
     async def _dependency_must_leave_idle(self) -> None:
@@ -602,12 +649,44 @@ class UserSnapshotRefreshExecutor:
         command: ExecuteUserSnapshotRefreshCommand,
     ) -> ExecuteUserSnapshotRefreshResult:
         canonical = _validate_command(command)
+        generation_id = _generation_id(canonical)
+        bind = getattr(self.session, "bind", None)
+        # Lightweight protocol fakes exercise the deterministic core directly;
+        # production AsyncSession instances always take the database lock.
+        if bind is None:
+            return await self._execute_locked(canonical)
+        if not isinstance(bind, AsyncEngine):
+            raise _fail()
+        async with bind.connect() as lock_connection:
+            await lock_connection.execute(
+                text("SELECT pg_advisory_lock(hashtextextended(:key, 0))"),
+                {"key": generation_id},
+            )
+            try:
+                return await self._execute_locked(canonical)
+            finally:
+                await lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"),
+                    {"key": generation_id},
+                )
+
+    async def _execute_locked(
+        self,
+        command: ExecuteUserSnapshotRefreshCommand,
+    ) -> ExecuteUserSnapshotRefreshResult:
+        canonical = _validate_command(command)
+        generation_id = _generation_id(canonical)
         if self.session.in_transaction():
             raise _fail()
 
         try:
             async with self.session.begin():
                 await self.repository.set_transaction_repeatable_read()
+                await self.repository.ensure_staged_generation(
+                    generation_id=generation_id,
+                    user_id=canonical.user_id,
+                    created_at=canonical.created_at,
+                )
                 if canonical.publication_account_ids:
                     publication_job = await self.session.scalar(
                         select(BackgroundJobModel)
@@ -674,7 +753,10 @@ class UserSnapshotRefreshExecutor:
 
         executions: dict[str, ExecutedAccountSnapshotRefresh] = {}
         snapshot_ids: set[str] = set()
-        for target in coverage.refresh_targets:
+        # A publication generation is a complete immutable replacement. Even a
+        # financially unchanged account receives a generation-local snapshot;
+        # reusing an ID from the previous generation would break the manifest FK.
+        for target in coverage.plan.account_targets:
             await self._dependency_must_leave_idle()
             writer = self.account_writer_factory(self.session)
             await self._dependency_must_leave_idle()
@@ -690,6 +772,7 @@ class UserSnapshotRefreshExecutor:
                         created_at=target.created_at,
                         is_recalculated=target.is_recalculated,
                         output_currency=target.output_currency,
+                        generation_id=generation_id,
                     )
                 )
             except AccountSnapshotWriteConflictError as exc:
@@ -700,6 +783,11 @@ class UserSnapshotRefreshExecutor:
                 AccountSnapshotEvidenceStateError,
                 AccountSnapshotPersistenceProjectionError,
             ) as exc:
+                structlog.get_logger(__name__).warning(
+                    "account_snapshot_refresh_state",
+                    account_id=target.account_id,
+                    cause_type=type(exc.__cause__).__name__ if exc.__cause__ is not None else None,
+                )
                 await self._dependency_must_leave_idle()
                 raise _fail() from exc
             await self._dependency_must_leave_idle()
@@ -713,19 +801,8 @@ class UserSnapshotRefreshExecutor:
             executions[validated.account_id] = ExecutedAccountSnapshotRefresh(
                 account_id=validated.account_id,
                 snapshot_id=validated.snapshot_id,
-                mode=AccountSnapshotRefreshMode.refresh,
-                disposition=_execution_disposition(validated.disposition),
-            )
-
-        for selected in coverage.selected_reuse_snapshots:
-            if selected.account_id in executions or selected.snapshot_id in snapshot_ids:
-                raise _fail()
-            snapshot_ids.add(selected.snapshot_id)
-            executions[selected.account_id] = ExecutedAccountSnapshotRefresh(
-                account_id=selected.account_id,
-                snapshot_id=selected.snapshot_id,
-                mode=AccountSnapshotRefreshMode.reuse_only,
-                disposition=AccountSnapshotRefreshExecutionDisposition.reused,
+                mode=target.mode,
+                disposition=_execution_disposition(validated.disposition, mode=target.mode),
             )
 
         net_target = coverage.plan.net_worth_target
@@ -736,6 +813,35 @@ class UserSnapshotRefreshExecutor:
         account_snapshots = tuple(
             executions[identity.account_id] for identity in required_identities
         )
+
+        await self._dependency_must_leave_idle()
+        portfolio_writer = self.portfolio_writer_factory(self.session)
+        await self._dependency_must_leave_idle()
+        try:
+            portfolio_result = await portfolio_writer.write(
+                WritePortfolioSnapshotCommand(
+                    user_id=net_target.user_id,
+                    generation_id=generation_id,
+                    timestamp=net_target.snapshot_timestamp,
+                    granularity=net_target.granularity,
+                    source=net_target.source,
+                    currency=net_target.output_currency,
+                    calculation_version=net_target.calculation_version,
+                    calculated_at=net_target.calculated_at,
+                    created_at=net_target.created_at,
+                    required_account_snapshot_identities=required_identities,
+                )
+            )
+        except PortfolioSnapshotWriteError as exc:
+            await self._dependency_must_leave_idle()
+            raise _fail() from exc
+        await self._dependency_must_leave_idle()
+        if (
+            portfolio_result.user_id != canonical.user_id
+            or portfolio_result.generation_id != generation_id
+            or not portfolio_result.portfolio_snapshot_id
+        ):
+            raise _fail()
 
         await self._dependency_must_leave_idle()
         net_worth_writer = self.net_worth_writer_factory(self.session)
@@ -753,6 +859,7 @@ class UserSnapshotRefreshExecutor:
                     created_at=net_target.created_at,
                     is_recalculated=net_target.is_recalculated,
                     required_account_snapshot_identities=required_identities,
+                    generation_id=generation_id,
                 )
             )
         except NetWorthSnapshotWriteConflictError as exc:
@@ -763,6 +870,11 @@ class UserSnapshotRefreshExecutor:
             NetWorthEvidenceStateError,
             NetWorthSnapshotPersistenceProjectionError,
         ) as exc:
+            structlog.get_logger(__name__).warning(
+                "net_worth_snapshot_refresh_state",
+                user_id=canonical.user_id,
+                cause_type=type(exc.__cause__).__name__ if exc.__cause__ is not None else None,
+            )
             await self._dependency_must_leave_idle()
             raise _fail() from exc
         await self._dependency_must_leave_idle()
@@ -774,8 +886,17 @@ class UserSnapshotRefreshExecutor:
 
         if canonical.granularity is SnapshotGranularity.day or (
             canonical.granularity is SnapshotGranularity.minute
-            and canonical.source is SnapshotSource.import_event
-            and canonical.publication_job_id is not None
+            and canonical.source
+            in {
+                SnapshotSource.import_event,
+                SnapshotSource.manual_recalculation,
+                SnapshotSource.price_refresh,
+                SnapshotSource.scheduled,
+            }
+            and (
+                canonical.source is not SnapshotSource.import_event
+                or canonical.publication_job_id is not None
+            )
         ):
             await self._dependency_must_leave_idle()
             baseline_writer = self.daily_baseline_writer_factory(self.session)
@@ -796,6 +917,11 @@ class UserSnapshotRefreshExecutor:
                     )
                 )
             except DailyBaselineError as exc:
+                structlog.get_logger(__name__).warning(
+                    "daily_baseline_snapshot_refresh_state",
+                    user_id=canonical.user_id,
+                    cause_type=type(exc.__cause__).__name__ if exc.__cause__ is not None else None,
+                )
                 await self._dependency_must_leave_idle()
                 raise _fail() from exc
             await self._dependency_must_leave_idle()
@@ -836,4 +962,6 @@ class UserSnapshotRefreshExecutor:
                 for item in account_snapshots
             ),
             selected_account_snapshot_count=len(required_identities),
+            generation_id=generation_id,
+            portfolio_snapshot_id=portfolio_result.portfolio_snapshot_id,
         )

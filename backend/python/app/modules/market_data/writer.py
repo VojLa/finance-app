@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -40,6 +41,7 @@ PRICE_SNAPSHOT_NAMESPACE = UUID("8c46da0b-b09a-49c7-94f1-a510cf4c2f7c")
 EXCHANGE_RATE_NAMESPACE = UUID("93484f65-330c-47e9-a592-49e4fd9a5122")
 _MAX_TRANSACTION_ATTEMPTS = 3
 _RETRYABLE_SQLSTATES = {"40001", "40P01", "23505"}
+logger = logging.getLogger(__name__)
 
 
 class MarketEvidenceWriteDisposition(StrEnum):
@@ -52,6 +54,7 @@ class PersistMarketEvidenceCommand:
     price_observations: tuple[PriceObservation, ...]
     exchange_rate_observations: tuple[ExchangeRateObservation, ...]
     created_at: datetime
+    reuse_persisted_fx_on_conflict: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,11 +198,13 @@ def _validate_command(
     tuple[PriceObservation, ...],
     tuple[ExchangeRateObservation, ...],
     datetime,
+    bool,
 ]:
     if (
         not isinstance(value, PersistMarketEvidenceCommand)
         or not isinstance(value.price_observations, tuple)
         or not isinstance(value.exchange_rate_observations, tuple)
+        or not isinstance(value.reuse_persisted_fx_on_conflict, bool)
     ):
         raise _fail()
     prices = tuple(_canonical_price(item) for item in value.price_observations)
@@ -233,6 +238,7 @@ def _validate_command(
             )
         ),
         _timestamp(value.created_at),
+        value.reuse_persisted_fx_on_conflict,
     )
 
 
@@ -277,6 +283,21 @@ def _rate_matches(
     )
 
 
+def _rate_identity_matches(
+    row: object,
+    observation: ExchangeRateObservation,
+    expected_id: str,
+) -> bool:
+    return (
+        isinstance(row, ExchangeRateModel)
+        and row.id == expected_id
+        and row.from_currency == observation.from_currency
+        and row.to_currency == observation.to_currency
+        and row.source is observation.provider
+        and row.date == observation.effective_at
+    )
+
+
 def _sqlstate(error: BaseException) -> str | None:
     pending: list[BaseException] = [error]
     seen: set[int] = set()
@@ -312,7 +333,7 @@ class MarketEvidenceWriter:
         self,
         command: PersistMarketEvidenceCommand,
     ) -> PersistMarketEvidenceResult:
-        prices, rates, created_at = _validate_command(command)
+        prices, rates, created_at, reuse_persisted_fx_on_conflict = _validate_command(command)
         if self.session.in_transaction():
             raise _fail()
         for attempt in range(_MAX_TRANSACTION_ATTEMPTS):
@@ -322,6 +343,7 @@ class MarketEvidenceWriter:
                         prices=prices,
                         rates=rates,
                         created_at=created_at,
+                        reuse_persisted_fx_on_conflict=reuse_persisted_fx_on_conflict,
                     )
             except (MarketEvidenceConflictError, MarketEvidenceStateError):
                 raise
@@ -340,6 +362,7 @@ class MarketEvidenceWriter:
         prices: tuple[PriceObservation, ...],
         rates: tuple[ExchangeRateObservation, ...],
         created_at: datetime,
+        reuse_persisted_fx_on_conflict: bool,
     ) -> PersistMarketEvidenceResult:
         await self.repository.set_transaction_serializable()
         scopes = tuple(
@@ -384,6 +407,14 @@ class MarketEvidenceWriter:
             )
             if existing_price is not None:
                 if not _price_matches(existing_price, price_observation, expected_id):
+                    logger.warning(
+                        "market_evidence_price_conflict",
+                        extra={
+                            "price_id": expected_id,
+                            "listing_id": price_observation.listing_id,
+                            "observed_at": price_observation.observed_at.isoformat(),
+                        },
+                    )
                     raise MarketEvidenceConflictError()
                 prices_replayed += 1
                 continue
@@ -402,6 +433,23 @@ class MarketEvidenceWriter:
             )
             if existing_rate is not None:
                 if not _rate_matches(existing_rate, rate_observation, expected_id):
+                    if reuse_persisted_fx_on_conflict and _rate_identity_matches(
+                        existing_rate,
+                        rate_observation,
+                        expected_id,
+                    ):
+                        logger.warning(
+                            "market_evidence_rate_revision_retained rate_id=%s effective_at=%s",
+                            expected_id,
+                            rate_observation.effective_at.isoformat(),
+                        )
+                        rates_replayed += 1
+                        continue
+                    logger.warning(
+                        "market_evidence_rate_conflict rate_id=%s effective_at=%s",
+                        expected_id,
+                        rate_observation.effective_at.isoformat(),
+                    )
                     raise MarketEvidenceConflictError()
                 rates_replayed += 1
                 continue

@@ -48,6 +48,8 @@ const portfolio: PortfolioSnapshotData = {
   asOf: "2032-08-02T12:30:00.000",
   baselineTimestamp: "2032-08-02T00:00:00.000",
   historyAnchorSnapshotId: "net-worth-baseline",
+  valuationTimestamp: "2032-08-02T12:29:00.000",
+  isStale: false,
   currency: "CZK",
   calculationVersion: 7,
   summary: { ...summary, accountCount: 1 },
@@ -77,6 +79,8 @@ const dashboard: DashboardSnapshotData = {
   asOf: portfolio.asOf,
   baselineTimestamp: portfolio.baselineTimestamp,
   historyAnchorSnapshotId: portfolio.historyAnchorSnapshotId,
+  valuationTimestamp: portfolio.valuationTimestamp,
+  isStale: portfolio.isStale,
   currency: "CZK",
   calculationVersion: 7,
   summary: {
@@ -153,8 +157,8 @@ describe("R10-E2 canonical current MONEY", () => {
       vi.fn<typeof fetch>(async (input) => {
         const url = new Request(input).url
         requests.push(url)
-        if (url === `${BACKEND_URL}/api/v1/portfolio/current`) return response(portfolio)
-        if (url === `${BACKEND_URL}/api/v1/dashboard/current`) return response(dashboard)
+        if (url === `${BACKEND_URL}/api/v1/portfolio/published`) return response(portfolio)
+        if (url === `${BACKEND_URL}/api/v1/dashboard/published`) return response(dashboard)
         throw new Error("Unexpected request")
       })
     )
@@ -179,16 +183,16 @@ describe("R10-E2 canonical current MONEY", () => {
 
     expect(
       formatSnapshotAmount(dashboardModel.summary.liabilitiesValue, dashboardModel.currency)
-    ).toBe("1\u00a0800,000000 CZK")
+    ).toBe("1\u00a0800,00 CZK")
     expect(
       formatSnapshotAmount(
         dashboardModel.accounts[0]!.liabilitiesValue,
         dashboardModel.accounts[0]!.accountCurrency
       )
-    ).toBe("75,000000 EUR")
+    ).toBe("75,00 EUR")
     expect(requests).toEqual([
-      `${BACKEND_URL}/api/v1/portfolio/current`,
-      `${BACKEND_URL}/api/v1/dashboard/current`,
+      `${BACKEND_URL}/api/v1/portfolio/published`,
+      `${BACKEND_URL}/api/v1/dashboard/published`,
     ])
     expect(JSON.stringify(requests)).not.toMatch(/snapshot-refresh|recalculate|\/api\/rates/)
   })

@@ -7,7 +7,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
@@ -27,6 +27,9 @@ from app.db.models.canonical_lineage import (
     AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
 )
 from app.db.models.enums import (
     AccountMemberRole,
@@ -37,8 +40,15 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.db.models.imports import ImportBatchModel
+from app.db.models.investment_snapshots import PortfolioSnapshotModel
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.url import normalize_database_url
 from app.modules.imports.job_executor import ImportExecutionStage
@@ -139,6 +149,7 @@ async def _seed_completion_publication_contract(
         snapshot_id = f"worker-net-worth-{job_id}"
         account_snapshot_id = f"worker-account-{job_id}"
         baseline_id = f"worker-baseline-{job_id}"
+        generation_id = f"worker-generation-{job_id}"
         state = (
             await connection.execute(
                 select(
@@ -151,22 +162,28 @@ async def _seed_completion_publication_contract(
         investment_revision: int | None
         holding_revision: int | None
         if state is None:
-            canonical_revision = 0
-            investment_revision = 0
-            holding_revision = 0
+            canonical_revision = 1
+            investment_revision = None
+            holding_revision = None
             await connection.execute(
                 insert(AccountCanonicalStateModel).values(
                     account_id=account_id,
                     last_revision=canonical_revision,
-                    last_investment_revision=investment_revision,
+                    last_investment_revision=0,
                     holding_revision=holding_revision,
                     updated_at=NOW,
                 )
             )
         else:
-            canonical_revision = state[0]
+            canonical_revision = max(state[0], 1)
             holding_revision = state[2]
             investment_revision = state[1] if holding_revision is not None else None
+            if state[0] == 0:
+                await connection.execute(
+                    update(AccountCanonicalStateModel)
+                    .where(AccountCanonicalStateModel.account_id == account_id)
+                    .values(last_revision=canonical_revision, updated_at=NOW)
+                )
         await connection.execute(
             insert(AccountMemberModel).values(
                 id=f"worker-member-{job_id}",
@@ -219,9 +236,25 @@ async def _seed_completion_publication_contract(
             )
         )
         await connection.execute(
+            insert(SnapshotGenerationModel).values(
+                id=generation_id,
+                state="staged",
+                created_at=NOW,
+                published_at=None,
+            )
+        )
+        await connection.execute(
+            insert(SnapshotGenerationTargetModel).values(
+                generation_id=generation_id,
+                user_id=user_id,
+                created_at=NOW,
+            )
+        )
+        await connection.execute(
             insert(AccountSnapshotModel).values(
                 id=account_snapshot_id,
                 account_id=account_id,
+                generation_id=generation_id,
                 timestamp=NOW,
                 granularity=SnapshotGranularity.minute,
                 source=SnapshotSource.import_event,
@@ -266,6 +299,7 @@ async def _seed_completion_publication_contract(
             insert(NetWorthSnapshotModel).values(
                 id=snapshot_id,
                 user_id=user_id,
+                generation_id=generation_id,
                 timestamp=NOW,
                 granularity=SnapshotGranularity.minute,
                 source=SnapshotSource.import_event,
@@ -286,9 +320,43 @@ async def _seed_completion_publication_contract(
             )
         )
         await connection.execute(
+            insert(PortfolioSnapshotModel).values(
+                id=f"worker-portfolio-{job_id}",
+                user_id=user_id,
+                generation_id=generation_id,
+                timestamp=NOW,
+                valuation_timestamp=NOW,
+                granularity=SnapshotGranularity.minute,
+                source=SnapshotSource.import_event,
+                currency="CZK",
+                cash_value=Decimal("0"),
+                investment_value=Decimal("0"),
+                investment_cost_basis=Decimal("0"),
+                net_deposits_value=Decimal("0"),
+                realized_pnl_value=Decimal("0"),
+                unrealized_pnl_value=Decimal("0"),
+                fees_value=Decimal("0"),
+                taxes_value=Decimal("0"),
+                cash_value_by_currency={},
+                investment_value_by_currency={},
+                investment_cost_basis_by_currency={},
+                net_deposits_by_currency={},
+                realized_pnl_by_currency={},
+                unrealized_pnl_by_currency={},
+                fees_by_currency={},
+                taxes_by_currency={},
+                price_evidence={},
+                exchange_rates={},
+                calculated_at=NOW,
+                calculation_version=1,
+                created_at=NOW,
+            )
+        )
+        await connection.execute(
             insert(DailySnapshotBaselineModel).values(
                 id=baseline_id,
                 user_id=user_id,
+                generation_id=generation_id,
                 net_worth_snapshot_id=snapshot_id,
                 timestamp=NOW,
                 granularity=SnapshotGranularity.minute,
@@ -302,6 +370,7 @@ async def _seed_completion_publication_contract(
         await connection.execute(
             insert(DailySnapshotBaselineAccountModel).values(
                 baseline_id=baseline_id,
+                generation_id=generation_id,
                 account_id=account_id,
                 account_type=AccountType.bank,
                 account_currency="CZK",
@@ -323,16 +392,55 @@ async def _cleanup_completion_publication_contract(
     job_id: str,
 ) -> None:
     async with engine.begin() as connection:
+        # Disposable fixture teardown; immutable series metadata is protected
+        # from ordinary deletion while its user exists.
+        await connection.execute(text("SET LOCAL session_replication_role = replica"))
+        await connection.execute(
+            delete(UserReadModelPublicationModel).where(
+                UserReadModelPublicationModel.user_id == user_id
+            )
+        )
+        await connection.execute(
+            delete(SnapshotSeriesPublicationReceiptModel).where(
+                SnapshotSeriesPublicationReceiptModel.user_id == user_id
+            )
+        )
+        await connection.execute(
+            delete(SnapshotSeriesPointLinkModel).where(
+                SnapshotSeriesPointLinkModel.user_id == user_id
+            )
+        )
+        await connection.execute(
+            delete(SnapshotSeriesHeadModel).where(SnapshotSeriesHeadModel.user_id == user_id)
+        )
+        await connection.execute(
+            delete(SnapshotSeriesVersionStateModel).where(
+                SnapshotSeriesVersionStateModel.user_id == user_id
+            )
+        )
         await connection.execute(
             delete(DailySnapshotBaselineModel).where(
                 DailySnapshotBaselineModel.background_job_id == job_id
             )
         )
         await connection.execute(
+            delete(PortfolioSnapshotModel).where(PortfolioSnapshotModel.user_id == user_id)
+        )
+        await connection.execute(
             delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id == user_id)
         )
         await connection.execute(
             delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id == account_id)
+        )
+        await connection.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.generation_id == f"worker-generation-{job_id}"
+            )
+        )
+        await connection.execute(
+            delete(SnapshotGenerationModel).where(
+                SnapshotGenerationModel.id == f"worker-generation-{job_id}"
+            )
         )
         await connection.execute(
             delete(ImportJobPublicationTargetModel).where(
@@ -610,6 +718,123 @@ async def test_crashed_committed_checkpoint_is_reclaimed_and_completed_exactly_o
                 _result(job_id).model_dump(mode="json"),
                 None,
                 None,
+                None,
+            )
+    finally:
+        await _cleanup_completion_publication_contract(
+            engine,
+            user_id=user_id,
+            account_id=account_id,
+            job_id=job_id,
+        )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
+async def test_history_invalidation_failure_rolls_back_r12_publication_and_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid4().hex
+    user_id = f"history-rollback-user-{suffix}"
+    account_id = f"history-rollback-account-{suffix}"
+    job_id = f"history-rollback-job-{suffix}"
+
+    async def fail_invalidation(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("injected history acceptance failure")
+
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                insert(UserModel).values(
+                    id=user_id,
+                    email=f"{user_id}@example.test",
+                    name="History rollback",
+                    password_hash=None,
+                    base_currency="CZK",
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            await connection.execute(
+                insert(AccountModel).values(
+                    id=account_id,
+                    name="History rollback",
+                    type=AccountType.bank,
+                    currency="CZK",
+                    color=None,
+                    is_archived=False,
+                    archived_at=None,
+                    created_at=NOW,
+                    updated_at=NOW,
+                    notes=None,
+                )
+            )
+            await connection.execute(
+                insert(BackgroundJobModel).values(
+                    **_job(job_id, user_id, account_id, run_after=NOW)
+                )
+            )
+        await _seed_completion_publication_contract(
+            engine,
+            user_id=user_id,
+            account_id=account_id,
+            job_id=job_id,
+        )
+        async with sessions() as session:
+            claimed = await BackgroundJobRepository(session).claim_next(
+                worker_id="history-rollback-worker",
+                now=NOW,
+                lease_duration=LEASE,
+            )
+            assert claimed is not None and claimed.job.id == job_id
+            await session.commit()
+
+        monkeypatch.setattr(
+            "app.modules.portfolio_history.invalidation.service."
+            "PortfolioHistoryInvalidationService.invalidate_current_members",
+            fail_invalidation,
+        )
+        async with sessions() as session:
+            with pytest.raises(RuntimeError, match="injected history acceptance failure"):
+                await BackgroundJobRepository(session).complete(
+                    lease=claimed.lease,
+                    result=_result(job_id).model_dump(mode="json"),
+                    progress=ImportJobProgress(
+                        phase=ImportJobPhase.completed,
+                        completed_units=7,
+                        total_units=7,
+                        completed_batches=1,
+                        total_batches=1,
+                    ).model_dump(mode="json"),
+                    now=NOW,
+                )
+            await session.rollback()
+
+        async with engine.connect() as connection:
+            state = (
+                await connection.execute(
+                    select(
+                        BackgroundJobModel.status,
+                        BackgroundJobModel.finished_at,
+                        BackgroundJobModel.lease_owner,
+                        ImportJobPublicationTargetModel.published_at,
+                    )
+                    .join(
+                        ImportJobPublicationTargetModel,
+                        ImportJobPublicationTargetModel.job_id == BackgroundJobModel.id,
+                    )
+                    .where(BackgroundJobModel.id == job_id)
+                )
+            ).one()
+            assert state == (
+                BackgroundJobStatus.running,
+                None,
+                "history-rollback-worker",
                 None,
             )
     finally:
@@ -956,7 +1181,7 @@ async def test_retry_wait_exhaustion_and_manual_retry_keep_one_canonical_job(
             assert failed == (
                 BackgroundJobStatus.failed,
                 2,
-                "background_job_attempts_exhausted",
+                "snapshot_temporarily_unavailable",
                 None,
             )
 
@@ -1010,7 +1235,7 @@ async def test_retry_wait_exhaustion_and_manual_retry_keep_one_canonical_job(
 
 @pytest.mark.integration
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
-async def test_missing_liability_then_manual_zero_resumes_same_rb_job(
+async def test_empty_loan_is_skipped_but_posted_loan_requires_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert DATABASE_URL is not None
@@ -1037,8 +1262,8 @@ async def test_missing_liability_then_manual_zero_resumes_same_rb_job(
             await connection.execute(
                 insert(AccountModel).values(
                     id=account_id,
-                    name="Credit card",
-                    type=AccountType.credit_card,
+                    name="Loan",
+                    type=AccountType.loan,
                     currency="CZK",
                     color=None,
                     is_archived=False,
@@ -1110,6 +1335,30 @@ async def test_missing_liability_then_manual_zero_resumes_same_rb_job(
 
         monkeypatch.setattr("app.modules.jobs.import_executor._now", lambda: NOW)
         executor = DurableImportJobExecutor(sessions, Settings(environment="test", _env_file=None))
+        empty = await executor._run_job_wide_stage(
+            ImportExecutionStage.validate_liability_readiness,
+            job_id,
+            user_id,
+            account_id,
+            (batch_id,),
+        )
+        assert empty.applied is True and empty.job_id == job_id
+        async with sessions() as session:
+            assert await session.scalar(select(LiabilityBalanceModel.id)) is None
+            current_job = await session.get(BackgroundJobModel, job_id)
+            assert current_job is not None and current_job.status is BackgroundJobStatus.running
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                update(AccountCanonicalStateModel)
+                .where(AccountCanonicalStateModel.account_id == account_id)
+                .values(
+                    last_revision=1,
+                    last_investment_revision=0,
+                    holding_revision=None,
+                    updated_at=NOW,
+                )
+            )
         with pytest.raises(ImportLiabilityBalanceRequiredError):
             await executor._run_job_wide_stage(
                 ImportExecutionStage.validate_liability_readiness,
@@ -1118,10 +1367,6 @@ async def test_missing_liability_then_manual_zero_resumes_same_rb_job(
                 account_id,
                 (batch_id,),
             )
-        async with sessions() as session:
-            assert await session.scalar(select(LiabilityBalanceModel.id)) is None
-            current_job = await session.get(BackgroundJobModel, job_id)
-            assert current_job is not None and current_job.status is BackgroundJobStatus.running
 
         async with sessions() as session:
             created = await ManualLiabilityBalanceService(session, clock=lambda: NOW).create(

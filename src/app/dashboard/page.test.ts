@@ -176,6 +176,13 @@ describe("dashboard snapshot cutover clients", () => {
     )
   })
 
+  it("refreshes both dashboard payloads and guards operational response order", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/dashboard/page.tsx"), "utf8")
+    expect(page).toContain("loadDashboard(true)")
+    expect(page).toContain("operationalRequestId.current")
+    expect(page).toContain("requestOperationalDashboardState()")
+  })
+
   it("keeps operational failure independent from ready snapshot financial data", async () => {
     const snapshotFetch = vi
       .fn<typeof fetch>()

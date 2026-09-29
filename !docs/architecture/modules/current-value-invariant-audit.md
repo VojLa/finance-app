@@ -1,5 +1,11 @@
 ## Current-value invariant audit
 
+Type: historical
+Status: historical
+Owns: milestone audit evidence for current value
+Code: current-value implementation at the recorded milestone
+Update when: evidence is archived or replaced by a newer record
+
 The active current portfolio and dashboard adapters call the coordinated
 manual refresh before every exact read. Python owns a current clock, floors it
 to `SnapshotGranularity.minute`, executes market evidence before snapshot

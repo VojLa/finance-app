@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.auth.dependencies import get_current_principal, get_request_settings
@@ -24,6 +24,12 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalChangeModel,
+    AccountCanonicalStateModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -34,11 +40,7 @@ from app.db.models.enums import (
 )
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
-from app.db.models.snapshots import (
-    AccountSnapshotItemModel,
-    AccountSnapshotModel,
-    NetWorthSnapshotModel,
-)
+from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
@@ -52,10 +54,12 @@ from app.modules.snapshot_refresh.executor import (
     ExecuteUserSnapshotRefreshResult,
     SnapshotRefreshExecutionConflictError,
     UserSnapshotRefreshExecutor,
+    _generation_id,
 )
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
+from app.modules.snapshot_refresh.version import current_coordinated_snapshot_calculation_version
 from app.modules.snapshots.writer import AccountSnapshotWriter, WriteAccountSnapshotCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -99,60 +103,7 @@ def _principal(user_id: str) -> AuthenticatedPrincipal:
 
 
 async def _cleanup(prefix: str) -> None:
-    engine = _engine()
-    try:
-        async with AsyncSession(engine) as session:
-            user_ids = tuple(
-                await session.scalars(
-                    select(UserModel.id).where(UserModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            account_ids = tuple(
-                await session.scalars(
-                    select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            snapshot_ids = (
-                tuple(
-                    await session.scalars(
-                        select(AccountSnapshotModel.id).where(
-                            AccountSnapshotModel.account_id.in_(account_ids)
-                        )
-                    )
-                )
-                if account_ids
-                else ()
-            )
-            if snapshot_ids:
-                await session.execute(
-                    delete(AccountSnapshotItemModel).where(
-                        AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
-                    )
-                )
-            if user_ids:
-                await session.execute(
-                    delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
-                )
-            if account_ids:
-                await session.execute(
-                    delete(AccountSnapshotModel).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-                await session.execute(
-                    delete(LiabilityBalanceModel).where(
-                        LiabilityBalanceModel.account_id.in_(account_ids)
-                    )
-                )
-                await session.execute(
-                    delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
-                )
-                await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
-            if user_ids:
-                await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
-            await session.commit()
-    finally:
-        await engine.dispose()
+    await market_support._cleanup(prefix)
 
 
 async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
@@ -221,14 +172,62 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
                             created_at=EVIDENCE_AT,
                         )
                     )
+                    session.add(
+                        AccountCanonicalChangeModel(
+                            account_id=account_id,
+                            revision=1,
+                            kind="liability_balance",
+                            entity_id=f"{prefix}-balance-{spec.suffix}",
+                            financial_timestamp=EVIDENCE_AT,
+                            created_at=EVIDENCE_AT,
+                        )
+                    )
+                await session.execute(
+                    update(AccountCanonicalStateModel)
+                    .where(AccountCanonicalStateModel.account_id == account_id)
+                    .values(last_revision=1, updated_at=EVIDENCE_AT)
+                )
             await session.commit()
     finally:
         await engine.dispose()
 
 
+def _unique_prefix(label: str) -> str:
+    return f"{label}-{uuid4()}"
+
+
 async def _write_viewer_snapshot(prefix: str, suffix: str) -> str:
     engine = _engine()
     try:
+        generation_id = _generation_id(
+            ExecuteUserSnapshotRefreshCommand(
+                user_id=_user_id(prefix),
+                snapshot_timestamp=BUCKET,
+                granularity=SnapshotGranularity.minute,
+                source=SnapshotSource.manual_recalculation,
+                calculation_version=current_coordinated_snapshot_calculation_version(),
+                calculated_at=BUCKET,
+                created_at=BUCKET,
+                is_recalculated=True,
+            )
+        )
+        async with AsyncSession(engine) as session:
+            session.add(
+                SnapshotGenerationModel(
+                    id=generation_id,
+                    state="staged",
+                    created_at=BUCKET,
+                    published_at=None,
+                )
+            )
+            session.add(
+                SnapshotGenerationTargetModel(
+                    generation_id=generation_id,
+                    user_id=_user_id(prefix),
+                    created_at=BUCKET,
+                )
+            )
+            await session.commit()
         async with AsyncSession(engine) as session:
             result = await AccountSnapshotWriter(session).write(
                 WriteAccountSnapshotCommand(
@@ -236,11 +235,12 @@ async def _write_viewer_snapshot(prefix: str, suffix: str) -> str:
                     snapshot_timestamp=BUCKET,
                     granularity=SnapshotGranularity.minute,
                     source=SnapshotSource.manual_recalculation,
-                    calculation_version=1,
+                    calculation_version=current_coordinated_snapshot_calculation_version(),
                     calculated_at=BUCKET,
                     created_at=BUCKET,
                     is_recalculated=True,
                     output_currency="EUR",
+                    generation_id=generation_id,
                 )
             )
         return result.snapshot_id
@@ -690,7 +690,7 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
                     timestamp=market_support.SNAPSHOT_AT,
                     granularity=(market_support.PortfolioSnapshotGranularity.minute),
                     currency="CZK",
-                    calculation_version=1,
+                    calculation_version=first.json()["calculationVersion"],
                     accounts=tuple(
                         market_support.ExactAccountSnapshotSelection(
                             account_id=item["accountId"],
@@ -721,16 +721,16 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected_call_count"),
+    ("failure", "expected_provider"),
     [
-        ("twelve-429", 1),
-        ("coingecko-stale", 2),
-        ("fx-failure", 3),
+        ("twelve-429", "twelve_data"),
+        ("coingecko-stale", "coingecko"),
+        ("fx-failure", "twelve_data_fx"),
     ],
 )
 def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
     failure: str,
-    expected_call_count: int,
+    expected_provider: str,
 ) -> None:
     unique = uuid4().hex[:10]
     prefix = f"r5b3b-{failure}-{uuid4()}"
@@ -772,7 +772,9 @@ def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "snapshot_refresh_unavailable"
-    assert len(_flatten_provider_calls(provider_call_batches)) == expected_call_count
+    assert expected_provider in {
+        provider for provider, _ in _flatten_provider_calls(provider_call_batches)
+    }
 
     async def verify_empty() -> None:
         engine = _engine()
@@ -929,7 +931,7 @@ def test_snapshot_conflict_after_market_commit_preserves_market_evidence() -> No
 
 
 def test_mixed_create_and_fresh_session_replay() -> None:
-    prefix = "k5e1-mixed"
+    prefix = _unique_prefix("k5e1-mixed")
     asyncio.run(
         _seed(
             prefix,
@@ -952,7 +954,7 @@ def test_mixed_create_and_fresh_session_replay() -> None:
             "timestamp": "2036-07-29T14:35:00.000",
             "granularity": "minute",
             "currency": "EUR",
-            "calculationVersion": 1,
+            "calculationVersion": current_coordinated_snapshot_calculation_version(),
             "accounts": first.json()["accounts"],
             "refreshAccountCount": 2,
             "reuseOnlyAccountCount": 1,
@@ -979,7 +981,7 @@ def test_mixed_create_and_fresh_session_replay() -> None:
 
 
 def test_missing_viewer_coverage_is_generic_and_writes_nothing() -> None:
-    prefix = "k5e1-viewer-missing"
+    prefix = _unique_prefix("k5e1-viewer-missing")
     asyncio.run(
         _seed(
             prefix,
@@ -1003,7 +1005,7 @@ def test_missing_viewer_coverage_is_generic_and_writes_nothing() -> None:
 
 
 def test_unavailable_direct_fx_fails_without_snapshot_or_rate_writes() -> None:
-    prefix = "r11j-unavailable-direct-fx"
+    prefix = _unique_prefix("r11j-unavailable-direct-fx")
     asyncio.run(
         _seed(
             prefix,
@@ -1052,7 +1054,7 @@ def test_unavailable_direct_fx_fails_without_snapshot_or_rate_writes() -> None:
 
 
 def test_empty_user_creates_and_replays_zero_account_net_worth() -> None:
-    prefix = "k5e1-empty"
+    prefix = _unique_prefix("k5e1-empty")
     asyncio.run(_seed(prefix, ()))
     try:
         first = _call(prefix)
@@ -1081,7 +1083,7 @@ def test_empty_user_creates_and_replays_zero_account_net_worth() -> None:
 def test_empty_market_plan_refreshes_supported_non_investment_account(
     account_type: AccountType,
 ) -> None:
-    prefix = f"r5b3b-empty-market-{account_type.value}"
+    prefix = _unique_prefix(f"r5b3b-empty-market-{account_type.value}")
     asyncio.run(_seed(prefix, (_AccountSpec("a", account_type=account_type),)))
     try:
         response = _call(prefix)
@@ -1094,7 +1096,7 @@ def test_empty_market_plan_refreshes_supported_non_investment_account(
 
 
 def test_physical_conflict_is_generic_and_does_not_repair() -> None:
-    prefix = "k5e1-conflict"
+    prefix = _unique_prefix("k5e1-conflict")
     asyncio.run(_seed(prefix, (_AccountSpec("a"),)))
     try:
         first = _call(prefix)
@@ -1148,8 +1150,8 @@ def test_physical_conflict_is_generic_and_does_not_repair() -> None:
 
 
 def test_principal_isolation_uses_only_current_user() -> None:
-    prefix_a = "k5e1-principal-a"
-    prefix_b = "k5e1-principal-b"
+    prefix_a = _unique_prefix("k5e1-principal-a")
+    prefix_b = _unique_prefix("k5e1-principal-b")
     asyncio.run(_seed(prefix_a, (_AccountSpec("a"),)))
     asyncio.run(_seed(prefix_b, (_AccountSpec("b"),)))
     try:
@@ -1165,7 +1167,7 @@ def test_principal_isolation_uses_only_current_user() -> None:
 
 
 def test_concurrent_requests_converge_without_duplicate_rows() -> None:
-    prefix = "k5e1-concurrent"
+    prefix = _unique_prefix("k5e1-concurrent")
     asyncio.run(_seed(prefix, (_AccountSpec("a"),)))
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:

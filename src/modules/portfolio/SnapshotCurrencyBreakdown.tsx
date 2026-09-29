@@ -1,7 +1,7 @@
 import { createElement, useId } from "react"
 
 import type { PortfolioPageSummary } from "./snapshot-page-model"
-import { formatSnapshotDecimal, UNAVAILABLE_COST_BASIS_LABEL } from "./snapshot-page-format"
+import { formatSnapshotExactDecimal, UNAVAILABLE_COST_BASIS_LABEL } from "./snapshot-page-format"
 
 type CurrencyAmount = PortfolioPageSummary["cashByCurrency"][number]
 
@@ -43,7 +43,7 @@ export function SnapshotCurrencyBreakdown({
                   {
                     className: "break-all text-right font-mono text-sm tabular-nums text-gray-900",
                   },
-                  formatSnapshotDecimal(item.amount)
+                  formatSnapshotExactDecimal(item.amount)
                 )
               )
             )

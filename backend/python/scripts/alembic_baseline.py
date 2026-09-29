@@ -36,9 +36,24 @@ IMPORT_PUBLICATION_ANCHOR_REVISION = "3m0001importanchor"
 EMPTY_INVESTMENT_HOLDING_REVISION = "3n0001emptyhold"
 UNKNOWN_INVESTMENT_COST_BASIS_REVISION = "3o0001unkbasis"
 RB_SCHEMA_FOUNDATION_REVISION = "3p0001rbfoundation"
-HEAD_REVISION = RB_SCHEMA_FOUNDATION_REVISION
-EXPECTED_TABLE_COUNT = 42
-EXPECTED_ENUM_COUNT = 30
+HISTORY_GENERATION_REVISION = "3q0001historygen"
+HISTORY_CLEANUP_REVISION = "3r0001historycleanup"
+CREDIT_LIMIT_REVISION = "3o0001creditlimit"
+MANUAL_MINUTE_BASELINE_REVISION = "3s0001manualbaseline"
+READ_MODEL_PUBLICATION_REVISION = "3t0001readmodelversion"
+SNAPSHOT_GENERATION_REVISION = "3u0001snapshotgeneration"
+PORTFOLIO_SNAPSHOT_REVISION = "3v0001portfoliosnapshot"
+MARKET_BASELINE_REVISION = "3w0001marketbaseline"
+HISTORY_SERIES_REVISION = "3x0001historyseries"
+SNAPSHOT_SERIES_JOBS_REVISION = "3y0001snapshotjobs"
+HISTORY_DROP_REVISION = "3z0001historydrop"
+VALUATION_EVIDENCE_REVISION = "400001anycoinvaluation"
+TEMPORAL_SERIES_REVISION = "410001serieslinks"
+HEAD_REVISION = TEMPORAL_SERIES_REVISION
+EXPECTED_TABLE_COUNT = 61
+EXPECTED_ENUM_COUNT = 31
+HISTORY_GENERATION_TABLE_COUNT = 54
+HISTORY_GENERATION_ENUM_COUNT = 34
 PREVIOUS_HEAD_TABLE_COUNT = 36
 PREVIOUS_HEAD_ENUM_COUNT = 28
 PREVIOUS_TABLE_COUNT = 31
@@ -64,8 +79,10 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 13:
-        raise RuntimeError(f"Expected exactly thirteen Alembic revisions, found {len(revisions)}.")
+    if len(revisions) != 26:
+        raise RuntimeError(
+            f"Expected exactly twenty-six Alembic revisions, found {len(revisions)}."
+        )
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
     if bases != [BASELINE_REVISION]:
@@ -84,7 +101,20 @@ def verify_revision_graph() -> None:
     import_publication_anchor = by_revision.get(IMPORT_PUBLICATION_ANCHOR_REVISION)
     empty_investment_holding = by_revision.get(EMPTY_INVESTMENT_HOLDING_REVISION)
     unknown_cost_basis = by_revision.get(UNKNOWN_INVESTMENT_COST_BASIS_REVISION)
-    head = by_revision.get(HEAD_REVISION)
+    reconciliation = by_revision.get(RB_SCHEMA_FOUNDATION_REVISION)
+    history_generation = by_revision.get(HISTORY_GENERATION_REVISION)
+    history_cleanup = by_revision.get(HISTORY_CLEANUP_REVISION)
+    credit_limit = by_revision.get(CREDIT_LIMIT_REVISION)
+    manual_minute_baseline = by_revision.get(MANUAL_MINUTE_BASELINE_REVISION)
+    read_model_publication = by_revision.get(READ_MODEL_PUBLICATION_REVISION)
+    snapshot_generation = by_revision.get(SNAPSHOT_GENERATION_REVISION)
+    portfolio_snapshot = by_revision.get(PORTFOLIO_SNAPSHOT_REVISION)
+    market_baseline = by_revision.get(MARKET_BASELINE_REVISION)
+    history_series = by_revision.get(HISTORY_SERIES_REVISION)
+    snapshot_series_jobs = by_revision.get(SNAPSHOT_SERIES_JOBS_REVISION)
+    history_drop = by_revision.get(HISTORY_DROP_REVISION)
+    valuation_evidence = by_revision.get(VALUATION_EVIDENCE_REVISION)
+    temporal_series = by_revision.get(TEMPORAL_SERIES_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
@@ -126,18 +156,67 @@ def verify_revision_graph() -> None:
         raise RuntimeError(
             "The unknown investment cost-basis revision must follow the empty-Holding head."
         )
-    if head is None or head.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION:
+    if (
+        reconciliation is None
+        or reconciliation.down_revision != UNKNOWN_INVESTMENT_COST_BASIS_REVISION
+    ):
         raise RuntimeError(
             "The reconciliation schema foundation must follow the unknown cost-basis head."
         )
+    if (
+        history_generation is None
+        or history_generation.down_revision != RB_SCHEMA_FOUNDATION_REVISION
+    ):
+        raise RuntimeError("The history-generation revision must follow reconciliation foundation.")
+    if history_cleanup is None or history_cleanup.down_revision != HISTORY_GENERATION_REVISION:
+        raise RuntimeError("The history-cleanup revision must follow history generation.")
+    if credit_limit is None or credit_limit.down_revision != HISTORY_CLEANUP_REVISION:
+        raise RuntimeError("The credit-limit revision must follow history cleanup.")
+    if (
+        manual_minute_baseline is None
+        or manual_minute_baseline.down_revision != CREDIT_LIMIT_REVISION
+    ):
+        raise RuntimeError("The manual-minute baseline revision must follow credit limit.")
+    if (
+        read_model_publication is None
+        or read_model_publication.down_revision != MANUAL_MINUTE_BASELINE_REVISION
+    ):
+        raise RuntimeError(
+            "The read-model publication revision must follow manual-minute baseline."
+        )
+    if (
+        snapshot_generation is None
+        or snapshot_generation.down_revision != READ_MODEL_PUBLICATION_REVISION
+    ):
+        raise RuntimeError("The snapshot-generation revision must follow read-model publication.")
+    if (
+        portfolio_snapshot is None
+        or portfolio_snapshot.down_revision != SNAPSHOT_GENERATION_REVISION
+    ):
+        raise RuntimeError("The portfolio-snapshot revision must follow snapshot generation.")
+    if market_baseline is None or market_baseline.down_revision != PORTFOLIO_SNAPSHOT_REVISION:
+        raise RuntimeError("The market-baseline revision must follow portfolio snapshot.")
+    if history_series is None or history_series.down_revision != MARKET_BASELINE_REVISION:
+        raise RuntimeError("The history-series revision must follow market baseline.")
+    if (
+        snapshot_series_jobs is None
+        or snapshot_series_jobs.down_revision != HISTORY_SERIES_REVISION
+    ):
+        raise RuntimeError("The snapshot-series jobs revision must follow history series.")
+    if history_drop is None or history_drop.down_revision != SNAPSHOT_SERIES_JOBS_REVISION:
+        raise RuntimeError("The legacy-history drop must follow snapshot-series jobs.")
+    if valuation_evidence is None or valuation_evidence.down_revision != HISTORY_DROP_REVISION:
+        raise RuntimeError(
+            "Investment-movement valuation evidence must follow legacy-history drop."
+        )
+    if temporal_series is None or temporal_series.down_revision != VALUATION_EVIDENCE_REVISION:
+        raise RuntimeError("Temporal snapshot-series links must follow valuation evidence.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 17:
-        raise RuntimeError(
-            "Ownership manifest schema_version must be 17 after reconciliation foundation."
-        )
+    if manifest.get("schema_version") != 25:
+        raise RuntimeError("Ownership manifest schema_version must be 25 after snapshot cutover.")
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
     if manifest.get("target_migration_owner") != "alembic":
@@ -166,7 +245,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 13,
+        "revision_count": 26,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -235,13 +314,44 @@ async def inspect_database(database_url: str) -> DatabaseState:
 
 def verify_database_state(state: DatabaseState) -> None:
     revision = state.version_revisions[0] if state.version_revisions else BASELINE_REVISION
-    if revision in {
+    if revision == RB_SCHEMA_FOUNDATION_REVISION:
+        expected_tables = 42
+        expected_enums = 30
+    elif revision in {
         BACKGROUND_JOB_REVISION,
         IMPORT_PUBLICATION_ANCHOR_REVISION,
         EMPTY_INVESTMENT_HOLDING_REVISION,
         UNKNOWN_INVESTMENT_COST_BASIS_REVISION,
     }:
         expected_tables = 38
+        expected_enums = 30
+    elif revision == HISTORY_GENERATION_REVISION:
+        expected_tables = HISTORY_GENERATION_TABLE_COUNT
+        expected_enums = HISTORY_GENERATION_ENUM_COUNT
+    elif revision in {
+        HISTORY_CLEANUP_REVISION,
+        CREDIT_LIMIT_REVISION,
+        MANUAL_MINUTE_BASELINE_REVISION,
+    }:
+        expected_tables = 56
+        expected_enums = 35
+    elif revision == READ_MODEL_PUBLICATION_REVISION:
+        expected_tables = 57
+        expected_enums = 35
+    elif revision == SNAPSHOT_GENERATION_REVISION:
+        expected_tables = 59
+        expected_enums = 35
+    elif revision in {PORTFOLIO_SNAPSHOT_REVISION, MARKET_BASELINE_REVISION}:
+        expected_tables = 65
+        expected_enums = 35
+    elif revision == HISTORY_SERIES_REVISION:
+        expected_tables = 66
+        expected_enums = 35
+    elif revision == SNAPSHOT_SERIES_JOBS_REVISION:
+        expected_tables = 70
+        expected_enums = 36
+    elif revision == VALUATION_EVIDENCE_REVISION:
+        expected_tables = 57
         expected_enums = EXPECTED_ENUM_COUNT
     elif revision == HEAD_REVISION:
         expected_tables = EXPECTED_TABLE_COUNT

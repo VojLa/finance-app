@@ -15,6 +15,7 @@ from scripts.alembic_baseline import (
     DIRECT_FX_REVISION,
     EMPTY_INVESTMENT_HOLDING_REVISION,
     HEAD_REVISION,
+    HISTORY_GENERATION_REVISION,
     IMPORT_PUBLICATION_ANCHOR_REVISION,
     MULTI_CURRENCY_COST_BASIS_REVISION,
     PREVIOUS_HEAD_REVISION,
@@ -337,13 +338,13 @@ def test_manifest_records_first_alembic_schema_head() -> None:
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 17
+    assert manifest["schema_version"] == 25
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 13
+    assert baseline["revision_count"] == 26
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 13
+    assert alembic["revision_count"] == 26
 
     verify_manifest()
     verify_revision_graph()
@@ -360,12 +361,14 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(38, 30, (IMPORT_PUBLICATION_ANCHOR_REVISION,)))
     verify_database_state(DatabaseState(38, 30, (UNKNOWN_INVESTMENT_COST_BASIS_REVISION,)))
     verify_database_state(DatabaseState(42, 30, (RB_SCHEMA_FOUNDATION_REVISION,)))
+    verify_database_state(DatabaseState(54, 34, (HISTORY_GENERATION_REVISION,)))
+    verify_database_state(DatabaseState(61, 31, (HEAD_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:
-    with pytest.raises(RuntimeError, match="Expected 42 application tables"):
+    with pytest.raises(RuntimeError, match="Expected 61 application tables"):
         verify_database_state(DatabaseState(31, 30, (HEAD_REVISION,)))
-    with pytest.raises(RuntimeError, match="Expected 30 enums"):
-        verify_database_state(DatabaseState(42, 27, (HEAD_REVISION,)))
+    with pytest.raises(RuntimeError, match="Expected 31 enums"):
+        verify_database_state(DatabaseState(61, 27, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="unknown Alembic revisions"):
         verify_database_state(DatabaseState(30, 27, ("unknown",)))

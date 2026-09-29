@@ -3,9 +3,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import AuthServiceClaims, CurrentPrincipal
+from app.auth.dependencies import AuthServiceClaims, CurrentPrincipal, get_request_settings
 from app.auth.models import (
     AuthenticatedUserResponse,
+    BaseCurrencyChangeRequest,
+    BaseCurrencyChangeResponse,
     CredentialVerificationRequest,
     CurrentUserResponse,
     PasswordChangeRequest,
@@ -13,7 +15,9 @@ from app.auth.models import (
     UserRegistrationRequest,
 )
 from app.auth.service import AuthService
+from app.config.settings import Settings
 from app.db.connection import get_db_session
+from app.modules.market_data.source_policy import market_evidence_source_policy_from_settings
 from app.shared.errors import ErrorResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -98,3 +102,31 @@ async def change_password(
     await AuthService(session).change_password(principal=principal, payload=payload)
     response.headers["Cache-Control"] = "no-store"
     return PasswordChangeResponse(ok=True)
+
+
+@router.put(
+    "/me/base-currency",
+    response_model=BaseCurrencyChangeResponse,
+    response_model_by_alias=True,
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication is required."},
+        409: {
+            "model": ErrorResponse,
+            "description": "Portfolio-history invalidation cannot be established safely.",
+        },
+        422: {"model": ErrorResponse, "description": "Invalid request."},
+    },
+)
+async def change_base_currency(
+    payload: BaseCurrencyChangeRequest,
+    principal: CurrentPrincipal,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_request_settings)],
+    response: Response,
+) -> BaseCurrencyChangeResponse:
+    result = await AuthService(
+        session,
+        source_policy=market_evidence_source_policy_from_settings(settings),
+    ).change_base_currency(principal=principal, payload=payload)
+    response.headers["Cache-Control"] = "no-store"
+    return result
