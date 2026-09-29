@@ -76,6 +76,7 @@
 - `src/modules/imports/version-0-1-import-cutover-audit.test.ts`
 - `src/modules/investments/investment-client.test.ts`
 - `src/modules/investments/r11g-investment-cutover.test.ts`
+- `src/modules/portfolio/SnapshotCurrencyBreakdown.test.tsx`
 - `src/modules/portfolio/portfolio-cutover-final-audit.test.ts`
 - `src/modules/portfolio/r10b2-account-currency-audit.test.ts`
 - `src/modules/portfolio/r11h-compatibility-removal.test.ts`
@@ -85,7 +86,6 @@
 - `src/modules/portfolio/snapshot-page-client.test.ts`
 - `src/modules/portfolio/snapshot-page-format.test.ts`
 - `src/modules/portfolio/snapshot-page-model.test.ts`
-- `src/modules/portfolio/SnapshotCurrencyBreakdown.test.tsx`
 - `src/modules/portfolio/unknown-cost-basis-ui.test.ts`
 - `src/modules/python-api/server/client.test.ts`
 - `src/modules/python-api/server/config.test.ts`

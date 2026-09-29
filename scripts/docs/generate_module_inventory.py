@@ -18,11 +18,12 @@ MODULE_ROOTS = (Path("backend/python/app/modules"), Path("src/modules"))
 
 def module_directories(relative_root: Path) -> list[Path]:
     root = REPOSITORY_ROOT / relative_root
-    return sorted(
+    modules = (
         path.relative_to(REPOSITORY_ROOT)
         for path in root.iterdir()
         if path.is_dir() and path.name != "__pycache__"
     )
+    return sorted(modules, key=lambda path: path.as_posix())
 
 
 def main() -> None:

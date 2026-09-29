@@ -18,7 +18,10 @@ OUTPUT = REPOSITORY_ROOT / "!docs" / "map" / "generated" / "TEST-INVENTORY.md"
 def tests_under(relative_root: Path, patterns: tuple[str, ...]) -> list[Path]:
     root = REPOSITORY_ROOT / relative_root
     files = {path for pattern in patterns for path in root.rglob(pattern)}
-    return sorted(path.relative_to(REPOSITORY_ROOT) for path in files if path.is_file())
+    relative_files = (
+        path.relative_to(REPOSITORY_ROOT) for path in files if path.is_file()
+    )
+    return sorted(relative_files, key=lambda path: path.as_posix())
 
 
 def main() -> None:

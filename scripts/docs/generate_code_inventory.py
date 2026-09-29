@@ -40,7 +40,10 @@ def source_files() -> dict[str, list[Path]]:
             if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
                 continue
             inventory[relative_root.as_posix()].append(relative)
-    return {root: sorted(paths) for root, paths in sorted(inventory.items())}
+    return {
+        root: sorted(paths, key=lambda path: path.as_posix())
+        for root, paths in sorted(inventory.items())
+    }
 
 
 def main() -> None:
