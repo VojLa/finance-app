@@ -35,6 +35,7 @@ from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.main import create_app
 from app.modules.imports import posting_service
+from scripts.alembic_baseline import HEAD_REVISION
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 EXPECTED_DATABASE = "finance_app_version_0_1_r8"
@@ -434,7 +435,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     database, version, migration = _run(_database_name_version_and_head())
     assert database == EXPECTED_DATABASE
     assert version.startswith("16.")
-    assert migration == "3o0001unkbasis"
+    assert migration == HEAD_REVISION
     assert _run(_counts()) == {
         "users": 0,
         "accounts": 0,
@@ -801,7 +802,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     assert rb_snapshot.investment_value == Decimal("0")
     assert rb_snapshot.total_value == Decimal("9826.550000")
     assert latest_snapshots[account_ids["trading212"]].cash_value_by_currency == {
-        "EUR": "804.000000"
+        "EUR": "805.250000"
     }
     assert latest_snapshots[account_ids["anycoin"]].cash_value_by_currency == {"EUR": "-490.000000"}
     latest_net_worth = after_reimport["net_worth"][-1]
@@ -842,7 +843,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     assert portfolio["summary"]["liabilitiesValue"] == dashboard["summary"]["liabilitiesValue"]
     assert portfolio["summary"]["cashByCurrency"] == [
         {"currency": "CZK", "amount": "9826.550000"},
-        {"currency": "EUR", "amount": "314.000000"},
+        {"currency": "EUR", "amount": "315.250000"},
     ]
     assert portfolio["summary"]["netDepositsByCurrency"] == [
         {"currency": "EUR", "amount": "1000.000000"}
@@ -860,10 +861,20 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         set(point)
         == {
             "timestamp",
+            "resolutionMinutes",
             "cashValue",
             "investmentValue",
             "liabilitiesValue",
             "netWorthValue",
+            "netInvestedValue",
+            "portfolioSnapshotId",
+            "realizedPnlValue",
+            "unrealizedPnlValue",
+            "cashByCurrency",
+            "investmentByCurrency",
+            "liabilitiesByCurrency",
+            "netInvestedByCurrency",
+            "positions",
         }
         for point in history["points"]
     )

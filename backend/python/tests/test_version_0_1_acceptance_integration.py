@@ -22,6 +22,7 @@ from app.db.models.imports import ImportBatchModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
+from scripts.alembic_baseline import HEAD_REVISION
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 PREFIX = "version-0-1-acceptance"
@@ -116,7 +117,7 @@ def test_real_postgresql_version_and_migration_state() -> None:
     version, database, migration = _run(inspect_database())
     assert version.startswith("PostgreSQL 16.")
     assert database == EXPECTED_DATABASE
-    assert migration == "3o0001unkbasis"
+    assert migration == HEAD_REVISION
 
 
 def test_python_accounts_and_import_batch_registration_use_persisted_membership() -> None:
@@ -165,8 +166,11 @@ def test_python_accounts_and_import_batch_registration_use_persisted_membership(
                 },
             )
             assert response.status_code == 201
-            assert response.json()["source"] == source
-            assert response.json()["status"] == "pending"
+            registration = response.json()
+            assert registration["status"] == "upload_required"
+            assert registration["job"] is None
+            assert registration["batch"]["source"] == source
+            assert registration["batch"]["status"] == "pending"
 
     assert _run(_persisted_counts()) == (3, 3, 3)
 
