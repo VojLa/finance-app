@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from common import (
@@ -18,10 +19,21 @@ MODULE_ROOTS = (Path("backend/python/app/modules"), Path("src/modules"))
 
 def module_directories(relative_root: Path) -> list[Path]:
     root = REPOSITORY_ROOT / relative_root
+    tracked_directories = {
+        Path(*Path(line).parts[: len(relative_root.parts) + 1])
+        for line in subprocess.check_output(
+            ["git", "ls-files", "--", relative_root.as_posix()],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+        ).splitlines()
+        if len(Path(line).parts) > len(relative_root.parts)
+    }
     modules = (
         path.relative_to(REPOSITORY_ROOT)
         for path in root.iterdir()
-        if path.is_dir() and path.name != "__pycache__"
+        if path.is_dir()
+        and path.name != "__pycache__"
+        and path.relative_to(REPOSITORY_ROOT) in tracked_directories
     )
     return sorted(modules, key=lambda path: path.as_posix())
 

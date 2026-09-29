@@ -34,7 +34,7 @@
 - `backend/python/app/modules/snapshots`
 - `backend/python/app/modules/transactions`
 
-## `src/modules/` (19)
+## `src/modules/` (14)
 
 - `src/modules/accounts`
 - `src/modules/analytics`
@@ -42,16 +42,11 @@
 - `src/modules/budgets`
 - `src/modules/categories`
 - `src/modules/dashboard`
-- `src/modules/fx`
-- `src/modules/holdings`
 - `src/modules/imports`
 - `src/modules/investments`
 - `src/modules/notifications`
 - `src/modules/portfolio`
-- `src/modules/pricing`
 - `src/modules/python-api`
 - `src/modules/read-models`
-- `src/modules/snapshots`
 - `src/modules/transactions`
 - `src/modules/users`
-- `src/modules/wallet`
