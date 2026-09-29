@@ -1,41 +1,33 @@
-# Finance App documentation
+# Finance App technical documentation
 
-This directory describes the repository as implemented, not only its target
-architecture. Product intent and the planned milestones remain in
-[`!planning`](../!planning/README.md).
+Type: reference
+Status: current
+Owns: root navigation for implemented technical documentation
+Code: whole repository
+Update when: a top-level documentation owner changes
 
-## Current implementation snapshot
+Implemented behavior lives here. Future design is in [`!planning`](../!planning/README.md), user guidance in [`!user-docs`](../!user-docs/README.md), and milestone evidence in [`ChatGPT`](../ChatGPT/README.md).
 
-The application is in the internal `0.1` architecture milestone. Next.js owns
-the UI, NextAuth session, and thin authenticated transport adapters. Python
-owns the active account, import, canonical ledger, Holdings, market evidence,
-snapshot, daily-baseline, current-value, portfolio, dashboard, and history
-workflows. PostgreSQL is the finance persistence authority and Alembic owns its
-schema migrations.
+| Need                                       | Start here                                                                          |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Find a subsystem                           | [Project maps](map/project-map/README.md) → [domain maps](map/domain-map/README.md) |
+| Understand business ownership              | [Domains](domains/README.md)                                                        |
+| Understand boundaries, flows or invariants | [Architecture](architecture/README.md)                                              |
+| Change HTTP behavior                       | [API](api/README.md)                                                                |
+| Change schema or persistence               | [Data](data/README.md)                                                              |
+| Select verification                        | [Testing](testing/README.md)                                                        |
+| Handle auth or sensitive input             | [Security](security/README.md)                                                      |
+| Run or recover the app                     | [Operations](operations/README.md)                                                  |
+| Follow implementation workflow             | [Development](development/README.md)                                                |
+| Understand accepted technical decisions    | [Implemented decisions](decisions/README.md)                                        |
+| Look up a shared term                      | [Reference](reference/README.md)                                                    |
+| Inspect exhaustive facts                   | [Generated inventories](map/generated/README.md)                                    |
+| Read historical evidence                   | [History](history/README.md)                                                        |
 
-The strict current-value engine is implemented as a D1 daily baseline plus
-forward canonical changes and current persisted market evidence. R10-E1 closes
-the authentication lookup transaction before D1/D2 takes ownership. R10-E2
-canonicalizes every public MONEY value to the exact six-decimal wire contract
-without changing financial arithmetic. Real authenticated mixed-currency
-portfolio and dashboard responses now pass the strict browser validator.
+Read `AGENTS.md` → project maps → one domain map → only the relevant invariant,
+flow, code and tests. Runtime code, tests and live OpenAPI prevail over stale prose.
 
-Version 0.1 is complete as an internal Architecture Locked MVP. This status is
-not a declaration of public-production readiness.
-
-## Reading guide
-
-- [Product overview](01-product-overview.md), [domain model](02-domain-model.md), and
-  [glossary](03-glossary.md) describe the business vocabulary and implementation status.
-- [`01-architecture`](01-architecture/) describes runtime boundaries, modules, data flow,
-  and security.
-- [`02-imports`](02-imports/) documents the implemented import pipeline and its limits.
-- [`03-api`](03-api/01-conventions.md) is the HTTP integration guide. The live OpenAPI
-  schema is available from the Python service when documentation is enabled.
-- [`04-development`](04-development/) contains local setup, checks, and coding rules.
-- [`05-decisions`](05-decisions/) mirrors the short, implementation-facing architectural
-  decisions. The full ADR record lives in [`!planning/decisions`](../!planning/decisions/).
-
-When documentation conflicts with code, treat the code, its tests, and the live
-OpenAPI document as the immediate runtime truth; update this directory in the
-same change that resolves the discrepancy.
+Documentation completeness is defined in the
+[coverage contract](development/documentation-coverage.md): generated inventories
+enumerate files and contracts, while domain and cross-cutting documents explain
+ownership, dependencies, invariants, verification and recovery.

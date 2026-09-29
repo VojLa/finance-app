@@ -144,12 +144,10 @@ describe.skipIf(!DATABASE_URL)("R4 browser-to-FastAPI PostgreSQL acceptance", ()
       browserFetch
     )
     expect(browserFetch).toHaveBeenCalledTimes(1)
-    expect(result.files).toHaveLength(1)
-    expect(result.files[0]).toMatchObject({
-      filename: path.basename(fixturePath),
-      batchId: expect.any(String),
-      status: expect.stringMatching(/completed/),
-      rowsImported: expect.any(Number),
+    expect(result.job).toMatchObject({
+      account_id: accountId,
+      id: expect.any(String),
+      status: expect.stringMatching(/queued|running|retry_wait/),
     })
     expect(JSON.stringify(result)).not.toMatch(
       /Authorization|Cookie|token|password|request_id|raw_import_row|backend/
@@ -166,7 +164,7 @@ describe.skipIf(!DATABASE_URL)("R4 browser-to-FastAPI PostgreSQL acceptance", ()
     ["trading212", "backend/python/tests/fixtures/imports/trading212/activity.csv", "events"],
     ["anycoin", "backend/python/tests/fixtures/imports/anycoin/history.csv", "events"],
   ] as const)(
-    "persists %s fixture evidence through the public staged API",
+    "durably registers and enqueues the %s fixture without browser-owned processing",
     async (source, fixture, canonicalKind) => {
       const accountId = accounts[source]
       const { bytes } = await browserImport(accountId, source, fixture)
@@ -177,8 +175,8 @@ describe.skipIf(!DATABASE_URL)("R4 browser-to-FastAPI PostgreSQL acceptance", ()
       })
 
       expect(persisted.batches).toBe(1)
-      expect(Number(persisted.rows)).toBeGreaterThan(0)
-      expect(Number(persisted[canonicalKind])).toBeGreaterThan(0)
+      expect(persisted.rows).toBe(0)
+      expect(persisted[canonicalKind]).toBe(0)
       expect(
         uploadedBodies.some((uploaded) => Buffer.from(uploaded).equals(Buffer.from(bytes)))
       ).toBe(true)
@@ -223,9 +221,9 @@ describe.skipIf(!DATABASE_URL)("R4 browser-to-FastAPI PostgreSQL acceptance", ()
   }, 120000)
 
   it("uses the exact session subject and a fresh token for every Python request", () => {
-    expect(tokenSubjects).toHaveLength(25)
+    expect(tokenSubjects).toHaveLength(10)
     expect(new Set(tokenSubjects)).toEqual(new Set([userId]))
-    expect(tokenJtis).toHaveLength(25)
-    expect(new Set(tokenJtis).size).toBe(25)
+    expect(tokenJtis).toHaveLength(10)
+    expect(new Set(tokenJtis).size).toBe(10)
   })
 })

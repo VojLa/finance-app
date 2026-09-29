@@ -2,15 +2,18 @@ import type { components } from "@/generated/python-api"
 
 export type PythonImportBatchCreateRequest = components["schemas"]["ImportBatchCreateRequest"]
 export type PythonImportBatch = components["schemas"]["ImportBatchResponse"]
+export type PythonImportRegistration =
+  | components["schemas"]["ImportRegistrationUploadRequiredResponse"]
+  | components["schemas"]["ImportRegistrationResumeJobResponse"]
 export type PythonImportUploadResponse = components["schemas"]["ImportUploadResponse"]
-export type PythonImportParseResponse = components["schemas"]["ImportParseResponse"]
-export type PythonImportNormalizeResponse = components["schemas"]["ImportNormalizeResponse"]
-export type PythonImportDeduplicateResponse = components["schemas"]["ImportDeduplicateResponse"]
-export type PythonImportClassifyResponse = components["schemas"]["ImportClassifyResponse"]
-export type PythonImportCanonicalPostResponse = components["schemas"]["ImportCanonicalPostResponse"]
-export type PythonImportFinalizeRequest = components["schemas"]["FinalizeImportBatchesRequest"]
-export type PythonImportFinalizeResponse = components["schemas"]["FinalizeImportBatchesResponse"]
-export type PythonImportPostResponse = components["schemas"]["ImportPostResponse"]
+export type PythonImportJob = components["schemas"]["ImportJobResponse"]
+export type PythonImportJobStatus = components["schemas"]["BackgroundJobStatus"]
+export type ImportJobAcceptance = {
+  outcome: "started" | "resumed"
+  job: PythonImportJob
+  acceptedBatchIds: readonly string[]
+  rejectedFiles: readonly { filename: string; code: string; message: string }[]
+}
 export type PythonImportSource = Extract<
   components["schemas"]["ImportSource"],
   "raiffeisenbank" | "trading212" | "anycoin"
@@ -27,115 +30,12 @@ export const IMPORT_STATUSES = [
   "cancelled",
 ] as const satisfies readonly PythonImportStatus[]
 
-export type ImportWorkflowStage =
-  | "created"
-  | "uploaded"
-  | "parsed"
-  | "normalized"
-  | "deduplicated"
-  | "classified"
-  | "posted"
-  | "status"
-
 export type ImportPublicError = {
   code: string
   message: string
 }
 
-type ImportFileCounts = {
-  rowsTotal: number
-  rowsImported: number
-  rowsSkipped: number
-  rowsFailed: number
-  rowsNeedsReview: number
-}
-
-export type CompletedImportFileResult = ImportFileCounts & {
-  filename: string
-  batchId: string
-  status: "completed" | "partially_completed"
-  lastSuccessfulStage: "status"
-  issues: {
-    failed: number
-    needsReview: number
-  }
-}
-
-export type DuplicateImportFileResult = ImportFileCounts & {
-  filename: string
-  status: "duplicate"
-  lastSuccessfulStage?: never
-  error: ImportPublicError
-  issues: {
-    failed: 0
-    needsReview: 0
-  }
-}
-
-export type FailedImportFileResult = ImportFileCounts & {
-  filename: string
-  batchId?: string
-  status: "failed"
-  lastSuccessfulStage?: ImportWorkflowStage
-  error: ImportPublicError
-  issues: {
-    failed: number
-    needsReview: number
-  }
-}
-
-export type ImportFileResult =
-  | CompletedImportFileResult
-  | DuplicateImportFileResult
-  | FailedImportFileResult
-
-export type ImportFinalizationStatus =
-  | PythonImportFinalizeResponse["snapshot_refresh_status"]
-  | "not_run"
-
-export type ImportFilesSummary = {
-  files: ImportFileResult[]
-  rowsTotal: number
-  rowsImported: number
-  rowsSkipped: number
-  rowsFailed: number
-  rowsNeedsReview: number
-  completedFiles: number
-  duplicateFiles: number
-  failedFiles: number
-}
-
-export type ImportSummary = ImportFilesSummary & {
-  snapshotRefreshStatus: ImportFinalizationStatus
-}
-
-export type ImportFinalizationRequest = {
-  accountId: string
-  batchIds: string[]
-}
-
-export type ImportFinalizationResult = {
-  batchIds: string[]
-  snapshotRefreshStatus: PythonImportFinalizeResponse["snapshot_refresh_status"]
-}
-
-export type ImportApiErrorResponse = {
-  error: ImportPublicError
-  partial?: ImportSummary
-}
-
-export type ImportStatusResult = {
-  batches: Array<{
-    id: string
-    accountId: string
-    source: PythonImportSource
-    filename: string
-    status: PythonImportStatus
-    rowsTotal: number
-    rowsImported: number
-    rowsSkipped: number
-  }>
-}
+export type ImportApiErrorResponse = { error: ImportPublicError }
 
 export function isPythonImportSource(value: unknown): value is PythonImportSource {
   return typeof value === "string" && IMPORT_SOURCES.includes(value as PythonImportSource)
@@ -159,7 +59,7 @@ function stringField(value: Record<string, unknown>, name: string): string {
 
 function countField(value: Record<string, unknown>, name: string): number {
   const field = value[name]
-  if (!Number.isInteger(field) || (field as number) < 0) {
+  if (!Number.isInteger(field) || (field as number) < 0 || (field as number) > 1_000_000_000) {
     throw new TypeError(`Invalid ${name}`)
   }
   return field as number
@@ -194,6 +94,248 @@ function nullableString(value: Record<string, unknown>, name: string): string | 
   return field as string | null
 }
 
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function dateField(value: Record<string, unknown>, name: string): string {
+  const field = stringField(value, name)
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/.test(field) ||
+    Number.isNaN(Date.parse(field))
+  ) {
+    throw new TypeError(`Invalid ${name}`)
+  }
+  return field
+}
+
+function nullableDateField(value: Record<string, unknown>, name: string): string | null {
+  const field = nullableString(value, name)
+  if (
+    field !== null &&
+    (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/.test(field) ||
+      Number.isNaN(Date.parse(field)))
+  ) {
+    throw new TypeError(`Invalid ${name}`)
+  }
+  return field
+}
+
+const JOB_STATUSES = ["queued", "running", "retry_wait", "completed", "failed"] as const
+const JOB_PHASES = [
+  "queued",
+  "parsing",
+  "normalizing",
+  "deduplicating",
+  "classifying",
+  "posting",
+  "reconciling",
+  "acquiring_reporting_fx",
+  "validating_liability",
+  "rebuilding_holdings",
+  "refreshing_snapshot",
+  "completed",
+] as const
+
+export function parseImportJob(value: unknown): PythonImportJob {
+  if (!isPlainObject(value)) throw new TypeError("Invalid import job")
+  const keys = [
+    "id",
+    "account_id",
+    "kind",
+    "status",
+    "progress",
+    "result",
+    "error",
+    "attempt_count",
+    "max_attempts",
+    "manual_retry_count",
+    "run_after",
+    "started_at",
+    "finished_at",
+    "created_at",
+    "updated_at",
+  ] as const
+  if (!exactKeys(value, keys)) throw new TypeError("Invalid import job fields")
+  const id = stringField(value, "id")
+  const accountId = stringField(value, "account_id")
+  if (
+    id !== id.trim() ||
+    id.length > 255 ||
+    accountId !== accountId.trim() ||
+    accountId.length > 255 ||
+    value.kind !== "import_workflow"
+  ) {
+    throw new TypeError("Invalid import job identity")
+  }
+  if (
+    typeof value.status !== "string" ||
+    !JOB_STATUSES.includes(value.status as (typeof JOB_STATUSES)[number])
+  ) {
+    throw new TypeError("Invalid import job status")
+  }
+  if (!isPlainObject(value.progress)) throw new TypeError("Invalid import job progress")
+  const progressKeys = [
+    "schema_version",
+    "phase",
+    "completed_units",
+    "total_units",
+    "completed_batches",
+    "total_batches",
+  ] as const
+  if (
+    !exactKeys(value.progress, progressKeys) ||
+    value.progress.schema_version !== 1 ||
+    typeof value.progress.phase !== "string" ||
+    !JOB_PHASES.includes(value.progress.phase as (typeof JOB_PHASES)[number])
+  ) {
+    throw new TypeError("Invalid import job progress")
+  }
+  const completedUnits = countField(value.progress, "completed_units")
+  const totalUnits = countField(value.progress, "total_units")
+  const completedBatches = countField(value.progress, "completed_batches")
+  const totalBatches = countField(value.progress, "total_batches")
+  if (
+    totalUnits < 1 ||
+    totalBatches < 1 ||
+    totalBatches > 10 ||
+    completedUnits > totalUnits ||
+    completedBatches > totalBatches
+  ) {
+    throw new TypeError("Invalid import job progress counters")
+  }
+
+  let result: PythonImportJob["result"] = null
+  if (value.result !== null) {
+    if (!isPlainObject(value.result)) throw new TypeError("Invalid import job result")
+    const resultKeys = [
+      "schema_version",
+      "batch_ids",
+      "rows_total",
+      "rows_imported",
+      "rows_skipped",
+      "snapshot_refresh_status",
+      "completed_at",
+    ] as const
+    if (
+      !exactKeys(value.result, resultKeys) ||
+      value.result.schema_version !== 1 ||
+      !Array.isArray(value.result.batch_ids) ||
+      value.result.batch_ids.length < 1 ||
+      value.result.batch_ids.length > 10 ||
+      value.result.batch_ids.some(
+        (batchId) =>
+          typeof batchId !== "string" ||
+          !batchId ||
+          batchId.length > 255 ||
+          batchId !== batchId.trim()
+      ) ||
+      value.result.batch_ids.some(
+        (batchId, index, batchIds) => index > 0 && batchId <= batchIds[index - 1]
+      ) ||
+      !["created", "replayed", "not_required"].includes(
+        value.result.snapshot_refresh_status as string
+      )
+    ) {
+      throw new TypeError("Invalid import job result")
+    }
+    const rowsTotal = countField(value.result, "rows_total")
+    const rowsImported = countField(value.result, "rows_imported")
+    const rowsSkipped = countField(value.result, "rows_skipped")
+    if (rowsImported + rowsSkipped !== rowsTotal) {
+      throw new TypeError("Invalid import job result counters")
+    }
+    dateField(value.result, "completed_at")
+    result = value.result as PythonImportJob["result"]
+  }
+
+  let error: PythonImportJob["error"] = null
+  if (value.error !== null) {
+    if (
+      !isPlainObject(value.error) ||
+      !exactKeys(value.error, ["code", "message"]) ||
+      stringField(value.error, "code").length > 100 ||
+      stringField(value.error, "message").length > 1000 ||
+      /[\r\n]/.test(stringField(value.error, "code")) ||
+      /[\r\n]/.test(stringField(value.error, "message"))
+    ) {
+      throw new TypeError("Invalid import job error")
+    }
+    error = value.error as PythonImportJob["error"]
+  }
+
+  const attemptCount = countField(value, "attempt_count")
+  const maxAttempts = countField(value, "max_attempts")
+  const manualRetryCount = countField(value, "manual_retry_count")
+  if (maxAttempts < 1 || attemptCount > maxAttempts) {
+    throw new TypeError("Invalid import job attempts")
+  }
+  const runAfter = dateField(value, "run_after")
+  const startedAt = nullableDateField(value, "started_at")
+  const finishedAt = nullableDateField(value, "finished_at")
+  const createdAt = dateField(value, "created_at")
+  const updatedAt = dateField(value, "updated_at")
+  const completed = value.status === "completed"
+  const failed = value.status === "failed"
+  const retryWaiting = value.status === "retry_wait"
+  const terminal = completed || failed
+  if (
+    completed !== (result !== null) ||
+    (completed && error !== null) ||
+    (failed && error === null) ||
+    (retryWaiting && error === null) ||
+    terminal !== (finishedAt !== null) ||
+    (completed &&
+      (value.progress.phase !== "completed" ||
+        completedUnits !== totalUnits ||
+        completedBatches !== totalBatches ||
+        result?.batch_ids.length !== totalBatches))
+  ) {
+    throw new TypeError("Invalid terminal import job state")
+  }
+  return {
+    id,
+    account_id: accountId,
+    kind: "import_workflow",
+    status: value.status as PythonImportJob["status"],
+    progress: value.progress as PythonImportJob["progress"],
+    result,
+    error,
+    attempt_count: attemptCount,
+    max_attempts: maxAttempts,
+    manual_retry_count: manualRetryCount,
+    run_after: runAfter,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  }
+}
+
+/** Reject any registration shape that could leak non-public durable-job internals. */
+export function parseImportRegistration(value: unknown): PythonImportRegistration {
+  if (!isPlainObject(value) || !exactKeys(value, ["status", "batch", "job"])) {
+    throw new TypeError("Invalid import registration")
+  }
+  if (value.status === "upload_required" && value.job === null) {
+    return {
+      status: "upload_required",
+      batch: parseImportBatch(value.batch),
+      job: null,
+    }
+  }
+  if (value.status === "resume_job" && value.batch === null) {
+    return {
+      status: "resume_job",
+      batch: null,
+      job: parseImportJob(value.job),
+    }
+  }
+  throw new TypeError("Invalid import registration")
+}
+
 export function parseImportBatch(value: unknown): PythonImportBatch {
   if (!isPlainObject(value)) throw new TypeError("Invalid import batch")
   const createdAt = stringField(value, "created_at")
@@ -220,19 +362,6 @@ export function parseImportBatch(value: unknown): PythonImportBatch {
   }
 }
 
-function parseStageBase(
-  value: unknown,
-  countNames: readonly string[]
-): Record<string, string | number> {
-  if (!isPlainObject(value)) throw new TypeError("Invalid import stage response")
-  const result: Record<string, string | number> = {
-    batch_id: stringField(value, "batch_id"),
-    status: importStatus(value.status),
-  }
-  for (const name of countNames) result[name] = countField(value, name)
-  return result
-}
-
 export function parseImportUpload(value: unknown): PythonImportUploadResponse {
   if (!isPlainObject(value)) throw new TypeError("Invalid upload response")
   if (typeof value.stored !== "boolean" || typeof value.idempotent !== "boolean") {
@@ -247,342 +376,33 @@ export function parseImportUpload(value: unknown): PythonImportUploadResponse {
   }
 }
 
-export function parseImportParse(value: unknown): PythonImportParseResponse {
-  return parseStageBase(value, [
-    "rows_total",
-    "rows_pending",
-    "rows_failed",
-  ]) as PythonImportParseResponse
-}
-
-export function parseImportNormalize(value: unknown): PythonImportNormalizeResponse {
-  return parseStageBase(value, [
-    "rows_total",
-    "rows_normalized",
-    "rows_needs_review",
-    "rows_failed",
-  ]) as PythonImportNormalizeResponse
-}
-
-export function parseImportDeduplicate(value: unknown): PythonImportDeduplicateResponse {
-  return parseStageBase(value, [
-    "rows_total",
-    "rows_unique",
-    "rows_duplicate",
-    "rows_needs_review",
-    "rows_failed",
-  ]) as PythonImportDeduplicateResponse
-}
-
-export function parseImportClassify(value: unknown): PythonImportClassifyResponse {
-  return parseStageBase(value, [
-    "rows_total",
-    "rows_classified",
-    "rows_duplicate",
-    "rows_needs_review",
-    "rows_failed",
-    "rows_skipped",
-  ]) as PythonImportClassifyResponse
-}
-
-export function parseImportPost(value: unknown): PythonImportPostResponse {
-  if (!isPlainObject(value)) throw new TypeError("Invalid post response")
-  const completedAt = stringField(value, "completed_at")
-  if (Number.isNaN(Date.parse(completedAt)) || typeof value.replayed !== "boolean") {
-    throw new TypeError("Invalid post response")
-  }
-  const refreshStatuses = [
-    "created",
-    "replayed",
-    "not_required",
-    "unavailable",
-    "conflict",
-  ] as const
-  if (
-    typeof value.snapshot_refresh_status !== "string" ||
-    !refreshStatuses.includes(
-      value.snapshot_refresh_status as PythonImportPostResponse["snapshot_refresh_status"]
-    )
-  ) {
-    throw new TypeError("Invalid snapshot refresh status")
-  }
-  return {
-    batch_id: stringField(value, "batch_id"),
-    status: importStatus(value.status),
-    rows_total: countField(value, "rows_total"),
-    rows_imported: countField(value, "rows_imported"),
-    rows_skipped: countField(value, "rows_skipped"),
-    replayed: value.replayed,
-    completed_at: completedAt,
-    snapshot_refresh_status:
-      value.snapshot_refresh_status as PythonImportPostResponse["snapshot_refresh_status"],
-  }
-}
-
-export function parseImportCanonicalPost(value: unknown): PythonImportCanonicalPostResponse {
-  if (!isPlainObject(value)) throw new TypeError("Invalid canonical post response")
-  const completedAt = stringField(value, "completed_at")
-  if (Number.isNaN(Date.parse(completedAt)) || typeof value.replayed !== "boolean") {
-    throw new TypeError("Invalid canonical post response")
-  }
-  return {
-    batch_id: stringField(value, "batch_id"),
-    status: importStatus(value.status),
-    rows_total: countField(value, "rows_total"),
-    rows_imported: countField(value, "rows_imported"),
-    rows_skipped: countField(value, "rows_skipped"),
-    completed_at: completedAt,
-    replayed: value.replayed,
-  }
-}
-
-const SNAPSHOT_REFRESH_STATUSES = [
-  "created",
-  "replayed",
-  "not_required",
-  "unavailable",
-  "conflict",
-] as const satisfies readonly PythonImportFinalizeResponse["snapshot_refresh_status"][]
-
-export function parseImportFinalize(value: unknown): PythonImportFinalizeResponse {
-  if (
-    !isPlainObject(value) ||
-    !Array.isArray(value.batch_ids) ||
-    value.batch_ids.some(
-      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId.trim() !== batchId
-    ) ||
-    new Set(value.batch_ids).size !== value.batch_ids.length ||
-    typeof value.snapshot_refresh_status !== "string" ||
-    !SNAPSHOT_REFRESH_STATUSES.includes(
-      value.snapshot_refresh_status as PythonImportFinalizeResponse["snapshot_refresh_status"]
-    )
-  ) {
-    throw new TypeError("Invalid import finalization response")
-  }
-  return {
-    batch_ids: value.batch_ids,
-    snapshot_refresh_status:
-      value.snapshot_refresh_status as PythonImportFinalizeResponse["snapshot_refresh_status"],
-  }
-}
-
-export function summarizeImportFiles(files: readonly ImportFileResult[]): ImportFilesSummary {
-  return files.reduce<ImportFilesSummary>(
-    (summary, file) => ({
-      files: [...summary.files, file],
-      rowsTotal: summary.rowsTotal + file.rowsTotal,
-      rowsImported: summary.rowsImported + file.rowsImported,
-      rowsSkipped: summary.rowsSkipped + file.rowsSkipped,
-      rowsFailed: summary.rowsFailed + file.rowsFailed,
-      rowsNeedsReview: summary.rowsNeedsReview + file.rowsNeedsReview,
-      completedFiles:
-        summary.completedFiles +
-        (file.status === "completed" || file.status === "partially_completed" ? 1 : 0),
-      duplicateFiles: summary.duplicateFiles + (file.status === "duplicate" ? 1 : 0),
-      failedFiles: summary.failedFiles + (file.status === "failed" ? 1 : 0),
-    }),
-    {
-      files: [],
-      rowsTotal: 0,
-      rowsImported: 0,
-      rowsSkipped: 0,
-      rowsFailed: 0,
-      rowsNeedsReview: 0,
-      completedFiles: 0,
-      duplicateFiles: 0,
-      failedFiles: 0,
-    }
-  )
-}
-
-export function withImportFinalization(
-  summary: ImportFilesSummary,
-  snapshotRefreshStatus: ImportFinalizationStatus
-): ImportSummary {
-  return { ...summary, snapshotRefreshStatus }
-}
-
-export function recoverableBatchIds(summary: ImportSummary): string[] {
-  return summary.files
-    .flatMap((file) => {
-      if (file.status === "completed" || file.status === "partially_completed") {
-        return [file.batchId]
-      }
-      if (
-        file.status === "failed" &&
-        file.lastSuccessfulStage === "posted" &&
-        file.batchId !== undefined
-      ) {
-        return [file.batchId]
-      }
-      return []
-    })
-    .sort()
-}
-
-export function requiresImportFinalizationRecovery(summary: ImportSummary): boolean {
-  return (
-    recoverableBatchIds(summary).length > 0 &&
-    ["not_run", "unavailable", "conflict"].includes(summary.snapshotRefreshStatus)
-  )
-}
-
-export function parseImportFinalizationResult(value: unknown): ImportFinalizationResult {
-  if (
-    !isPlainObject(value) ||
-    Object.keys(value).length !== 2 ||
-    !Object.hasOwn(value, "batchIds") ||
-    !Object.hasOwn(value, "snapshotRefreshStatus") ||
-    !Array.isArray(value.batchIds)
-  ) {
-    throw new TypeError("Invalid import finalization result")
-  }
-  const batchIds = value.batchIds
-  const snapshotRefreshStatus = value.snapshotRefreshStatus
-  if (
-    batchIds.length === 0 ||
-    batchIds.length > 10 ||
-    batchIds.some(
-      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId.trim() !== batchId
-    ) ||
-    new Set(batchIds).size !== batchIds.length ||
-    batchIds.some((batchId, index) => index > 0 && batchId < batchIds[index - 1]) ||
-    typeof snapshotRefreshStatus !== "string" ||
-    !SNAPSHOT_REFRESH_STATUSES.includes(
-      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"]
-    )
-  ) {
-    throw new TypeError("Invalid import finalization result")
-  }
-  return {
-    batchIds,
-    snapshotRefreshStatus:
-      snapshotRefreshStatus as PythonImportFinalizeResponse["snapshot_refresh_status"],
-  }
-}
-
 export function isImportApiErrorResponse(value: unknown): value is ImportApiErrorResponse {
-  if (!isPlainObject(value) || !isPlainObject(value.error)) return false
-  return (
-    typeof value.error.code === "string" &&
-    value.error.code.length > 0 &&
-    typeof value.error.message === "string" &&
-    value.error.message.length > 0
-  )
+  if (!isPlainObject(value) || !exactKeys(value, ["error"]) || !isPlainObject(value.error)) {
+    return false
+  }
+  try {
+    parsePublicError(value.error)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function parsePublicError(value: unknown): ImportPublicError {
-  if (!isPlainObject(value)) throw new TypeError("Invalid import error")
-  return {
-    code: stringField(value, "code"),
-    message: stringField(value, "message"),
+  if (!isPlainObject(value) || !exactKeys(value, ["code", "message"])) {
+    throw new TypeError("Invalid import error")
   }
-}
-
-export function parseImportFileResult(value: unknown): ImportFileResult {
-  if (!isPlainObject(value) || !isPlainObject(value.issues)) {
-    throw new TypeError("Invalid import file result")
-  }
-  const filename = stringField(value, "filename")
-  const status = stringField(value, "status")
-  const counts = {
-    rowsTotal: countField(value, "rowsTotal"),
-    rowsImported: countField(value, "rowsImported"),
-    rowsSkipped: countField(value, "rowsSkipped"),
-    rowsFailed: countField(value, "rowsFailed"),
-    rowsNeedsReview: countField(value, "rowsNeedsReview"),
-  }
-  const issues = {
-    failed: countField(value.issues, "failed"),
-    needsReview: countField(value.issues, "needsReview"),
-  }
-  if (issues.failed !== counts.rowsFailed || issues.needsReview !== counts.rowsNeedsReview) {
-    throw new TypeError("Invalid issue counts")
-  }
-  if (status === "duplicate") {
-    return {
-      filename,
-      status,
-      ...counts,
-      issues: { failed: 0, needsReview: 0 },
-      error: parsePublicError(value.error),
-    }
-  }
-  if (status === "failed") {
-    const batchId = value.batchId === undefined ? undefined : stringField(value, "batchId")
-    const lastSuccessfulStage =
-      value.lastSuccessfulStage === undefined
-        ? undefined
-        : stringField(value, "lastSuccessfulStage")
-    const stages: readonly ImportWorkflowStage[] = [
-      "created",
-      "uploaded",
-      "parsed",
-      "normalized",
-      "deduplicated",
-      "classified",
-      "posted",
-      "status",
-    ]
-    if (
-      lastSuccessfulStage !== undefined &&
-      !stages.includes(lastSuccessfulStage as ImportWorkflowStage)
-    ) {
-      throw new TypeError("Invalid workflow stage")
-    }
-    return {
-      filename,
-      status,
-      ...counts,
-      issues,
-      error: parsePublicError(value.error),
-      ...(batchId ? { batchId } : {}),
-      ...(lastSuccessfulStage
-        ? { lastSuccessfulStage: lastSuccessfulStage as ImportWorkflowStage }
-        : {}),
-    }
-  }
-  if (status !== "completed" && status !== "partially_completed") {
-    throw new TypeError("Invalid import file status")
-  }
-  return {
-    filename,
-    batchId: stringField(value, "batchId"),
-    status,
-    lastSuccessfulStage: "status",
-    ...counts,
-    issues,
-  }
-}
-
-export function parseImportSummary(value: unknown): ImportSummary {
-  if (!isPlainObject(value) || !Array.isArray(value.files)) {
-    throw new TypeError("Invalid import summary")
-  }
-  const files = value.files.map(parseImportFileResult)
-  const projected = summarizeImportFiles(files)
-  for (const key of [
-    "rowsTotal",
-    "rowsImported",
-    "rowsSkipped",
-    "rowsFailed",
-    "rowsNeedsReview",
-    "completedFiles",
-    "duplicateFiles",
-    "failedFiles",
-  ] as const) {
-    if (countField(value, key) !== projected[key]) {
-      throw new TypeError(`Invalid ${key}`)
-    }
-  }
-  const finalizationStatus = stringField(value, "snapshotRefreshStatus")
+  const code = stringField(value, "code")
+  const message = stringField(value, "message")
   if (
-    finalizationStatus !== "not_run" &&
-    !SNAPSHOT_REFRESH_STATUSES.includes(
-      finalizationStatus as PythonImportFinalizeResponse["snapshot_refresh_status"]
-    )
+    code.length > 100 ||
+    message.length > 1000 ||
+    code !== code.trim() ||
+    message !== message.trim() ||
+    /[\r\n]/.test(code) ||
+    /[\r\n]/.test(message)
   ) {
-    throw new TypeError("Invalid snapshotRefreshStatus")
+    throw new TypeError("Invalid import error")
   }
-  return withImportFinalization(projected, finalizationStatus as ImportFinalizationStatus)
+  return { code, message }
 }

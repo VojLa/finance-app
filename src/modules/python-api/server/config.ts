@@ -5,7 +5,7 @@ import { configurationError } from "./errors"
 const DEFAULT_ISSUER = "finance-app-next"
 const DEFAULT_AUDIENCE = "finance-app-python"
 const DEFAULT_TOKEN_TTL_SECONDS = "60"
-const DEFAULT_TIMEOUT_MS = "30000"
+const DEFAULT_TIMEOUT_MS = "60000"
 
 export type PythonApiConfig = {
   backendUrl: string

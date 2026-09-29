@@ -1,10 +1,11 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.db.models.common import TIMESTAMP
+from app.db.models.common import MONEY, TIMESTAMP
 from app.db.models.enums import (
     ACCOUNT_INVITE_STATUS_DB,
     ACCOUNT_MEMBER_ROLE_DB,
@@ -20,6 +21,11 @@ from app.db.models.enums import (
 class AccountModel(Base):
     __tablename__ = "Account"
     __table_args__ = (
+        CheckConstraint(
+            '"creditLimit" IS NULL OR '
+            '("type" = \'credit_card\'::"AccountType" AND "creditLimit" > 0)',
+            name="Account_credit_limit_only_for_credit_cards",
+        ),
         Index(None, "type"),
         Index(None, "isArchived"),
         {"schema": "public"},
@@ -44,6 +50,7 @@ class AccountModel(Base):
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
+    credit_limit: Mapped[Decimal | None] = mapped_column("creditLimit", MONEY)
 
 
 class AccountMemberModel(Base):

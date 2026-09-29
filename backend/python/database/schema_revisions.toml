@@ -28,3 +28,103 @@ schema_change = true
 schema_source = "database/revisions/3i0001d1base/schema.sql"
 checksum_source = "database/revisions/3i0001d1base/schema.sha256"
 schema_change = true
+
+[revisions."3j0001twfx"]
+schema_source = "database/revisions/3j0001twfx/schema.sql"
+checksum_source = "database/revisions/3j0001twfx/schema.sha256"
+schema_change = true
+
+[revisions."3k0001mcost"]
+schema_source = "database/revisions/3k0001mcost/schema.sql"
+checksum_source = "database/revisions/3k0001mcost/schema.sha256"
+schema_change = true
+
+[revisions."3l0001bgjob"]
+schema_source = "database/revisions/3l0001bgjob/schema.sql"
+checksum_source = "database/revisions/3l0001bgjob/schema.sha256"
+schema_change = true
+
+[revisions."3m0001importanchor"]
+schema_source = "database/revisions/3m0001importanchor/schema.sql"
+checksum_source = "database/revisions/3m0001importanchor/schema.sha256"
+schema_change = true
+
+[revisions."3n0001emptyhold"]
+schema_source = "database/revisions/3n0001emptyhold/schema.sql"
+checksum_source = "database/revisions/3n0001emptyhold/schema.sha256"
+schema_change = true
+
+[revisions."3o0001unkbasis"]
+schema_source = "database/revisions/3o0001unkbasis/schema.sql"
+checksum_source = "database/revisions/3o0001unkbasis/schema.sha256"
+schema_change = true
+
+[revisions."3p0001rbfoundation"]
+schema_source = "database/revisions/3p0001rbfoundation/schema.sql"
+checksum_source = "database/revisions/3p0001rbfoundation/schema.sha256"
+schema_change = true
+
+[revisions."3q0001historygen"]
+schema_source = "database/revisions/3q0001historygen/schema.sql"
+checksum_source = "database/revisions/3q0001historygen/schema.sha256"
+schema_change = true
+
+[revisions."3r0001historycleanup"]
+schema_source = "database/revisions/3r0001historycleanup/schema.sql"
+checksum_source = "database/revisions/3r0001historycleanup/schema.sha256"
+schema_change = true
+
+[revisions."3o0001creditlimit"]
+schema_source = "database/revisions/3o0001creditlimit/schema.sql"
+checksum_source = "database/revisions/3o0001creditlimit/schema.sha256"
+schema_change = true
+
+[revisions."3s0001manualbaseline"]
+schema_source = "database/revisions/3s0001manualbaseline/schema.sql"
+checksum_source = "database/revisions/3s0001manualbaseline/schema.sha256"
+schema_change = true
+
+[revisions."3t0001readmodelversion"]
+schema_source = "database/revisions/3t0001readmodelversion/schema.sql"
+checksum_source = "database/revisions/3t0001readmodelversion/schema.sha256"
+schema_change = true
+
+[revisions."3u0001snapshotgeneration"]
+schema_source = "database/revisions/3u0001snapshotgeneration/schema.sql"
+checksum_source = "database/revisions/3u0001snapshotgeneration/schema.sha256"
+schema_change = true
+
+[revisions."3v0001portfoliosnapshot"]
+schema_source = "database/revisions/3v0001portfoliosnapshot/schema.sql"
+checksum_source = "database/revisions/3v0001portfoliosnapshot/schema.sha256"
+schema_change = true
+
+[revisions."3w0001marketbaseline"]
+schema_source = "database/revisions/3w0001marketbaseline/schema.sql"
+checksum_source = "database/revisions/3w0001marketbaseline/schema.sha256"
+schema_change = true
+
+[revisions."3x0001historyseries"]
+schema_source = "database/revisions/3x0001historyseries/schema.sql"
+checksum_source = "database/revisions/3x0001historyseries/schema.sha256"
+schema_change = true
+
+[revisions."3y0001snapshotjobs"]
+schema_source = "database/revisions/3y0001snapshotjobs/schema.sql"
+checksum_source = "database/revisions/3y0001snapshotjobs/schema.sha256"
+schema_change = true
+
+[revisions."3z0001historydrop"]
+schema_source = "database/revisions/3z0001historydrop/schema.sql"
+checksum_source = "database/revisions/3z0001historydrop/schema.sha256"
+schema_change = true
+
+[revisions."400001anycoinvaluation"]
+schema_source = "database/revisions/400001anycoinvaluation/schema.sql"
+checksum_source = "database/revisions/400001anycoinvaluation/schema.sha256"
+schema_change = true
+
+[revisions."410001serieslinks"]
+schema_source = "database/revisions/410001serieslinks/schema.sql"
+checksum_source = "database/revisions/410001serieslinks/schema.sha256"
+schema_change = true

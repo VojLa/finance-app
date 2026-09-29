@@ -20,10 +20,10 @@ class DashboardSnapshotSummary:
     liabilities_value: Decimal
     cash_value: Decimal
     investment_value: Decimal
-    investment_cost_basis: Decimal
-    unrealized_pnl_value: Decimal
-    realized_pnl_value: Decimal
-    net_deposits_value: Decimal
+    investment_cost_basis: Decimal | None
+    unrealized_pnl_value: Decimal | None
+    realized_pnl_value: Decimal | None
+    net_deposits_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     account_count: int
@@ -47,8 +47,8 @@ class DashboardAccountCard:
     cash_value: Decimal
     investment_value: Decimal
     liabilities_value: Decimal
-    net_deposits_value: Decimal
-    unrealized_pnl_value: Decimal
+    net_deposits_value: Decimal | None
+    unrealized_pnl_value: Decimal | None
     position_count: int
 
 
@@ -75,7 +75,7 @@ class DashboardTopPosition:
     asset_type: AssetType
     value: Decimal
     value_currency: str
-    unrealized_pnl: Decimal
+    unrealized_pnl: Decimal | None
     allocation_pct: Decimal
 
 

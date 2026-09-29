@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import ImportJobBatchModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -42,8 +43,14 @@ from app.modules.imports.storage import LocalImportStorage
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5c-internal-auth-secret-32-characters"
-USERS = ["user-owner", "user-admin", "user-editor", "user-viewer", "user-foreign"]
-ACCOUNTS = ["account-active", "account-foreign", "account-archived"]
+USERS = [
+    "parse-user-owner",
+    "parse-user-admin",
+    "parse-user-editor",
+    "parse-user-viewer",
+    "parse-user-foreign",
+]
+ACCOUNTS = ["parse-account-active", "parse-account-foreign", "parse-account-archived"]
 
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 
@@ -98,28 +105,36 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
 
     malformed = b"a,b,c\n1,2,3\n\n4,5,6,7\n8,9\n"
     contents = {
-        "batch-owner": valid("Salary"),
-        "batch-admin": valid("Admin"),
-        "batch-editor": valid("Editor"),
-        "batch-viewer": valid("Viewer"),
-        "batch-foreign": valid("Foreign"),
-        "batch-archived": valid("Archived"),
-        "batch-malformed": malformed,
-        "batch-missing": valid("Missing"),
-        "batch-modified": valid("Modified"),
-        "batch-unknown-codec": valid("UnknownCodec"),
-        "batch-undecodable": b"a,b\n\xff,2\n",
-        "batch-empty": b"",
-        "batch-header-only": b"a,b\n",
-        "batch-invalid-header": b"a,a\n1,2\n",
-        "batch-oversized": b"oversized-metadata",
-        "batch-concurrent": valid("Concurrent"),
-        "batch-rollback": b"a,b\n1,2\n3,4\n",
+        "parse-batch-owner": valid("Salary"),
+        "parse-batch-admin": valid("Admin"),
+        "parse-batch-editor": valid("Editor"),
+        "parse-batch-viewer": valid("Viewer"),
+        "parse-batch-foreign": valid("Foreign"),
+        "parse-batch-archived": valid("Archived"),
+        "parse-batch-malformed": malformed,
+        "parse-batch-missing": valid("Missing"),
+        "parse-batch-modified": valid("Modified"),
+        "parse-batch-unknown-codec": valid("UnknownCodec"),
+        "parse-batch-undecodable": b"a,b\n\xff,2\n",
+        "parse-batch-empty": b"",
+        "parse-batch-header-only": b"a,b\n",
+        "parse-batch-invalid-header": b"a,a\n1,2\n",
+        "parse-batch-oversized": b"oversized-metadata",
+        "parse-batch-concurrent": valid("Concurrent"),
+        "parse-batch-rollback": b"a,b\n1,2\n3,4\n",
     }
     async with AsyncSession(engine) as session:
-        await session.execute(delete(ImportRowModel))
-        await session.execute(delete(ImportLogModel))
-        await session.execute(delete(ImportBatchModel))
+        batch_ids = tuple(contents)
+        await session.execute(
+            delete(ImportJobBatchModel).where(ImportJobBatchModel.batch_id.in_(batch_ids))
+        )
+        await session.execute(
+            delete(ImportRowModel).where(ImportRowModel.import_batch_id.in_(batch_ids))
+        )
+        await session.execute(
+            delete(ImportLogModel).where(ImportLogModel.import_batch_id.in_(batch_ids))
+        )
+        await session.execute(delete(ImportBatchModel).where(ImportBatchModel.id.in_(batch_ids)))
         await session.execute(
             delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(ACCOUNTS))
         )
@@ -139,9 +154,9 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
             )
         await session.flush()
         for account_id, archived in [
-            ("account-active", False),
-            ("account-foreign", False),
-            ("account-archived", True),
+            ("parse-account-active", False),
+            ("parse-account-foreign", False),
+            ("parse-account-archived", True),
         ]:
             session.add(
                 AccountModel(
@@ -159,12 +174,42 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
             )
         await session.flush()
         memberships = [
-            ("member-owner", "user-owner", "account-active", AccountMemberRole.owner),
-            ("member-admin", "user-admin", "account-active", AccountMemberRole.admin),
-            ("member-editor", "user-editor", "account-active", AccountMemberRole.editor),
-            ("member-viewer", "user-viewer", "account-active", AccountMemberRole.viewer),
-            ("member-foreign", "user-foreign", "account-foreign", AccountMemberRole.owner),
-            ("member-archived", "user-owner", "account-archived", AccountMemberRole.owner),
+            (
+                "parse-member-owner",
+                "parse-user-owner",
+                "parse-account-active",
+                AccountMemberRole.owner,
+            ),
+            (
+                "parse-member-admin",
+                "parse-user-admin",
+                "parse-account-active",
+                AccountMemberRole.admin,
+            ),
+            (
+                "parse-member-editor",
+                "parse-user-editor",
+                "parse-account-active",
+                AccountMemberRole.editor,
+            ),
+            (
+                "parse-member-viewer",
+                "parse-user-viewer",
+                "parse-account-active",
+                AccountMemberRole.viewer,
+            ),
+            (
+                "parse-member-foreign",
+                "parse-user-foreign",
+                "parse-account-foreign",
+                AccountMemberRole.owner,
+            ),
+            (
+                "parse-member-archived",
+                "parse-user-owner",
+                "parse-account-archived",
+                AccountMemberRole.owner,
+            ),
         ]
         for index, (member_id, user_id, account_id, role) in enumerate(memberships):
             timestamp = now + timedelta(milliseconds=index)
@@ -183,12 +228,12 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
             )
         await session.flush()
         for batch_id, content in contents.items():
-            if batch_id == "batch-foreign":
-                account_id, user_id = "account-foreign", "user-foreign"
-            elif batch_id == "batch-archived":
-                account_id, user_id = "account-archived", "user-owner"
+            if batch_id == "parse-batch-foreign":
+                account_id, user_id = "parse-account-foreign", "parse-user-foreign"
+            elif batch_id == "parse-batch-archived":
+                account_id, user_id = "parse-account-archived", "parse-user-owner"
             else:
-                account_id, user_id = "account-active", "user-owner"
+                account_id, user_id = "parse-account-active", "parse-user-owner"
             session.add(
                 ImportBatchModel(
                     id=batch_id,
@@ -197,12 +242,16 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
                     source=ImportSource.manual,
                     filename="fixture.csv",
                     file_size=(
-                        PARSER_MAX_BYTES + 1 if batch_id == "batch-oversized" else len(content)
+                        PARSER_MAX_BYTES + 1
+                        if batch_id == "parse-batch-oversized"
+                        else len(content)
                     ),
-                    file_encoding=("not-a-codec" if batch_id == "batch-unknown-codec" else "utf-8"),
+                    file_encoding=(
+                        "not-a-codec" if batch_id == "parse-batch-unknown-codec" else "utf-8"
+                    ),
                     checksum=(
                         hashlib.sha256(batch_id.encode()).hexdigest()
-                        if batch_id == "batch-oversized"
+                        if batch_id == "parse-batch-oversized"
                         else hashlib.sha256(content).hexdigest()
                     ),
                     status=ImportStatus.pending,
@@ -219,14 +268,16 @@ async def _seed(storage: LocalImportStorage) -> dict[str, bytes]:
     await engine.dispose()
 
     for batch_id, content in contents.items():
-        if batch_id != "batch-missing":
+        if batch_id != "parse-batch-missing":
             path = storage.path_for(batch_id)
             path.parent.mkdir(parents=True, exist_ok=True)
-            if batch_id == "batch-oversized":
+            if batch_id == "parse-batch-oversized":
                 with path.open("wb") as oversized:
                     oversized.truncate(PARSER_MAX_BYTES + 1)
             else:
-                path.write_bytes(b"X" * len(content) if batch_id == "batch-modified" else content)
+                path.write_bytes(
+                    b"X" * len(content) if batch_id == "parse-batch-modified" else content
+                )
     return contents
 
 
@@ -265,9 +316,9 @@ async def _concurrent_parse(storage: LocalImportStorage) -> list[object]:
             service = ImportParserService(session, storage=storage)
             try:
                 return await service.parse_batch(
-                    principal=_principal("user-owner"),
-                    account_id="account-active",
-                    batch_id="batch-concurrent",
+                    principal=_principal("parse-user-owner"),
+                    account_id="parse-account-active",
+                    batch_id="parse-batch-concurrent",
                 )
             except Exception as exc:  # returned for controlled-result assertions
                 return exc
@@ -297,9 +348,9 @@ async def _rollback_then_retry(storage: LocalImportStorage) -> tuple[int, int]:
             pytest.raises(RuntimeError, match="controlled row persistence failure"),
         ):
             await service.parse_batch(
-                principal=_principal("user-owner"),
-                account_id="account-active",
-                batch_id="batch-rollback",
+                principal=_principal("parse-user-owner"),
+                account_id="parse-account-active",
+                batch_id="parse-batch-rollback",
             )
 
     async with AsyncSession(engine) as session:
@@ -307,15 +358,15 @@ async def _rollback_then_retry(storage: LocalImportStorage) -> tuple[int, int]:
             await session.scalar(
                 select(func.count())
                 .select_from(ImportRowModel)
-                .where(ImportRowModel.import_batch_id == "batch-rollback")
+                .where(ImportRowModel.import_batch_id == "parse-batch-rollback")
             )
             or 0
         )
         service = ImportParserService(session, storage=storage)
         response = await service.parse_batch(
-            principal=_principal("user-owner"),
-            account_id="account-active",
-            batch_id="batch-rollback",
+            principal=_principal("parse-user-owner"),
+            account_id="parse-account-active",
+            batch_id="parse-batch-rollback",
         )
         after_retry = response.rows_total
     await engine.dispose()
@@ -338,33 +389,36 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
 
     os.environ["IMPORT_STORAGE_ROOT"] = str(tmp_path)
     with TestClient(create_app(settings)) as client:
+        first_owner_response: dict[str, object] | None = None
         for user_id, batch_id in [
-            ("user-owner", "batch-owner"),
-            ("user-admin", "batch-admin"),
-            ("user-editor", "batch-editor"),
+            ("parse-user-owner", "parse-batch-owner"),
+            ("parse-user-admin", "parse-batch-admin"),
+            ("parse-user-editor", "parse-batch-editor"),
         ]:
             response = client.post(
-                f"/api/v1/accounts/account-active/imports/{batch_id}/parse",
+                f"/api/v1/accounts/parse-account-active/imports/{batch_id}/parse",
                 headers=_headers(user_id),
             )
             assert response.status_code == 200
             assert response.json()["status"] == "processing"
+            if batch_id == "parse-batch-owner":
+                first_owner_response = response.json()
 
         viewer = client.post(
-            "/api/v1/accounts/account-active/imports/batch-viewer/parse",
-            headers=_headers("user-viewer"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-viewer/parse",
+            headers=_headers("parse-user-viewer"),
         )
         foreign = client.post(
-            "/api/v1/accounts/account-foreign/imports/batch-foreign/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-foreign/imports/parse-batch-foreign/parse",
+            headers=_headers("parse-user-owner"),
         )
         archived = client.post(
-            "/api/v1/accounts/account-archived/imports/batch-archived/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-archived/imports/parse-batch-archived/parse",
+            headers=_headers("parse-user-owner"),
         )
         cross_account = client.post(
-            "/api/v1/accounts/account-active/imports/batch-foreign/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-foreign/parse",
+            headers=_headers("parse-user-owner"),
         )
         assert viewer.status_code == 403
         assert viewer.json()["error"]["code"] == "account_access_denied"
@@ -377,12 +431,12 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
             assert response.json()["error"]["code"] == code
 
         malformed = client.post(
-            "/api/v1/accounts/account-active/imports/batch-malformed/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-malformed/parse",
+            headers=_headers("parse-user-owner"),
         )
         assert malformed.status_code == 200
         assert malformed.json() == {
-            "batch_id": "batch-malformed",
+            "batch_id": "parse-batch-malformed",
             "status": "processing",
             "rows_total": 4,
             "rows_pending": 1,
@@ -390,12 +444,12 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
         }
 
         missing = client.post(
-            "/api/v1/accounts/account-active/imports/batch-missing/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-missing/parse",
+            headers=_headers("parse-user-owner"),
         )
         modified = client.post(
-            "/api/v1/accounts/account-active/imports/batch-modified/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-modified/parse",
+            headers=_headers("parse-user-owner"),
         )
         assert missing.status_code == 409
         assert missing.json()["error"]["code"] == "import_file_missing"
@@ -403,27 +457,27 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
         assert modified.json()["error"]["code"] == "import_file_invalid"
 
         fatal_cases = [
-            ("batch-unknown-codec", 422, "import_parse_failed"),
-            ("batch-undecodable", 422, "import_parse_failed"),
-            ("batch-empty", 422, "import_parse_failed"),
-            ("batch-header-only", 422, "import_parse_failed"),
-            ("batch-invalid-header", 422, "import_parse_failed"),
-            ("batch-oversized", 413, "import_parse_file_too_large"),
+            ("parse-batch-unknown-codec", 422, "import_parse_failed"),
+            ("parse-batch-undecodable", 422, "import_parse_failed"),
+            ("parse-batch-empty", 422, "import_parse_failed"),
+            ("parse-batch-header-only", 422, "import_parse_failed"),
+            ("parse-batch-invalid-header", 422, "import_parse_failed"),
+            ("parse-batch-oversized", 413, "import_parse_file_too_large"),
         ]
         for batch_id, status_code, error_code in fatal_cases:
             response = client.post(
-                f"/api/v1/accounts/account-active/imports/{batch_id}/parse",
-                headers=_headers("user-owner"),
+                f"/api/v1/accounts/parse-account-active/imports/{batch_id}/parse",
+                headers=_headers("parse-user-owner"),
             )
             assert response.status_code == status_code
             assert response.json()["error"]["code"] == error_code
 
         second = client.post(
-            "/api/v1/accounts/account-active/imports/batch-owner/parse",
-            headers=_headers("user-owner"),
+            "/api/v1/accounts/parse-account-active/imports/parse-batch-owner/parse",
+            headers=_headers("parse-user-owner"),
         )
-        assert second.status_code == 409
-        assert second.json()["error"]["code"] == "import_parse_state_invalid"
+        assert second.status_code == 200
+        assert second.json() == first_owner_response
 
     async def assert_rows() -> None:
         engine = create_async_engine(normalize_database_url(DATABASE_URL))
@@ -432,7 +486,7 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
                 (
                     await session.scalars(
                         select(ImportRowModel)
-                        .where(ImportRowModel.import_batch_id == "batch-owner")
+                        .where(ImportRowModel.import_batch_id == "parse-batch-owner")
                         .order_by(ImportRowModel.row_number)
                     )
                 ).all()
@@ -453,7 +507,7 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
                 (
                     await session.scalars(
                         select(ImportRowModel)
-                        .where(ImportRowModel.import_batch_id == "batch-malformed")
+                        .where(ImportRowModel.import_batch_id == "parse-batch-malformed")
                         .order_by(ImportRowModel.row_number)
                     )
                 ).all()
@@ -469,23 +523,23 @@ def test_parser_orchestration_against_postgresql(tmp_path: Path) -> None:
         await engine.dispose()
 
     _run(assert_rows())
-    assert _run(_batch_state("batch-viewer")) == (ImportStatus.pending, 0, 0, 0)
-    assert _run(_batch_state("batch-missing")) == (ImportStatus.failed, 0, 0, 1)
-    assert _run(_batch_state("batch-modified")) == (ImportStatus.failed, 0, 0, 1)
+    assert _run(_batch_state("parse-batch-viewer")) == (ImportStatus.pending, 0, 0, 0)
+    assert _run(_batch_state("parse-batch-missing")) == (ImportStatus.failed, 0, 0, 1)
+    assert _run(_batch_state("parse-batch-modified")) == (ImportStatus.failed, 0, 0, 1)
     for batch_id in [
-        "batch-unknown-codec",
-        "batch-undecodable",
-        "batch-empty",
-        "batch-header-only",
-        "batch-invalid-header",
-        "batch-oversized",
+        "parse-batch-unknown-codec",
+        "parse-batch-undecodable",
+        "parse-batch-empty",
+        "parse-batch-header-only",
+        "parse-batch-invalid-header",
+        "parse-batch-oversized",
     ]:
         assert _run(_batch_state(batch_id)) == (ImportStatus.failed, 0, 0, 1)
 
     concurrent = _run(_concurrent_parse(storage))
     assert sum(not isinstance(result, Exception) for result in concurrent) == 1
     assert sum(isinstance(result, ImportParseStateError) for result in concurrent) == 1
-    assert _run(_batch_state("batch-concurrent")) == (ImportStatus.processing, 1, 1, 0)
+    assert _run(_batch_state("parse-batch-concurrent")) == (ImportStatus.processing, 1, 1, 0)
 
     assert _run(_rollback_then_retry(storage)) == (0, 2)
-    assert _run(_batch_state("batch-rollback")) == (ImportStatus.processing, 2, 2, 0)
+    assert _run(_batch_state("parse-batch-rollback")) == (ImportStatus.processing, 2, 2, 0)

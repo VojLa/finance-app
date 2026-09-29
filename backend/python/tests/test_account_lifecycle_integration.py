@@ -16,7 +16,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config.settings import Settings
-from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.enums import (
     AccountMemberRole,
@@ -98,6 +98,12 @@ async def _seed() -> None:
         await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNTS)))
         await session.execute(delete(AssetListingModel).where(AssetListingModel.id == "listing-4d"))
         await session.execute(delete(AssetModel).where(AssetModel.id == "asset-4d"))
+        await session.execute(
+            delete(AccountInviteModel).where(
+                (AccountInviteModel.inviter_id.in_(USERS))
+                | (AccountInviteModel.accepted_by_id.in_(USERS))
+            )
+        )
         await session.execute(delete(UserModel).where(UserModel.id.in_(USERS)))
 
         for user_id in USERS:
@@ -220,6 +226,7 @@ async def _seed() -> None:
                 account_id="active-owner",
                 calculated_at=now,
                 updated_at=now,
+                cost_basis_by_currency={"CZK": "100.0000000000"},
             )
         )
         session.add(

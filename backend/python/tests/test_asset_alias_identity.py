@@ -146,3 +146,31 @@ def test_twelve_data_command_accepts_supported_asset_types(
     )
 
     assert validate_onboard_asset_alias_command(command) is command
+
+
+def test_yahoo_crypto_command_accepts_exact_asset_symbol_usd_pair() -> None:
+    command = _command(
+        provider=AssetAliasProvider.yahoo_finance,
+        external_id="BTC-USD",
+        expected_symbol="BTC",
+        expected_asset_type=AssetType.crypto,
+        expected_currency="BTC",
+    )
+
+    assert validate_onboard_asset_alias_command(command) is command
+
+
+@pytest.mark.parametrize("external_id", ["BTC-CZK", "ETH-USD", "BTCUSD", "BTC-USD=X"])
+def test_yahoo_crypto_command_rejects_nonmatching_or_non_usd_pair(
+    external_id: str,
+) -> None:
+    with pytest.raises(AssetAliasInvalidError):
+        validate_onboard_asset_alias_command(
+            _command(
+                provider=AssetAliasProvider.yahoo_finance,
+                external_id=external_id,
+                expected_symbol="BTC",
+                expected_asset_type=AssetType.crypto,
+                expected_currency="BTC",
+            )
+        )

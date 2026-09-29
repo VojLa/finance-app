@@ -4,6 +4,8 @@ export const dashboardSnapshotFixture = {
   asOf: "2026-07-31T10:15:00.000",
   baselineTimestamp: "2026-07-31T00:00:00.000",
   historyAnchorSnapshotId: "net-worth-baseline",
+  valuationTimestamp: "2026-07-31T10:14:00.000",
+  isStale: false,
   currency: "CZK",
   calculationVersion: 7,
   summary: {
@@ -100,3 +102,23 @@ export const dashboardSnapshotFixture = {
     },
   ],
 } satisfies DashboardSnapshotData
+
+export function anycoinIncompleteDashboardSnapshotFixture(): DashboardSnapshotData {
+  const fixture = structuredClone(dashboardSnapshotFixture) as DashboardSnapshotData
+  fixture.summary.investmentCostBasis = null
+  fixture.summary.netDepositsValue = null
+  fixture.summary.realizedPnlValue = null
+  fixture.summary.unrealizedPnlValue = null
+
+  const investmentAccount = fixture.accounts[0]
+  const anycoinPosition = fixture.topPositions[1]
+  if (investmentAccount === undefined || anycoinPosition === undefined) {
+    throw new Error("Dashboard fixture is missing the Anycoin evidence.")
+  }
+  investmentAccount.netDepositsValue = null
+  investmentAccount.unrealizedPnlValue = null
+  anycoinPosition.symbol = "BTC"
+  anycoinPosition.name = "Bitcoin"
+  anycoinPosition.unrealizedPnl = null
+  return fixture
+}

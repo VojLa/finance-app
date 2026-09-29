@@ -16,8 +16,8 @@ const MONEY = /^-?(?:0|[1-9]\d{0,11})\.\d{6}$/
 
 describe("Version 0.1 R10-E1 browser closure boundary", () => {
   it("keeps both active browser workflows on the authenticated Python current API", () => {
-    expect(workflow).toContain("api.readCurrentPortfolio()")
-    expect(workflow).toContain("api.readCurrentDashboard()")
+    expect(workflow).toContain("api.readPublishedPortfolio()")
+    expect(workflow).toContain("api.readPublishedDashboard()")
     expect(currentApi).toContain('"/portfolio/current"')
     expect(currentApi).toContain('"/dashboard/current"')
     expect(workflow).not.toContain("/api/rates")

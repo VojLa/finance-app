@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from app.db.models.enums import ExchangeRateSource, PriceSource
 from app.modules.fx.models import ExchangeRateObservation
@@ -28,6 +28,21 @@ class ExchangeRateProvider(Protocol):
         self,
         requirement: ExchangeRateRequirement,
     ) -> ExchangeRateObservation: ...
+
+
+@runtime_checkable
+class BatchExchangeRateProvider(Protocol):
+    """Optional ordered batch port for one provider source.
+
+    The returned observations must have exactly the supplied requirement order.
+    This avoids repeated transport calls for historical requirements of one
+    direct pair while preserving the existing single-observation port.
+    """
+
+    async def fetch_many(
+        self,
+        requirements: tuple[ExchangeRateRequirement, ...],
+    ) -> tuple[ExchangeRateObservation, ...]: ...
 
 
 class PriceProviderRegistry:

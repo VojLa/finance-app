@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -26,10 +27,19 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.snapshot_refresh.executor import ExecuteUserSnapshotRefreshCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-CANONICAL_ALIAS = '{"symbol":"AAPL","mic_code":"XNAS"}'
+
+
+def unique_alias(prefix: str, symbol: str = "AAPL") -> str:
+    """Return an exact Twelve Data identity that cannot collide across DB runs."""
+    return f'{{"symbol":"{unique_symbol(prefix, symbol)}","mic_code":"XNAS"}}'
+
+
+def unique_symbol(prefix: str, symbol: str = "AAPL") -> str:
+    return f"{symbol}_{prefix.replace('-', '_')}"
 
 
 def twelve_data_engine():
@@ -42,7 +52,7 @@ async def seed_listed_holding(
     *,
     event_at: datetime,
     created_at: datetime,
-    aliases: tuple[str, ...] = (CANONICAL_ALIAS,),
+    aliases: tuple[str, ...] | None = None,
     exact_trading212_identity: bool = False,
 ) -> tuple[str, str, str, str]:
     user_id = f"{prefix}-user"
@@ -109,21 +119,28 @@ async def seed_listed_holding(
                     asset_id=asset_id,
                     symbol="AAPL",
                     exchange=(
-                        "trading212" if exact_trading212_identity else f"trading212-{prefix}"
+                        f"trading212-{prefix}"
+                        if exact_trading212_identity
+                        else f"trading212-{prefix}-other"
                     ),
                     mic="XLON",
                     currency="USD",
                     country="US",
                     provider=PriceSource.broker,
                     provider_symbol=(
-                        "AAPL_US_EQ" if exact_trading212_identity else f"AAPL_US_EQ-{prefix}"
+                        f"AAPL_US_EQ-{prefix}"
+                        if exact_trading212_identity
+                        else f"AAPL_US_EQ-{prefix}-other"
                     ),
                     is_primary=True,
                     created_at=created_at,
                     updated_at=created_at,
                 )
             )
-            for index, alias in enumerate(aliases, start=1):
+            for index, alias in enumerate(
+                (unique_alias(prefix),) if aliases is None else aliases,
+                start=1,
+            ):
                 session.add(
                     AssetAliasModel(
                         id=f"{prefix}-alias-{index}",
@@ -142,6 +159,7 @@ async def seed_listed_holding(
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     avg_buy_price=Decimal("200"),
+                    cost_basis_by_currency={"USD": "400.0000000000"},
                     currency="USD",
                     current_price=None,
                     current_value=None,
@@ -196,6 +214,17 @@ async def seed_listed_holding(
                     updated_at=created_at,
                 )
             )
+            recorded = await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=event_at,
+                created_at=created_at,
+                replay=False,
+            )
+            state = await session.get(AccountCanonicalStateModel, account_id)
+            assert state is not None
+            state.holding_revision = recorded.revision
             await session.commit()
     finally:
         await engine.dispose()

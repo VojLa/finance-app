@@ -48,6 +48,9 @@ def _item(
     native_value_currency: str = "USD",
     native_cost_basis: Decimal = Decimal("50"),
     native_cost_currency: str = "USD",
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...] | None = None,
+    average_buy_price: Decimal | None = None,
+    average_buy_price_currency: str | None = None,
 ) -> PortfolioSnapshotItemSource:
     return PortfolioSnapshotItemSource(
         item_id=item_id,
@@ -70,6 +73,17 @@ def _item(
         native_value_currency=native_value_currency,
         native_cost_basis=native_cost_basis,
         native_cost_currency=native_cost_currency,
+        native_cost_basis_by_currency=(
+            native_cost_basis_by_currency
+            if native_cost_basis_by_currency is not None
+            else (PortfolioCurrencyAmount(native_cost_currency, native_cost_basis),)
+        ),
+        average_buy_price=(
+            average_buy_price if average_buy_price is not None else native_cost_basis / quantity
+        ),
+        average_buy_price_currency=(
+            average_buy_price_currency if average_buy_price_currency is not None else price_currency
+        ),
     )
 
 
@@ -212,7 +226,160 @@ def test_investment_snapshot_builds_exact_portfolio_view() -> None:
         "USD",
         Decimal("50"),
         "USD",
+        (PortfolioCurrencyAmount("USD", Decimal("50")),),
+        Decimal("25"),
+        "USD",
     )
+
+
+def test_unknown_cost_basis_is_exposed_as_null_while_quantity_and_value_remain_exact() -> None:
+    incomplete_item = replace(
+        _item(),
+        allocation_pct=Decimal("100"),
+        cost_basis=None,
+        cost_currency=None,
+        unrealized_pnl=None,
+        native_cost_basis=None,
+        native_cost_currency=None,
+        native_cost_basis_by_currency=None,
+        average_buy_price=None,
+        average_buy_price_currency=None,
+    )
+    source = replace(
+        _source(
+            items=(incomplete_item,), investment_value=Decimal("60"), total_value=Decimal("70")
+        ),
+        investment_cost_basis=None,
+        net_deposits_value=None,
+        net_deposits_by_currency=None,
+        realized_pnl_value=None,
+        unrealized_pnl_value=None,
+    )
+
+    view = build_portfolio_snapshot_view(source)
+
+    assert view.summary.investment_value == Decimal("60")
+    assert view.summary.total_value == Decimal("70")
+    assert view.summary.investment_cost_basis is None
+    assert view.summary.net_deposits_value is None
+    assert view.summary.net_deposits_by_currency is None
+    assert view.summary.realized_pnl_value is None
+    assert view.summary.unrealized_pnl_value is None
+    position = view.positions[0]
+    assert position.quantity == Decimal("2")
+    assert position.value == Decimal("60")
+    assert (
+        position.cost_basis,
+        position.cost_currency,
+        position.unrealized_pnl,
+        position.native_cost_basis,
+        position.native_cost_currency,
+        position.native_cost_basis_by_currency,
+        position.average_buy_price,
+        position.average_buy_price_currency,
+    ) == (None, None, None, None, None, None, None, None)
+
+
+def test_live_anycoin_native_value_uses_half_even_derived_quantity_boundary() -> None:
+    item = replace(
+        _item(),
+        symbol="BTC",
+        name="Bitcoin",
+        asset_type=AssetType.crypto,
+        quantity=Decimal("0.0200000000"),
+        price_per_unit=Decimal("1419861.4401809645"),
+        price_currency="CZK",
+        value=Decimal("28397.228804"),
+        value_currency="CZK",
+        cost_basis=None,
+        cost_currency=None,
+        unrealized_pnl=None,
+        allocation_pct=Decimal("100.0000"),
+        native_value=Decimal("28397.2288036193"),
+        native_value_currency="CZK",
+        native_cost_basis=None,
+        native_cost_currency=None,
+        native_cost_basis_by_currency=None,
+        average_buy_price=None,
+        average_buy_price_currency=None,
+    )
+    source = replace(
+        _source(
+            account_name="Anycoin CZK",
+            account_type=AccountType.exchange,
+            account_currency="CZK",
+            output_currency="CZK",
+            cash_value=Decimal("0.000000"),
+            cash_by_currency=(PortfolioCurrencyAmount("CZK", Decimal("0.000000")),),
+            investment_value=Decimal("28397.228804"),
+            liabilities_value=Decimal("0.000000"),
+            total_value=Decimal("28397.228804"),
+            fees_value=Decimal("0.000000"),
+            taxes_value=Decimal("0.000000"),
+            items=(item,),
+        ),
+        investment_cost_basis=None,
+        net_deposits_value=None,
+        net_deposits_by_currency=None,
+        realized_pnl_value=None,
+        unrealized_pnl_value=None,
+    )
+
+    view = build_portfolio_snapshot_view(source)
+
+    assert view.positions[0].native_value == Decimal("28397.2288036193")
+    assert view.summary.total_value == Decimal("28397.228804")
+
+
+@pytest.mark.parametrize(
+    ("native_value", "quantity", "price_per_unit"),
+    (
+        (Decimal("28397.2288036192"), Decimal("0.0200000000"), Decimal("1419861.4401809645")),
+        (Decimal("0.0000000000"), Decimal("0.0000000001"), Decimal("0.0000000001")),
+    ),
+    ids=("wrong-half-even-result", "nonzero-underflow"),
+)
+def test_derived_native_value_mismatch_or_underflow_fails_closed(
+    native_value: Decimal,
+    quantity: Decimal,
+    price_per_unit: Decimal,
+) -> None:
+    item = replace(
+        _item(),
+        quantity=quantity,
+        price_per_unit=price_per_unit,
+        value=Decimal("0.000000"),
+        cost_basis=None,
+        cost_currency=None,
+        unrealized_pnl=None,
+        allocation_pct=Decimal("0.0000"),
+        native_value=native_value,
+        native_cost_basis=None,
+        native_cost_currency=None,
+        native_cost_basis_by_currency=None,
+        average_buy_price=None,
+        average_buy_price_currency=None,
+    )
+    source = replace(
+        _source(
+            cash_value=Decimal("0.000000"),
+            cash_by_currency=(PortfolioCurrencyAmount("EUR", Decimal("0.000000")),),
+            investment_value=Decimal("0.000000"),
+            liabilities_value=Decimal("0.000000"),
+            total_value=Decimal("0.000000"),
+            fees_value=Decimal("0.000000"),
+            taxes_value=Decimal("0.000000"),
+            items=(item,),
+        ),
+        investment_cost_basis=None,
+        net_deposits_value=None,
+        net_deposits_by_currency=None,
+        realized_pnl_value=None,
+        unrealized_pnl_value=None,
+    )
+
+    with pytest.raises(PortfolioSnapshotProjectionError):
+        build_portfolio_snapshot_view(source)
 
 
 @pytest.mark.parametrize(
@@ -279,6 +446,33 @@ def test_mixed_currency_positions_preserve_native_fields_and_output_aggregates()
     assert {position.cost_currency for position in view.positions} == {"EUR"}
 
 
+def test_position_preserves_cost_currency_when_provider_quote_differs() -> None:
+    item = replace(
+        _item(),
+        allocation_pct=Decimal("100"),
+        average_buy_price_currency="EUR",
+        native_cost_currency="EUR",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("EUR", Decimal("50")),),
+    )
+    view = build_portfolio_snapshot_view(
+        _source(
+            items=(item,),
+            investment_value=Decimal("60"),
+            investment_cost_basis=Decimal("50"),
+            total_value=Decimal("70"),
+            unrealized_pnl_value=Decimal("10"),
+        )
+    )
+
+    position = view.positions[0]
+    assert (position.price_currency, position.native_value_currency) == ("USD", "USD")
+    assert (
+        position.average_buy_price_currency,
+        position.native_cost_currency,
+        position.native_cost_basis_by_currency,
+    ) == ("EUR", "EUR", (PortfolioCurrencyAmount("EUR", Decimal("50")),))
+
+
 def test_position_permutation_produces_structurally_equal_view() -> None:
     source = _source()
     permuted = replace(source, items=tuple(reversed(source.items)))
@@ -302,6 +496,7 @@ def test_inputs_are_not_mutated_and_outputs_are_frozen() -> None:
 
 def test_financial_values_never_use_binary_float() -> None:
     view = build_portfolio_snapshot_view(_source())
+    assert view.summary.net_deposits_by_currency is not None
     financial_values = (
         view.summary.cash_value,
         *(item.amount for item in view.summary.cash_by_currency),
@@ -536,7 +731,7 @@ def test_invalid_metadata_fails_closed(mutation: dict[str, object]) -> None:
     assert str(raised.value) == "Portfolio snapshot evidence cannot produce a complete view."
 
 
-def test_zero_value_position_requires_zero_allocation() -> None:
+def test_zero_value_position_is_rejected_with_missing_positive_cost_evidence() -> None:
     zero = _item(
         quantity=Decimal("0"),
         price_per_unit=Decimal("30"),
@@ -546,6 +741,8 @@ def test_zero_value_position_requires_zero_allocation() -> None:
         allocation_pct=Decimal("0"),
         native_value=Decimal("0"),
         native_cost_basis=Decimal("0"),
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", Decimal("0")),),
+        average_buy_price=Decimal("30"),
     )
     source = _source(
         cash_value=Decimal("10"),
@@ -560,11 +757,8 @@ def test_zero_value_position_requires_zero_allocation() -> None:
         items=(zero,),
     )
 
-    assert build_portfolio_snapshot_view(source).positions[0].allocation_pct == 0
     with pytest.raises(PortfolioSnapshotProjectionError):
-        build_portfolio_snapshot_view(
-            replace(source, items=(replace(zero, allocation_pct=Decimal("1")),))
-        )
+        build_portfolio_snapshot_view(source)
 
 
 def test_projection_has_a_pure_import_and_call_boundary() -> None:

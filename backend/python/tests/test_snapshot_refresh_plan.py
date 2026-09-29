@@ -43,6 +43,7 @@ def _account(
     accepted_at: datetime = datetime(2026, 1, 1),
     is_archived: bool = False,
     archived_at: datetime | None = None,
+    has_canonical_history: bool = True,
 ) -> SnapshotRefreshAccountEvidence:
     return SnapshotRefreshAccountEvidence(
         account_id=account_id,
@@ -54,6 +55,7 @@ def _account(
         accepted_at=accepted_at,
         is_archived=is_archived,
         archived_at=archived_at,
+        has_canonical_history=has_canonical_history,
     )
 
 
@@ -267,6 +269,30 @@ def test_consistently_archived_account_is_excluded() -> None:
     result = build_user_snapshot_refresh_plan(_input(_account("active"), archived))
 
     assert tuple(target.account_id for target in result.account_targets) == ("active",)
+
+
+def test_empty_active_account_is_excluded_from_snapshot_and_net_worth_targets() -> None:
+    result = build_user_snapshot_refresh_plan(
+        _input(
+            _account("posted"),
+            _account("empty", has_canonical_history=False),
+        )
+    )
+
+    assert tuple(target.account_id for target in result.account_targets) == ("posted",)
+    assert result.net_worth_target.required_account_ids == ("posted",)
+
+
+def test_empty_publication_account_is_authorized_but_not_a_snapshot_target() -> None:
+    result = build_user_snapshot_refresh_plan(
+        replace(
+            _input(_account("empty", has_canonical_history=False)),
+            publication_account_ids=("empty",),
+        )
+    )
+
+    assert result.account_targets == ()
+    assert result.net_worth_target.required_account_ids == ()
 
 
 @pytest.mark.parametrize(

@@ -1,21 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
-
-type SubCategory = {
-  id: string
-  name: string
-  icon: string | null
-  color: string | null
-  type: string
-  isDefault: boolean
-  userId: string | null
-}
-
-type Category = SubCategory & {
-  parentId: string | null
-  children: SubCategory[]
-}
+import {
+  createCategory,
+  deleteCategory,
+  requestCategories,
+  updateCategory,
+} from "@/modules/categories/category-client"
+import type { Category, CategoryChild as SubCategory } from "@/modules/categories/category-contract"
 
 type CatForm = {
   name: string
@@ -145,6 +137,8 @@ function CatFormFields({
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([])
+  const [categoryLoading, setCategoryLoading] = useState(true)
+  const [categoryLoadError, setCategoryLoadError] = useState("")
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<CatForm>(emptyForm())
   const [formLoading, setFormLoading] = useState(false)
@@ -155,8 +149,15 @@ export default function CategoriesPage() {
   const [editError, setEditError] = useState("")
 
   async function load() {
-    const res = await fetch("/api/categories")
-    if (res.ok) setCategories(await res.json())
+    setCategoryLoading(true)
+    setCategoryLoadError("")
+    try {
+      setCategories(await requestCategories())
+    } catch {
+      setCategoryLoadError("Kategorie se nepodařilo načíst. Zobrazuji poslední načtený stav.")
+    } finally {
+      setCategoryLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -167,25 +168,22 @@ export default function CategoriesPage() {
     e.preventDefault()
     setFormLoading(true)
     setFormError("")
-    const res = await fetch("/api/categories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      await createCategory({
         name: form.name,
         icon: form.icon || null,
         color: form.color || null,
-        type: form.type,
+        type: form.type as "income" | "expense" | "both",
         parentId: form.parentId || null,
-      }),
-    })
-    setFormLoading(false)
-    if (!res.ok) {
-      const d = await res.json()
-      setFormError(d.error)
-    } else {
+        idempotencyKey: crypto.randomUUID(),
+      })
       setShowForm(false)
       setForm(emptyForm())
-      load()
+      await load()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Kategorii se nepodařilo vytvořit.")
+    } finally {
+      setFormLoading(false)
     }
   }
 
@@ -206,37 +204,31 @@ export default function CategoriesPage() {
     if (!editingId) return
     setEditLoading(true)
     setEditError("")
-    const res = await fetch("/api/categories", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: editingId,
+    try {
+      await updateCategory(editingId, {
         name: editForm.name,
         icon: editForm.icon || null,
         color: editForm.color || null,
-        type: editForm.type,
+        type: editForm.type as "income" | "expense" | "both",
         parentId: editForm.parentId || null,
-      }),
-    })
-    setEditLoading(false)
-    if (!res.ok) {
-      const d = await res.json()
-      setEditError(d.error)
-    } else {
+      })
       setEditingId(null)
-      load()
+      await load()
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "Kategorii se nepodařilo upravit.")
+    } finally {
+      setEditLoading(false)
     }
   }
 
   async function handleDelete(id: string) {
     if (!confirm("Smazat kategorii? Transakce v této kategorii zůstanou bez kategorie.")) return
-    const res = await fetch(`/api/categories?id=${id}`, { method: "DELETE" })
-    if (!res.ok) {
-      const d = await res.json()
-      alert(d.error)
-    } else {
+    try {
+      await deleteCategory(id)
       if (editingId === id) setEditingId(null)
-      load()
+      await load()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Kategorii se nepodařilo smazat.")
     }
   }
 
@@ -289,6 +281,8 @@ export default function CategoriesPage() {
       )}
 
       <div className="space-y-8">
+        {categoryLoading && <p role="status" className="text-sm text-gray-500">Načítám kategorie…</p>}
+        {categoryLoadError && <p role="alert" className="text-sm text-red-700">{categoryLoadError}</p>}
         {/* Custom categories */}
         {userCats.length > 0 && (
           <div>
@@ -450,7 +444,7 @@ export default function CategoriesPage() {
           </div>
         )}
 
-        {userCats.length === 0 && !showForm && (
+        {userCats.length === 0 && !showForm && !categoryLoading && !categoryLoadError && (
           <div className="bg-white rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-400">
             Žádné vlastní kategorie. Přidej první pomocí tlačítka výše.
           </div>

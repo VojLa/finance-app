@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -34,6 +35,7 @@ from app.db.models.snapshots import (
 )
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.fx.models import ExchangeRateObservation
 from app.modules.market_data.models import (
     ExchangeRateRequirement,
@@ -59,6 +61,7 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
 )
+from tests.support.investment_fixture_e2e import cleanup as cleanup_fixture
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -80,7 +83,7 @@ def _engine():
 
 
 class _PriceProvider:
-    source = PriceSource.yahoo_finance
+    source = PriceSource.twelve_data
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -101,7 +104,7 @@ class _PriceProvider:
 
 
 class _FxProvider:
-    source = ExchangeRateSource.ecb
+    source = ExchangeRateSource.twelve_data
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -129,7 +132,7 @@ class _FxProvider:
 
 
 class _FailingPriceProvider:
-    source = PriceSource.yahoo_finance
+    source = PriceSource.twelve_data
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -210,7 +213,7 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
                 mic=None,
                 currency="EUR",
                 country=None,
-                provider=PriceSource.yahoo_finance,
+                provider=PriceSource.twelve_data,
                 provider_symbol=f"EXACT-{prefix}",
                 is_primary=False,
                 created_at=CREATED_AT,
@@ -236,6 +239,7 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
                 account_id=account_id,
                 calculated_at=CREATED_AT,
                 updated_at=CREATED_AT,
+                cost_basis_by_currency={"EUR": "200.0000000000"},
             )
         )
         for index, event_at in enumerate((EVENT_AT, SECOND_EVENT_AT), start=1):
@@ -281,6 +285,20 @@ async def _seed(prefix: str) -> tuple[str, str, str, str]:
                     updated_at=CREATED_AT,
                 )
             )
+        recorded = None
+        for event_id, event_at in zip(event_ids, (EVENT_AT, SECOND_EVENT_AT), strict=True):
+            recorded = await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=event_at,
+                created_at=CREATED_AT,
+                replay=False,
+            )
+        assert recorded is not None
+        state = await session.get(AccountCanonicalStateModel, account_id)
+        assert state is not None
+        state.holding_revision = recorded.revision
         await session.commit()
     await engine.dispose()
     return user_id, account_id, asset_id, listing_id
@@ -324,7 +342,14 @@ async def test_provider_failure_writes_no_market_or_snapshot_rows() -> None:
                 )
             assert str(error.value) == "Market evidence is unavailable."
             assert price_provider.calls == 1
-            assert fx_provider.requirements == []
+            assert [
+                (item.from_currency, item.to_currency, item.through, item.provider)
+                for item in fx_provider.requirements
+            ] == [
+                ("EUR", "CZK", EVENT_AT, ExchangeRateSource.twelve_data),
+                ("EUR", "CZK", SECOND_EVENT_AT, ExchangeRateSource.twelve_data),
+                ("EUR", "CZK", SNAPSHOT_AT, ExchangeRateSource.twelve_data),
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             assert (
@@ -357,6 +382,7 @@ async def test_provider_failure_writes_no_market_or_snapshot_rows() -> None:
             )
     finally:
         await engine.dispose()
+        await cleanup_fixture(prefix)
 
 
 @pytest.mark.asyncio
@@ -416,7 +442,7 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             expected_price = PriceObservation(
                 asset_id=asset_id,
                 listing_id=listing_id,
-                provider=PriceSource.yahoo_finance,
+                provider=PriceSource.twelve_data,
                 provider_symbol=f"EXACT-{prefix}",
                 price=Decimal("110.0000000000"),
                 currency="EUR",
@@ -425,14 +451,14 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             expected_event_rate = ExchangeRateObservation(
                 from_currency="EUR",
                 to_currency="CZK",
-                provider=ExchangeRateSource.ecb,
+                provider=ExchangeRateSource.twelve_data,
                 rate=Decimal("24.00000000"),
                 effective_at=EVENT_DAY,
             )
             expected_snapshot_rate = ExchangeRateObservation(
                 from_currency="EUR",
                 to_currency="CZK",
-                provider=ExchangeRateSource.ecb,
+                provider=ExchangeRateSource.twelve_data,
                 rate=Decimal("25.00000000"),
                 effective_at=SNAPSHOT_AT - timedelta(days=1),
             )
@@ -490,7 +516,7 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             assert prices[0].id == market_result.price_ids[0]
             assert prices[0].price == Decimal("110.0000000000")
             assert prices[0].timestamp == SNAPSHOT_AT - timedelta(hours=1)
-            assert prices[0].source is PriceSource.yahoo_finance
+            assert prices[0].source is PriceSource.twelve_data
             assert len(rates) == 2
             assert sum(item.date == EVENT_DAY for item in rates) == 1
             assert {(item.id, item.rate, item.date, item.source) for item in rates} == {
@@ -498,13 +524,13 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
                     exchange_rate_id(expected_event_rate),
                     Decimal("24.00000000"),
                     EVENT_DAY,
-                    ExchangeRateSource.ecb,
+                    ExchangeRateSource.twelve_data,
                 ),
                 (
                     exchange_rate_id(expected_snapshot_rate),
                     Decimal("25.00000000"),
                     SNAPSHOT_AT - timedelta(days=1),
-                    ExchangeRateSource.ecb,
+                    ExchangeRateSource.twelve_data,
                 ),
             }
             account_snapshot = await session.get(
@@ -541,14 +567,14 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
                         "timestamp": (SNAPSHOT_AT - timedelta(days=1)).isoformat(
                             timespec="milliseconds"
                         ),
-                        "source": "ecb",
+                        "source": "twelve_data",
                     }
                 ],
                 "historicalRateIds": [exchange_rate_id(expected_event_rate)],
             }
             assert len(items) == 1
             assert items[0].price_per_unit == Decimal("110.0000000000")
-            assert items[0].price_source is PriceSource.yahoo_finance
+            assert items[0].price_source is PriceSource.twelve_data
             assert net_worth is not None
             assert net_worth.cash_value == Decimal("25000.000000")
             assert net_worth.portfolio_value == Decimal("5500.000000")
@@ -579,3 +605,4 @@ async def test_market_refresh_to_account_and_net_worth_snapshot_e2e() -> None:
             assert replayed_snapshot.replayed_account_snapshot_count == 1
     finally:
         await engine.dispose()
+        await cleanup_fixture(prefix)

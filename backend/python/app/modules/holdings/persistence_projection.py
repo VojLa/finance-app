@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 from app.db.models.common import QUANTITY
 from app.db.models.enums import (
     AssetType,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     MovementDirection,
@@ -17,6 +18,11 @@ from app.modules.holdings.projection import (
     HoldingProjectionMovement,
     HoldingProjectionStateError,
     build_holding_projection,
+)
+from app.shared.canonical_arithmetic import (
+    CanonicalArithmeticError,
+    canonical_ratio,
+    canonical_rounded,
 )
 
 
@@ -37,6 +43,7 @@ class HoldingPersistenceMovement:
     price_per_unit: Decimal | None
     value_amount: Decimal | None
     value_currency: str | None
+    listing_currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +54,16 @@ class HoldingPersistenceEvent:
     event_date: datetime
     external_id: str | None
     movements: tuple[HoldingPersistenceMovement, ...]
+    source: ImportSource | None = None
+    realized_pnl: Decimal | None = None
+    realized_pnl_currency: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedRealizedPnlPlan:
+    event_id: str
+    amount: Decimal
+    currency: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,18 +75,20 @@ class ExpectedPersistedHoldingPlan:
     name: str | None
     asset_type: AssetType
     quantity: Decimal
-    avg_buy_price: Decimal
+    avg_buy_price: Decimal | None
     currency: str
     current_price: Decimal | None
     current_value: Decimal | None
     unrealized_pnl: Decimal | None
     realized_pnl: Decimal | None
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class HoldingPersistenceProjection:
     account_id: str
     holdings: tuple[ExpectedPersistedHoldingPlan, ...]
+    realized_pnl: tuple[ExpectedRealizedPnlPlan, ...] = ()
 
 
 @dataclass(slots=True)
@@ -78,8 +97,9 @@ class _CostPosition:
     symbol: str
     asset_type: AssetType
     quantity: Decimal
-    average: Decimal
+    average: Decimal | None
     currency: str
+    cost_basis: dict[str, Decimal] | None
 
 
 def _fail() -> HoldingProjectionStateError:
@@ -107,7 +127,13 @@ def _exact(value: object, *, positive: bool = False) -> Decimal:
 
 
 def _currency(value: object) -> str:
-    if not isinstance(value, str) or not value or value != value.strip() or value != value.upper():
+    if (
+        not isinstance(value, str)
+        or len(value) != 3
+        or not value.isascii()
+        or not value.isalpha()
+        or value != value.upper()
+    ):
         raise _fail()
     return value
 
@@ -160,15 +186,13 @@ def _parts(
     return assets, cash, fees
 
 
-def _basis(movement: HoldingPersistenceMovement) -> tuple[Decimal, str]:
-    quantity = _exact(movement.quantity, positive=True)
+def _basis(movement: HoldingPersistenceMovement) -> tuple[Decimal, str, Decimal, str]:
+    _exact(movement.quantity, positive=True)
     price = _exact(movement.price_per_unit, positive=True)
     value = _exact(movement.value_amount, positive=True)
-    currency = _currency(movement.value_currency)
-    calculated = _exact(value / quantity, positive=True)
-    if calculated != price or _exact(price * quantity, positive=True) != value:
-        raise _fail()
-    return price, currency
+    quote_currency = _currency(movement.listing_currency)
+    settlement_currency = _currency(movement.value_currency)
+    return price, quote_currency, value, settlement_currency
 
 
 def _validate_value_if_present(movement: HoldingPersistenceMovement) -> None:
@@ -180,6 +204,19 @@ def _validate_value_if_present(movement: HoldingPersistenceMovement) -> None:
     if all(value is None for value in values):
         return
     _basis(movement)
+
+
+def _optional_basis(
+    movement: HoldingPersistenceMovement,
+) -> tuple[Decimal, str, Decimal, str] | None:
+    values = (
+        movement.price_per_unit,
+        movement.value_amount,
+        movement.value_currency,
+    )
+    if all(value is None for value in values):
+        return None
+    return _basis(movement)
 
 
 def _validate_event_shape(event: HoldingPersistenceEvent) -> HoldingPersistenceMovement | None:
@@ -196,13 +233,15 @@ def _validate_event_shape(event: HoldingPersistenceEvent) -> HoldingPersistenceM
         )
         if cash_leg.direction is not expected_cash_direction:
             raise _fail()
-        _, cost_currency = _basis(asset)
+        _, _, settlement_value, settlement_currency = _basis(asset)
         if (
-            _exact(cash_leg.quantity, positive=True) != asset.value_amount
-            or _currency(cash_leg.currency) != cost_currency
+            _exact(cash_leg.quantity, positive=True) != settlement_value
+            or _currency(cash_leg.currency) != settlement_currency
             or cash_leg.asset_id is not None
             or cash_leg.listing_id is not None
         ):
+            raise _fail()
+        if any(_currency(fee.currency) != settlement_currency for fee in fees):
             raise _fail()
         return asset
     if event_type is InvestmentEventType.asset_transfer:
@@ -261,7 +300,10 @@ def _acquire(
         or movement.source_asset_type is None
     ):
         raise _fail()
-    price, currency = _basis(movement)
+    basis = _optional_basis(movement)
+    quote_currency = _currency(movement.listing_currency)
+    if basis is not None and basis[1] != quote_currency:
+        raise _fail()
     position = positions.get(movement.listing_id)
     if position is None:
         positions[movement.listing_id] = _CostPosition(
@@ -269,28 +311,51 @@ def _acquire(
             symbol=movement.source_symbol,
             asset_type=movement.source_asset_type,
             quantity=movement.quantity,
-            average=price,
-            currency=currency,
+            average=None if basis is None else basis[0],
+            currency=quote_currency,
+            cost_basis=(None if basis is None else {basis[3]: basis[2]}),
         )
         return
     if (
         position.asset_id != movement.asset_id
         or position.symbol != movement.source_symbol
         or position.asset_type is not movement.source_asset_type
-        or position.currency != currency
+        or position.currency != quote_currency
     ):
         raise _fail()
-    existing_cost = _exact(position.quantity * position.average)
-    new_cost = _exact(existing_cost + _exact(movement.value_amount, positive=True))
     new_quantity = _exact(position.quantity + movement.quantity, positive=True)
-    position.average = _exact(new_cost / new_quantity, positive=True)
+    if basis is None or position.average is None or position.cost_basis is None:
+        position.quantity = new_quantity
+        position.average = None
+        position.cost_basis = None
+        return
+    price, _, settlement_value, settlement_currency = basis
+    try:
+        quote_cost = canonical_rounded(
+            (position.quantity * position.average) + (movement.quantity * price),
+            QUANTITY,
+        )
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    try:
+        position.average = canonical_ratio(quote_cost, new_quantity, QUANTITY)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
     position.quantity = new_quantity
+    existing_settlement = position.cost_basis.get(settlement_currency, Decimal(0))
+    try:
+        position.cost_basis[settlement_currency] = canonical_rounded(
+            existing_settlement + settlement_value,
+            QUANTITY,
+        )
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
 
 
 def _dispose(
     positions: dict[str, _CostPosition],
     movement: HoldingPersistenceMovement,
-) -> None:
+) -> Decimal | None:
     if movement.listing_id is None:
         raise _fail()
     position = positions.get(movement.listing_id)
@@ -302,11 +367,64 @@ def _dispose(
         or movement.quantity > position.quantity
     ):
         raise _fail()
-    remaining = _exact(position.quantity - movement.quantity)
+    if movement.price_per_unit is not None:
+        _, quote_currency, _, _ = _basis(movement)
+        if quote_currency != position.currency:
+            raise _fail()
+    original_quantity = position.quantity
+    try:
+        disposed_cost = (
+            None
+            if position.average is None
+            else canonical_rounded(movement.quantity * position.average, QUANTITY)
+        )
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    remaining = _exact(original_quantity - movement.quantity)
     if remaining == 0:
         del positions[movement.listing_id]
     else:
+        if position.cost_basis is not None:
+            scaled_cost_basis: dict[str, Decimal] = {}
+            for currency, amount in position.cost_basis.items():
+                try:
+                    remaining_amount = canonical_rounded(
+                        amount * remaining / original_quantity,
+                        QUANTITY,
+                    )
+                except (CanonicalArithmeticError, InvalidOperation, ZeroDivisionError) as exc:
+                    raise _fail() from exc
+                if remaining_amount <= 0:
+                    raise _fail()
+                scaled_cost_basis[currency] = remaining_amount
+            position.cost_basis = scaled_cost_basis
         position.quantity = remaining
+    return disposed_cost
+
+
+def _expected_anycoin_realized_pnl(
+    event: HoldingPersistenceEvent,
+    asset: HoldingPersistenceMovement,
+    disposed_cost: Decimal | None,
+) -> ExpectedRealizedPnlPlan | None:
+    if disposed_cost is None:
+        # Quantity can still be projected when an earlier transfer has no
+        # acquisition basis. Realized P/L must remain explicitly unknown.
+        if event.realized_pnl is not None or event.realized_pnl_currency is not None:
+            raise _fail()
+        return None
+    _, quote_currency, proceeds, settlement_currency = _basis(asset)
+    if quote_currency != settlement_currency:
+        raise _fail()
+    try:
+        amount = canonical_rounded(proceeds - disposed_cost, QUANTITY)
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    return ExpectedRealizedPnlPlan(
+        event_id=event.event_id,
+        amount=amount,
+        currency=settlement_currency,
+    )
 
 
 def build_holding_persistence_projection(
@@ -329,8 +447,13 @@ def build_holding_persistence_projection(
             or not isinstance(event.event_type, InvestmentEventType)
             or not event.movements
             or (event.external_id is not None and not isinstance(event.external_id, str))
+            or (event.source is not None and not isinstance(event.source, ImportSource))
+            or (event.realized_pnl is None) != (event.realized_pnl_currency is None)
         ):
             raise _fail()
+        if event.realized_pnl is not None:
+            _exact(event.realized_pnl)
+            _currency(event.realized_pnl_currency)
         event_ids.add(event.event_id)
         base_movements.extend(_base_movement(event, movement) for movement in event.movements)
     quantity_projection = build_holding_projection(
@@ -340,6 +463,7 @@ def build_holding_persistence_projection(
 
     ordered = sorted(events, key=lambda event: (event.event_date, event.event_id))
     positions: dict[str, _CostPosition] = {}
+    realized_pnl: list[ExpectedRealizedPnlPlan] = []
     precision = QUANTITY.precision
     if precision is None:
         raise RuntimeError("Canonical QUANTITY must define precision.")
@@ -353,7 +477,15 @@ def build_holding_persistence_projection(
                 if asset.direction is MovementDirection.incoming:
                     _acquire(positions, asset)
                 else:
-                    _dispose(positions, asset)
+                    disposed_cost = _dispose(positions, asset)
+                    if event.source is ImportSource.anycoin:
+                        expected_realized_pnl = _expected_anycoin_realized_pnl(
+                            event,
+                            asset,
+                            disposed_cost,
+                        )
+                        if expected_realized_pnl is not None:
+                            realized_pnl.append(expected_realized_pnl)
             elif event.event_type is InvestmentEventType.asset_transfer:
                 if asset.direction is MovementDirection.incoming:
                     _acquire(positions, asset)
@@ -372,12 +504,17 @@ def build_holding_persistence_projection(
             name=None,
             asset_type=position.asset_type,
             quantity=position.quantity,
-            avg_buy_price=_exact(position.average, positive=True),
+            avg_buy_price=(
+                None if position.average is None else _exact(position.average, positive=True)
+            ),
             currency=position.currency,
             current_price=None,
             current_value=None,
             unrealized_pnl=None,
             realized_pnl=None,
+            cost_basis_by_currency=(
+                None if position.cost_basis is None else tuple(sorted(position.cost_basis.items()))
+            ),
         )
         for listing_id, position in sorted(positions.items())
         if (
@@ -387,7 +524,11 @@ def build_holding_persistence_projection(
     )
     if len(holdings) != len(positions):
         raise _fail()
-    return HoldingPersistenceProjection(account_id=account_id, holdings=holdings)
+    return HoldingPersistenceProjection(
+        account_id=account_id,
+        holdings=holdings,
+        realized_pnl=tuple(realized_pnl),
+    )
 
 
 def build_holding_delta_projection(
@@ -413,8 +554,24 @@ def build_holding_delta_projection(
         ):
             raise _fail()
         quantity = _exact(holding.quantity, positive=True)
-        average = _exact(holding.avg_buy_price, positive=True)
+        average = (
+            None if holding.avg_buy_price is None else _exact(holding.avg_buy_price, positive=True)
+        )
         currency = _currency(holding.currency)
+        cost_basis: dict[str, Decimal] | None = None
+        if holding.cost_basis_by_currency is not None:
+            cost_basis = {}
+            for component_currency, component_amount in holding.cost_basis_by_currency:
+                currency_key = _currency(component_currency)
+                if currency_key in cost_basis:
+                    raise _fail()
+                cost_basis[currency_key] = _exact(component_amount, positive=True)
+            if tuple(cost_basis.items()) != holding.cost_basis_by_currency or tuple(
+                cost_basis
+            ) != tuple(sorted(cost_basis)):
+                raise _fail()
+        if (average is None) != (cost_basis is None):
+            raise _fail()
         positions[holding.listing_id] = _CostPosition(
             asset_id=holding.asset_id,
             symbol=holding.symbol,
@@ -422,7 +579,10 @@ def build_holding_delta_projection(
             quantity=quantity,
             average=average,
             currency=currency,
+            cost_basis=cost_basis,
         )
+        if cost_basis == {}:
+            raise _fail()
 
     event_ids: set[str] = set()
     ordered = sorted(events, key=lambda event: (event.event_date, event.event_id))
@@ -466,6 +626,9 @@ def build_holding_delta_projection(
             current_value=None,
             unrealized_pnl=None,
             realized_pnl=None,
+            cost_basis_by_currency=(
+                None if position.cost_basis is None else tuple(sorted(position.cost_basis.items()))
+            ),
         )
         for listing_id, position in sorted(positions.items())
     )

@@ -16,6 +16,7 @@ from app.db.models.enums import (
     AccountType,
     AssetType,
     ExchangeRateSource,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
@@ -36,6 +37,9 @@ from app.modules.liabilities.evidence_service import (
 from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
 )
+from app.modules.market_data.source_policy import (
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
@@ -53,6 +57,8 @@ from app.modules.snapshots.evidence_service import (
     BuildAccountSnapshotEvidenceCommand,
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
+    SnapshotMetricUnsupportedReason,
+    UnsupportedSnapshotMetric,
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
@@ -120,6 +126,7 @@ def _transaction(
 def _holding_rows(
     *,
     holding_currency: str = "EUR",
+    listing_currency: str = "EUR",
 ) -> tuple[PersistedHoldingEvidence, ...]:
     asset = AssetModel(
         id="asset-1",
@@ -127,7 +134,7 @@ def _holding_rows(
         isin=None,
         name="ABC",
         asset_type=AssetType.stock,
-        currency="EUR",
+        currency=listing_currency,
         updated_at=NOW,
     )
     listing = AssetListingModel(
@@ -136,7 +143,7 @@ def _holding_rows(
         symbol="ABC",
         exchange="trading212",
         mic=None,
-        currency="EUR",
+        currency=listing_currency,
         country=None,
         provider=PriceSource.broker,
         provider_symbol="ABC",
@@ -153,7 +160,8 @@ def _holding_rows(
         asset_type=AssetType.stock,
         quantity=Decimal("2"),
         avg_buy_price=Decimal("10"),
-        currency=holding_currency,
+        currency=listing.currency,
+        cost_basis_by_currency={holding_currency: "20.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
@@ -170,7 +178,7 @@ def _price(
     timestamp: datetime,
     *,
     currency: str = "EUR",
-    source: PriceSource = PriceSource.broker,
+    source: PriceSource = PriceSource.twelve_data,
 ) -> PriceSnapshotModel:
     return PriceSnapshotModel(
         id=price_id,
@@ -190,7 +198,7 @@ def _rate(
     *,
     base_currency: str = "EUR",
     quote_currency: str = "CZK",
-    source: ExchangeRateSource = ExchangeRateSource.cnb,
+    source: ExchangeRateSource = ExchangeRateSource.twelve_data,
 ) -> ExchangeRateModel:
     return ExchangeRateModel(
         id=rate_id,
@@ -305,7 +313,8 @@ async def test_empty_mixed_currency_account_uses_requested_output_without_fx(
     assert result.selected_historical_exchange_rate_ids == ()
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         (),
-        "CZK",
+        "EUR",
+        source=ExchangeRateSource.twelve_data,
         through=NOW,
     )
 
@@ -318,6 +327,7 @@ async def test_empty_rate_repository_request_issues_no_sql() -> None:
     result = await repository.load_exchange_rate_candidates(
         (),
         "EUR",
+        source=ExchangeRateSource.twelve_data,
         through=NOW,
     )
 
@@ -423,7 +433,7 @@ async def test_malformed_persisted_account_fails_closed(corruption: str) -> None
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.bank, AccountType.cash, AccountType.savings],
+    [AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card],
 )
 async def test_cash_account_balance_uses_complete_signed_transaction_history(
     account_type: AccountType,
@@ -570,41 +580,34 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
 
 
 @pytest.mark.asyncio
-async def test_mixed_currency_investment_selects_only_direct_czk_pivot_legs() -> None:
+async def test_mixed_currency_investment_selects_only_direct_output_pairs() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
-        load_holdings=_holding_rows(holding_currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="GBP"),
         load_active_events=(_event(InvestmentEventType.interest),),
         load_active_movements=(_movement(currency="CHF"),),
         load_price_candidates=(_price("price-gbp", "15", NOW, currency="GBP"),),
         load_exchange_rate_candidates=(
             _rate(
                 "rate-usd",
-                "18",
+                "0.9",
                 NOW,
                 base_currency="USD",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
             _rate(
                 "rate-chf",
-                "21",
+                "1.05",
                 NOW,
                 base_currency="CHF",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
             _rate(
                 "rate-gbp",
-                "24",
+                "1.2",
                 NOW,
                 base_currency="GBP",
-                quote_currency="CZK",
-            ),
-            _rate(
-                "rate-eur",
-                "20",
-                NOW,
-                base_currency="EUR",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
         ),
     )
@@ -628,31 +631,31 @@ async def test_mixed_currency_investment_selects_only_direct_czk_pivot_legs() ->
     )
     assert result.selected_snapshot_exchange_rate_ids == (
         "rate-chf",
-        "rate-eur",
         "rate-gbp",
         "rate-usd",
     )
     assert result.selected_historical_exchange_rate_ids == ()
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
-        ("CHF", "EUR", "GBP", "USD"),
-        "CZK",
+        ("CHF", "GBP", "USD"),
+        "EUR",
+        source=ExchangeRateSource.twelve_data,
         through=NOW,
     )
 
 
 @pytest.mark.asyncio
-async def test_account_currency_pivot_rejects_non_cnb_observation() -> None:
+async def test_account_currency_rejects_non_twelve_data_observation() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="EUR"),
-        load_holdings=_holding_rows(holding_currency="EUR"),
+        load_holdings=_holding_rows(holding_currency="EUR", listing_currency="USD"),
         load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),
         load_exchange_rate_candidates=(
-            _rate("eur-czk", "20", NOW, base_currency="EUR"),
             _rate(
-                "usd-czk",
-                "18",
+                "usd-eur",
+                "0.9",
                 NOW,
                 base_currency="USD",
+                quote_currency="EUR",
                 source=ExchangeRateSource.ecb,
             ),
         ),
@@ -666,41 +669,51 @@ async def test_account_currency_pivot_rejects_non_cnb_observation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_czk_output_rejects_non_twelve_data_observation() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.bank, currency="EUR"),
+        load_active_transactions=(
+            _transaction("transaction-eur", "10", TransactionType.income, currency="EUR"),
+        ),
+        load_exchange_rate_candidates=(
+            _rate(
+                "yahoo-eur-czk",
+                "25",
+                NOW,
+                source=ExchangeRateSource.yahoo_finance,
+            ),
+        ),
+    )
+
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command(output_currency="CZK"))
+
+
+@pytest.mark.asyncio
 async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_separate() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
-        load_holdings=_holding_rows(holding_currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="USD"),
         load_active_events=(_event(),),
         load_active_movements=(_movement(currency="USD"),),
         load_price_candidates=(_price("price-usd", "15", NOW, currency="USD"),),
         load_exchange_rate_candidates=(
             _rate(
                 "event-usd",
-                "16",
+                "0.8",
                 EARLIER,
                 base_currency="USD",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
             _rate(
                 "snapshot-usd",
-                "18",
+                "0.9",
                 NOW,
                 base_currency="USD",
-                quote_currency="CZK",
-            ),
-            _rate(
-                "event-eur",
-                "20",
-                EARLIER,
-                base_currency="EUR",
-                quote_currency="CZK",
-            ),
-            _rate(
-                "snapshot-eur",
-                "20",
-                NOW,
-                base_currency="EUR",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
         ),
     )
@@ -717,14 +730,8 @@ async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_sepa
         Decimal("8.000000"),
         (CurrencyAmount("USD", Decimal("10.000000")),),
     )
-    assert result.selected_snapshot_exchange_rate_ids == (
-        "snapshot-eur",
-        "snapshot-usd",
-    )
-    assert result.selected_historical_exchange_rate_ids == (
-        "event-eur",
-        "event-usd",
-    )
+    assert result.selected_snapshot_exchange_rate_ids == ("snapshot-usd",)
+    assert result.selected_historical_exchange_rate_ids == ("event-usd",)
 
 
 @pytest.mark.asyncio
@@ -737,18 +744,11 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
         ),
         load_exchange_rate_candidates=(
             _rate(
-                "usd-czk",
-                "18",
+                "usd-eur",
+                "0.9",
                 NOW,
                 base_currency="USD",
-                quote_currency="CZK",
-            ),
-            _rate(
-                "eur-czk",
-                "20",
-                NOW,
-                base_currency="EUR",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
         ),
     )
@@ -764,7 +764,7 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
         CurrencyAmount("EUR", Decimal("20.000000")),
         CurrencyAmount("USD", Decimal("100.000000")),
     )
-    assert result.selected_snapshot_exchange_rate_ids == ("eur-czk", "usd-czk")
+    assert result.selected_snapshot_exchange_rate_ids == ("usd-eur",)
     assert result.selected_historical_exchange_rate_ids == ()
     structural_zero = ExactSnapshotMetric(Decimal(0), ())
     assert result.net_deposits == structural_zero
@@ -874,12 +874,12 @@ async def test_mixed_currency_cash_preserves_native_breakdown_and_unsupported_me
                 quote_currency="EUR",
             ),
             _rate(
-                "manual",
+                "same-active-source",
                 "0.9",
                 NOW,
                 base_currency="USD",
                 quote_currency="EUR",
-                source=ExchangeRateSource.manual,
+                source=ExchangeRateSource.twelve_data,
             ),
         ),
     ],
@@ -921,13 +921,86 @@ async def test_future_price_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_free_selects_yahoo_and_ignores_newer_canonical_price() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(),
+        load_price_candidates=(
+            _price("yahoo", "15", EARLIER, source=PriceSource.yahoo_finance),
+            _price("twelve-newer", "99", NOW, source=PriceSource.twelve_data),
+        ),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    ).build(_command())
+
+    assert result.selected_price_ids == ("yahoo",)
+
+
+@pytest.mark.asyncio
+async def test_canonical_policy_rejects_yahoo_only_price_evidence() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(),
+        load_price_candidates=(_price("yahoo", "15", NOW, source=PriceSource.yahoo_finance),),
+    )
+
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+        ).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_local_free_selects_yahoo_direct_fx_and_ignores_twelve_data() -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="USD"),
+        load_holdings=_holding_rows(holding_currency="USD", listing_currency="USD"),
+        load_price_candidates=(
+            _price("yahoo-price", "15", NOW, currency="USD", source=PriceSource.yahoo_finance),
+        ),
+        load_exchange_rate_candidates=(
+            _rate(
+                "yahoo-rate",
+                "0.9",
+                NOW,
+                base_currency="USD",
+                quote_currency="EUR",
+                source=ExchangeRateSource.yahoo_finance,
+            ),
+            _rate(
+                "twelve-rate",
+                "0.8",
+                NOW,
+                base_currency="USD",
+                quote_currency="EUR",
+                source=ExchangeRateSource.twelve_data,
+            ),
+        ),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    ).build(_command(output_currency="EUR"))
+
+    assert result.selected_price_ids == ("yahoo-price",)
+    assert result.selected_snapshot_exchange_rate_ids == ("yahoo-rate",)
+
+
+@pytest.mark.asyncio
 async def test_same_timestamp_price_ambiguity_fails_closed() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="EUR"),
         load_holdings=_holding_rows(),
         load_price_candidates=(
             _price("broker", "15", NOW),
-            _price("manual", "15", NOW, source=PriceSource.manual),
+            _price("second-provider-row", "15", NOW, source=PriceSource.twelve_data),
         ),
     )
     with pytest.raises(AccountSnapshotEvidenceStateError):
@@ -945,7 +1018,7 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
         load_price_candidates=(_price("price", "15", NOW),),
         load_exchange_rate_candidates=(
             _rate("ecb", "25", NOW),
-            _rate("manual", "25", NOW, source=ExchangeRateSource.manual),
+            _rate("second-provider-row", "25", NOW, source=ExchangeRateSource.twelve_data),
         ),
     )
     with pytest.raises(AccountSnapshotEvidenceStateError):
@@ -958,7 +1031,7 @@ async def test_same_timestamp_fx_ambiguity_fails_closed() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 async def test_liability_accounts_use_selected_canonical_balance_once(
     account_type: AccountType,
@@ -1028,23 +1101,16 @@ def _selected_liability(
 
 
 @pytest.mark.asyncio
-async def test_mixed_currency_liability_selects_and_audits_czk_pivot_legs() -> None:
+async def test_mixed_currency_liability_selects_and_audits_direct_pair() -> None:
     repository = _repository(
         load_account=_account(AccountType.loan, currency="USD"),
         load_exchange_rate_candidates=(
             _rate(
-                "usd-czk",
-                "18",
+                "usd-eur",
+                "0.9",
                 NOW,
                 base_currency="USD",
-                quote_currency="CZK",
-            ),
-            _rate(
-                "eur-czk",
-                "20",
-                NOW,
-                base_currency="EUR",
-                quote_currency="CZK",
+                quote_currency="EUR",
             ),
         ),
     )
@@ -1062,7 +1128,7 @@ async def test_mixed_currency_liability_selects_and_audits_czk_pivot_legs() -> N
     assert result.valuation.liabilities_value_by_currency == (
         CurrencyAmount("USD", Decimal("115.000000")),
     )
-    assert result.selected_snapshot_exchange_rate_ids == ("eur-czk", "usd-czk")
+    assert result.selected_snapshot_exchange_rate_ids == ("usd-eur",)
     assert result.selected_historical_exchange_rate_ids == ()
     assert result.selected_liability_balance_id == "liability-balance-1"
     assert result.selected_liability_effective_at == EARLIER
@@ -1108,12 +1174,12 @@ async def test_mixed_currency_liability_selects_and_audits_czk_pivot_legs() -> N
                 quote_currency="EUR",
             ),
             _rate(
-                "manual",
+                "same-active-source",
                 "0.9",
                 NOW,
                 base_currency="USD",
                 quote_currency="EUR",
-                source=ExchangeRateSource.manual,
+                source=ExchangeRateSource.twelve_data,
             ),
         ),
     ],
@@ -1231,6 +1297,94 @@ async def test_asset_transfer_fails_when_externality_is_not_persisted() -> None:
             MagicMock(),
             repository=repository,
         ).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_asset_transfer_with_unknown_basis_keeps_value_and_marks_only_unsupported_metrics() -> (
+    None
+):
+    holdings = _holding_rows()
+    holdings[0].holding.avg_buy_price = None
+    holdings[0].holding.cost_basis_by_currency = None
+    event = _event(InvestmentEventType.asset_transfer)
+    movement = _movement()
+    movement.kind = InvestmentMovementKind.asset
+    movement.asset_id = "asset-1"
+    movement.listing_id = "listing-1"
+    movement.quantity = Decimal("2")
+    movement.currency = "ABC"
+    movement.price_per_unit = None
+    movement.value_amount = None
+    movement.value_currency = None
+    movement.source_symbol = "ABC"
+    movement.source_asset_type = AssetType.stock
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=holdings,
+        load_active_events=(event,),
+        load_active_movements=(movement,),
+        load_price_candidates=(_price("price", "15", NOW),),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+    ).build(_command(output_currency="EUR", calculation_version=3))
+
+    assert result.valuation.investment_value == Decimal("30")
+    assert result.valuation.total_value == Decimal("30")
+    assert result.valuation.investment_cost_basis is None
+    assert result.valuation.items[0].cost_basis is None
+    assert result.net_deposits == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+    )
+    assert result.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
+    assert result.unrealized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.cost_basis_evidence_unavailable
+    )
+    assert result.fees == ExactSnapshotMetric(Decimal(0), ())
+    assert result.taxes == ExactSnapshotMetric(Decimal(0), ())
+
+
+@pytest.mark.asyncio
+async def test_missing_anycoin_sell_realized_pnl_fails_closed_instead_of_publishing_zero() -> None:
+    event = _event(InvestmentEventType.trade)
+    event.id = "event-sell"
+    event.source = ImportSource.anycoin
+    asset = _movement()
+    asset.id = "movement-asset"
+    asset.event_id = event.id
+    asset.kind = InvestmentMovementKind.asset
+    asset.direction = MovementDirection.outgoing
+    asset.quantity = Decimal("1")
+    asset.currency = "ABC"
+    asset.asset_id = "asset-1"
+    asset.listing_id = "listing-1"
+    asset.price_per_unit = Decimal("10")
+    asset.value_amount = Decimal("10")
+    asset.value_currency = "EUR"
+    asset.source_symbol = "ABC"
+    asset.source_asset_type = AssetType.stock
+    cash = _movement()
+    cash.id = "movement-cash"
+    cash.event_id = event.id
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=_repository(
+            load_account=_account(AccountType.exchange, currency="EUR"),
+            load_holdings=_holding_rows(),
+            load_active_events=(event,),
+            load_active_movements=(asset, cash),
+            load_price_candidates=(_price("price", "15", NOW),),
+        ),
+    ).build(_command(output_currency="EUR", calculation_version=3))
+
+    assert result.realized_pnl == UnsupportedSnapshotMetric(
+        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+    )
 
 
 def _empty_valuation() -> ExpectedAccountSnapshotValuation:

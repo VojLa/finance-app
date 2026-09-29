@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, event, func, select, update
@@ -18,6 +19,12 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -48,6 +55,14 @@ pytestmark = pytest.mark.skipif(
     reason="DATABASE_URL is required",
 )
 NOW = datetime(2033, 8, 1)
+_RUN_ID = uuid4().hex
+_SCOPED_PREFIXES: dict[str, str] = {}
+
+
+def _scope(prefix: str) -> str:
+    if prefix in _SCOPED_PREFIXES.values():
+        return prefix
+    return _SCOPED_PREFIXES.setdefault(prefix, f"{prefix}-{_RUN_ID}")
 
 
 def _engine() -> AsyncEngine:
@@ -77,6 +92,7 @@ async def _repeatable_session(
 
 
 def _user(prefix: str, *, currency: str = "CZK") -> UserModel:
+    prefix = _scope(prefix)
     return UserModel(
         id=f"{prefix}-user",
         email=f"{prefix}@example.test",
@@ -96,6 +112,7 @@ def _account(
     currency: str = "CZK",
     archived: bool = False,
 ) -> AccountModel:
+    prefix = _scope(prefix)
     return AccountModel(
         id=f"{prefix}-{suffix}",
         name=suffix,
@@ -117,6 +134,7 @@ def _membership(
     role: AccountMemberRole = AccountMemberRole.owner,
     accepted_at: datetime | None = NOW,
 ) -> AccountMemberModel:
+    prefix = _scope(prefix)
     return AccountMemberModel(
         id=f"{prefix}-member-{account.id}",
         account_id=account.id,
@@ -139,8 +157,10 @@ def _snapshot(
     source: SnapshotSource = SnapshotSource.manual_recalculation,
     is_recalculated: bool = True,
 ) -> AccountSnapshotModel:
+    prefix = _scope(prefix)
     return AccountSnapshotModel(
         id=f"{prefix}-snapshot-{account.id}",
+        generation_id=f"{prefix}-generation",
         account_id=account.id,
         timestamp=NOW,
         granularity=SnapshotGranularity.day,
@@ -173,6 +193,7 @@ def _snapshot(
 
 
 def _command(prefix: str) -> BuildSnapshotRefreshCoverageCommand:
+    prefix = _scope(prefix)
     return BuildSnapshotRefreshCoverageCommand(
         user_id=f"{prefix}-user",
         snapshot_timestamp=NOW,
@@ -186,6 +207,7 @@ def _command(prefix: str) -> BuildSnapshotRefreshCoverageCommand:
 
 
 async def _cleanup(prefix: str) -> None:
+    prefix = _scope(prefix)
     engine = _engine()
     async with AsyncSession(engine) as session:
         user_ids = tuple(
@@ -205,6 +227,11 @@ async def _cleanup(prefix: str) -> None:
         )
         if snapshot_ids:
             await session.execute(
+                delete(AccountSnapshotCanonicalBoundaryModel).where(
+                    AccountSnapshotCanonicalBoundaryModel.snapshot_id.in_(snapshot_ids)
+                )
+            )
+            await session.execute(
                 delete(AccountSnapshotItemModel).where(
                     AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
                 )
@@ -220,7 +247,21 @@ async def _cleanup(prefix: str) -> None:
             await session.execute(
                 delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
             )
+            await session.execute(
+                delete(AccountCanonicalStateModel).where(
+                    AccountCanonicalStateModel.account_id.in_(account_ids)
+                )
+            )
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
+        generation_id = f"{prefix}-generation"
+        await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.generation_id == generation_id
+            )
+        )
+        await session.execute(
+            delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == generation_id)
+        )
         if user_ids:
             await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
         await session.commit()
@@ -235,17 +276,64 @@ async def _seed(
     snapshots: tuple[AccountSnapshotModel, ...] = (),
     currency: str = "CZK",
 ) -> None:
+    prefix = _scope(prefix)
     engine = _engine()
     async with AsyncSession(engine, expire_on_commit=False) as session:
         session.add(_user(prefix, currency=currency))
         session.add_all(accounts)
+        await session.flush()
+        for account in accounts:
+            if not account.is_archived:
+                await session.execute(
+                    update(AccountCanonicalStateModel)
+                    .where(AccountCanonicalStateModel.account_id == account.id)
+                    .values(
+                        last_revision=1,
+                        last_investment_revision=1,
+                        holding_revision=1,
+                        updated_at=NOW,
+                    )
+                )
+        snapshots_for_generation = tuple(snapshots)
+        generation_id = f"{prefix}-generation"
+        session.add(
+            SnapshotGenerationModel(
+                id=generation_id,
+                state="published",
+                created_at=NOW,
+                published_at=NOW,
+            )
+        )
+        session.add(
+            SnapshotGenerationTargetModel(
+                generation_id=generation_id,
+                user_id=f"{prefix}-user",
+                created_at=NOW,
+                staged_by_job_id=None,
+                staged_lease_version=None,
+                staged_lease_owner=None,
+            )
+        )
         await session.flush()
         session.add_all(
             memberships
             if memberships is not None
             else tuple(_membership(prefix, account) for account in accounts)
         )
-        session.add_all(snapshots)
+        session.add_all(snapshots_for_generation)
+        await session.flush()
+        session.add_all(
+            AccountSnapshotCanonicalBoundaryModel(
+                snapshot_id=snapshot.id,
+                account_id=snapshot.account_id,
+                canonical_revision=1,
+                investment_revision=1,
+                holding_revision=1,
+                selected_liability_balance_id=None,
+                created_at=NOW,
+            )
+            for snapshot in snapshots_for_generation
+        )
         await session.commit()
     await engine.dispose()
 
@@ -256,6 +344,7 @@ async def _build(
     *,
     repository: SnapshotRefreshEvidenceRepository | None = None,
 ) -> CompleteSnapshotRefreshCoverage:
+    prefix = _scope(prefix)
     async with _repeatable_session(engine) as session:
         return await SnapshotRefreshEvidenceService(
             session,
@@ -264,6 +353,7 @@ async def _build(
 
 
 async def _state(prefix: str) -> tuple[object, ...]:
+    prefix = _scope(prefix)
     engine = _engine()
     async with AsyncSession(engine) as session:
         users = tuple(
@@ -404,7 +494,9 @@ async def test_viewer_exact_snapshot_returns_only_reuse_identity() -> None:
     assert result.refresh_target_count == 0
     assert result.reuse_only_target_count == 1
     assert result.selected_reuse_snapshots[0].account_id == account.id
-    assert result.selected_reuse_snapshots[0].snapshot_id == (f"{prefix}-snapshot-{account.id}")
+    assert result.selected_reuse_snapshots[0].snapshot_id == (
+        f"{_scope(prefix)}-snapshot-{account.id}"
+    )
     assert await _state(prefix) == before
     await _cleanup(prefix)
 
@@ -578,10 +670,19 @@ async def test_current_archive_unsupported_incomplete_and_foreign_semantics() ->
         await engine.dispose()
     await _cleanup(archived_prefix)
 
-    for prefix, account_type, accepted_at in (
-        ("k5b-unsupported", AccountType.bank, NOW),
-        ("k5b-incomplete", AccountType.broker, None),
-    ):
+    supported_prefix = "k5b-cash-like"
+    await _cleanup(supported_prefix)
+    supported = _account(supported_prefix, "bank", account_type=AccountType.bank)
+    await _seed(supported_prefix, (supported,))
+    engine = _engine()
+    try:
+        result = await _build(engine, supported_prefix)
+        assert tuple(target.account_id for target in result.refresh_targets) == (supported.id,)
+    finally:
+        await engine.dispose()
+    await _cleanup(supported_prefix)
+
+    for prefix, account_type, accepted_at in (("k5b-incomplete", AccountType.broker, None),):
         await _cleanup(prefix)
         account = _account(prefix, "account", account_type=account_type)
         await _seed(
@@ -767,6 +868,16 @@ async def test_repeatable_read_membership_race_is_one_old_then_new_view() -> Non
                 ) as writer:
                     writer.add(concurrent)
                     await writer.flush()
+                    await writer.execute(
+                        update(AccountCanonicalStateModel)
+                        .where(AccountCanonicalStateModel.account_id == concurrent.id)
+                        .values(
+                            last_revision=1,
+                            last_investment_revision=1,
+                            holding_revision=1,
+                            updated_at=NOW,
+                        )
+                    )
                     writer.add(_membership(prefix, concurrent))
                     await writer.commit()
                 resume.set()
@@ -815,7 +926,7 @@ async def test_repeatable_read_base_currency_race_is_coherent() -> None:
                 async with AsyncSession(engine) as writer:
                     await writer.execute(
                         update(UserModel)
-                        .where(UserModel.id == f"{prefix}-user")
+                        .where(UserModel.id == f"{_scope(prefix)}-user")
                         .values(base_currency="EUR")
                     )
                     await writer.commit()

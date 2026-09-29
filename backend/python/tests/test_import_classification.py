@@ -481,7 +481,7 @@ def _anycoin_event(*, action: str = "buy") -> dict[str, object]:
         "raw_action": "grouped_trade",
         "asset": {"symbol": "BTC", "isin": None, "name": None, "asset_type_hint": "crypto"},
         "quantity": "1",
-        "price": None if transfer else {"amount": "100", "currency": "EUR"},
+        "price": None,
         "total": None if transfer else {"amount": "100", "currency": "EUR"},
         "fee": None,
         "conversion": None,
@@ -489,6 +489,7 @@ def _anycoin_event(*, action: str = "buy") -> dict[str, object]:
         "is_promotional": False,
         "note": None,
         "asset_direction": "in" if transfer else None,
+        "quote_currency": "EUR",
     }
 
 

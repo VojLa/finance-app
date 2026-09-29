@@ -47,7 +47,6 @@ def test_python_api_inventory_contains_the_current_public_boundaries() -> None:
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/classify"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/post"),
         ("POST", "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post"),
-        ("POST", "/api/v1/accounts/{account_id}/imports/finalize"),
         ("POST", "/api/v1/snapshot-refresh/recalculate"),
         ("POST", "/api/v1/portfolio/snapshot"),
         ("POST", "/api/v1/dashboard/snapshot"),
@@ -94,12 +93,17 @@ def test_active_browser_boundaries_are_thin_python_adapters() -> None:
 
     assert "createAccount" in accounts
     assert "handleImportPost" in imports
-    assert "runImportCanonicalWorkflow" in import_handler
-    assert "finalizeImportBatches" in import_handler
+    assert "startImportJob" in import_handler
     assert "runPortfolioSnapshotWorkflow" in portfolio
     assert "runDashboardSnapshotWorkflow" in dashboard
-    assert "readSnapshotBackedPortfolioHistory" in history
-    for forbidden in ("@/lib/prisma", "importCsvFilesAsync", "getPortfolioSnapshotHistory"):
+    assert "readGenerationPortfolioHistory" in history
+    for forbidden in (
+        "@/lib/prisma",
+        "importCsvFilesAsync",
+        "getPortfolioSnapshotHistory",
+        "runImportCanonicalWorkflow",
+        "finalizeImportBatches",
+    ):
         assert forbidden not in active
 
 
@@ -114,14 +118,15 @@ def test_release_has_backend_schema_and_write_free_frontend_remote_gates() -> No
     for command in (
         "npm ci",
         "npm run api:python:check",
+        "npm run boundary:check",
         "npm test",
         "npm run lint",
         "npx tsc --noEmit --incremental false",
-        "npm run db:validate",
         "git diff --check",
         'test -z "$(git status --porcelain)"',
     ):
         assert command in frontend
+    assert "npm run db:validate" not in frontend
 
 
 def test_release_roadmap_records_complete_version_0_1_closure() -> None:
@@ -150,4 +155,5 @@ def test_release_roadmap_records_complete_version_0_1_closure() -> None:
     )
     assert "0.1-R10-E2 — canonical current MONEY serialization: implemented" in status
     assert "Version 0.1 — COMPLETE / Architecture Locked" in status
-    assert "Version 0.1 is not complete" not in status
+    assert "R11 closed the strict Python/TS" in status
+    assert "boundary and removed the legacy TypeScript/Prisma runtime" in status

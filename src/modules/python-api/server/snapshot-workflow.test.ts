@@ -2,10 +2,20 @@ import "server-only"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { dashboardSnapshotFixture } from "@/test/dashboard-snapshot-fixture"
-import { portfolioSnapshotFixture } from "@/test/portfolio-snapshot-fixture"
+import {
+  anycoinIncompleteDashboardSnapshotFixture,
+  dashboardSnapshotFixture,
+} from "@/test/dashboard-snapshot-fixture"
+import {
+  anycoinIncompletePortfolioSnapshotFixture,
+  portfolioSnapshotFixture,
+} from "@/test/portfolio-snapshot-fixture"
 import type { PythonSnapshotApi } from "./client"
-import { runDashboardSnapshotWorkflow, runPortfolioSnapshotWorkflow } from "./snapshot-workflow"
+import {
+  refreshPortfolioSnapshotWorkflow,
+  runDashboardSnapshotWorkflow,
+  runPortfolioSnapshotWorkflow,
+} from "./snapshot-workflow"
 
 const IDENTITY = { userId: "user-1", email: "user@example.test" }
 
@@ -19,6 +29,8 @@ function api(
     readDashboardSnapshot: vi.fn(),
     readCurrentPortfolio: vi.fn(async () => portfolio as never),
     readCurrentDashboard: vi.fn(async () => dashboard as never),
+    readPublishedPortfolio: vi.fn(async () => portfolio as never),
+    readPublishedDashboard: vi.fn(async () => dashboard as never),
   }
 }
 
@@ -34,15 +46,36 @@ describe("strict current portfolio workflow", () => {
     const client = api()
     const result = await runPortfolioSnapshotWorkflow(IDENTITY, client)
 
-    expect(result.data).toBe(await client.readCurrentPortfolio())
+    expect(result.data).toBe(await client.readPublishedPortfolio())
     expect(result.current).toEqual({
       asOf: portfolioSnapshotFixture().asOf,
       baselineTimestamp: portfolioSnapshotFixture().baselineTimestamp,
       historyAnchorSnapshotId: "net-worth-baseline",
       currency: "EUR",
       calculationVersion: 7,
+      valuationTimestamp: "2032-08-02T12:29:00.000",
+      isStale: false,
     })
     expect(client.recalculateSnapshotRefresh).not.toHaveBeenCalled()
+  })
+
+  it("recalculates before reading the refreshed published portfolio", async () => {
+    const calls: string[] = []
+    const client = api()
+    vi.mocked(client.recalculateSnapshotRefresh).mockImplementation(async () => {
+      calls.push("recalculate")
+      return undefined as never
+    })
+    vi.mocked(client.readPublishedPortfolio).mockImplementation(async () => {
+      calls.push("published")
+      return portfolioSnapshotFixture()
+    })
+
+    await refreshPortfolioSnapshotWorkflow(IDENTITY, client)
+
+    expect(client.recalculateSnapshotRefresh).toHaveBeenCalledOnce()
+    expect(client.readPublishedPortfolio).toHaveBeenCalledOnce()
+    expect(calls).toEqual(["recalculate", "published"])
   })
 
   it.each([
@@ -54,6 +87,69 @@ describe("strict current portfolio workflow", () => {
       runPortfolioSnapshotWorkflow(IDENTITY, api({ ...portfolioSnapshotFixture(), ...mutation }))
     )
   })
+
+  it.each([
+    ["missing cost breakdown", undefined],
+    ["empty cost breakdown", []],
+    [
+      "duplicate cost currency",
+      [
+        { currency: "EUR", amount: "1.0000000000" },
+        { currency: "EUR", amount: "2.0000000000" },
+      ],
+    ],
+    [
+      "unsorted cost currencies",
+      [
+        { currency: "USD", amount: "1.0000000000" },
+        { currency: "EUR", amount: "2.0000000000" },
+      ],
+    ],
+    ["zero cost component", [{ currency: "EUR", amount: "0.0000000000" }]],
+  ])("fails closed on %s", async (_label, nativeCostBasisByCurrency) => {
+    const payload = portfolioSnapshotFixture()
+    payload.accounts[0].positions[0] = {
+      ...payload.accounts[0].positions[0],
+      nativeCostBasisByCurrency,
+    } as never
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
+
+  it("accepts one correlated incomplete Anycoin branch without changing quantity or value", async () => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    const result = await runPortfolioSnapshotWorkflow(IDENTITY, api(payload))
+    const anycoin = result.data.accounts[1]?.positions[0]
+
+    expect(result.data.summary.investmentCostBasis).toBeNull()
+    expect(result.data.summary.netDepositsValue).toBeNull()
+    expect(result.data.summary.realizedPnlValue).toBeNull()
+    expect(result.data.summary.unrealizedPnlValue).toBeNull()
+    expect(anycoin).toMatchObject({
+      quantity: "1.0000000000",
+      value: "40.000000",
+      costBasis: null,
+      unrealizedPnl: null,
+      nativeCostBasis: null,
+    })
+    expect(result.data.accounts[0]?.positions[0]?.costBasis).toBe("100.0000010000")
+  })
+
+  it.each([
+    ["summary cost only", { investmentCostBasis: "0.000000" }],
+    ["summary deposits only", { netDepositsValue: "0.000000" }],
+  ])("rejects a partial-null Anycoin %s branch", async (_label, summaryMutation) => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    payload.summary = { ...payload.summary, ...summaryMutation } as never
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
+
+  it("rejects a partial-null position instead of substituting zero", async () => {
+    const payload = anycoinIncompletePortfolioSnapshotFixture()
+    const position = payload.accounts[1]?.positions[0]
+    if (position === undefined) throw new Error("Missing Anycoin fixture position.")
+    ;(position as { costBasis: string | null }).costBasis = "0.0000000000"
+    await contractFailure(runPortfolioSnapshotWorkflow(IDENTITY, api(payload)))
+  })
 })
 
 describe("strict current dashboard workflow", () => {
@@ -62,7 +158,7 @@ describe("strict current dashboard workflow", () => {
     const result = await runDashboardSnapshotWorkflow(IDENTITY, client)
 
     expect(result.data.accounts[0].netDepositsValue).toBe("1250.000000")
-    expect(client.readCurrentDashboard).toHaveBeenCalledOnce()
+    expect(client.readPublishedDashboard).toHaveBeenCalledOnce()
     expect(client.recalculateSnapshotRefresh).not.toHaveBeenCalled()
   })
 
@@ -85,5 +181,32 @@ describe("strict current dashboard workflow", () => {
         api(undefined, { ...dashboardSnapshotFixture, ...mutation })
       )
     )
+  })
+
+  it("preserves a correlated incomplete Anycoin dashboard branch", async () => {
+    const payload = anycoinIncompleteDashboardSnapshotFixture()
+    const result = await runDashboardSnapshotWorkflow(IDENTITY, api(undefined, payload))
+
+    expect(result.data.summary.investmentCostBasis).toBeNull()
+    expect(result.data.summary.netDepositsValue).toBeNull()
+    expect(result.data.summary.realizedPnlValue).toBeNull()
+    expect(result.data.summary.unrealizedPnlValue).toBeNull()
+    expect(result.data.topPositions.find(({ symbol }) => symbol === "BTC")).toMatchObject({
+      value: "2.000001",
+      unrealizedPnl: null,
+    })
+  })
+
+  it("rejects partial-null dashboard summary and account branches", async () => {
+    const summaryPayload = anycoinIncompleteDashboardSnapshotFixture()
+    ;(summaryPayload.summary as { investmentCostBasis: string | null }).investmentCostBasis =
+      "0.000000"
+    await contractFailure(runDashboardSnapshotWorkflow(IDENTITY, api(undefined, summaryPayload)))
+
+    const accountPayload = anycoinIncompleteDashboardSnapshotFixture()
+    const account = accountPayload.accounts[0]
+    if (account === undefined) throw new Error("Missing Anycoin fixture account.")
+    ;(account as { netDepositsValue: string | null }).netDepositsValue = "0.000000"
+    await contractFailure(runDashboardSnapshotWorkflow(IDENTITY, api(undefined, accountPayload)))
   })
 })

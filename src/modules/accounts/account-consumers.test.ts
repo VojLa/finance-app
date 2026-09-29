@@ -39,8 +39,8 @@ describe("typed account collection consumers", () => {
     }
 
     const importSource = await readFile(path.join(process.cwd(), "src/app/import/page.tsx"), "utf8")
-    expect(importSource).toContain('accountLoadState.status === "error"')
-    expect(importSource).toContain('accountLoadState.status === "ready"')
+    expect(importSource).toContain('accounts.status === "error"')
+    expect(importSource).toContain('accounts.status === "ready"')
 
     const portfolioAddSource = await readFile(
       path.join(process.cwd(), "src/app/portfolio/add/page.tsx"),

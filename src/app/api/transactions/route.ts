@@ -1,142 +1,148 @@
+import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
-import { getServerSession } from "next-auth"
-import { authOptions } from "@/lib/auth"
-import { prisma, serializePrisma } from "@/lib/prisma"
-import { getAccessibleAccountIds, assertAccountAccess } from "@/lib/accountAccess"
 
-const TX_INCLUDE = {
-  category: true,
-  account: { select: { name: true, currency: true } },
-} as const
+import { authOptions } from "@/lib/auth"
+import { normalizeAdapterError } from "@/modules/python-api/server/errors"
+import { createPythonTransactionApi } from "@/modules/transactions/server/transaction-api"
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
+const TRANSACTION_TYPES = new Set(["income", "expense", "transfer"])
+
+function unauthorized() {
+  return NextResponse.json(
+    { error: "Přihlášení je vyžadováno" },
+    { status: 401, headers: NO_STORE_HEADERS }
+  )
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new SyntaxError("Invalid JSON object")
+  }
+  return value as Record<string, unknown>
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : ""
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function identity(session: { user: { id: string; email?: string | null } }) {
+  return { userId: session.user.id, email: session.user.email || undefined }
+}
+
+function errorResponse(error: unknown) {
+  if (error instanceof SyntaxError) {
+    return NextResponse.json(
+      { error: "Neplatná data transakce" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    )
+  }
+  const mapped = normalizeAdapterError(error)
+  const message =
+    mapped.code === "transaction_not_found" || mapped.code === "account_not_found"
+      ? "Transakce nebo účet nebyly nalezeny"
+      : mapped.code === "transaction_category_invalid"
+        ? "Kategorie není pro tuto transakci dostupná"
+        : mapped.status === 409
+          ? "Transakci nelze bezpečně změnit"
+          : mapped.status === 422
+            ? "Zkontrolujte údaje transakce"
+            : "Transakční služba je dočasně nedostupná"
+  return NextResponse.json({ error: message }, { status: mapped.status, headers: NO_STORE_HEADERS })
+}
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  if (!session?.user?.id) return unauthorized()
 
-  const { searchParams } = req.nextUrl
-  const page = Math.max(1, parseInt(searchParams.get("page") ?? "1"))
-  const limit = 50
-  const type = searchParams.get("type")
-  const categoryId = searchParams.get("categoryId")
-  const accountId = searchParams.get("accountId")
-  const search = searchParams.get("q")
-
-  const accountIds = await getAccessibleAccountIds(session.user.id, "viewer")
-
-  if (accountId && !accountIds.includes(accountId)) {
-    return NextResponse.json(serializePrisma({ transactions: [], total: 0, page: 1, pages: 0 }))
+  const pageValue = Number.parseInt(req.nextUrl.searchParams.get("page") ?? "1", 10)
+  const rawType = req.nextUrl.searchParams.get("type") ?? undefined
+  const type = rawType && TRANSACTION_TYPES.has(rawType) ? rawType : undefined
+  try {
+    const result = await createPythonTransactionApi(identity(session)).list({
+      page: Number.isFinite(pageValue) ? Math.max(1, pageValue) : 1,
+      type: type as "income" | "expense" | "transfer" | undefined,
+      categoryId: req.nextUrl.searchParams.get("categoryId") || undefined,
+      accountId: req.nextUrl.searchParams.get("accountId") || undefined,
+      q: req.nextUrl.searchParams.get("q") || undefined,
+    })
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  const where = {
-    accountId: accountId ? accountId : { in: accountIds },
-    ...(type ? { type: type as "income" | "expense" | "transfer" } : {}),
-    ...(categoryId ? { categoryId } : {}),
-    ...(search
-      ? {
-          OR: [
-            { description: { contains: search, mode: "insensitive" as const } },
-            { counterparty: { contains: search, mode: "insensitive" as const } },
-          ],
-        }
-      : {}),
-  }
-
-  const [total, transactions] = await Promise.all([
-    prisma.transaction.count({ where }),
-    prisma.transaction.findMany({
-      where,
-      include: TX_INCLUDE,
-      orderBy: { date: "desc" },
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
-  ])
-
-  return NextResponse.json(
-    serializePrisma({ transactions, total, page, pages: Math.ceil(total / limit) })
-  )
 }
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { date, amount, currency, type, accountId, description, counterparty, note, categoryId } =
-    await req.json()
-
-  if (!date || amount == null || !currency || !type || !accountId) {
-    return NextResponse.json({ error: "Chybí povinná pole" }, { status: 400 })
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const input = record(await req.json())
+    const result = await createPythonTransactionApi(identity(session)).create({
+      date: text(input.date),
+      amount:
+        typeof input.amount === "number" || typeof input.amount === "string" ? input.amount : "",
+      currency: text(input.currency),
+      type: text(input.type) as "income" | "expense" | "transfer",
+      accountId: text(input.accountId),
+      description: optionalText(input.description),
+      counterparty: optionalText(input.counterparty),
+      note: optionalText(input.note),
+      categoryId: optionalText(input.categoryId),
+      idempotencyKey: text(input.idempotencyKey),
+    })
+    return NextResponse.json(result, { status: 201, headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  const hasAccess = await assertAccountAccess(accountId, session.user.id, "editor")
-  if (!hasAccess) return NextResponse.json({ error: "Účet nenalezen" }, { status: 404 })
-
-  const tx = await prisma.transaction.create({
-    data: {
-      date: new Date(date),
-      amount,
-      currency,
-      type,
-      accountId,
-      description: description || null,
-      counterparty: counterparty || null,
-      note: note || null,
-      categoryId: categoryId || null,
-    },
-    include: TX_INCLUDE,
-  })
-
-  return NextResponse.json(serializePrisma(tx), { status: 201 })
 }
 
 export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const body = await req.json()
-  const { id } = body
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const accountIds = await getAccessibleAccountIds(session.user.id, "editor")
-
-  const tx = await prisma.transaction.findFirst({ where: { id, accountId: { in: accountIds } } })
-  if (!tx) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
-
-  const data: Record<string, unknown> = {}
-  if ("categoryId" in body) data.categoryId = body.categoryId || null
-  if ("date" in body) data.date = new Date(body.date)
-  if ("amount" in body) data.amount = body.amount
-  if ("currency" in body) data.currency = body.currency
-  if ("type" in body) data.type = body.type
-  if ("description" in body) data.description = body.description || null
-  if ("counterparty" in body) data.counterparty = body.counterparty || null
-  if ("note" in body) data.note = body.note || null
-
-  const updated = await prisma.transaction.update({
-    where: { id },
-    data,
-    include: TX_INCLUDE,
-  })
-
-  return NextResponse.json(serializePrisma(updated))
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const input = record(await req.json())
+    const transactionId = text(input.id)
+    const payload: Record<string, unknown> = {
+      idempotencyKey: text(input.idempotencyKey),
+    }
+    for (const field of [
+      "date",
+      "amount",
+      "currency",
+      "type",
+      "description",
+      "counterparty",
+      "note",
+      "categoryId",
+    ]) {
+      if (field in input) payload[field] = input[field]
+    }
+    const result = await createPythonTransactionApi(identity(session)).update(
+      transactionId,
+      payload as Parameters<ReturnType<typeof createPythonTransactionApi>["update"]>[1]
+    )
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }
 
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const id = req.nextUrl.searchParams.get("id")
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const accountIds = await getAccessibleAccountIds(session.user.id, "editor")
-
-  const tx = await prisma.transaction.findFirst({ where: { id, accountId: { in: accountIds } } })
-  if (!tx) return NextResponse.json({ error: "Nenalezeno" }, { status: 404 })
-
-  await prisma.$transaction([
-    prisma.transactionSplit.deleteMany({ where: { transactionId: id } }),
-    prisma.transaction.delete({ where: { id } }),
-  ])
-  return NextResponse.json({ ok: true })
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const transactionId = req.nextUrl.searchParams.get("id") ?? ""
+    const idempotencyKey = req.nextUrl.searchParams.get("idempotencyKey") ?? ""
+    const result = await createPythonTransactionApi(identity(session)).delete(transactionId, {
+      idempotencyKey,
+    })
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }

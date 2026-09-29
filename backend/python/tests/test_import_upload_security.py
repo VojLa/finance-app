@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from hashlib import sha256
 from pathlib import Path
@@ -13,6 +14,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.enums import ImportStatus
 from app.modules.accounts.access import AccountAccessDeniedError
 from app.modules.imports.service import (
+    ImportBatchAlreadyImportedError,
     ImportBatchNotFoundError,
     ImportBatchService,
     ImportUploadContentTypeError,
@@ -20,7 +22,12 @@ from app.modules.imports.service import (
     ImportUploadStateError,
     ImportUploadTooLargeError,
 )
-from app.modules.imports.storage import ImportFileMismatchError, LocalImportStorage
+from app.modules.imports.storage import (
+    ImportFileMismatchError,
+    ImportStorageBusyError,
+    LocalImportStorage,
+)
+from app.shared.errors import ApplicationError
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -296,6 +303,54 @@ async def test_concurrent_identical_and_conflicting_uploads_are_safe(tmp_path: P
     assert not list(tmp_path.rglob("publish.lock"))
 
 
+@pytest.mark.asyncio
+async def test_stale_publish_lock_is_recovered_after_process_crash(tmp_path: Path) -> None:
+    content = b"recoverable upload"
+    checksum = sha256(content).hexdigest()
+    storage = LocalImportStorage(tmp_path, lock_timeout_seconds=0.1, stale_lock_seconds=1)
+    destination = storage.path_for("stale-lock")
+    destination.parent.mkdir(parents=True)
+    lock_path = destination.parent / "publish.lock"
+    lock_path.write_text("dead-owner", encoding="utf-8")
+    os.utime(lock_path, (1, 1))
+
+    result = await storage.store(
+        batch_id="stale-lock",
+        chunks=_chunks(content),
+        max_bytes=100,
+        expected_size=len(content),
+        expected_checksum=checksum,
+    )
+
+    assert result.created is True
+    assert destination.read_bytes() == content
+    assert not lock_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_live_publish_lock_times_out_without_deleting_owner_lock(tmp_path: Path) -> None:
+    content = b"blocked upload"
+    checksum = sha256(content).hexdigest()
+    storage = LocalImportStorage(tmp_path, lock_timeout_seconds=0.02, stale_lock_seconds=60)
+    destination = storage.path_for("live-lock")
+    destination.parent.mkdir(parents=True)
+    lock_path = destination.parent / "publish.lock"
+    lock_path.write_text("live-owner", encoding="utf-8")
+
+    with pytest.raises(ImportStorageBusyError):
+        await storage.store(
+            batch_id="live-lock",
+            chunks=_chunks(content),
+            max_bytes=100,
+            expected_size=len(content),
+            expected_checksum=checksum,
+        )
+
+    assert lock_path.read_text(encoding="utf-8") == "live-owner"
+    assert not destination.exists()
+    assert not list(tmp_path.rglob("upload-*"))
+
+
 @pytest.mark.parametrize(
     "content_type",
     [None, "text/csv", "text/plain", "multipart/form-data", "application/json"],
@@ -326,19 +381,25 @@ async def test_invalid_content_type_does_not_consume_stream(
 
 
 @pytest.mark.parametrize(
-    "status",
+    ("status", "error_type", "code"),
     [
-        ImportStatus.processing,
-        ImportStatus.completed,
-        ImportStatus.failed,
-        ImportStatus.partially_completed,
-        ImportStatus.cancelled,
+        (ImportStatus.processing, ImportUploadStateError, "import_upload_state_invalid"),
+        (ImportStatus.completed, ImportBatchAlreadyImportedError, "import_batch_already_imported"),
+        (
+            ImportStatus.partially_completed,
+            ImportBatchAlreadyImportedError,
+            "import_batch_already_imported",
+        ),
+        (ImportStatus.failed, ImportUploadStateError, "import_upload_state_invalid"),
+        (ImportStatus.cancelled, ImportUploadStateError, "import_upload_state_invalid"),
     ],
 )
 @pytest.mark.asyncio
 async def test_non_pending_state_does_not_consume_stream(
     tmp_path: Path,
     status: ImportStatus,
+    error_type: type[ApplicationError],
+    code: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, _session = _service(tmp_path)
@@ -349,7 +410,7 @@ async def test_non_pending_state_does_not_consume_stream(
     )
     monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
 
-    with pytest.raises(ImportUploadStateError):
+    with pytest.raises(error_type) as raised:
         await service.upload_file(
             principal=_principal(),
             account_id="account-a",
@@ -357,6 +418,8 @@ async def test_non_pending_state_does_not_consume_stream(
             content_type="application/octet-stream",
             chunks=_ForbiddenStream(),
         )
+    assert raised.value.code == code
+    assert not service.storage.path_for("batch-a").exists()
 
 
 @pytest.mark.asyncio

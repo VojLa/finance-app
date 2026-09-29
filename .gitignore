@@ -10,5 +10,9 @@ __pycache__
 .coverage
 coverage.xml
 htmlcov
+backend/python/.tmp/
+backend/python/.data/
+test_imports/
 *.egg-info
 target
+tsconfig.tsbuildinfo

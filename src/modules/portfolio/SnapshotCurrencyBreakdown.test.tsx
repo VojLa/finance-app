@@ -16,7 +16,7 @@ const ITEMS = [
   { currency: "USD", amount: "-50.000000" },
 ] as const
 
-function render(items: readonly { currency: string; amount: string }[]) {
+function render(items: readonly { currency: string; amount: string }[] | null) {
   return renderToStaticMarkup(
     createElement(SnapshotCurrencyBreakdown, {
       title: "Hotovost podle měny",
@@ -60,6 +60,14 @@ describe("SnapshotCurrencyBreakdown", () => {
     expect(output).toContain("Snapshot neobsahuje žádnou hotovost podle měny.")
     expect(output).not.toContain("<dl")
     expect(output).not.toContain("<dt")
+  })
+
+  it("renders unavailable evidence distinctly from an empty zero-value breakdown", () => {
+    const output = render(null)
+
+    expect(output).toContain("Nedostupné – chybí pořizovací cena")
+    expect(output).not.toContain("Snapshot neobsahuje žádnou hotovost podle měny.")
+    expect(output).not.toContain("0,000000")
   })
 
   it("does not mutate its input or render invalid placeholder values", () => {

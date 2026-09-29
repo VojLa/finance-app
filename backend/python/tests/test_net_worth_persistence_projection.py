@@ -148,12 +148,14 @@ def _metadata(
     calculated_at: datetime = CALCULATED_AT,
     created_at: datetime = CREATED_AT,
     is_recalculated: bool = True,
+    generation_id: str = "legacy-snapshot-generation:3u0001",
 ) -> NetWorthSnapshotPersistenceMetadata:
     return NetWorthSnapshotPersistenceMetadata(
         source=source,
         calculated_at=calculated_at,
         created_at=created_at,
         is_recalculated=is_recalculated,
+        generation_id=generation_id,
     )
 
 
@@ -260,6 +262,16 @@ def test_deterministic_id_matches_physical_key_only() -> None:
     assert metadata_changed.snapshot.id == baseline.snapshot.id
     assert financially_changed.snapshot.id == baseline.snapshot.id
     assert version_changed.snapshot.id == baseline.snapshot.id
+
+
+def test_generation_changes_snapshot_identity() -> None:
+    first = _project(metadata=_metadata(generation_id="generation-1"))
+    repeated = _project(metadata=_metadata(generation_id="generation-1"))
+    second = _project(metadata=_metadata(generation_id="generation-2"))
+
+    assert first.snapshot.id == repeated.snapshot.id
+    assert first.snapshot.id != second.snapshot.id
+    assert first.snapshot.generation_id == "generation-1"
 
 
 def test_input_permutation_does_not_change_identity_or_row() -> None:
@@ -758,6 +770,7 @@ def test_valid_lineage_is_preserved_only_in_ephemeral_audit() -> None:
         "liabilities_value_by_currency",
         "total_net_worth_by_currency",
         "exchange_rates",
+        "generation_id",
     )
     assert result.snapshot.exchange_rates is None
 

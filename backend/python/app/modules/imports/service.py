@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -35,6 +36,14 @@ WRITE_ROLES = {
 MAX_UPLOAD_BYTES = 1_073_741_824
 
 
+@dataclass(frozen=True, slots=True)
+class RegisteredImportBatch:
+    """Internal exact-registration result, intentionally not an HTTP DTO."""
+
+    batch: ImportBatchModel
+    created: bool
+
+
 class ImportBatchNotFoundError(ApplicationError):
     def __init__(self) -> None:
         super().__init__(
@@ -49,6 +58,31 @@ class ImportBatchExistsError(ApplicationError):
         super().__init__(
             code="import_batch_exists",
             message="An import batch with this checksum already exists.",
+            status_code=409,
+        )
+
+
+class ImportBatchAlreadyImportedError(ApplicationError):
+    """The exact authenticated file is already terminally posted.
+
+    This is intentionally distinct from the raw-upload state guard.  Browser
+    retries can present it as a successful duplicate outcome without ever
+    reopening or replacing immutable import evidence.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_batch_already_imported",
+            message="This import file has already been processed.",
+            status_code=409,
+        )
+
+
+class ImportBatchNotReusableError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="import_batch_not_reusable",
+            message="This import batch cannot be reused in its current state.",
             status_code=409,
         )
 
@@ -90,7 +124,8 @@ class ImportUploadStateError(ApplicationError):
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    result = datetime.now(UTC).replace(tzinfo=None)
+    return result.replace(microsecond=(result.microsecond // 1000) * 1000)
 
 
 class ImportBatchService:
@@ -118,6 +153,8 @@ class ImportBatchService:
             checksum=payload.checksum,
         )
         if existing is not None:
+            if self._matches_create_payload(existing, payload):
+                return self._exact_replay_response(existing)
             raise ImportBatchExistsError()
 
         now = _now()
@@ -147,7 +184,6 @@ class ImportBatchService:
             message="Import batch registered and awaiting processing.",
             created_at=now,
         )
-
         try:
             self.repository.add_batch(batch)
             await self.session.flush()
@@ -161,6 +197,8 @@ class ImportBatchService:
                 checksum=payload.checksum,
             )
             if duplicate is not None:
+                if self._matches_create_payload(duplicate, payload):
+                    return self._exact_replay_response(duplicate)
                 raise ImportBatchExistsError() from None
             raise
         except Exception:
@@ -168,6 +206,64 @@ class ImportBatchService:
             raise
 
         return self._response(batch)
+
+    async def register_exact_batch(
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        account_id: str,
+        payload: ImportBatchCreateRequest,
+    ) -> RegisteredImportBatch:
+        """Find or create one exact batch within a caller-owned transaction.
+
+        The registration orchestrator owns authorization, account serialization,
+        job recovery and the final commit.  Keeping this primitive model-only
+        prevents a legacy batch response from accidentally becoming recovery
+        authority.
+        """
+
+        existing = await self.repository.get_by_checksum(
+            user_id=principal.user_id,
+            account_id=account_id,
+            checksum=payload.checksum,
+            for_update=True,
+        )
+        if existing is not None:
+            if self._matches_create_payload(existing, payload):
+                return RegisteredImportBatch(batch=existing, created=False)
+            raise ImportBatchExistsError()
+
+        now = _now()
+        batch = ImportBatchModel(
+            id=str(uuid4()),
+            user_id=principal.user_id,
+            account_id=account_id,
+            source=payload.source,
+            filename=payload.filename,
+            file_size=payload.file_size,
+            file_encoding=payload.file_encoding,
+            checksum=payload.checksum,
+            status=ImportStatus.pending,
+            rows_total=None,
+            rows_imported=None,
+            rows_skipped=None,
+            created_at=now,
+            completed_at=None,
+            retain_until=None,
+            raw_data_purged_at=None,
+        )
+        log = ImportLogModel(
+            id=str(uuid4()),
+            import_batch_id=batch.id,
+            level=ImportLogLevel.info,
+            event=ImportLogEvent.started,
+            message="Import batch registered and awaiting processing.",
+            created_at=now,
+        )
+        self.repository.add_batch(batch)
+        await self.session.flush()
+        self.repository.add_log(log)
+        return RegisteredImportBatch(batch=batch, created=True)
 
     async def upload_file(
         self,
@@ -187,6 +283,8 @@ class ImportBatchService:
         batch = await self.repository.get_for_account(account_id=account_id, batch_id=batch_id)
         if batch is None:
             raise ImportBatchNotFoundError()
+        if batch.status in {ImportStatus.completed, ImportStatus.partially_completed}:
+            raise ImportBatchAlreadyImportedError()
         if batch.status is not ImportStatus.pending:
             raise ImportUploadStateError()
         if (
@@ -253,6 +351,30 @@ class ImportBatchService:
         if batch is None:
             raise ImportBatchNotFoundError()
         return self._response(batch)
+
+    @staticmethod
+    def _matches_create_payload(
+        batch: ImportBatchModel,
+        payload: ImportBatchCreateRequest,
+    ) -> bool:
+        """Allow only an exact retry to reuse a registered batch identity."""
+        return (
+            batch.source == payload.source
+            and batch.filename == payload.filename
+            and batch.file_size == payload.file_size
+            and batch.file_encoding == payload.file_encoding
+            and batch.checksum == payload.checksum
+        )
+
+    @classmethod
+    def _exact_replay_response(cls, batch: ImportBatchModel) -> ImportBatchResponse:
+        if batch.status in {ImportStatus.pending, ImportStatus.processing}:
+            return cls._response(batch)
+        if batch.status in {ImportStatus.completed, ImportStatus.partially_completed}:
+            raise ImportBatchAlreadyImportedError()
+        if batch.status in {ImportStatus.failed, ImportStatus.cancelled}:
+            raise ImportBatchNotReusableError()
+        raise RuntimeError("The persisted import batch status is invalid.")
 
     @staticmethod
     def _response(batch: ImportBatchModel) -> ImportBatchResponse:

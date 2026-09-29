@@ -52,6 +52,11 @@ function jsonResponse(value: unknown, status = 200): Response {
   })
 }
 
+function portfolioCurrentFixture() {
+  const value = portfolioSnapshotFixture()
+  return { ...value, valuationTimestamp: value.asOf, isStale: false }
+}
+
 function browserFetchAdapter() {
   return vi.fn<typeof fetch>(async (input, init) => {
     expect(input).toBe(PORTFOLIO_WORKFLOW_PATH)
@@ -88,7 +93,7 @@ afterEach(() => {
 
 describe("in-process portfolio browser flow", () => {
   it("connects browser, Next route, real workflow, FastAPI transport, and page model", async () => {
-    const portfolio = portfolioSnapshotFixture()
+    const portfolio = portfolioCurrentFixture()
     const tokens: string[] = []
     const tokenIds: string[] = []
     const fastApiBodies: string[] = []
@@ -110,7 +115,7 @@ describe("in-process portfolio browser flow", () => {
       tokenIds.push(String(payload.jti))
       expect(request.headers.has("Cookie")).toBe(false)
 
-      if (request.url === `${BACKEND_URL}/api/v1/portfolio/current`) {
+      if (request.url === `${BACKEND_URL}/api/v1/portfolio/published`) {
         expect(request.method).toBe("POST")
         expect(await request.text()).toBe("")
         return jsonResponse(portfolio)
@@ -125,7 +130,7 @@ describe("in-process portfolio browser flow", () => {
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(getSession).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(1)
-    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/current`])
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/portfolio/published`])
     expect(tokens).toHaveLength(1)
     expect(new Set(tokens).size).toBe(1)
     expect(new Set(tokenIds).size).toBe(1)
@@ -141,7 +146,7 @@ describe("in-process portfolio browser flow", () => {
     expect(model.aggregate.summary).toBe(state.data.summary)
     expect(model.aggregate.summary.totalValue).toBe("777.123456")
     expect(state.data.summary.cashByCurrency[2]?.amount).toBe("-50.000000")
-    expect(state.data.summary.netDepositsByCurrency[1]?.amount).toBe("500.000000")
+    expect(state.data.summary.netDepositsByCurrency?.[1]?.amount).toBe("500.000000")
     expect(model.aggregate.summary.cashByCurrency).toBe(state.data.summary.cashByCurrency)
     expect(model.accounts[0]?.summary).toBe(state.data.accounts[0]?.summary)
     expect(model.accounts[0]?.positions[0]?.position.value).toBe("123.456789")
@@ -158,7 +163,7 @@ describe("in-process portfolio browser flow", () => {
   it("fails closed without a daily baseline and never performs a legacy read", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      expect(request.url).toBe(`${BACKEND_URL}/api/v1/portfolio/current`)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/portfolio/published`)
       return jsonResponse(
         { error: { code: "current_value_unavailable", message: "Unavailable." } },
         409
@@ -198,10 +203,24 @@ describe("in-process portfolio browser flow", () => {
   it("cuts browser history through NextAuth and one authenticated Python GET", async () => {
     const history = {
       range: "1Y" as const,
+      state: "ready" as const,
       currency: "EUR",
+      generationId: "generation-portfolio-audit",
+      publicationVersion: 1,
+      coveredThrough: "2032-08-01T23:59:00.000",
+      preferredResolutionMinutes: 1440,
+      resolutions: [1440],
+      coverage: [
+        {
+          resolutionMinutes: 1440,
+          start: "2032-08-01T00:00:00.000",
+          end: "2032-08-02T00:00:00.000",
+        },
+      ],
       points: [
         {
           timestamp: "2032-08-01T00:00:00.000",
+          resolutionMinutes: 1440,
           cashValue: "10.000000",
           investmentValue: "100.123456",
           liabilitiesValue: "5.000000",
@@ -264,7 +283,7 @@ describe("in-process portfolio browser flow", () => {
 
 describe("portfolio financial authority and history isolation", () => {
   it("preserves representative Decimal strings without financial recomputation", () => {
-    const portfolio = portfolioSnapshotFixture()
+    const portfolio = portfolioCurrentFixture()
     const values = [
       "0",
       "-0.000001",
@@ -309,8 +328,11 @@ describe("portfolio financial authority and history isolation", () => {
       /GET \/api\/portfolio|\/api\/rates|snapshots\/recalculate|latestHistoryPoint|history positions|history allocation/i
     )
     expect(content).not.toMatch(/\b(?:Prisma|YAHOO|FX service|price provider)\b/i)
-    expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
-    expect(content).not.toMatch(/\bMath\./)
+    const page = await readFile(path.join(ROOT, "src/app/portfolio/page.tsx"), "utf8")
+    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
+    expect(page).toContain("Number(position.allocationPct)")
+    expect(content.replace(page, "")).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
+    expect(content.replace(page, "")).not.toMatch(/\bMath\./)
     expect(content).not.toContain(".toFixed(")
     expect(content).not.toContain(".reduce(")
     expect(content).not.toContain(".sort(")
@@ -345,7 +367,9 @@ describe("portfolio financial authority and history isolation", () => {
     expect(page).toContain("Historie celého portfolia")
     expect(page).not.toContain("latestHistoryPoint")
     expect(page).not.toContain("activeHistoryPoint")
-    expect(page).not.toMatch(/historyState.*(?:summary|positions|allocation|accounts)/i)
+    expect(page).not.toMatch(/historyState(?:\.data)?\.(?:summary|positions|allocation|accounts)/i)
+    expect(page).toContain("selectedHistoryPoint.netInvestedValue")
+    expect(page).toContain("selectedHistoryPoint.positions")
     expect(page).toContain("historyState.data.currency")
   })
 })

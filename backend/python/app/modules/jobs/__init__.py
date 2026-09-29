@@ -1,0 +1,1 @@
+"""Persisted background job contracts."""

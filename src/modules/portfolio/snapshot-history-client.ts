@@ -16,6 +16,14 @@ export type PortfolioHistoryLoadResult =
       data: SnapshotPortfolioHistoryResponse
     }>
   | Readonly<{
+      status: "rebuilding"
+      data: SnapshotPortfolioHistoryResponse
+    }>
+  | Readonly<{
+      status: "failed"
+      data: SnapshotPortfolioHistoryResponse
+    }>
+  | Readonly<{
       status: "error"
       message: string
     }>
@@ -25,10 +33,12 @@ const HISTORY_ERROR_MESSAGE = "Historii portfolia se nepodařilo načíst."
 export async function requestPortfolioHistory(
   range: SnapshotPortfolioHistoryRange,
   expectedCurrency: string,
-  fetchImplementation: FetchImplementation = globalThis.fetch
+  fetchImplementation: FetchImplementation = globalThis.fetch,
+  accountId: string | null = null
 ): Promise<PortfolioHistoryLoadResult> {
   try {
     const parameters = new URLSearchParams({ range })
+    if (accountId !== null) parameters.set("accountId", accountId)
     const response = await fetchImplementation(`/api/portfolio/history?${parameters.toString()}`, {
       method: "GET",
       cache: "no-store",
@@ -38,7 +48,7 @@ export async function requestPortfolioHistory(
     }
     const payload: unknown = await response.json()
     const data = parseSnapshotPortfolioHistory(payload, range, expectedCurrency)
-    return data.points.length === 0 ? { status: "empty", data } : { status: "ready", data }
+    return { status: data.state, data }
   } catch {
     return { status: "error", message: HISTORY_ERROR_MESSAGE }
   }
@@ -48,10 +58,11 @@ export function startPortfolioHistoryRequest(
   range: SnapshotPortfolioHistoryRange,
   expectedCurrency: string,
   onResult: (result: PortfolioHistoryLoadResult) => void,
-  fetchImplementation: FetchImplementation = globalThis.fetch
+  fetchImplementation: FetchImplementation = globalThis.fetch,
+  accountId: string | null = null
 ): () => void {
   let active = true
-  void requestPortfolioHistory(range, expectedCurrency, fetchImplementation).then((result) => {
+  void requestPortfolioHistory(range, expectedCurrency, fetchImplementation, accountId).then((result) => {
     if (active) onResult(result)
   })
   return () => {

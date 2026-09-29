@@ -9,8 +9,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from decimal import Decimal
-from itertools import count
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,18 +20,29 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
     AssetType,
+    LiabilityBalanceSource,
     PriceSource,
     SnapshotSource,
+    TransactionClassification,
+    TransactionType,
 )
 from app.db.models.enums import (
     SnapshotGranularity as DbSnapshotGranularity,
 )
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
+from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
@@ -41,11 +52,10 @@ pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is requir
 SNAPSHOT_AT = datetime(2032, 8, 2)
 CREATED_AT = datetime(2032, 8, 2, 0, 0, 0, 123000)
 SECRET = "portfolio-snapshot-integration-secret-value"
-_PREFIXES = count()
 
 
 def _prefix(label: str) -> str:
-    return f"5lc-{os.getpid()}-{next(_PREFIXES)}-{label}"
+    return f"5lc-{uuid4().hex}-{label}"
 
 
 def _engine() -> AsyncEngine:
@@ -129,9 +139,22 @@ async def _cleanup(prefix: str) -> None:
                 )
             )
             await session.execute(
+                delete(AccountSnapshotCanonicalBoundaryModel).where(
+                    AccountSnapshotCanonicalBoundaryModel.snapshot_id.in_(snapshot_ids)
+                )
+            )
+            await session.execute(
                 delete(AccountSnapshotModel).where(AccountSnapshotModel.id.in_(snapshot_ids))
             )
         if account_ids:
+            await session.execute(
+                delete(TransactionModel).where(TransactionModel.account_id.in_(account_ids))
+            )
+            await session.execute(
+                delete(LiabilityBalanceModel).where(
+                    LiabilityBalanceModel.account_id.in_(account_ids)
+                )
+            )
             await session.execute(
                 delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
             )
@@ -144,6 +167,16 @@ async def _cleanup(prefix: str) -> None:
         await session.execute(delete(AssetModel).where(AssetModel.id.startswith(f"{prefix}-")))
         if account_ids:
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
+        await session.execute(
+            delete(SnapshotGenerationTargetModel).where(
+                SnapshotGenerationTargetModel.generation_id.startswith(f"{prefix}-")
+            )
+        )
+        await session.execute(
+            delete(SnapshotGenerationModel).where(
+                SnapshotGenerationModel.id.startswith(f"{prefix}-")
+            )
+        )
         await session.execute(delete(UserModel).where(UserModel.id.startswith(f"{prefix}-")))
         await session.commit()
     await engine.dispose()
@@ -161,12 +194,10 @@ async def _seed(
     user_id = f"{prefix}-user"
     account_id = f"{prefix}-account"
     snapshot_id = f"{prefix}-snapshot"
-    liability = account_type in {
-        AccountType.credit_card,
-        AccountType.loan,
-        AccountType.mortgage,
-    }
-    if liability or empty:
+    generation_id = f"{prefix}-generation"
+    liability = account_type in {AccountType.loan, AccountType.mortgage}
+    credit_card = account_type is AccountType.credit_card
+    if liability or credit_card or empty:
         with_items = False
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -209,13 +240,75 @@ async def _seed(
                 updated_at=SNAPSHOT_AT,
             )
         )
+        session.add(
+            SnapshotGenerationModel(
+                id=generation_id,
+                state="published",
+                created_at=CREATED_AT,
+                published_at=CREATED_AT,
+            )
+        )
+        await session.flush()
+        session.add(
+            SnapshotGenerationTargetModel(
+                generation_id=generation_id,
+                user_id=user_id,
+                created_at=CREATED_AT,
+                staged_by_job_id=None,
+                staged_lease_version=None,
+                staged_lease_owner=None,
+            )
+        )
+        if credit_card:
+            session.add(
+                TransactionModel(
+                    id=f"{prefix}-purchase",
+                    account_id=account_id,
+                    date=SNAPSHOT_AT,
+                    booking_date=SNAPSHOT_AT,
+                    amount=Decimal("-25.000000"),
+                    currency="EUR",
+                    type=TransactionType.expense,
+                    classification=TransactionClassification.real_expense,
+                    description="card purchase",
+                    created_at=CREATED_AT,
+                    updated_at=CREATED_AT,
+                )
+            )
+        elif liability:
+            session.add(
+                LiabilityBalanceModel(
+                    id=f"{prefix}-balance",
+                    account_id=account_id,
+                    effective_at=SNAPSHOT_AT,
+                    currency="EUR",
+                    outstanding_principal=Decimal("25.000000"),
+                    accrued_interest=Decimal("0.000000"),
+                    fees_outstanding=Decimal("0.000000"),
+                    total_outstanding=Decimal("25.000000"),
+                    source=LiabilityBalanceSource.manual,
+                    external_id=None,
+                    created_at=CREATED_AT,
+                )
+            )
+        await session.flush()
+        canonical_state = await session.get(AccountCanonicalStateModel, account_id)
+        assert canonical_state is not None
+        canonical_revision = canonical_state.last_revision
+        if with_items:
+            canonical_state.holding_revision = canonical_state.last_investment_revision
         investment = Decimal("100.000000") if with_items else Decimal("0.000000")
         cost_basis = Decimal("80.000000") if with_items else Decimal("0.000000")
-        cash = Decimal("0.000000") if liability else Decimal("10.000000")
+        cash = (
+            Decimal("-25.000000")
+            if credit_card
+            else (Decimal("0.000000") if liability else Decimal("10.000000"))
+        )
         liabilities = Decimal("25.000000") if liability else Decimal("0.000000")
         snapshot = AccountSnapshotModel(
             id=snapshot_id,
             account_id=account_id,
+            generation_id=generation_id,
             timestamp=SNAPSHOT_AT,
             granularity=DbSnapshotGranularity.day,
             source=SnapshotSource.manual_recalculation,
@@ -245,6 +338,18 @@ async def _seed(
             exchange_rates=None,
         )
         session.add(snapshot)
+        await session.flush()
+        session.add(
+            AccountSnapshotCanonicalBoundaryModel(
+                snapshot_id=snapshot_id,
+                account_id=account_id,
+                canonical_revision=canonical_revision,
+                investment_revision=0 if with_items else None,
+                holding_revision=0 if with_items else None,
+                selected_liability_balance_id=f"{prefix}-balance" if liability else None,
+                created_at=CREATED_AT,
+            )
+        )
         if with_items:
             for suffix, symbol, native_currency, value, cost, allocation in (
                 ("a", "AAA", "USD", "60.000000", "50.0000000000", "60.0000"),
@@ -299,6 +404,9 @@ async def _seed(
                         value_currency=native_currency,
                         native_cost_basis=Decimal(cost),
                         native_cost_currency=native_currency,
+                        native_cost_basis_by_currency={native_currency: cost},
+                        average_buy_price=Decimal(cost) / Decimal(2),
+                        average_buy_price_currency=native_currency,
                     )
                 )
         await session.commit()
@@ -382,6 +490,73 @@ async def _counts(account_id: str) -> tuple[int, int]:
         )
     await engine.dispose()
     return snapshots, items
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("account_type", "expected_cash", "expected_liabilities"),
+    [
+        (AccountType.broker, Decimal("10"), Decimal("0")),
+        (AccountType.credit_card, Decimal("-25"), Decimal("0")),
+        (AccountType.loan, Decimal("0"), Decimal("25")),
+    ],
+)
+async def test_fixture_has_published_canonical_and_liability_evidence(
+    account_type: AccountType,
+    expected_cash: Decimal,
+    expected_liabilities: Decimal,
+) -> None:
+    prefix = _prefix(f"lineage-{account_type.value}")
+    await _cleanup(prefix)
+    try:
+        user_id, account_id, snapshot_id = await _seed(prefix, account_type=account_type)
+        engine = _engine()
+        async with AsyncSession(engine) as session:
+            snapshot = await session.get(AccountSnapshotModel, snapshot_id)
+            generation = await session.get(SnapshotGenerationModel, f"{prefix}-generation")
+            target = await session.get(
+                SnapshotGenerationTargetModel, (f"{prefix}-generation", user_id)
+            )
+            state = await session.get(AccountCanonicalStateModel, account_id)
+            boundary = await session.get(AccountSnapshotCanonicalBoundaryModel, snapshot_id)
+            transactions = tuple(
+                await session.scalars(
+                    select(TransactionModel).where(TransactionModel.account_id == account_id)
+                )
+            )
+            balances = tuple(
+                await session.scalars(
+                    select(LiabilityBalanceModel).where(
+                        LiabilityBalanceModel.account_id == account_id
+                    )
+                )
+            )
+            assert snapshot is not None and generation is not None and target is not None
+            assert state is not None and boundary is not None
+            assert snapshot.generation_id == generation.id
+            assert generation.state == "published" and generation.published_at == CREATED_AT
+            assert boundary.account_id == account_id
+            assert boundary.canonical_revision == state.last_revision
+            assert snapshot.cash_value == expected_cash
+            assert snapshot.liabilities_value == expected_liabilities
+            if account_type is AccountType.credit_card:
+                assert len(transactions) == 1 and transactions[0].amount == Decimal("-25")
+                assert not balances and boundary.selected_liability_balance_id is None
+            elif account_type is AccountType.loan:
+                assert not transactions and len(balances) == 1
+                assert balances[0].total_outstanding == Decimal("25")
+                assert boundary.selected_liability_balance_id == balances[0].id
+            else:
+                assert not transactions and not balances
+                assert boundary.selected_liability_balance_id is None
+        await engine.dispose()
+
+        response = _call(account_id, user_id)
+        assert response.status_code == 200
+        assert response.json()["summary"]["cashValue"] == f"{expected_cash:.6f}"
+        assert response.json()["summary"]["liabilitiesValue"] == f"{expected_liabilities:.6f}"
+    finally:
+        await _cleanup(prefix)
 
 
 @pytest.mark.asyncio

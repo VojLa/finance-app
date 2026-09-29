@@ -22,6 +22,10 @@ from app.db.models.enums import (
     PriceSource,
 )
 from app.db.models.imports import ImportBatchModel, ImportRowModel
+from app.modules.imports.anycoin_identity import (
+    AnycoinAssetIdentityError,
+    canonical_anycoin_crypto_display_name,
+)
 from app.modules.imports.classification import (
     InvestmentAction,
     InvestmentEventPostingIntent,
@@ -39,6 +43,7 @@ from app.modules.imports.posting_common import (
     exact_naive_timestamp,
     exact_numeric,
 )
+from app.shared.canonical_arithmetic import CanonicalArithmeticError, canonical_ratio
 
 _ASSET_ACTIONS: Final = frozenset(
     {
@@ -120,6 +125,7 @@ class InvestmentEventPostingPlan:
     description: str | None
     realized_pnl: Decimal | None
     realized_pnl_currency: str | None
+    quote_currency: str | None
     asset_resolution: InvestmentAssetResolutionPlan | None
     movements: tuple[InvestmentMovementPlan, ...]
 
@@ -151,19 +157,35 @@ def _asset_resolution(
         return None
     symbol = _nonblank_upper(intent.asset.symbol)
     isin = None if intent.asset.isin is None else _nonblank_upper(intent.asset.isin)
-    name = bounded_optional_text(intent.asset.name)
     asset_type = _asset_type(intent)
-    if intent.action in {InvestmentAction.buy, InvestmentAction.sell}:
+    listing_currency: str | None
+    if intent.source is ImportSource.anycoin:
+        try:
+            name = canonical_anycoin_crypto_display_name(
+                symbol=symbol,
+                supplied_name=intent.asset.name,
+            )
+        except AnycoinAssetIdentityError as exc:
+            raise ImportPostStateError() from exc
+        if intent.quote_currency is None:
+            raise ImportPostStateError()
+        listing_currency = _nonblank_upper(intent.quote_currency)
+    else:
+        name = bounded_optional_text(intent.asset.name)
+    if intent.source is not ImportSource.anycoin and intent.action in {
+        InvestmentAction.buy,
+        InvestmentAction.sell,
+    }:
         if intent.total is None:
             raise ImportPostStateError()
         listing_currency = (
             intent.price.currency if intent.price is not None else intent.total.currency
         )
-    elif intent.action is InvestmentAction.dividend:
+    elif intent.source is not ImportSource.anycoin and intent.action is InvestmentAction.dividend:
         listing_currency = None
-    elif asset_type is AssetType.crypto:
+    elif intent.source is not ImportSource.anycoin and asset_type is AssetType.crypto:
         listing_currency = symbol
-    else:
+    elif intent.source is not ImportSource.anycoin:
         listing_currency = intent.price.currency if intent.price is not None else None
     asset_currency = symbol if asset_type is AssetType.crypto else listing_currency
     provider = _PROVIDERS.get(intent.source)
@@ -267,13 +289,23 @@ def _asset_movement(
 ) -> InvestmentMovementPlan:
     if intent.quantity is None:
         raise ImportPostStateError()
+    price_per_unit = intent.price.amount if intent.price is not None else None
+    if intent.price is not None:
+        exact_numeric(intent.price.amount, QUANTITY)
+    if intent.action in {InvestmentAction.buy, InvestmentAction.sell} and price_per_unit is None:
+        if intent.total is None:
+            raise ImportPostStateError()
+        try:
+            price_per_unit = canonical_ratio(intent.total.amount, intent.quantity, QUANTITY)
+        except CanonicalArithmeticError as exc:
+            raise ImportPostStateError() from exc
     return _movement(
         kind=InvestmentMovementKind.asset,
         direction=direction,
         quantity=intent.quantity,
         currency=asset.symbol,
         requires_asset=True,
-        price_per_unit=intent.price.amount if intent.price is not None else None,
+        price_per_unit=price_per_unit,
         value_amount=intent.total.amount if intent.total is not None else None,
         value_currency=intent.total.currency if intent.total is not None else None,
         asset=asset,
@@ -440,6 +472,9 @@ def build_investment_posting_plan(
         realized_pnl=realized_pnl,
         realized_pnl_currency=(
             intent.realized_pnl.currency if intent.realized_pnl is not None else None
+        ),
+        quote_currency=(
+            _nonblank_upper(intent.quote_currency) if intent.quote_currency is not None else None
         ),
         asset_resolution=asset,
         movements=_movements(intent, asset, note=note),

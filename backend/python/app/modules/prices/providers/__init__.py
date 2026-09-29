@@ -10,6 +10,10 @@ from app.modules.market_data.policy import (
     MarketEvidencePolicy,
 )
 from app.modules.market_data.providers import PriceProviderRegistry
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicyError,
+    market_evidence_source_policy_from_settings,
+)
 from app.modules.prices.providers.coingecko import CoinGeckoPriceProvider
 from app.modules.prices.providers.coingecko_transport import (
     CoinGeckoPriceTransport,
@@ -19,6 +23,11 @@ from app.modules.prices.providers.twelve_data import TwelveDataPriceProvider
 from app.modules.prices.providers.twelve_data_transport import (
     HttpxTwelveDataPriceTransport,
     TwelveDataPriceTransport,
+)
+from app.modules.prices.providers.yahoo_finance import YahooFinancePriceProvider
+from app.modules.prices.providers.yahoo_finance_transport import (
+    HttpxYahooFinanceChartTransport,
+    YahooFinanceChartTransport,
 )
 
 
@@ -63,12 +72,36 @@ def create_production_price_registry(
     )
 
 
+def create_local_free_price_registry(
+    settings: Settings,
+    *,
+    policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
+    yahoo_finance_transport: YahooFinanceChartTransport | None = None,
+    yahoo_finance_http_transport: httpx.AsyncBaseTransport | None = None,
+) -> PriceProviderRegistry:
+    source_policy = market_evidence_source_policy_from_settings(settings)
+    if source_policy.mode != "local_free":
+        raise MarketEvidenceSourcePolicyError()
+    yahoo_transport = yahoo_finance_transport or HttpxYahooFinanceChartTransport(
+        base_url=settings.yahoo_finance_chart_base_url,
+        timeout_seconds=settings.yahoo_finance_timeout_seconds,
+        max_response_bytes=settings.yahoo_finance_max_response_bytes,
+        user_agent=settings.yahoo_finance_user_agent,
+        transport=yahoo_finance_http_transport,
+    )
+    return PriceProviderRegistry((YahooFinancePriceProvider(yahoo_transport, policy=policy),))
+
+
 __all__ = [
     "CoinGeckoPriceProvider",
     "CoinGeckoPriceTransport",
     "HttpxCoinGeckoPriceTransport",
     "HttpxTwelveDataPriceTransport",
+    "HttpxYahooFinanceChartTransport",
     "TwelveDataPriceProvider",
     "TwelveDataPriceTransport",
+    "YahooFinanceChartTransport",
+    "YahooFinancePriceProvider",
+    "create_local_free_price_registry",
     "create_production_price_registry",
 ]

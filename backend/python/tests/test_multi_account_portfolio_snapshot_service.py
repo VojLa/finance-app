@@ -82,6 +82,9 @@ def _position(account_id: str, value: str, cost: str) -> PortfolioPositionView:
         native_value_currency="USD",
         native_cost_basis=cost_decimal,
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", cost_decimal),),
+        average_buy_price=cost_decimal,
+        average_buy_price_currency="USD",
     )
 
 
@@ -786,8 +789,9 @@ def test_services_have_no_financial_recalculation_or_forbidden_read_dependency()
             "HoldingModel",
             "PriceSnapshotModel",
             "ExchangeRateModel",
-            "PortfolioSnapshotReader",
         }.isdisjoint(imports)
+        if path.name == "multi_account_service.py":
+            assert "PreloadedPortfolioSnapshotRepository" in imports
         for forbidden in (
             "asyncio.gather",
             "datetime.now",

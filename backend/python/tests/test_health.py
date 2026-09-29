@@ -28,7 +28,11 @@ def test_readiness_returns_503_without_database(test_settings: Settings) -> None
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "dependencies": {"database": "unavailable"},
+        "dependencies": {
+            "database": "unavailable",
+            "portfolioHistoryRuntime": "disabled",
+            "scheduledSnapshotRefreshRuntime": "disabled",
+        },
     }
 
 
@@ -58,5 +62,9 @@ def test_readiness_returns_200_when_database_is_available(
     assert response.status_code == 200
     assert response.json() == {
         "status": "ready",
-        "dependencies": {"database": "available"},
+        "dependencies": {
+            "database": "available",
+            "portfolioHistoryRuntime": "disabled",
+            "scheduledSnapshotRefreshRuntime": "disabled",
+        },
     }

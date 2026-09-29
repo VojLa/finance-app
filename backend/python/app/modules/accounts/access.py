@@ -60,6 +60,7 @@ async def require_account_access(
         .where(
             AccountMemberModel.account_id == account_id,
             AccountMemberModel.user_id == principal.user_id,
+            AccountMemberModel.accepted_at.is_not(None),
         )
     )
     if not include_archived:

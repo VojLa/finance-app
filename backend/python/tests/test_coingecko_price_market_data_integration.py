@@ -9,10 +9,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from support.coingecko_price_integration import (
-    coingecko_engine,
-    seed_crypto_holding,
-)
 
 from app.config.settings import Settings
 from app.db.models.enums import PriceSource
@@ -20,6 +16,12 @@ from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.modules.market_data.factory import create_production_market_evidence_service
 from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
+from tests.support import investment_fixture_e2e as investment_support
+from tests.support.coingecko_price_integration import (
+    coingecko_engine,
+    seed_crypto_holding,
+    unique_alias,
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -55,14 +57,14 @@ def _success_transport(
 @pytest.mark.asyncio
 async def test_production_coingecko_registry_persists_exact_price_and_replays() -> None:
     prefix = f"r5b2a-market-{uuid4()}"
+    provider_symbol = unique_alias(prefix)
     user_id, _, asset_id, listing_id = await seed_crypto_holding(
         prefix,
         event_at=datetime(2026, 8, 1),
         created_at=CREATED_AT,
-        aliases=("bitcoin",),
-        listing_provider_symbol="BTC",
+        aliases=(provider_symbol,),
     )
-    transport, requests = _success_transport("bitcoin")
+    transport, requests = _success_transport(provider_symbol)
     engine = coingecko_engine()
     settings = Settings(environment="test", _env_file=None)
     try:
@@ -90,7 +92,7 @@ async def test_production_coingecko_registry_persists_exact_price_and_replays() 
         assert len(requests) == 2
         for request in requests:
             assert request.url.params.multi_items() == [
-                ("ids", "bitcoin"),
+                ("ids", provider_symbol),
                 ("vs_currencies", "eur"),
                 ("include_last_updated_at", "true"),
                 ("precision", "full"),
@@ -119,6 +121,7 @@ async def test_production_coingecko_registry_persists_exact_price_and_replays() 
             )
     finally:
         await engine.dispose()
+        await investment_support.cleanup(prefix)
 
 
 @pytest.mark.asyncio
@@ -163,3 +166,4 @@ async def test_missing_or_ambiguous_coingecko_alias_fails_before_http(
             )
     finally:
         await engine.dispose()
+        await investment_support.cleanup(prefix)

@@ -29,6 +29,8 @@ from app.modules.net_worth.writer import (
     NetWorthSnapshotWriteResult,
     NetWorthSnapshotWriteStateError,
 )
+from app.modules.portfolio_snapshot.writer import PortfolioSnapshotWriteResult
+from app.modules.snapshot_refresh import executor as executor_module
 from app.modules.snapshot_refresh.evidence_service import (
     BuildSnapshotRefreshCoverageCommand,
     CompleteSnapshotRefreshCoverage,
@@ -121,6 +123,10 @@ class _Repository:
         if self.error is not None:
             raise self.error
 
+    async def ensure_staged_generation(self, **values: object) -> None:
+        self.calls.append("generation")
+        self.generation_values = values
+
 
 class _Coverage:
     def __init__(
@@ -205,6 +211,26 @@ class _NetWorthWriter:
         return self.value
 
 
+class _PortfolioWriter:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+        self.commands: list[Any] = []
+
+    def __call__(self, session: object) -> _PortfolioWriter:
+        return self
+
+    async def write(self, command: Any) -> PortfolioSnapshotWriteResult:
+        self.calls.append("portfolio writer")
+        self.commands.append(command)
+        return PortfolioSnapshotWriteResult(
+            portfolio_snapshot_id="portfolio-1",
+            generation_id=command.generation_id,
+            user_id=command.user_id,
+            investment_account_snapshot_ids=(),
+            position_count=0,
+        )
+
+
 class _DailyBaselineWriter:
     def __init__(self) -> None:
         self.commands: list[Any] = []
@@ -235,6 +261,37 @@ def _command(**changes: object) -> ExecuteUserSnapshotRefreshCommand:
     }
     values.update(changes)
     return ExecuteUserSnapshotRefreshCommand(**cast(Any, values))
+
+
+@pytest.mark.parametrize(
+    ("publication_job_id", "publication_account_ids", "valid"),
+    (
+        (None, (), True),
+        ("job-1", ("account-a",), True),
+        (None, ("account-a",), False),
+        ("job-1", (), False),
+    ),
+)
+def test_publication_account_override_requires_the_exact_internal_job_pair(
+    publication_job_id: str | None,
+    publication_account_ids: tuple[str, ...],
+    valid: bool,
+) -> None:
+    command = _command(
+        granularity=SnapshotGranularity.minute,
+        source=SnapshotSource.import_event,
+        is_recalculated=False,
+        publication_job_id=publication_job_id,
+        publication_account_ids=publication_account_ids,
+    )
+    if valid:
+        assert (
+            executor_module._validate_command(command).publication_account_ids
+            == publication_account_ids
+        )
+    else:
+        with pytest.raises(SnapshotRefreshExecutionStateError):
+            executor_module._validate_command(command)
 
 
 def _target(
@@ -395,7 +452,7 @@ def _executor(
     coverage = _Coverage(calls, active_coverage, coverage_error)
     results = account_results or {
         target.account_id: _account_result(target.account_id)
-        for target in contract_coverage.refresh_targets
+        for target in contract_coverage.plan.account_targets
     }
     accounts = _AccountWriters(
         calls,
@@ -412,12 +469,14 @@ def _executor(
         leave_active=net_leave_active,
     )
     baseline_writer = daily_baseline_writer or _DailyBaselineWriter()
+    portfolio = _PortfolioWriter(calls)
     executor = UserSnapshotRefreshExecutor(
         cast(Any, active_session),
         repository=cast(Any, _Repository(calls, repository_error)),
         coverage_service_factory=cast(Any, Mock(return_value=coverage)),
         account_writer_factory=cast(Any, accounts),
         net_worth_writer_factory=cast(Any, net),
+        portfolio_writer_factory=cast(Any, portfolio),
         daily_baseline_writer_factory=cast(Any, baseline_writer),
     )
     return executor, active_session, coverage, accounts, net, calls
@@ -470,10 +529,12 @@ async def test_operation_order_commands_lineage_and_counts_are_exact() -> None:
     assert calls == [
         "coverage begin",
         "repeatable-read",
+        "generation",
         "coverage build",
         "coverage end",
         "account writer account-a",
         "account writer account-b",
+        "portfolio writer",
         "net-worth writer",
     ]
     assert coverage.commands == [
@@ -493,7 +554,9 @@ async def test_operation_order_commands_lineage_and_counts_are_exact() -> None:
         "account-b",
     ]
     assert all(command.output_currency == "EUR" for command in accounts.commands)
+    assert all(command.generation_id == result.generation_id for command in accounts.commands)
     assert net.commands[0].required_account_snapshot_identities == _identities(coverage_value)
+    assert net.commands[0].generation_id == result.generation_id
     assert result.account_snapshots == (
         ExecutedAccountSnapshotRefresh(
             "account-a",
@@ -514,19 +577,31 @@ async def test_operation_order_commands_lineage_and_counts_are_exact() -> None:
     assert result.selected_account_snapshot_count == 2
 
 
+@pytest.mark.parametrize(
+    "writer_disposition",
+    [AccountSnapshotWriteDisposition.created, AccountSnapshotWriteDisposition.replayed],
+)
 @pytest.mark.asyncio
-async def test_mixed_refresh_and_reuse_never_writes_viewer_target() -> None:
+async def test_mixed_refresh_and_reuse_clones_every_target_into_generation(
+    writer_disposition: AccountSnapshotWriteDisposition,
+) -> None:
     coverage_value = _coverage(
         (
             ("account-a", AccountSnapshotRefreshMode.refresh),
             ("account-b", AccountSnapshotRefreshMode.reuse_only),
         )
     )
-    executor, _, _, accounts, net, _ = _executor(coverage_value)
+    executor, _, _, accounts, net, _ = _executor(
+        coverage_value,
+        account_results={
+            "account-a": _account_result("account-a"),
+            "account-b": _account_result("account-b", writer_disposition),
+        },
+    )
 
     result = await executor.execute(_command())
 
-    assert [command.account_id for command in accounts.commands] == ["account-a"]
+    assert [command.account_id for command in accounts.commands] == ["account-a", "account-b"]
     assert result.account_snapshots[1].mode is AccountSnapshotRefreshMode.reuse_only
     assert (
         result.account_snapshots[1].disposition is AccountSnapshotRefreshExecutionDisposition.reused
@@ -538,7 +613,7 @@ async def test_mixed_refresh_and_reuse_never_writes_viewer_target() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_reuse_and_empty_plans_skip_account_writer() -> None:
+async def test_all_reuse_is_generation_local_and_empty_plan_skips_account_writer() -> None:
     for coverage_value in (
         _coverage(
             (
@@ -552,7 +627,7 @@ async def test_all_reuse_and_empty_plans_skip_account_writer() -> None:
 
         result = await executor.execute(_command())
 
-        assert accounts.commands == []
+        assert len(accounts.commands) == len(coverage_value.plan.account_targets)
         assert result.required_account_snapshot_identities == _identities(coverage_value)
         assert len(net.commands) == 1
 

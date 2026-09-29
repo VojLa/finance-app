@@ -105,13 +105,13 @@ def _install_market_overrides(
     def service(
         session: AsyncSession = Depends(get_db_session),
     ) -> MarketBackedSnapshotRefreshService:
-        twelve, coingecko, cnb = harness.transports(session)
+        twelve, coingecko, fx = harness.transports(session)
 
         def factory(active_session: AsyncSession, settings: Any):
             return create_production_market_evidence_service(
                 active_session,
                 settings,
-                http_transport=cnb,
+                twelve_data_fx_http_transport=fx,
                 coingecko_http_transport=coingecko,
                 twelve_data_http_transport=twelve,
             )
@@ -163,9 +163,18 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
 ) -> None:
     assert DATABASE_URL is not None
     prefix = f"r5b4-recovery-{source.value}-{uuid4().hex[:10]}"
-    user_id, account_id = asyncio.run(investment_support.seed_identity(prefix, source=source))
+    quote_currency = "EUR"
+    symbol_override = (
+        "Q" + uuid4().hex[:2].translate(str.maketrans("0123456789abcdef", "ABCDEFGHIJKLMNOP"))
+        if source is ImportSource.anycoin
+        else None
+    )
+    user_id, account_id = asyncio.run(
+        investment_support.seed_identity(prefix, source=source, quote_currency=quote_currency)
+    )
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / source.value))
     observed_at = refresh_support._observed_at()
+    existing_fx_rate_ids = asyncio.run(refresh_support._twelve_data_fx_rate_ids())
     harness = refresh_support._ProviderHarness(observed_at=observed_at)
     app = create_app(refresh_support._settings())
     manual_bucket = datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0) + timedelta(
@@ -179,11 +188,23 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
                 source=source,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(source, fixture_name),
+                content=investment_support.fixture(
+                    source,
+                    fixture_name,
+                    quote_currency=quote_currency,
+                    symbol_override=symbol_override,
+                ),
                 filename=fixture_name,
                 post=False,
             )
-            asyncio.run(investment_support.seed_asset_listing(prefix, source=source))
+            asset_id, listing_id = asyncio.run(
+                investment_support.seed_asset_listing(
+                    prefix,
+                    source=source,
+                    quote_currency=quote_currency,
+                    symbol_override=symbol_override,
+                )
+            )
             if source is ImportSource.trading212:
                 asyncio.run(refresh_support._configure_trading_czk(prefix))
 
@@ -210,12 +231,12 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
                 inventory,
                 key=lambda item: (item["symbol"], item["assetId"]),
             )
-            item = next(value for value in inventory if value["assetId"] == f"{prefix}-asset")
+            item = next(value for value in inventory if value["assetId"] == asset_id)
             assert item["listings"] == [
                 {
-                    "currency": "EUR",
+                    "currency": quote_currency,
                     "exchange": source.value,
-                    "listingId": f"{prefix}-listing",
+                    "listingId": listing_id,
                     "provider": ("broker" if source is ImportSource.trading212 else "exchange"),
                     "providerSymbol": item["symbol"],
                 }
@@ -299,7 +320,7 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
         if provider == "twelve_data":
             assert not any(name == "coingecko" for name, _ in harness.calls)
         else:
-            assert not any(name in {"twelve_data", "cnb"} for name, _ in harness.calls)
+            assert not any(name in {"twelve_data", "twelve_data_fx"} for name, _ in harness.calls)
 
         after = asyncio.run(refresh_support._database_state(prefix))
         assert len(after["holdings"]) == len(after["prices"]) == 1
@@ -320,7 +341,7 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
         )
     finally:
         asyncio.run(refresh_support._cleanup(prefix))
-        asyncio.run(refresh_support._delete_cnb_rates())
+        asyncio.run(refresh_support._delete_new_twelve_data_fx_rates(existing_fx_rate_ids))
 
 
 def test_actual_cli_missing_database_url_is_safe_json() -> None:

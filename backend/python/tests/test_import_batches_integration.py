@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -18,20 +19,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.background_jobs import BackgroundJobModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     ImportLogEvent,
     ImportLogLevel,
     ImportStatus,
 )
-from app.db.models.imports import ImportBatchModel, ImportLogModel
+from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
+from app.db.models.ledger import InvestmentEventModel
+from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
-from app.modules.imports.models import ImportBatchCreateRequest
-from app.modules.imports.service import ImportBatchExistsError, ImportBatchService
+from app.modules.imports.models import ImportBatchCreateRequest, ImportBatchResponse
+from app.modules.imports.service import ImportBatchService
+from app.modules.imports.storage import LocalImportStorage
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-5a-internal-auth-secret-32-characters"
@@ -88,6 +95,7 @@ async def _seed() -> None:
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     now = datetime.now(UTC).replace(tzinfo=None)
     async with AsyncSession(engine) as session:
+        await session.execute(delete(BackgroundJobModel))
         await session.execute(delete(ImportLogModel))
         await session.execute(delete(ImportBatchModel))
         await session.execute(
@@ -185,6 +193,141 @@ async def _counts(*, user_id: str, account_id: str, checksum: str) -> tuple[int,
         )
     await engine.dispose()
     return int(batches or 0), int(logs or 0)
+
+
+async def _set_batch_status(batch_id: str, status: ImportStatus) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        batch = await session.get(ImportBatchModel, batch_id)
+        assert batch is not None
+        batch.status = status
+        if status in {ImportStatus.completed, ImportStatus.partially_completed}:
+            batch.rows_total = 2
+            batch.rows_imported = 1
+            batch.rows_skipped = 1
+            batch.completed_at = datetime.now(UTC).replace(tzinfo=None)
+        else:
+            batch.rows_total = 0
+            batch.rows_imported = 0
+            batch.rows_skipped = 0
+            batch.completed_at = None
+        await session.commit()
+    await engine.dispose()
+
+
+async def _insert_import_job(
+    *,
+    job_id: str,
+    user_id: str,
+    batch_id: str,
+    status: BackgroundJobStatus,
+    payload: dict[str, object] | None = None,
+) -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with AsyncSession(engine) as session:
+        session.add(
+            BackgroundJobModel(
+                id=job_id,
+                user_id=user_id,
+                account_id="account-active",
+                kind=BackgroundJobKind.import_workflow,
+                status=status,
+                idempotency_key=f"test-registration-{job_id}",
+                payload=payload or {"schema_version": 1, "batch_ids": [batch_id]},
+                checkpoint={"schema_version": 1, "phase": "queued", "completed_batch_ids": []},
+                progress={
+                    "schema_version": 1,
+                    "phase": "queued",
+                    "completed_units": 0,
+                    "total_units": 7,
+                    "completed_batches": 0,
+                    "total_batches": 1,
+                },
+                result=(
+                    {
+                        "schema_version": 1,
+                        "batch_ids": [batch_id],
+                        "rows_total": 1,
+                        "rows_imported": 1,
+                        "rows_skipped": 0,
+                        "snapshot_refresh_status": "created",
+                        "completed_at": now.isoformat(),
+                    }
+                    if status is BackgroundJobStatus.completed
+                    else None
+                ),
+                error_code="import_failed" if status is BackgroundJobStatus.failed else None,
+                error_message=(
+                    "Import processing failed safely."
+                    if status is BackgroundJobStatus.failed
+                    else None
+                ),
+                attempt_count=1,
+                max_attempts=5,
+                manual_retry_count=0,
+                run_after=now,
+                lease_owner=None,
+                lease_version=0,
+                lease_expires_at=None,
+                lease_heartbeat_at=None,
+                started_at=(
+                    now
+                    if status in {BackgroundJobStatus.completed, BackgroundJobStatus.failed}
+                    else None
+                ),
+                finished_at=(
+                    now
+                    if status in {BackgroundJobStatus.completed, BackgroundJobStatus.failed}
+                    else None
+                ),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+async def _replay_state(*, batch_id: str) -> tuple[int, int, int, int, int]:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    async with AsyncSession(engine) as session:
+        batches = await session.scalar(
+            select(func.count())
+            .select_from(ImportBatchModel)
+            .where(ImportBatchModel.id == batch_id)
+        )
+        logs = await session.scalar(
+            select(func.count())
+            .select_from(ImportLogModel)
+            .where(ImportLogModel.import_batch_id == batch_id)
+        )
+        rows = await session.scalar(
+            select(func.count())
+            .select_from(ImportRowModel)
+            .where(ImportRowModel.import_batch_id == batch_id)
+        )
+        transactions = await session.scalar(
+            select(func.count())
+            .select_from(TransactionModel)
+            .where(TransactionModel.import_batch_id == batch_id)
+        )
+        events = await session.scalar(
+            select(func.count())
+            .select_from(InvestmentEventModel)
+            .where(InvestmentEventModel.import_batch_id == batch_id)
+        )
+    await engine.dispose()
+    return (
+        int(batches or 0),
+        int(logs or 0),
+        int(rows or 0),
+        int(transactions or 0),
+        int(events or 0),
+    )
 
 
 async def _logs(batch_id: str) -> list[ImportLogModel]:
@@ -294,7 +437,11 @@ def test_import_batch_workflow_against_postgresql() -> None:
             json=_payload("a", filename="  transactions.csv  "),
         )
         assert owner.status_code == 201
-        owner_body = owner.json()
+        owner_response = owner.json()
+        assert owner_response["status"] == "upload_required"
+        assert owner_response["job"] is None
+        owner_body = owner_response["batch"]
+        assert owner_body is not None
         assert "user_id" not in owner_body
         assert owner_body["status"] == "pending"
         assert owner_body["filename"] == "transactions.csv"
@@ -336,9 +483,8 @@ def test_import_batch_workflow_against_postgresql() -> None:
             headers=_headers("user-owner"),
             json=_payload("a"),
         )
-        assert duplicate.status_code == 409
-        assert duplicate.json()["error"]["code"] == "import_batch_exists"
-        assert owner_body["id"] not in json.dumps(duplicate.json())
+        assert duplicate.status_code == 201
+        assert duplicate.json() == owner_response
         assert _run(
             _counts(user_id="user-owner", account_id="account-active", checksum="a" * 64)
         ) == (1, 1)
@@ -362,7 +508,7 @@ def test_import_batch_workflow_against_postgresql() -> None:
             json=_payload("f"),
         )
         assert foreign_created.status_code == 201
-        foreign_id = foreign_created.json()["id"]
+        foreign_id = foreign_created.json()["batch"]["id"]
 
         for user_id in ["user-owner", "user-admin", "user-editor", "user-viewer"]:
             listing = client.get(
@@ -404,11 +550,367 @@ def test_import_batch_workflow_against_postgresql() -> None:
 def test_concurrent_duplicate_registration_is_controlled() -> None:
     _run(_seed())
     results = _run(_concurrent_create())
-    successes = [result for result in results if not isinstance(result, BaseException)]
-    conflicts = [result for result in results if isinstance(result, ImportBatchExistsError)]
-    assert len(successes) == 1
-    assert len(conflicts) == 1
+    successes = [result for result in results if isinstance(result, ImportBatchResponse)]
+    assert len(successes) == 2
+    assert {result.id for result in successes} == {successes[0].id}
     assert _run(_counts(user_id="user-owner", account_id="account-active", checksum="7" * 64)) == (
         1,
         1,
     )
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [ImportStatus.completed, ImportStatus.partially_completed],
+)
+def test_exact_terminal_registration_returns_safe_conflict_without_mutation(
+    terminal_status: ImportStatus,
+) -> None:
+    _run(_seed())
+    app = create_app(
+        Settings(
+            environment="test",
+            database_url=DATABASE_URL,
+            docs_enabled=True,
+            log_level="ERROR",
+            log_json=False,
+            internal_auth_secret=SECRET,
+            _env_file=None,
+        )
+    )
+    payload = _payload("e" if terminal_status is ImportStatus.completed else "f")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        created = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload,
+        )
+        assert created.status_code == 201
+        batch_id = created.json()["batch"]["id"]
+        _run(_set_batch_status(batch_id, terminal_status))
+        before = _run(_replay_state(batch_id=batch_id))
+
+        replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload,
+        )
+        mismatch = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload | {"filename": "different.csv"},
+        )
+
+    assert replay.status_code == 409
+    assert {key: value for key, value in replay.json()["error"].items() if key != "request_id"} == {
+        "code": "import_batch_already_imported",
+        "message": "This import file has already been processed.",
+    }
+    assert mismatch.status_code == 409
+    assert mismatch.json()["error"]["code"] == "import_batch_exists"
+    assert _run(_replay_state(batch_id=batch_id)) == before == (1, 1, 0, 0, 0)
+
+
+def test_exact_processing_registration_reuses_the_canonical_batch_without_mutation() -> None:
+    _run(_seed())
+    app = create_app(
+        Settings(
+            environment="test",
+            database_url=DATABASE_URL,
+            docs_enabled=True,
+            log_level="ERROR",
+            log_json=False,
+            internal_auth_secret=SECRET,
+            _env_file=None,
+        )
+    )
+    payload = _payload("e")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        created = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload,
+        )
+        assert created.status_code == 201
+        batch_id = created.json()["batch"]["id"]
+        _run(_set_batch_status(batch_id, ImportStatus.processing))
+        before = _run(_replay_state(batch_id=batch_id))
+
+        replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload,
+        )
+
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "import_batch_not_reusable"
+    assert _run(_replay_state(batch_id=batch_id)) == before == (1, 1, 0, 0, 0)
+
+
+def test_job_aware_registration_recovery_fails_closed_on_real_postgresql() -> None:
+    """Registration is the only public recovery decision point for one batch."""
+
+    _run(_seed())
+    app = create_app(
+        Settings(
+            environment="test",
+            database_url=DATABASE_URL,
+            docs_enabled=True,
+            log_level="ERROR",
+            log_json=False,
+            internal_auth_secret=SECRET,
+            _env_file=None,
+        )
+    )
+
+    def register(client: TestClient, checksum: str) -> tuple[dict[str, object], str]:
+        payload = _payload(checksum, filename=f"recovery-{checksum}.csv")
+        response = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["status"] == "upload_required"
+        assert body["job"] is None
+        assert body["batch"] is not None
+        return payload, str(body["batch"]["id"])
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        failed_payload, failed_batch_id = register(client, "a")
+        _run(_set_batch_status(failed_batch_id, ImportStatus.completed))
+        _run(
+            _insert_import_job(
+                job_id="registration-failed-job",
+                user_id="user-owner",
+                batch_id=failed_batch_id,
+                status=BackgroundJobStatus.failed,
+            )
+        )
+        failed_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=failed_payload,
+        )
+        assert failed_replay.status_code == 201
+        assert failed_replay.json()["status"] == "resume_job"
+        assert failed_replay.json()["batch"] is None
+        assert failed_replay.json()["job"]["id"] == "registration-failed-job"
+        assert not {"payload", "checkpoint", "lease_owner"} & failed_replay.json()["job"].keys()
+
+        completed_payload, completed_batch_id = register(client, "b")
+        _run(_set_batch_status(completed_batch_id, ImportStatus.completed))
+        _run(
+            _insert_import_job(
+                job_id="registration-completed-job",
+                user_id="user-owner",
+                batch_id=completed_batch_id,
+                status=BackgroundJobStatus.completed,
+            )
+        )
+        completed_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=completed_payload,
+        )
+        assert completed_replay.status_code == 409
+        assert completed_replay.json()["error"]["code"] == "import_batch_already_imported"
+
+        legacy_payload, legacy_batch_id = register(client, "c")
+        _run(_set_batch_status(legacy_batch_id, ImportStatus.partially_completed))
+        legacy_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=legacy_payload,
+        )
+        assert legacy_replay.status_code == 409
+        assert legacy_replay.json()["error"]["code"] == "import_batch_already_imported"
+
+        pending_payload, pending_batch_id = register(client, "d")
+        _run(_set_batch_status(pending_batch_id, ImportStatus.processing))
+        processing_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=pending_payload,
+        )
+        assert processing_replay.status_code == 409
+        assert processing_replay.json()["error"]["code"] == "import_batch_not_reusable"
+
+        corrupt_payload, corrupt_batch_id = register(client, "e")
+        _run(_set_batch_status(corrupt_batch_id, ImportStatus.processing))
+        _run(
+            _insert_import_job(
+                job_id="registration-corrupt-job",
+                user_id="user-owner",
+                batch_id=corrupt_batch_id,
+                status=BackgroundJobStatus.queued,
+                payload={"batch_ids": [corrupt_batch_id]},
+            )
+        )
+        corrupt_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=corrupt_payload,
+        )
+        assert corrupt_replay.status_code == 409
+        assert corrupt_replay.json()["error"]["code"] == "import_batch_not_reusable"
+
+        multiple_payload, multiple_batch_id = register(client, "f")
+        _run(_set_batch_status(multiple_batch_id, ImportStatus.processing))
+        for suffix in ("one", "two"):
+            _run(
+                _insert_import_job(
+                    job_id=f"registration-multiple-{suffix}",
+                    user_id="user-owner",
+                    batch_id=multiple_batch_id,
+                    status=BackgroundJobStatus.queued,
+                )
+            )
+        multiple_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=multiple_payload,
+        )
+        assert multiple_replay.status_code == 409
+        assert multiple_replay.json()["error"]["code"] == "import_batch_not_reusable"
+
+        foreign_payload, foreign_batch_id = register(client, "0")
+        _run(_set_batch_status(foreign_batch_id, ImportStatus.processing))
+        _run(
+            _insert_import_job(
+                job_id="registration-foreign-job",
+                user_id="user-admin",
+                batch_id=foreign_batch_id,
+                status=BackgroundJobStatus.queued,
+            )
+        )
+        foreign_replay = client.post(
+            "/api/v1/accounts/account-active/imports",
+            headers=_headers("user-owner"),
+            json=foreign_payload,
+        )
+        assert foreign_replay.status_code == 409
+        assert foreign_replay.json()["error"]["code"] == "import_batch_not_reusable"
+
+
+def test_lost_registration_response_reuses_batch_for_upload_and_one_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run(_seed())
+    content = b"durable registration replay\n"
+    checksum = hashlib.sha256(content).hexdigest()
+    payload = {
+        "source": "raiffeisenbank",
+        "filename": "durable.csv",
+        "file_size": len(content),
+        "file_encoding": "utf-8",
+        "checksum": checksum,
+    }
+    monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
+    app = create_app(
+        Settings(
+            environment="test",
+            database_url=DATABASE_URL,
+            docs_enabled=True,
+            log_level="ERROR",
+            log_json=False,
+            internal_auth_secret=SECRET,
+            _env_file=None,
+        )
+    )
+    storage = LocalImportStorage(tmp_path)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            first = client.post(
+                "/api/v1/accounts/account-active/imports",
+                headers=_headers("user-owner"),
+                json=payload,
+            )
+            retry = client.post(
+                "/api/v1/accounts/account-active/imports",
+                headers=_headers("user-owner"),
+                json=payload,
+            )
+            assert first.status_code == retry.status_code == 201
+            assert first.json() == retry.json()
+            assert first.json()["status"] == "upload_required"
+            batch_id = first.json()["batch"]["id"]
+
+            upload = client.put(
+                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
+                headers={**_headers("user-owner"), "Content-Type": "application/octet-stream"},
+                content=content,
+            )
+            assert upload.status_code == 200
+            assert upload.json()["idempotent"] is False
+            upload_replay = client.put(
+                f"/api/v1/accounts/account-active/imports/{batch_id}/file",
+                headers={**_headers("user-owner"), "Content-Type": "application/octet-stream"},
+                content=content,
+            )
+            assert upload_replay.status_code == 200
+            assert upload_replay.json()["idempotent"] is True
+            assert storage.path_for(batch_id).read_bytes() == content
+
+            first_job = client.post(
+                "/api/v1/accounts/account-active/imports/jobs",
+                headers=_headers("user-owner"),
+                json={"batch_ids": [batch_id]},
+            )
+            replay_job = client.post(
+                "/api/v1/accounts/account-active/imports/jobs",
+                headers=_headers("user-owner"),
+                json={"batch_ids": [batch_id]},
+            )
+            assert first_job.status_code == replay_job.status_code == 202
+            assert first_job.json()["id"] == replay_job.json()["id"]
+
+        async def counts() -> tuple[int, int, int, int, int, int]:
+            assert DATABASE_URL is not None
+            engine = create_async_engine(normalize_database_url(DATABASE_URL))
+            async with AsyncSession(engine) as session:
+                batches = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportBatchModel)
+                    .where(ImportBatchModel.id == batch_id)
+                )
+                logs = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportLogModel)
+                    .where(ImportLogModel.import_batch_id == batch_id)
+                )
+                jobs = await session.scalar(
+                    select(func.count())
+                    .select_from(BackgroundJobModel)
+                    .where(BackgroundJobModel.id == first_job.json()["id"])
+                )
+                raw_rows = await session.scalar(
+                    select(func.count())
+                    .select_from(ImportRowModel)
+                    .where(ImportRowModel.import_batch_id == batch_id)
+                )
+                transactions = await session.scalar(
+                    select(func.count())
+                    .select_from(TransactionModel)
+                    .where(TransactionModel.import_batch_id == batch_id)
+                )
+                investment_events = await session.scalar(
+                    select(func.count())
+                    .select_from(InvestmentEventModel)
+                    .where(InvestmentEventModel.import_batch_id == batch_id)
+                )
+            await engine.dispose()
+            return (
+                int(batches or 0),
+                int(logs or 0),
+                int(jobs or 0),
+                int(raw_rows or 0),
+                int(transactions or 0),
+                int(investment_events or 0),
+            )
+
+        assert _run(counts()) == (1, 1, 1, 0, 0, 0)
+    finally:
+        storage.remove(batch_id) if "batch_id" in locals() else None

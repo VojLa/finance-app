@@ -141,7 +141,7 @@ def test_exchange_rate_observation_is_immutable_and_preserved_exactly() -> None:
         _rate(from_currency="USD"),
         _rate(to_currency="EUR"),
         _rate(to_currency="EUR", from_currency="EUR"),
-        _rate(provider=ExchangeRateSource.cnb),
+        _rate(provider=ExchangeRateSource.twelve_data),
         _rate(from_currency="eur"),
         _rate(to_currency="CZ"),
         _rate(rate=Decimal("0")),

@@ -4,6 +4,11 @@ from app.db.models.accounts import (
     AccountModel,
 )
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.background_jobs import (
+    BackgroundJobModel,
+    ImportJobAffectedAccountModel,
+    ImportJobBatchModel,
+)
 from app.db.models.budgets import (
     BudgetAccountModel,
     BudgetAlertModel,
@@ -17,6 +22,10 @@ from app.db.models.canonical_lineage import (
     AccountSnapshotCanonicalBoundaryModel,
     DailySnapshotBaselineAccountModel,
     DailySnapshotBaselineModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+    UserReadModelPublicationModel,
+    UserReadModelPublicationWatermarkModel,
 )
 from app.db.models.categories import CategoryModel, CategoryRuleModel
 from app.db.models.counterparties import CounterpartyAliasModel, CounterpartyModel
@@ -28,6 +37,8 @@ from app.db.models.enums import (
     AliasMatchType,
     AssetAliasProvider,
     AssetType,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     BudgetAlertType,
     BudgetPeriodType,
     CategoryType,
@@ -46,15 +57,46 @@ from app.db.models.enums import (
     RuleField,
     RuleOperator,
     SnapshotGranularity,
+    SnapshotSeriesJobKind,
     SnapshotSource,
     TransactionClassification,
     TransactionType,
 )
 from app.db.models.holdings import HoldingModel
-from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.imports import (
+    ImportBatchModel,
+    ImportLogModel,
+    ImportRowModel,
+    ImportSourceOccurrenceModel,
+)
+from app.db.models.investment_snapshots import (
+    InvestmentAccountSnapshotItemModel,
+    InvestmentAccountSnapshotModel,
+    PortfolioSnapshotInputModel,
+    PortfolioSnapshotItemAccountModel,
+    PortfolioSnapshotItemModel,
+    PortfolioSnapshotModel,
+)
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
 from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.db.models.publication_targets import ImportJobPublicationTargetModel
+from app.db.models.snapshot_series_jobs import (
+    SnapshotSeriesCanonicalInvalidationModel,
+    SnapshotSeriesDirtyStateModel,
+    SnapshotSeriesRebuildJobModel,
+    SnapshotSeriesScheduleStateModel,
+)
+from app.db.models.snapshot_series_publication import (
+    SnapshotSeriesHeadModel,
+    SnapshotSeriesPointLinkModel,
+    SnapshotSeriesPublicationReceiptModel,
+    SnapshotSeriesVersionStateModel,
+)
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -63,6 +105,7 @@ from app.db.models.snapshots import (
 from app.db.models.transactions import (
     TransactionModel,
     TransactionPairModel,
+    TransactionReportingEvidenceModel,
     TransactionSplitModel,
 )
 from app.db.models.users import UserModel
@@ -86,6 +129,9 @@ __all__ = [
     "AssetListingModel",
     "AssetModel",
     "AssetType",
+    "BackgroundJobKind",
+    "BackgroundJobModel",
+    "BackgroundJobStatus",
     "BudgetAccountModel",
     "BudgetAlertModel",
     "BudgetAlertType",
@@ -105,31 +151,56 @@ __all__ = [
     "ExchangeRateSource",
     "HoldingModel",
     "ImportBatchModel",
+    "ImportJobAffectedAccountModel",
+    "ImportJobBatchModel",
+    "ImportJobPublicationTargetModel",
     "ImportLogEvent",
     "ImportLogLevel",
     "ImportLogModel",
     "ImportRowModel",
     "ImportRowStatus",
     "ImportSource",
+    "ImportSourceOccurrenceModel",
     "ImportStatus",
+    "InvestmentAccountSnapshotItemModel",
+    "InvestmentAccountSnapshotModel",
     "InvestmentEventModel",
     "InvestmentEventType",
     "InvestmentMovementKind",
     "InvestmentMovementModel",
+    "InvestmentMovementValuationEvidenceModel",
     "LiabilityBalanceModel",
     "LiabilityBalanceSource",
     "MovementDirection",
     "NetWorthSnapshotModel",
+    "PortfolioSnapshotInputModel",
+    "PortfolioSnapshotItemAccountModel",
+    "PortfolioSnapshotItemModel",
+    "PortfolioSnapshotModel",
     "PriceSnapshotModel",
     "PriceSource",
     "RuleField",
     "RuleOperator",
+    "SnapshotGenerationModel",
+    "SnapshotGenerationTargetModel",
     "SnapshotGranularity",
+    "SnapshotSeriesCanonicalInvalidationModel",
+    "SnapshotSeriesDirtyStateModel",
+    "SnapshotSeriesHeadModel",
+    "SnapshotSeriesJobKind",
+    "SnapshotSeriesPointLinkModel",
+    "SnapshotSeriesPublicationReceiptModel",
+    "SnapshotSeriesRebuildJobModel",
+    "SnapshotSeriesScheduleStateModel",
+    "SnapshotSeriesVersionStateModel",
     "SnapshotSource",
     "TransactionClassification",
     "TransactionModel",
     "TransactionPairModel",
+    "TransactionReportingEvidenceModel",
     "TransactionSplitModel",
     "TransactionType",
     "UserModel",
+    "UserReadModelPublicationModel",
+    "UserReadModelPublicationWatermarkModel",
 ]

@@ -35,6 +35,16 @@ def test_env_example_has_only_commented_twelve_data_key() -> None:
     assert settings.twelve_data_api_key is None
 
 
+def test_compose_passes_twelve_data_key_only_to_python_api() -> None:
+    compose_path = Path(__file__).resolve().parents[3] / "docker-compose.yml"
+    compose = compose_path.read_text(encoding="utf-8")
+    app_section, api_section = compose.split("\n  api:", maxsplit=1)
+
+    assert "TWELVE_DATA_API_KEY" not in app_section
+    assert "TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}" in api_section
+    assert compose.count("TWELVE_DATA_API_KEY") == 2
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -88,4 +98,4 @@ def test_production_registry_contains_exact_price_and_fx_sources() -> None:
     assert service.price_registry.sources == frozenset(
         {PriceSource.coingecko, PriceSource.twelve_data}
     )
-    assert service.fx_registry.sources == frozenset({ExchangeRateSource.cnb})
+    assert service.fx_registry.sources == frozenset({ExchangeRateSource.twelve_data})

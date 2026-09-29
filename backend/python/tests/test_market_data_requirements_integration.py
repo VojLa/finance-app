@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
@@ -40,6 +40,7 @@ from app.modules.market_data.requirements import (
 from app.modules.market_data.requirements_repository import (
     MarketEvidenceRequirementsRepository,
 )
+from tests.support.investment_fixture_e2e import cleanup as cleanup_fixture
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -199,6 +200,7 @@ async def test_read_only_plan_uses_exact_persisted_scope_and_event_dates() -> No
                         account_id=account_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"USD": "200.0000000000"},
                     )
                 )
             event_id = f"{prefix}-event"
@@ -361,3 +363,18 @@ async def test_read_only_plan_uses_exact_persisted_scope_and_event_dates() -> No
         )
     finally:
         await engine.dispose()
+        cleanup_engine = _engine()
+        try:
+            async with AsyncSession(cleanup_engine) as session:
+                await session.execute(
+                    delete(TransactionModel).where(TransactionModel.id == f"{prefix}-transaction")
+                )
+                await session.execute(
+                    delete(LiabilityBalanceModel).where(
+                        LiabilityBalanceModel.id == f"{prefix}-liability"
+                    )
+                )
+                await session.commit()
+        finally:
+            await cleanup_engine.dispose()
+        await cleanup_fixture(prefix)

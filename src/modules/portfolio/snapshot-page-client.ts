@@ -4,6 +4,7 @@ import type {
 } from "@/modules/python-api/snapshot-workflow-contract"
 
 export const PORTFOLIO_WORKFLOW_PATH = "/api/snapshot-workflow/portfolio"
+export const PORTFOLIO_REFRESH_WORKFLOW_PATH = "/api/snapshot-workflow/portfolio/refresh"
 
 export type PortfolioPageState =
   | { status: "loading" }
@@ -34,6 +35,8 @@ function isCurrentSummary(value: unknown): value is CurrentValueSummary {
     typeof value.asOf === "string" &&
     typeof value.baselineTimestamp === "string" &&
     typeof value.historyAnchorSnapshotId === "string" &&
+    typeof value.valuationTimestamp === "string" &&
+    typeof value.isStale === "boolean" &&
     typeof value.currency === "string" &&
     typeof value.calculationVersion === "number" &&
     value.calculationVersion > 0
@@ -65,13 +68,17 @@ function safeErrorState(value: unknown): PortfolioPageState {
 }
 
 export async function requestPortfolioPageState(
-  fetchImplementation: FetchImplementation = globalThis.fetch
+  fetchImplementation: FetchImplementation = globalThis.fetch,
+  refresh = false
 ): Promise<PortfolioPageState> {
   try {
-    const response = await fetchImplementation(PORTFOLIO_WORKFLOW_PATH, {
+    const response = await fetchImplementation(
+      refresh ? PORTFOLIO_REFRESH_WORKFLOW_PATH : PORTFOLIO_WORKFLOW_PATH,
+      {
       method: "POST",
       cache: "no-store",
-    })
+      }
+    )
     const payload: unknown = await response.json()
 
     if (!response.ok) return safeErrorState(payload)

@@ -9,11 +9,14 @@ from enum import StrEnum
 
 from app.db.models.common import MONEY, RATE, TIMESTAMP
 from app.modules.snapshots.account_projection import (
-    FX_PIVOT_CURRENCY,
     CurrencyAmount,
     ExchangeRateConsumptionRole,
     ExpectedAccountSnapshotValuation,
     convert_currency_amount,
+)
+from app.modules.snapshots.calculation import (
+    DerivedSnapshotCalculationError,
+    round_derived_snapshot_value,
 )
 
 _ERROR_MESSAGE = "Persisted evidence cannot produce a complete account snapshot."
@@ -67,7 +70,7 @@ class ConsumedHistoricalExchangeRate:
 class ExactFinancialMetrics:
     net_deposits_value: Decimal
     realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
+    unrealized_pnl_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     net_deposits_by_currency: tuple[CurrencyAmount, ...]
@@ -202,7 +205,7 @@ def build_financial_metrics(
         pair = (base_currency, quote_currency)
         if (
             metric_item is None
-            or quote_currency not in {output_currency, FX_PIVOT_CURRENCY}
+            or quote_currency != output_currency
             or timestamp > metric_item.timestamp
             or pair in rates_by_evidence.setdefault(selected.evidence_id, {})
         ):
@@ -265,24 +268,35 @@ def build_financial_metrics(
     if set(rates_by_evidence) - set(evidence_by_id):
         raise _fail()
 
-    unrealized = _calculated(
-        valuation.investment_value,
-        -valuation.investment_cost_basis,
-        multiply=False,
+    unrealized = (
+        None
+        if valuation.investment_cost_basis is None
+        else _calculated(
+            valuation.investment_value,
+            -valuation.investment_cost_basis,
+            multiply=False,
+        )
     )
     native_unrealized: dict[str, Decimal] = {}
     native_available = True
     for valuation_item in valuation.items:
-        if valuation_item.value_currency != valuation_item.native_cost_currency:
+        if (
+            valuation_item.native_cost_basis is None
+            or valuation_item.native_cost_currency is None
+            or valuation_item.value_currency != valuation_item.native_cost_currency
+        ):
             native_available = False
             break
+        try:
+            native_item_unrealized = round_derived_snapshot_value(
+                valuation_item.native_value - valuation_item.native_cost_basis,
+                MONEY,
+            )
+        except DerivedSnapshotCalculationError as exc:
+            raise _fail() from exc
         native_unrealized[valuation_item.value_currency] = _calculated(
             native_unrealized.get(valuation_item.value_currency, Decimal(0)),
-            _calculated(
-                valuation_item.native_value,
-                -valuation_item.native_cost_basis,
-                multiply=False,
-            ),
+            native_item_unrealized,
             multiply=False,
         )
 

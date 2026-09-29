@@ -10,7 +10,6 @@ from app.db.models.enums import AccountType
 
 LIABILITY_ACCOUNT_TYPES = frozenset(
     {
-        AccountType.credit_card,
         AccountType.loan,
         AccountType.mortgage,
     }

@@ -115,7 +115,8 @@ const ROUTES: RouteCase[] = [
   },
   {
     name: "update",
-    invoke: () => updateRoute.PATCH(updateRequest(), { params: { id: "path-account" } }),
+    invoke: () =>
+      updateRoute.PATCH(updateRequest(), { params: Promise.resolve({ id: "path-account" }) }),
     client: update as unknown as Mock,
   },
   {
@@ -129,7 +130,7 @@ const ROUTES: RouteCase[] = [
             Cookie: "next-auth=session-cookie",
           },
         }),
-        { params: { id: "path-account" } }
+        { params: Promise.resolve({ id: "path-account" }) }
       ),
     client: archive as unknown as Mock,
   },
@@ -230,7 +231,9 @@ describe("thin account routes", () => {
     })
     update.mockResolvedValue({ ...ACCOUNT, name: "Updated", currency: "USD" })
 
-    await updateRoute.PATCH(updateRequest(), { params: { id: "path-account" } })
+    await updateRoute.PATCH(updateRequest(), {
+      params: Promise.resolve({ id: "path-account" }),
+    })
 
     expect(getSession).toHaveBeenCalledTimes(1)
     expect(update).toHaveBeenCalledTimes(1)
@@ -254,7 +257,7 @@ describe("thin account routes", () => {
         method: "POST",
         body: "ignored caller body",
       }),
-      { params: { id: "path-account" } }
+      { params: Promise.resolve({ id: "path-account" }) }
     )
 
     expect(getSession).toHaveBeenCalledTimes(1)
@@ -353,7 +356,7 @@ describe("thin account routes", () => {
 
       const response = await updateRoute.PATCH(
         updateRequestWith({ name: "Updated", [field]: "caller-controlled" }),
-        { params: { id: "path-account" } }
+        { params: Promise.resolve({ id: "path-account" }) }
       )
 
       expect(response.status).toBe(422)

@@ -1,215 +1,98 @@
 # Finance App
 
-Personal finance and portfolio application in active migration from a Next.js-first
-backend toward a Python backend with PostgreSQL as the shared persistence layer.
+Personal finance and portfolio application with a Next.js presentation layer,
+FastAPI business backend, and PostgreSQL persistence.
 
-## Current State
+## Runtime architecture
 
-The application is not a finished product yet. The repository currently contains:
+- Next.js 15, React, TypeScript, Tailwind CSS, and NextAuth JWT sessions.
+- Thin same-origin Next.js API adapters forward authenticated requests to FastAPI.
+- Python owns credentials, authorization over financial data, imports, accounts,
+  transactions, budgets, investments, market evidence, snapshots, and read models.
+- SQLAlchemy is the runtime persistence mapping and Alembic is the only executable
+  schema migration system.
+- `prisma/migrations/` is immutable historical SQL evidence only. The repository has
+  no Prisma client, generator, schema mirror, deployment command, or runtime package.
 
-- `Next.js 14` frontend in TypeScript.
-- Existing Next.js/TypeScript backend routes that still power parts of the current UI.
-- `FastAPI` Python backend under `backend/python`.
-- PostgreSQL 16 database.
-- Prisma as the current production migration owner.
-- Complete SQLAlchemy read-only mirror of the current Prisma-managed schema.
-- Alembic configured with a no-op baseline revision, ready for a future migration cutover.
+## Local development
 
-Important database ownership rule:
+Copy `.env.example` to `.env`, then start the complete stack:
 
-- Prisma still owns schema migrations.
-- SQLAlchemy is a runtime and verification mirror.
-- Alembic is configured and verified, but does not own application tables or enums yet.
-- No app startup path should run schema creation, Alembic stamp, or Alembic upgrade.
-
-## Stack
-
-- Frontend: Next.js 14, React, TypeScript, Tailwind CSS
-- Current auth/UI integration: NextAuth
-- Python API: FastAPI, SQLAlchemy 2.x async engine, asyncpg
-- Database: PostgreSQL 16
-- Current migration owner: Prisma
-- Future migration target: Alembic
-- Tooling: uv, Ruff, mypy, pytest, Vitest, Docker Compose
-
-## Local Development
-
-Create or update `.env` from `.env.example` first.
-
-Start the full local stack:
-
-```bash
+```powershell
 docker compose up --build
 ```
 
-Services:
+The UI is at `http://localhost:3000`, FastAPI at `http://localhost:8010`, and
+PostgreSQL at `localhost:5434` by default (override with `FINANCE_APP_DB_PORT`).
 
-```text
-Next.js frontend: http://localhost:3000
-Python API:       http://localhost:8010
-PostgreSQL:       localhost:5433
+For a new empty database:
+
+```powershell
+npm run db:bootstrap
+npm run seed
 ```
 
-Useful API endpoints:
+For an existing database on the Alembic graph:
 
-```text
-GET http://localhost:8010/api/v1/health/live
-GET http://localhost:8010/api/v1/health/ready
-GET http://localhost:8010/api/v1/portfolio?user_id=<user-id>
-GET http://localhost:8010/docs
+```powershell
+npm run db:migrate
+npm run db:check
 ```
 
-Start only the Python API and database:
+Run the services outside Docker with:
 
-```bash
-docker compose up api --build
-```
+```powershell
+npm ci
+npm run dev -- -p 3010
 
-Start the Next.js app locally outside Docker:
-
-```bash
-npm install
-npm run db:generate
-npm run dev
-```
-
-## Database Workflow
-
-Current Prisma commands:
-
-```bash
-npm run db:generate
-npm run db:deploy
-npm run db:validate
-npm run db:studio
-```
-
-For local development with a disposable database, `npm run db:migrate` is available, but
-production-like verification uses committed Prisma migrations with `db:deploy`.
-
-The canonical PostgreSQL schema baseline lives in:
-
-```text
-backend/python/database/baseline/schema.sql
-backend/python/database/baseline/schema.sha256
-backend/python/database/schema_ownership.toml
-```
-
-Verify a migrated PostgreSQL database against the committed baseline:
-
-```bash
-cd backend/python
-uv run python scripts/database_schema.py --check
-uv run python scripts/sqlalchemy_schema.py --check
-```
-
-Verify Alembic baseline readiness before any manual stamp:
-
-```bash
-cd backend/python
-uv run python scripts/alembic_baseline.py --verify
-```
-
-Alembic baseline commands are explicit operator actions only:
-
-```bash
-cd backend/python
-uv run alembic -c alembic.ini stamp 3d0001base
-uv run alembic -c alembic.ini current --check-heads
-uv run alembic -c alembic.ini check
-uv run alembic -c alembic.ini upgrade head
-```
-
-These commands must not change application schema objects. The baseline revision is a
-marker for the inherited Prisma schema.
-
-## Python Backend
-
-Python backend setup:
-
-```bash
 cd backend/python
 uv sync --frozen --extra dev
 uv run uvicorn app.main:app --reload --port 8010
 ```
 
-Windows bootstrap:
+Next.js does not require `DATABASE_URL`; only the Python service and database
+operator scripts connect to PostgreSQL.
+
+## Verification
+
+Frontend:
+
+```powershell
+npm test
+npm run lint
+npx tsc --noEmit
+npm run api:python:check
+npm run format:check
+```
+
+Backend:
 
 ```powershell
 cd backend/python
-.\bootstrap.ps1 -RunChecks
-```
-
-Backend quality gate:
-
-```bash
-cd backend/python
-uv run python scripts/check.py
-```
-
-Equivalent individual checks:
-
-```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy .
+uv run mypy app
 uv run pytest
+uv run python scripts/migration_policy.py --check
 ```
 
-## Frontend And TypeScript Checks
+The PostgreSQL integration tests require an explicit dedicated `DATABASE_URL`.
+Do not run `npm run build` while `next dev` is active because both processes share
+the `.next` cache.
 
-```bash
-npm run test
-npm run lint
-npm run format:check
-npm run build
-```
+## Database safety
 
-Some current product workflows still depend on the legacy Next.js backend routes while the
-Python API migration continues.
+- Do not edit the files under `prisma/migrations/`; their aggregate SHA-256 is
+  verified as a frozen archive.
+- Add schema changes only as reviewed Alembic revisions with revision-specific SQL
+  artifacts and SQLAlchemy parity.
+- Never call `create_all`, `drop_all`, stamp, or upgrade from application startup.
+- `db:bootstrap` refuses a non-empty public schema; normal upgrades use an advisory
+  lock and verify the committed schema artifact after migration.
 
 ## Documentation
 
-Planning and architecture documentation lives in:
-
-```text
-!planning/
-!docs/
-backend/python/README.md
-backend/python/database/README.md
-backend/python/app/db/README.md
-```
-
-The most relevant current planning documents are:
-
-```text
-!planning/02-roadmap.md
-!planning/03-modules.md
-!planning/05-domain-model.md
-!planning/06-project-structure.md
-```
-
-## Current Milestone Notes
-
-Recently completed backend migration steps:
-
-- Step 3C: complete SQLAlchemy schema mirror.
-- Step 3D: Alembic baseline readiness.
-
-Still not completed:
-
-- Full cutover from Prisma-owned migrations to Alembic-owned migrations.
-- Full removal of domain backend logic from Next.js route handlers.
-- Shared production auth/session boundary between Next.js and Python API.
-- Production-ready import, portfolio, snapshot, and dashboard workflows fully served by
-  Python API.
-
-## Safety Rules
-
-- Do not edit old Prisma migrations to hide drift.
-- Do not regenerate the canonical SQL baseline unless the schema change is intentional.
-- Do not call `Base.metadata.create_all()` or `Base.metadata.drop_all()` in application
-  runtime.
-- Do not run Alembic stamp or upgrade automatically during FastAPI startup.
-- Do not treat SQLAlchemy metadata as the migration owner until the ownership cutover is
-  explicitly approved.
+Current architecture is documented in [`!docs/`](!docs/), planned scope and
+decisions in [`!planning/`](!planning/), and active Codex workflow in
+[`.agents/`](.agents/). Historical execution and audit records remain in
+[`ChatGPT/`](ChatGPT/).

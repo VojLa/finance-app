@@ -1,5 +1,11 @@
 # 0001 Use Python Backend
 
+Type: historical
+Status: historical
+Owns: retained rationale for Python backend authority
+Code: Python backend and transport boundary
+Update when: the record is superseded or archived
+
 ## Status
 
 Accepted.

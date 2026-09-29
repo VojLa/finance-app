@@ -159,6 +159,7 @@ class PriceSource(StrEnum):
 
 
 class ExchangeRateSource(StrEnum):
+    twelve_data = "twelve_data"
     cnb = "cnb"
     ecb = "ecb"
     manual = "manual"
@@ -236,6 +237,18 @@ class ImportLogEvent(StrEnum):
     failed = "failed"
 
 
+class BackgroundJobStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    retry_wait = "retry_wait"
+    completed = "completed"
+    failed = "failed"
+
+
+class BackgroundJobKind(StrEnum):
+    import_workflow = "import_workflow"
+
+
 class SnapshotGranularity(StrEnum):
     minute = "minute"
     hour = "hour"
@@ -250,6 +263,11 @@ class SnapshotSource(StrEnum):
     holdings_recalculation = "holdings_recalculation"
     scheduled = "scheduled"
     manual_recalculation = "manual_recalculation"
+
+
+class SnapshotSeriesJobKind(StrEnum):
+    rebuild = "rebuild"
+    capture = "capture"
 
 
 ACCOUNT_MEMBER_ROLE_DB = postgres_enum(AccountMemberRole, name="AccountMemberRole")
@@ -287,5 +305,11 @@ IMPORT_STATUS_DB = postgres_enum(ImportStatus, name="ImportStatus")
 IMPORT_ROW_STATUS_DB = postgres_enum(ImportRowStatus, name="ImportRowStatus")
 IMPORT_LOG_LEVEL_DB = postgres_enum(ImportLogLevel, name="ImportLogLevel")
 IMPORT_LOG_EVENT_DB = postgres_enum(ImportLogEvent, name="ImportLogEvent")
+BACKGROUND_JOB_STATUS_DB = postgres_enum(BackgroundJobStatus, name="BackgroundJobStatus")
+BACKGROUND_JOB_KIND_DB = postgres_enum(BackgroundJobKind, name="BackgroundJobKind")
 SNAPSHOT_GRANULARITY_DB = postgres_enum(SnapshotGranularity, name="SnapshotGranularity")
 SNAPSHOT_SOURCE_DB = postgres_enum(SnapshotSource, name="SnapshotSource")
+SNAPSHOT_SERIES_JOB_KIND_DB = postgres_enum(
+    SnapshotSeriesJobKind,
+    name="SnapshotSeriesJobKind",
+)

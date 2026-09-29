@@ -13,13 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.enums import (
     AssetType,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     MovementDirection,
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
-from app.modules.holdings.persistence_projection import ExpectedPersistedHoldingPlan
+from app.modules.holdings.persistence_projection import (
+    ExpectedPersistedHoldingPlan,
+    ExpectedRealizedPnlPlan,
+)
 from app.modules.holdings.rebuild_service import (
     CurrentHoldingState,
     HoldingCreatePlan,
@@ -28,6 +32,7 @@ from app.modules.holdings.rebuild_service import (
     HoldingRebuildStateError,
     adapt_persisted_history,
     build_holding_rebuild_plan,
+    materialize_realized_pnl,
     stable_holding_id,
     validate_current_holdings,
 )
@@ -47,7 +52,10 @@ def _expected(
     quantity: str = "2",
     average: str = "100",
     currency: str = "EUR",
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None = None,
 ) -> ExpectedPersistedHoldingPlan:
+    exact_quantity = Decimal(quantity)
+    exact_average = Decimal(average)
     return ExpectedPersistedHoldingPlan(
         account_id="account",
         asset_id=asset_id,
@@ -55,13 +63,18 @@ def _expected(
         symbol="VWCE",
         name=None,
         asset_type=AssetType.etf,
-        quantity=Decimal(quantity),
-        avg_buy_price=Decimal(average),
+        quantity=exact_quantity,
+        avg_buy_price=exact_average,
         currency=currency,
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
         realized_pnl=None,
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else ((currency, exact_quantity * exact_average),)
+        ),
     )
 
 
@@ -73,7 +86,10 @@ def _current(
     quantity: str = "2",
     average: str = "100",
     current_price: Decimal | None = None,
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None = None,
 ) -> CurrentHoldingState:
+    exact_quantity = Decimal(quantity)
+    exact_average = Decimal(average)
     return CurrentHoldingState(
         holding_id=holding_id,
         account_id="account",
@@ -82,9 +98,14 @@ def _current(
         symbol="VWCE",
         name=None,
         asset_type=AssetType.etf,
-        quantity=Decimal(quantity),
-        avg_buy_price=Decimal(average),
+        quantity=exact_quantity,
+        avg_buy_price=exact_average,
         currency="EUR",
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else (("EUR", exact_quantity * exact_average),)
+        ),
         current_price=current_price,
         current_value=None,
         unrealized_pnl=None,
@@ -101,7 +122,7 @@ def _asset_models() -> tuple[AssetModel, AssetListingModel]:
     )
     listing = cast(
         AssetListingModel,
-        SimpleNamespace(id="listing", asset_id="asset", symbol="VWCE"),
+        SimpleNamespace(id="listing", asset_id="asset", symbol="VWCE", currency="USD"),
     )
     return asset, listing
 
@@ -116,9 +137,13 @@ def _event_models() -> tuple[
             account_id="account",
             type=InvestmentEventType.trade,
             date=NOW,
+            source=ImportSource.anycoin,
             external_id="external",
+            realized_pnl=None,
+            realized_pnl_currency=None,
             archived_at=None,
             deleted_at=None,
+            updated_at=NOW,
         ),
     )
     asset = cast(
@@ -205,6 +230,46 @@ def test_adapter_uses_persisted_join_evidence_and_is_deterministic() -> None:
     ]
     linked = next(item for item in result[0].movements if item.asset_id)
     assert linked.listing_asset_id == "asset"
+    assert linked.listing_currency == "USD"
+    assert result[0].source is ImportSource.anycoin
+
+
+def test_realized_pnl_materialization_is_idempotent_and_conflicts_fail_closed() -> None:
+    event, _, _ = _event_models()
+    expected = (
+        ExpectedRealizedPnlPlan(
+            event_id=event.id,
+            amount=Decimal("-50.0000000000"),
+            currency="CZK",
+        ),
+    )
+
+    assert (
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
+        is True
+    )
+    assert event.realized_pnl == Decimal("-50.0000000000")
+    assert event.realized_pnl_currency == "CZK"
+    assert (
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
+        is False
+    )
+
+    event.realized_pnl = Decimal("1.0000000000")
+    with pytest.raises(HoldingRebuildStateError):
+        materialize_realized_pnl(
+            events_by_id={event.id: event},
+            expected=expected,
+            rebuilt_at=NOW,
+        )
 
 
 @pytest.mark.parametrize(
@@ -326,6 +391,7 @@ def test_current_holding_corruption_fails_closed(field: str, value: object) -> N
         "quantity": Decimal("2"),
         "avg_buy_price": Decimal("100"),
         "currency": "EUR",
+        "cost_basis_by_currency": {"EUR": "200.0000000000"},
         "current_price": None,
         "current_value": None,
         "unrealized_pnl": None,

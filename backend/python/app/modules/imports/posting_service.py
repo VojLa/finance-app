@@ -9,11 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.common import TIMESTAMP
-from app.db.models.enums import AccountMemberRole, ImportRowStatus, ImportStatus
+from app.db.models.enums import AccountMemberRole, ImportRowStatus, ImportSource, ImportStatus
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.modules.accounts.access import require_account_access
 from app.modules.imports.investment_posting import ImportInvestmentPostingWriter
-from app.modules.imports.investment_posting_plan import build_investment_posting_plan
+from app.modules.imports.investment_posting_plan import (
+    InvestmentEventPostingPlan,
+    build_investment_posting_plan,
+)
 from app.modules.imports.posting_common import ImportPostStateError
 from app.modules.imports.repository import ImportBatchRepository
 from app.modules.imports.service import ImportBatchNotFoundError
@@ -214,13 +217,18 @@ def _writer_batch(batch: ImportBatchModel) -> ImportBatchModel:
 
 def _validate_postable_row(
     *, account_id: str, batch: ImportBatchModel, row: ImportRowModel
-) -> None:
+) -> InvestmentEventPostingPlan | None:
     target = _posting_target(row)
     try:
         if target == "transaction":
             build_transaction_posting_plan(account_id=account_id, batch=batch, row=row)
+            return None
         elif target == "investment_event":
-            build_investment_posting_plan(account_id=account_id, batch=batch, row=row)
+            return build_investment_posting_plan(
+                account_id=account_id,
+                batch=batch,
+                row=row,
+            )
         else:
             raise ImportBatchPostStateError()
     except ImportPostStateError as exc:
@@ -244,6 +252,7 @@ def _preflight(
         raise ImportBatchPostStateError()
     writer_batch = _writer_batch(batch) if replay else batch
     postable_keys: set[str] = set()
+    anycoin_quotes: set[str] = set()
     for row in rows:
         if row.status in {ImportRowStatus.pending, ImportRowStatus.imported}:
             if not isinstance(row.deduplication_key, str) or not row.deduplication_key:
@@ -251,11 +260,26 @@ def _preflight(
             if row.deduplication_key in postable_keys:
                 raise ImportBatchPostStateError()
             postable_keys.add(row.deduplication_key)
-            _validate_postable_row(account_id=account_id, batch=writer_batch, row=row)
+            plan = _validate_postable_row(account_id=account_id, batch=writer_batch, row=row)
+            if batch.source is ImportSource.anycoin:
+                if (
+                    plan is None
+                    or plan.source is not ImportSource.anycoin
+                    or plan.quote_currency is None
+                    or (
+                        plan.asset_resolution is not None
+                        and plan.asset_resolution.listing_currency_hint != plan.quote_currency
+                    )
+                ):
+                    raise ImportBatchPostStateError()
+                anycoin_quotes.add(plan.quote_currency)
         elif not (
             _valid_duplicate(row) or _valid_skipped(row) or _valid_failed(row) or _valid_review(row)
         ):
             raise ImportBatchPostStateError()
+
+    if batch.source is ImportSource.anycoin and postable_keys and len(anycoin_quotes) != 1:
+        raise ImportBatchPostStateError()
 
     imported = sum(row.status is ImportRowStatus.imported for row in rows)
     skipped = len(rows) - imported - sum(row.status is ImportRowStatus.pending for row in rows)

@@ -1,4 +1,7 @@
-import type { OperationalDashboardData } from "./operational-dashboard-contract"
+import type {
+  OperationalDashboardData,
+  OperationalDashboardResponse,
+} from "./operational-dashboard-contract"
 import { buildOperationalDashboardData } from "./operational-dashboard-model"
 
 export const OPERATIONAL_DASHBOARD_PATH = "/api/dashboard"
@@ -24,7 +27,7 @@ export async function requestOperationalDashboardState(
       cache: "no-store",
     })
     if (!response.ok) return ERROR_STATE
-    const payload: unknown = await response.json()
+    const payload = (await response.json()) as OperationalDashboardResponse
     return {
       status: "ready",
       data: buildOperationalDashboardData(payload),

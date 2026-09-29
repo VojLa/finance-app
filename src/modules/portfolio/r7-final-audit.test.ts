@@ -102,11 +102,9 @@ describe("R7 checkout-portable production inventory", () => {
     const page = await source("src/app/portfolio/page.tsx")
     const chart = await source("src/components/charts/PortfolioLineChart.tsx")
     const chartProjection = await source("src/components/charts/portfolio-history-chart.ts")
-    const barrel = await source("src/modules/snapshots/index.ts")
-    const legacy = await source("src/modules/snapshots/service.ts")
     const active = `${route}\n${transport}\n${contract}\n${client}\n${page}\n${chart}\n${chartProjection}`
 
-    expect(route).toContain("readSnapshotBackedPortfolioHistory")
+    expect(route).toContain("readGenerationPortfolioHistory")
     expect(transport).toContain("createAuthenticatedPythonTransport")
     expect(transport).toContain('client.GET("/api/v1/portfolio/history"')
     expect(contract).toContain('components["schemas"]["PortfolioHistoryResponse"]')
@@ -118,9 +116,6 @@ describe("R7 checkout-portable production inventory", () => {
     expect(active).not.toMatch(
       /@\/lib\/prisma|@\/lib\/accountAccess|@\/modules\/snapshots|@\/modules\/portfolio\/rates|getPortfolioSnapshotHistory|historical prices?|historical FX|\/api\/rates/
     )
-    expect(barrel).not.toContain("getPortfolioSnapshotHistory")
-    expect(legacy).toContain("export async function getPortfolioSnapshotHistory")
-
     const productionFiles = (await filesUnder("src"))
       .filter((file) => /\.(?:ts|tsx)$/.test(file))
       .filter((file) => !/\.test\.(?:ts|tsx)$/.test(file))
@@ -130,7 +125,7 @@ describe("R7 checkout-portable production inventory", () => {
         occurrences.push(file)
       }
     }
-    expect(occurrences).toEqual(["src/modules/snapshots/service.ts"])
+    expect(occurrences).toEqual([])
   })
 
   it("proves exact browser validation, state isolation, and one chart conversion", async () => {
@@ -141,35 +136,42 @@ describe("R7 checkout-portable production inventory", () => {
     const chartProjection = await source("src/components/charts/portfolio-history-chart.ts")
     const historyChart = `${chart}\n${chartProjection}`
 
-    expect(contract).toContain('const RESPONSE_KEYS = ["range", "currency", "points"]')
+    expect(contract).toContain("const REQUIRED_RESPONSE_KEYS = [")
+    expect(contract).toContain('"preferredResolutionMinutes"')
+    expect(contract).toContain('"resolutionMinutes"')
     expect(contract).toContain("const POINT_KEYS = [")
-    expect(contract).toContain("const MAX_POINTS = 512")
+    expect(contract).toContain("const MAX_POINTS = 480")
     expect(contract).toContain("/^-?(?:0|[1-9]\\d{0,11})\\.\\d{6}$/")
     expect(contract).toContain("point.timestamp <= previousTimestamp")
     expect(client).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(|\.toFixed\(|\bMath\./)
     expect(client).not.toMatch(/\bas\s+Portfolio/)
     expect(client).toContain('status: "ready"')
     expect(client).toContain('status: "empty"')
+    expect(client).toContain('status: "rebuilding"')
+    expect(client).toContain('status: "failed"')
     expect(client).toContain('status: "error"')
 
-    expect(page).toContain('state.status === "ready" ? state.data.currency : null')
+    expect(page).toContain("selectedAccount?.currency ?? state.data.currency")
     expect(page).toContain(
       'state.status === "ready" ? state.current.historyAnchorSnapshotId : null'
     )
-    expect(page).toContain("[historyCurrency, historyRange, historySnapshotId]")
-    expect(page).not.toMatch(
-      /\[historyCurrency,\s*historyRange,\s*historySnapshotId,\s*(?:selectedAccount|historyValueMode)/
+    expect(page).toContain(
+      "[historyCurrency, historyRange, historySnapshotId, selectedAccountId]"
     )
     expect(page).toContain("Historie celého portfolia")
     expect(page).toContain("Načítám historii portfolia…")
     expect(page).toContain('historyState.status === "empty"')
     expect(page).toContain('historyState.status === "error"')
     expect(page).toContain('historyState.status === "ready"')
+    expect(page).toContain('historyState.status === "rebuilding"')
+    expect(page).toContain('historyState.status === "failed"')
 
     expect(historyChart.match(/\bNumber\(exactValue\)/g)).toHaveLength(1)
     expect(chartProjection).toContain(
       "Presentation-only conversion at the Recharts coordinate leaf boundary"
     )
+    expect(chartProjection).toContain("netInvestedExactValue")
+    expect(chartProjection).toContain("source: point")
     expect(chart).toContain("formatSnapshotAmount(point.exactValue, currency)")
     expect(historyChart).not.toMatch(
       /investedCzk|netDeposits|costBasis|realizedPnl|unrealizedPnl|currentValue|currentCzk|baseline/
@@ -203,10 +205,24 @@ describe("R7 in-process browser and state acceptance", () => {
   it("runs one browser GET through NextAuth and one exact authenticated Python GET", async () => {
     const history = {
       range: "1Y" as const,
+      state: "ready" as const,
       currency: "EUR",
+      generationId: "generation-r7",
+      publicationVersion: 1,
+      coveredThrough: "2032-08-01T23:59:00.000",
+      preferredResolutionMinutes: 1440,
+      resolutions: [1440],
+      coverage: [
+        {
+          resolutionMinutes: 1440,
+          start: "2032-08-01T00:00:00.000",
+          end: "2032-08-02T00:00:00.000",
+        },
+      ],
       points: [
         {
           timestamp: "2032-08-01T00:00:00.000",
+          resolutionMinutes: 1440,
           cashValue: "-10.000000",
           investmentValue: "100.123456",
           liabilitiesValue: "5.000000",
@@ -266,6 +282,11 @@ describe("R7 in-process browser and state acceptance", () => {
         exactValue: "85.123456",
         displayValue: 85.123456,
         dateLabel: expect.any(String),
+        resolutionMinutes: 1440,
+        resolutionLabel: "1 d",
+        netInvestedExactValue: null,
+        netInvestedDisplayValue: null,
+        source: history.points[0],
       },
     ])
   })
@@ -303,9 +324,27 @@ describe("R7 in-process browser and state acceptance", () => {
       },
       oneMonthFetch
     )
-    resolveOneMonth?.(jsonResponse({ range: "1M", currency: "EUR", points: [] }))
+    resolveOneMonth?.(
+      jsonResponse({
+        range: "1M",
+        state: "empty",
+        currency: "EUR",
+        resolutions: [],
+        coverage: [],
+        points: [],
+      })
+    )
     await vi.waitFor(() => expect(ranges).toEqual(["1M"]))
-    resolveOneYear?.(jsonResponse({ range: "1Y", currency: "EUR", points: [] }))
+    resolveOneYear?.(
+      jsonResponse({
+        range: "1Y",
+        state: "empty",
+        currency: "EUR",
+        resolutions: [],
+        coverage: [],
+        points: [],
+      })
+    )
     await Promise.resolve()
     await Promise.resolve()
     expect(ranges).toEqual(["1M"])

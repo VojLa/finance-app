@@ -1,11 +1,11 @@
 import "server-only"
 
 import type {
-  DashboardSnapshotData,
   ExactPortfolioSnapshotManifest,
   LegacyDashboardSnapshotData,
   LegacyPortfolioSnapshotData,
-  PortfolioSnapshotData,
+  PythonCurrentDashboardResponse,
+  PythonCurrentPortfolioResponse,
   PythonSnapshotRefreshResponse,
 } from "../snapshot-workflow-contract"
 import {
@@ -31,8 +31,10 @@ export type PythonSnapshotApi = {
   readDashboardSnapshot(
     manifest: ExactPortfolioSnapshotManifest
   ): Promise<LegacyDashboardSnapshotData>
-  readCurrentPortfolio(): Promise<PortfolioSnapshotData>
-  readCurrentDashboard(): Promise<DashboardSnapshotData>
+  readCurrentPortfolio(): Promise<PythonCurrentPortfolioResponse>
+  readCurrentDashboard(): Promise<PythonCurrentDashboardResponse>
+  readPublishedPortfolio(): Promise<PythonCurrentPortfolioResponse>
+  readPublishedDashboard(): Promise<PythonCurrentDashboardResponse>
 }
 
 function mapPythonError(status: number, value: unknown): SnapshotWorkflowAdapterError {
@@ -79,6 +81,12 @@ export function createPythonSnapshotApi(
     },
     readCurrentDashboard() {
       return responseData(client.POST("/api/v1/dashboard/current", {}), mapPythonError)
+    },
+    readPublishedPortfolio() {
+      return responseData(client.POST("/api/v1/portfolio/published", {}), mapPythonError)
+    },
+    readPublishedDashboard() {
+      return responseData(client.POST("/api/v1/dashboard/published", {}), mapPythonError)
     },
   }
 }

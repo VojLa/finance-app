@@ -4,28 +4,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.common import MONEY
 from app.db.models.enums import (
     AccountType,
     ExchangeRateSource,
+    ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
     MovementDirection,
+    PriceSource,
     SnapshotGranularity,
     SnapshotSource,
     TransactionClassification,
     TransactionType,
 )
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
+from app.modules.investments.transfer_valuation import (
+    TransferValuationStateError,
+    index_latest_transfer_valuations,
+    resolve_transfer_valuation,
+)
 from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidence as SelectedLiabilityBalanceEvidence,
 )
@@ -39,8 +51,12 @@ from app.modules.market_data.policy import (
     MarketEvidencePolicy,
     validate_market_evidence_policy,
 )
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
+)
 from app.modules.snapshots.account_projection import (
-    FX_PIVOT_CURRENCY,
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
@@ -69,15 +85,20 @@ from app.modules.snapshots.financial_metrics import (
     exact_money,
     exact_rate,
 )
+from app.shared.canonical_arithmetic import CanonicalArithmeticError, canonical_rounded
 
-_CASH_ACCOUNT_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings}
+_CASH_ACCOUNT_TYPES = {
+    AccountType.bank,
+    AccountType.cash,
+    AccountType.savings,
+    AccountType.credit_card,
+}
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
 _LIABILITY_ACCOUNT_TYPES = {
-    AccountType.credit_card,
     AccountType.loan,
     AccountType.mortgage,
 }
@@ -94,6 +115,7 @@ class BuildAccountSnapshotEvidenceCommand:
 
 
 class SnapshotMetricUnsupportedReason(StrEnum):
+    cost_basis_evidence_unavailable = "cost_basis_evidence_unavailable"
     external_cash_flow_classification_unavailable = "external_cash_flow_classification_unavailable"
     realized_pnl_evidence_unavailable = "realized_pnl_evidence_unavailable"
     fee_classification_unavailable = "fee_classification_unavailable"
@@ -148,6 +170,57 @@ def _nonblank(value: object) -> str:
     return value
 
 
+def _asset_transfer_net_deposit(
+    *,
+    event: InvestmentEventModel,
+    movement: InvestmentMovementModel,
+    evidence: InvestmentMovementValuationEvidenceModel | None = None,
+    canonical_revision: int | None = None,
+) -> HistoricalMetricEvidence | None:
+    """Classify a valued external asset transfer as a signed cash flow."""
+
+    try:
+        resolved = resolve_transfer_valuation(
+            event=event,
+            movement=movement,
+            evidence=evidence,
+            canonical_revision=canonical_revision,
+        )
+    except TransferValuationStateError as exc:
+        raise _fail() from exc
+    valuation = (
+        resolved.price_per_unit if resolved is not None else movement.price_per_unit,
+        resolved.value_amount if resolved is not None else movement.value_amount,
+        resolved.value_currency if resolved is not None else movement.value_currency,
+    )
+    if all(value is None for value in valuation):
+        return None
+    if any(value is None for value in valuation):
+        raise _fail()
+    price_per_unit, value_amount, value_currency = valuation
+    if (
+        not isinstance(price_per_unit, Decimal)
+        or not isinstance(value_amount, Decimal)
+        or not isinstance(value_currency, str)
+    ):
+        raise _fail()
+    try:
+        amount = exact_money(canonical_rounded(value_amount, MONEY))
+    except CanonicalArithmeticError as exc:
+        raise _fail() from exc
+    if price_per_unit <= 0 or amount <= 0:
+        raise _fail()
+    if movement.direction not in {MovementDirection.incoming, MovementDirection.outgoing}:
+        raise _fail()
+    return HistoricalMetricEvidence(
+        evidence_id=f"transfer:{_nonblank(movement.id)}",
+        timestamp=event.date,
+        kind=HistoricalMetricKind.net_deposit,
+        currency=canonical_currency(value_currency),
+        amount=(amount if movement.direction is MovementDirection.incoming else -amount),
+    )
+
+
 def _aligned_snapshot_timestamp(
     value: object,
     granularity: SnapshotGranularity,
@@ -174,6 +247,7 @@ def _select_latest_price(
     candidates: tuple[PriceSnapshotModel, ...],
     *,
     holding: SnapshotHoldingEvidence,
+    source: PriceSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> SelectedPriceEvidence:
@@ -181,6 +255,7 @@ def _select_latest_price(
         candidate
         for candidate in candidates
         if candidate.listing_id == holding.listing_id
+        and candidate.source is source
         and canonical_timestamp(candidate.timestamp) <= through
     ]
     if not matching:
@@ -194,6 +269,7 @@ def _select_latest_price(
         _nonblank(selected.id) == ""
         or selected.asset_id != holding.asset_id
         or selected.listing_id != holding.listing_id
+        or selected.source is not source
         or through - canonical_timestamp(selected.timestamp) > policy.maximum_price_age
     ):
         raise _fail()
@@ -214,6 +290,7 @@ def _select_latest_rate(
     *,
     base_currency: str,
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> ExchangeRateModel:
@@ -222,6 +299,7 @@ def _select_latest_rate(
         for candidate in candidates
         if candidate.from_currency == base_currency
         and candidate.to_currency == quote_currency
+        and candidate.source is source
         and candidate.date <= through
     ]
     if not matching:
@@ -236,7 +314,7 @@ def _select_latest_rate(
         or _nonblank(selected.id) == ""
         or canonical_currency(selected.from_currency) != base_currency
         or canonical_currency(selected.to_currency) != quote_currency
-        or not isinstance(selected.source, ExchangeRateSource)
+        or selected.source is not source
         or canonical_timestamp(selected.date) > through
         or through - canonical_timestamp(selected.date) > policy.maximum_fx_age
     ):
@@ -250,27 +328,35 @@ def _validate_rate_candidates(
     *,
     base_currencies: tuple[str, ...],
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
 ) -> tuple[ExchangeRateModel, ...]:
     if not isinstance(candidates, tuple):
         raise _fail()
     allowed_bases = set(base_currencies)
     ids: set[str] = set()
+    selected: list[ExchangeRateModel] = []
     for candidate in candidates:
         if not isinstance(candidate, ExchangeRateModel):
             raise _fail()
+        # Repositories normally constrain this query by source.  Keeping the
+        # filter here makes the selection boundary safe when it is reused with
+        # broader persisted evidence: inactive providers cannot displace the
+        # configured direct-pair source.
+        if candidate.source is not source:
+            continue
         rate_id = _nonblank(candidate.id)
         if (
             rate_id in ids
             or canonical_currency(candidate.from_currency) not in allowed_bases
             or canonical_currency(candidate.to_currency) != quote_currency
             or canonical_timestamp(candidate.date) > through
-            or not isinstance(candidate.source, ExchangeRateSource)
         ):
             raise _fail()
         ids.add(rate_id)
         exact_rate(candidate.rate)
-    return candidates
+        selected.append(candidate)
+    return tuple(selected)
 
 
 def _selected_snapshot_rate(
@@ -278,6 +364,7 @@ def _selected_snapshot_rate(
     *,
     base_currency: str,
     quote_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> SelectedExchangeRateEvidence:
@@ -285,6 +372,7 @@ def _selected_snapshot_rate(
         candidates,
         base_currency=base_currency,
         quote_currency=quote_currency,
+        source=source,
         through=through,
         policy=policy,
     )
@@ -306,18 +394,7 @@ def _conversion_pairs(
     output = canonical_currency(output_currency)
     if base == output:
         return ()
-    if output == FX_PIVOT_CURRENCY:
-        return ((base, FX_PIVOT_CURRENCY),)
-    if base == FX_PIVOT_CURRENCY:
-        return ((output, FX_PIVOT_CURRENCY),)
-    return tuple(
-        sorted(
-            {
-                (base, FX_PIVOT_CURRENCY),
-                (output, FX_PIVOT_CURRENCY),
-            }
-        )
-    )
+    return ((base, output),)
 
 
 def _selected_snapshot_rates(
@@ -325,6 +402,7 @@ def _selected_snapshot_rates(
     *,
     source_currencies: set[str],
     output_currency: str,
+    source: ExchangeRateSource,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> tuple[SelectedExchangeRateEvidence, ...]:
@@ -338,14 +416,13 @@ def _selected_snapshot_rates(
             candidates,
             base_currency=base_currency,
             quote_currency=quote_currency,
+            source=source,
             through=through,
             policy=policy,
         )
         for base_currency, quote_currency in sorted(pairs)
     )
-    if output_currency != FX_PIVOT_CURRENCY and any(
-        rate.source is not ExchangeRateSource.cnb for rate in selected
-    ):
+    if any(rate.source is not source for rate in selected):
         raise _fail()
     return selected
 
@@ -401,9 +478,36 @@ def _holding_evidence(
             or holding.symbol != asset.symbol
             or holding.asset_type is not asset.asset_type
             or holding.listing_id in listing_ids
+            or canonical_currency(holding.currency) != canonical_currency(listing.currency)
         ):
             raise _fail()
         listing_ids.add(holding.listing_id)
+        raw_breakdown = holding.cost_basis_by_currency
+        if raw_breakdown is not None and (not isinstance(raw_breakdown, dict) or not raw_breakdown):
+            raise _fail()
+        components: list[CurrencyAmount] = []
+        for raw_currency, raw_amount in sorted((raw_breakdown or {}).items()):
+            currency = canonical_currency(raw_currency)
+            if not isinstance(raw_amount, str):
+                raise _fail()
+            try:
+                with localcontext() as context:
+                    context.prec = 112
+                    amount = Decimal(raw_amount)
+                    scaled = amount.quantize(Decimal("0.0000000001"))
+            except InvalidOperation as exc:
+                raise _fail() from exc
+            if (
+                amount != scaled
+                or amount <= 0
+                or amount >= Decimal("1000000000000000000")
+                or format(amount, ".10f") != raw_amount
+            ):
+                raise _fail()
+            components.append(CurrencyAmount(currency=currency, amount=amount))
+        average_buy_price = holding.avg_buy_price
+        if (average_buy_price is None) != (raw_breakdown is None):
+            raise _fail()
         result.append(
             SnapshotHoldingEvidence(
                 holding_id=_nonblank(holding.id),
@@ -414,8 +518,9 @@ def _holding_evidence(
                 symbol=_nonblank(holding.symbol),
                 asset_type=holding.asset_type,
                 quantity=holding.quantity,
-                average_buy_price=holding.avg_buy_price,
+                average_buy_price=average_buy_price,
                 cost_currency=canonical_currency(holding.currency),
+                cost_basis_by_currency=(None if raw_breakdown is None else tuple(components)),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.listing_id, item.holding_id)))
@@ -485,7 +590,14 @@ def _investment_history(
     *,
     account_id: str,
     snapshot_timestamp: datetime,
-) -> tuple[tuple[CashBalanceEvidence, ...], tuple[HistoricalMetricEvidence, ...]]:
+    transfer_valuations: dict[str, InvestmentMovementValuationEvidenceModel] | None = None,
+    canonical_revisions: dict[str, int] | None = None,
+) -> tuple[
+    tuple[CashBalanceEvidence, ...],
+    tuple[HistoricalMetricEvidence, ...],
+    bool,
+    bool,
+]:
     event_by_id: dict[str, InvestmentEventModel] = {}
     for event in events:
         event_id = _nonblank(event.id)
@@ -503,6 +615,8 @@ def _investment_history(
     cash: dict[str, Decimal] = {}
     metrics: list[HistoricalMetricEvidence] = []
     movement_ids: set[str] = set()
+    has_asset_transfer = False
+    has_missing_anycoin_realized_pnl = False
     grouped: dict[str, list[InvestmentMovementModel]] = {event_id: [] for event_id in event_by_id}
     for movement in movements:
         movement_id = _nonblank(movement.id)
@@ -618,8 +732,18 @@ def _investment_history(
         elif event.type is not InvestmentEventType.asset_transfer:
             raise _fail()
         if event.type is InvestmentEventType.asset_transfer:
-            # Persisted history has no counter-account/externality identity.
-            raise _fail()
+            if len(assets) != 1 or cash_movements or fees or taxes:
+                raise _fail()
+            transfer_metric = _asset_transfer_net_deposit(
+                event=event,
+                movement=assets[0],
+                evidence=(transfer_valuations or {}).get(assets[0].id),
+                canonical_revision=(canonical_revisions or {}).get(event.id),
+            )
+            if transfer_metric is None:
+                has_asset_transfer = True
+            else:
+                metrics.append(transfer_metric)
         if event.realized_pnl is not None:
             if (
                 event.type is not InvestmentEventType.trade
@@ -633,9 +757,16 @@ def _investment_history(
                     timestamp=event.date,
                     kind=HistoricalMetricKind.realized_pnl,
                     currency=canonical_currency(event.realized_pnl_currency),
-                    amount=exact_money(event.realized_pnl),
+                    amount=exact_money(canonical_rounded(event.realized_pnl, MONEY)),
                 )
             )
+        elif (
+            event.source is ImportSource.anycoin
+            and event.type is InvestmentEventType.trade
+            and len(assets) == 1
+            and assets[0].direction is MovementDirection.outgoing
+        ):
+            has_missing_anycoin_realized_pnl = True
 
     balances = tuple(
         CashBalanceEvidence(
@@ -647,7 +778,12 @@ def _investment_history(
         )
         for currency, amount in sorted(cash.items())
     )
-    return balances, tuple(sorted(metrics, key=lambda item: (item.timestamp, item.evidence_id)))
+    return (
+        balances,
+        tuple(sorted(metrics, key=lambda item: (item.timestamp, item.evidence_id))),
+        has_asset_transfer,
+        has_missing_anycoin_realized_pnl,
+    )
 
 
 def _liability_complete_evidence(
@@ -727,6 +863,7 @@ class AccountSnapshotEvidenceService:
         repository: AccountSnapshotEvidenceRepository | None = None,
         liability_evidence_service: _LiabilityEvidenceSelector | None = None,
         policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
+        source_policy: MarketEvidenceSourcePolicy = CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
     ) -> None:
         self.session = session
         self.repository = repository or AccountSnapshotEvidenceRepository(session)
@@ -734,6 +871,7 @@ class AccountSnapshotEvidenceService:
             liability_evidence_service or LiabilityBalanceEvidenceService(session)
         )
         self.policy = validate_market_evidence_policy(policy)
+        self.source_policy = validate_market_evidence_source_policy(source_policy)
 
     async def build(
         self,
@@ -780,19 +918,22 @@ class AccountSnapshotEvidenceService:
                     liability_bases = tuple(sorted({pair[0] for pair in liability_pairs}))
                     loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                         liability_bases,
-                        FX_PIVOT_CURRENCY,
+                        output_currency,
+                        source=self.source_policy.fx_source,
                         through=snapshot_timestamp,
                     )
                     rate_candidates = _validate_rate_candidates(
                         loaded_rate_candidates,
                         base_currencies=liability_bases,
-                        quote_currency=FX_PIVOT_CURRENCY,
+                        quote_currency=output_currency,
+                        source=self.source_policy.fx_source,
                         through=snapshot_timestamp,
                     )
                     liability_snapshot_rates = _selected_snapshot_rates(
                         rate_candidates,
                         source_currencies={account_currency},
                         output_currency=output_currency,
+                        source=self.source_policy.fx_source,
                         through=snapshot_timestamp,
                         policy=self.policy,
                     )
@@ -831,12 +972,43 @@ class AccountSnapshotEvidenceService:
                     account_id,
                     through=snapshot_timestamp,
                 )
-                cash_balances, historical_evidence = _investment_history(
+                load_transfer_valuations = getattr(
+                    self.repository, "load_transfer_valuations", None
+                )
+                valuation_rows = (
+                    ()
+                    if load_transfer_valuations is None
+                    else await load_transfer_valuations(
+                        tuple(movement.id for movement in movements)
+                    )
+                )
+                try:
+                    transfer_valuations = index_latest_transfer_valuations(valuation_rows)
+                except TransferValuationStateError as exc:
+                    raise _fail() from exc
+                load_revisions = getattr(self.repository, "load_investment_event_revisions", None)
+                canonical_revisions = (
+                    {}
+                    if load_revisions is None
+                    else await load_revisions(account_id, tuple(event.id for event in events))
+                )
+                (
+                    cash_balances,
+                    historical_evidence,
+                    has_asset_transfer,
+                    has_missing_anycoin_realized_pnl,
+                ) = _investment_history(
                     events,
                     movements,
                     account_id=account_id,
                     snapshot_timestamp=snapshot_timestamp,
+                    transfer_valuations=transfer_valuations,
+                    canonical_revisions=canonical_revisions,
                 )
+
+            if account_type in _CASH_ACCOUNT_TYPES:
+                has_asset_transfer = False
+                has_missing_anycoin_realized_pnl = False
 
             price_candidates = await self.repository.load_price_candidates(
                 tuple(item.listing_id for item in holdings),
@@ -846,6 +1018,7 @@ class AccountSnapshotEvidenceService:
                 _select_latest_price(
                     price_candidates,
                     holding=holding,
+                    source=self.source_policy.price_source_for(holding.asset_type),
                     through=snapshot_timestamp,
                     policy=self.policy,
                 )
@@ -854,7 +1027,11 @@ class AccountSnapshotEvidenceService:
 
             snapshot_currencies = {
                 *(item.currency for item in prices),
-                *(item.cost_currency for item in holdings),
+                *(
+                    component.currency
+                    for item in holdings
+                    for component in (item.cost_basis_by_currency or ())
+                ),
                 *(item.currency for item in cash_balances),
             }
             historical_currencies = {item.currency for item in historical_evidence}
@@ -866,19 +1043,22 @@ class AccountSnapshotEvidenceService:
             required_currencies = tuple(sorted({pair[0] for pair in required_pairs}))
             loaded_rate_candidates = await self.repository.load_exchange_rate_candidates(
                 required_currencies,
-                FX_PIVOT_CURRENCY,
+                output_currency,
+                source=self.source_policy.fx_source,
                 through=snapshot_timestamp,
             )
             rate_candidates = _validate_rate_candidates(
                 loaded_rate_candidates,
                 base_currencies=required_currencies,
-                quote_currency=FX_PIVOT_CURRENCY,
+                quote_currency=output_currency,
+                source=self.source_policy.fx_source,
                 through=snapshot_timestamp,
             )
             snapshot_rates = _selected_snapshot_rates(
                 rate_candidates,
                 source_currencies=snapshot_currencies,
                 output_currency=output_currency,
+                source=self.source_policy.fx_source,
                 through=snapshot_timestamp,
                 policy=self.policy,
             )
@@ -892,13 +1072,11 @@ class AccountSnapshotEvidenceService:
                         rate_candidates,
                         base_currency=base_currency,
                         quote_currency=quote_currency,
+                        source=self.source_policy.fx_source,
                         through=evidence.timestamp,
                         policy=self.policy,
                     )
-                    if (
-                        output_currency != FX_PIVOT_CURRENCY
-                        and selected.source is not ExchangeRateSource.cnb
-                    ):
+                    if selected.source is not self.source_policy.fx_source:
                         raise _fail()
                     historical_rates.append(
                         SelectedHistoricalRate(
@@ -947,17 +1125,38 @@ class AccountSnapshotEvidenceService:
                     historical_evidence=historical_evidence,
                     historical_rates=tuple(historical_rates),
                 )
-                net_deposits = ExactSnapshotMetric(
-                    value=metrics.net_deposits_value,
-                    breakdown=metrics.net_deposits_by_currency,
+                cost_basis_unknown = valuation.investment_cost_basis is None
+                net_deposits = (
+                    UnsupportedSnapshotMetric(
+                        SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+                    )
+                    if has_asset_transfer
+                    else ExactSnapshotMetric(
+                        value=metrics.net_deposits_value,
+                        breakdown=metrics.net_deposits_by_currency,
+                    )
                 )
-                realized_pnl = ExactSnapshotMetric(
-                    value=metrics.realized_pnl_value,
-                    breakdown=metrics.realized_pnl_by_currency,
+                realized_pnl = (
+                    UnsupportedSnapshotMetric(
+                        SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+                    )
+                    if (
+                        has_asset_transfer or has_missing_anycoin_realized_pnl or cost_basis_unknown
+                    )
+                    else ExactSnapshotMetric(
+                        value=metrics.realized_pnl_value,
+                        breakdown=metrics.realized_pnl_by_currency,
+                    )
                 )
-                unrealized_pnl = ExactSnapshotMetric(
-                    value=metrics.unrealized_pnl_value,
-                    breakdown=metrics.unrealized_pnl_by_currency,
+                unrealized_pnl = (
+                    UnsupportedSnapshotMetric(
+                        SnapshotMetricUnsupportedReason.cost_basis_evidence_unavailable
+                    )
+                    if cost_basis_unknown
+                    else ExactSnapshotMetric(
+                        value=exact_money(metrics.unrealized_pnl_value),
+                        breakdown=metrics.unrealized_pnl_by_currency,
+                    )
                 )
                 fees = ExactSnapshotMetric(
                     value=metrics.fees_value,

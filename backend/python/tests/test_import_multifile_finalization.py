@@ -17,8 +17,13 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.modules.asset_aliases.models import AssetAliasConflictError
 from app.modules.holdings.models import HoldingRebuildResponse
 from app.modules.holdings.orchestration import HoldingRebuildUnavailableError
+from app.modules.imports.anycoin_btc_alias import (
+    OnboardAnycoinBtcAliasCommand,
+    OnboardAnycoinBtcAliasResult,
+)
 from app.modules.imports.multi_file_service import (
     FinalizeImportBatchesCommand,
     ImportBatchFinalizationStateError,
@@ -26,7 +31,20 @@ from app.modules.imports.multi_file_service import (
 )
 from app.modules.imports.posting_service import PostImportBatchResult
 from app.modules.imports.service import ImportBatchNotFoundError
+from app.modules.imports.trading212_asset_alias import (
+    OnboardTrading212AssetAliasesCommand,
+    OnboardTrading212AssetAliasesResult,
+)
+from app.modules.investments.anycoin_transfer_valuation_service import (
+    ValueAnycoinTransfersCommand,
+    ValueAnycoinTransfersResult,
+)
 from app.modules.market_data.models import MarketEvidenceRefreshResult
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    MarketEvidenceSourcePolicy,
+)
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
@@ -41,6 +59,7 @@ from app.modules.snapshot_refresh.market_backed_models import (
     MarketBackedSnapshotRefreshUnavailableError,
 )
 from app.modules.snapshot_refresh.plan import AccountSnapshotRefreshMode
+from app.modules.snapshot_refresh.version import current_coordinated_snapshot_calculation_version
 
 FIRST_COMPLETED_AT = datetime(2036, 8, 3, 10, 1, 1, 123000)
 FINAL_COMPLETED_AT = datetime(2036, 8, 3, 10, 4, 59, 999000)
@@ -145,7 +164,7 @@ def _combined_result() -> ExecuteMarketBackedSnapshotRefreshResult:
         granularity=SnapshotGranularity.minute,
         output_currency="CZK",
         source=SnapshotSource.import_event,
-        calculation_version=1,
+        calculation_version=current_coordinated_snapshot_calculation_version(),
         account_snapshots=(execution,),
         required_account_snapshot_identities=(
             SelectedAccountSnapshotIdentity("account-a", "snapshot-a"),
@@ -179,7 +198,8 @@ def _service(
     *,
     batches: Mapping[str, object] | None = None,
     postings: tuple[PostImportBatchResult, ...] | None = None,
-) -> tuple[ImportMultiFileFinalizationService, Mock, Mock, Mock]:
+    source_policy: MarketEvidenceSourcePolicy = CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+) -> tuple[ImportMultiFileFinalizationService, Mock, Mock, Mock, Mock]:
     session = _Session()
     persisted = batches or {
         batch_id: SimpleNamespace(
@@ -221,15 +241,32 @@ def _service(
     )
     holding_factory = Mock(return_value=holding)
     market = Mock(execute=AsyncMock(return_value=_combined_result()))
+    alias = Mock(onboard=AsyncMock(return_value=OnboardAnycoinBtcAliasResult(aliases=())))
+    trading_alias = Mock(
+        onboard=AsyncMock(return_value=OnboardTrading212AssetAliasesResult(aliases=()))
+    )
+    trading_alias_factory = Mock(return_value=trading_alias)
+    valuation = Mock(
+        value=AsyncMock(return_value=ValueAnycoinTransfersResult(created_count=1, replayed_count=0))
+    )
+    valuation_factory = Mock(return_value=valuation)
     service = ImportMultiFileFinalizationService(
         cast(AsyncSession, session),
         market_backed_service=market,
+        source_policy=source_policy,
         posting_service_factory=posting_factory,
         holding_service_factory=holding_factory,
         repository_factory=Mock(return_value=_AuditRepository()),
         batch_repository_factory=Mock(return_value=_BatchRepository(persisted)),
+        anycoin_btc_alias_factory=Mock(return_value=alias),
+        anycoin_transfer_valuation_factory=valuation_factory,
+        trading212_asset_alias_factory=trading_alias_factory,
     )
-    return service, posting_factory, holding_factory, market
+    service._test_anycoin_valuation = valuation  # type: ignore[attr-defined]
+    service._test_anycoin_valuation_factory = valuation_factory  # type: ignore[attr-defined]
+    service._test_trading_alias = trading_alias  # type: ignore[attr-defined]
+    service._test_trading_alias_factory = trading_alias_factory  # type: ignore[attr-defined]
+    return service, posting_factory, holding_factory, market, alias
 
 
 @pytest.fixture(autouse=True)
@@ -241,13 +278,14 @@ def _authorize(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_three_batches_have_one_holdings_and_market_finalization() -> None:
-    service, posting_factory, holding_factory, market = _service()
+    service, posting_factory, holding_factory, market, alias = _service()
 
     result = await service.finalize(_command())
 
     assert result.batch_ids == ("batch-a", "batch-b", "batch-c")
     assert result.snapshot_refresh_status.value == "created"
     assert posting_factory.call_count == 3
+    alias.onboard.assert_awaited_once()
     holding_factory.assert_called_once()
     assert holding_factory.call_args.args[1]() == FINAL_COMPLETED_AT
     market.execute.assert_awaited_once_with(
@@ -256,12 +294,33 @@ async def test_three_batches_have_one_holdings_and_market_finalization() -> None
             snapshot_timestamp=FINAL_BUCKET,
             granularity=SnapshotGranularity.minute,
             source=SnapshotSource.import_event,
-            calculation_version=1,
+            calculation_version=current_coordinated_snapshot_calculation_version(),
             calculated_at=FINAL_BUCKET,
             created_at=FINAL_BUCKET,
             is_recalculated=False,
         )
     )
+
+
+async def test_trading_aliases_onboard_after_posting_before_financial_refresh() -> None:
+    service, posting_factory, holding_factory, market, _ = _service()
+
+    await service.finalize(_command())
+
+    assert posting_factory.call_count == 3
+    service._test_trading_alias_factory.assert_called_once_with(  # type: ignore[attr-defined]
+        service.session
+    )
+    service._test_trading_alias.onboard.assert_awaited_once_with(  # type: ignore[attr-defined]
+        OnboardTrading212AssetAliasesCommand(
+            account_id="account-a",
+            batch_ids=("batch-a", "batch-b", "batch-c"),
+            source=ImportSource.trading212,
+            created_at=FINAL_COMPLETED_AT,
+        )
+    )
+    holding_factory.assert_called_once()
+    market.execute.assert_awaited_once()
 
 
 async def test_zero_import_skips_holdings_and_market() -> None:
@@ -278,12 +337,13 @@ async def test_zero_import_skips_holdings_and_market() -> None:
             ("batch-c", FINAL_COMPLETED_AT),
         )
     )
-    service, posting_factory, holding_factory, market = _service(postings=postings)
+    service, posting_factory, holding_factory, market, alias = _service(postings=postings)
 
     result = await service.finalize(_command())
 
     assert result.snapshot_refresh_status.value == "not_required"
     assert posting_factory.call_count == 3
+    alias.onboard.assert_awaited_once()
     holding_factory.assert_not_called()
     market.execute.assert_not_awaited()
 
@@ -297,7 +357,7 @@ async def test_cash_only_batches_skip_holdings_but_refresh_once() -> None:
             ("batch-c", FINAL_COMPLETED_AT),
         )
     )
-    service, _, holding_factory, market = _service(postings=postings)
+    service, _, holding_factory, market, _ = _service(postings=postings)
 
     await service.finalize(_command())
 
@@ -306,7 +366,7 @@ async def test_cash_only_batches_skip_holdings_but_refresh_once() -> None:
 
 
 async def test_market_failure_returns_unavailable_and_retry_can_complete() -> None:
-    failed_service, _, failed_holding_factory, failed_market = _service()
+    failed_service, _, failed_holding_factory, failed_market, _ = _service()
     failed_market.execute.side_effect = MarketBackedSnapshotRefreshUnavailableError()
 
     failed = await failed_service.finalize(_command())
@@ -315,7 +375,7 @@ async def test_market_failure_returns_unavailable_and_retry_can_complete() -> No
     failed_holding_factory.assert_called_once()
     failed_market.execute.assert_awaited_once()
 
-    retry_service, _, retry_holding_factory, retry_market = _service()
+    retry_service, _, retry_holding_factory, retry_market, _ = _service()
     recovered = await retry_service.finalize(_command())
 
     assert recovered.snapshot_refresh_status.value == "created"
@@ -324,7 +384,7 @@ async def test_market_failure_returns_unavailable_and_retry_can_complete() -> No
 
 
 async def test_holding_failure_remains_recoverable_with_the_same_batch_set() -> None:
-    failed_service, _, failed_holding_factory, failed_market = _service()
+    failed_service, _, failed_holding_factory, failed_market, _ = _service()
     failed_holding_factory.return_value.rebuild.side_effect = HoldingRebuildUnavailableError()
 
     failed = await failed_service.finalize(_command())
@@ -333,7 +393,7 @@ async def test_holding_failure_remains_recoverable_with_the_same_batch_set() -> 
     failed_holding_factory.assert_called_once()
     failed_market.execute.assert_not_awaited()
 
-    retry_service, _, retry_holding_factory, retry_market = _service()
+    retry_service, _, retry_holding_factory, retry_market, _ = _service()
     recovered = await retry_service.finalize(_command())
 
     assert recovered.snapshot_refresh_status.value == "created"
@@ -342,7 +402,7 @@ async def test_holding_failure_remains_recoverable_with_the_same_batch_set() -> 
 
 
 async def test_snapshot_conflict_remains_recoverable_with_the_same_batch_set() -> None:
-    failed_service, _, failed_holding_factory, failed_market = _service()
+    failed_service, _, failed_holding_factory, failed_market, _ = _service()
     failed_market.execute.side_effect = MarketBackedSnapshotRefreshConflictError()
 
     failed = await failed_service.finalize(_command())
@@ -351,12 +411,108 @@ async def test_snapshot_conflict_remains_recoverable_with_the_same_batch_set() -
     failed_holding_factory.assert_called_once()
     failed_market.execute.assert_awaited_once()
 
-    retry_service, _, retry_holding_factory, retry_market = _service()
+    retry_service, _, retry_holding_factory, retry_market, _ = _service()
     recovered = await retry_service.finalize(_command())
 
     assert recovered.snapshot_refresh_status.value == "created"
     retry_holding_factory.assert_called_once()
     retry_market.execute.assert_awaited_once()
+
+
+async def test_anycoin_alias_onboards_after_posting_before_financial_refresh() -> None:
+    batches = {
+        batch_id: SimpleNamespace(
+            id=batch_id,
+            account_id="account-a",
+            user_id="user-a",
+            source=ImportSource.anycoin,
+            status=ImportStatus.completed,
+            completed_at=completed_at,
+        )
+        for batch_id, completed_at in (
+            ("batch-a", FIRST_COMPLETED_AT),
+            ("batch-b", datetime(2036, 8, 3, 10, 2)),
+            ("batch-c", FINAL_COMPLETED_AT),
+        )
+    }
+    service, posting_factory, holding_factory, market, alias = _service(batches=batches)
+
+    await service.finalize(_command())
+
+    assert posting_factory.call_count == 3
+    alias.onboard.assert_awaited_once_with(
+        OnboardAnycoinBtcAliasCommand(
+            account_id="account-a",
+            batch_ids=("batch-a", "batch-b", "batch-c"),
+            source=ImportSource.anycoin,
+            created_at=FINAL_COMPLETED_AT,
+        )
+    )
+    cast(Mock, service.anycoin_btc_alias_factory).assert_called_once_with(
+        service.session,
+        CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
+    service._test_anycoin_valuation_factory.assert_called_once_with(  # type: ignore[attr-defined]
+        service.session
+    )
+    service._test_anycoin_valuation.value.assert_awaited_once_with(  # type: ignore[attr-defined]
+        ValueAnycoinTransfersCommand(
+            account_id="account-a",
+            source=ImportSource.anycoin,
+            created_at=FINAL_COMPLETED_AT,
+        )
+    )
+    holding_factory.assert_called_once()
+    market.execute.assert_awaited_once()
+
+
+async def test_anycoin_alias_conflict_stops_before_holdings_and_market() -> None:
+    batches = {
+        "batch-a": SimpleNamespace(
+            id="batch-a",
+            account_id="account-a",
+            user_id="user-a",
+            source=ImportSource.anycoin,
+            status=ImportStatus.completed,
+            completed_at=FINAL_COMPLETED_AT,
+        )
+    }
+    service, _, holding_factory, market, alias = _service(
+        batches=batches,
+        postings=(_posting("batch-a", completed_at=FINAL_COMPLETED_AT),),
+    )
+    alias.onboard.side_effect = AssetAliasConflictError()
+
+    with pytest.raises(AssetAliasConflictError):
+        await service.finalize(_command("batch-a"))
+
+    holding_factory.assert_not_called()
+    market.execute.assert_not_awaited()
+
+
+async def test_anycoin_alias_finalization_passes_local_free_policy_explicitly() -> None:
+    batches = {
+        "batch-a": SimpleNamespace(
+            id="batch-a",
+            account_id="account-a",
+            user_id="user-a",
+            source=ImportSource.anycoin,
+            status=ImportStatus.completed,
+            completed_at=FINAL_COMPLETED_AT,
+        )
+    }
+    service, _, _, _, _ = _service(
+        batches=batches,
+        postings=(_posting("batch-a", completed_at=FINAL_COMPLETED_AT),),
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
+
+    await service.finalize(_command("batch-a"))
+
+    cast(Mock, service.anycoin_btc_alias_factory).assert_called_once_with(
+        service.session,
+        LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
 
 
 async def test_mixed_source_fails_before_posting() -> None:
@@ -376,12 +532,13 @@ async def test_mixed_source_fails_before_posting() -> None:
             completed_at=FINAL_COMPLETED_AT,
         ),
     }
-    service, posting_factory, holding_factory, market = _service(batches=batches)
+    service, posting_factory, holding_factory, market, alias = _service(batches=batches)
 
     with pytest.raises(ImportBatchFinalizationStateError):
         await service.finalize(_command("batch-a", "batch-b"))
 
     posting_factory.assert_not_called()
+    alias.onboard.assert_not_awaited()
     holding_factory.assert_not_called()
     market.execute.assert_not_awaited()
 
@@ -396,7 +553,7 @@ async def test_foreign_principal_batch_is_nondisclosed() -> None:
             completed_at=FIRST_COMPLETED_AT,
         )
     }
-    service, posting_factory, _, market = _service(batches=batches)
+    service, posting_factory, _, market, _ = _service(batches=batches)
 
     with pytest.raises(ImportBatchNotFoundError):
         await service.finalize(_command("batch-a"))
@@ -406,7 +563,7 @@ async def test_foreign_principal_batch_is_nondisclosed() -> None:
 
 
 async def test_posting_replay_transaction_leak_is_rolled_back() -> None:
-    service, posting_factory, holding_factory, market = _service()
+    service, posting_factory, holding_factory, market, alias = _service()
     session = cast(_Session, service.session)
 
     async def leaking_post(_: object) -> object:
@@ -423,6 +580,7 @@ async def test_posting_replay_transaction_leak_is_rolled_back() -> None:
     session.rollback.assert_awaited_once()
     assert session.active is False
     holding_factory.assert_not_called()
+    alias.onboard.assert_not_awaited()
     market.execute.assert_not_awaited()
 
 
@@ -437,7 +595,7 @@ async def test_posting_replay_transaction_leak_is_rolled_back() -> None:
     ],
 )
 async def test_invalid_command_fails_before_database(command: object) -> None:
-    service, posting_factory, _, market = _service()
+    service, posting_factory, _, market, _ = _service()
 
     with pytest.raises(RuntimeError):
         await service.finalize(cast(Any, command))

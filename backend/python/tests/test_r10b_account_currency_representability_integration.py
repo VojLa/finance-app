@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.db.models.accounts import AccountModel
+from app.db.models.canonical_lineage import SnapshotGenerationModel
 from app.db.models.enums import (
     AccountType,
     AssetType,
@@ -23,6 +24,7 @@ from app.db.url import normalize_database_url
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     CashBalanceEvidence,
+    CurrencyAmount,
     LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
@@ -43,6 +45,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 
 PREFIX = "r10b-representability"
+GENERATION_ID = f"{PREFIX}-generation"
+ACCOUNT_IDS = tuple(f"{PREFIX}-{suffix}" for suffix in "abcd")
 SNAPSHOT_AT = datetime(2036, 1, 11, 12, 0)
 CREATED_AT = datetime(2036, 1, 11, 12, 0, 0, 123000)
 
@@ -52,13 +56,15 @@ def _engine():
     return create_async_engine(normalize_database_url(DATABASE_URL))
 
 
-def _rate(base: str, value: str, *, suffix: str) -> SelectedExchangeRateEvidence:
+def _rate(
+    base: str, value: str, *, suffix: str, quote: str = "CZK"
+) -> SelectedExchangeRateEvidence:
     return SelectedExchangeRateEvidence(
         rate_id=f"{PREFIX}-{suffix}",
         base_currency=base,
-        quote_currency="CZK",
+        quote_currency=quote,
         rate=Decimal(value),
-        source=ExchangeRateSource.cnb,
+        source=ExchangeRateSource.twelve_data,
         timestamp=SNAPSHOT_AT,
     )
 
@@ -130,7 +136,8 @@ def _investment(
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("80"),
-                    cost_currency=cost_currency,
+                    cost_currency=price_currency,
+                    cost_basis_by_currency=(CurrencyAmount(cost_currency, Decimal("160")),),
                 ),
             ),
             prices=(
@@ -249,10 +256,7 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
             "c",
             price_currency="USD",
             cost_currency="EUR",
-            rates=(
-                _rate("USD", "23.00000000", suffix="c-usd-czk"),
-                _rate("EUR", "25.00000000", suffix="c-eur-czk"),
-            ),
+            rates=(_rate("USD", "0.92000000", suffix="c-usd-eur", quote="EUR"),),
             output_currency="EUR",
         ),
         _liability(output_currency="EUR"),
@@ -268,11 +272,12 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             await session.execute(
-                delete(AccountSnapshotModel).where(
-                    AccountSnapshotModel.account_id.startswith(PREFIX)
-                )
+                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
             )
-            await session.execute(delete(AccountModel).where(AccountModel.id.startswith(PREFIX)))
+            await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNT_IDS)))
+            await session.execute(
+                delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == GENERATION_ID)
+            )
             unique_rows = {row.account_id: row for row in rows}
             session.add_all(
                 AccountModel(
@@ -298,14 +303,26 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
                 )
             )
             await session.flush()
-            session.add_all(AccountSnapshotModel(**row.model_values()) for row in rows)
+            session.add(
+                SnapshotGenerationModel(
+                    id=GENERATION_ID,
+                    state="published",
+                    created_at=CREATED_AT,
+                    published_at=CREATED_AT,
+                )
+            )
+            await session.flush()
+            session.add_all(
+                AccountSnapshotModel(**{**row.model_values(), "generation_id": GENERATION_ID})
+                for row in rows
+            )
             await session.commit()
 
         async with AsyncSession(engine) as session:
             physical = tuple(
                 await session.scalars(
                     select(AccountSnapshotModel)
-                    .where(AccountSnapshotModel.account_id.startswith(PREFIX))
+                    .where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
                     .order_by(AccountSnapshotModel.account_id)
                 )
             )
@@ -315,7 +332,7 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
                     AccountSnapshotModel,
                     AccountSnapshotModel.account_id == AccountModel.id,
                 )
-                .where(AccountModel.id.startswith(PREFIX))
+                .where(AccountModel.id.in_(ACCOUNT_IDS))
                 .order_by(AccountModel.id, AccountSnapshotModel.currency)
             )
             currencies = tuple((row[0], row[1]) for row in currency_rows)
@@ -347,22 +364,22 @@ async def test_postgresql_proves_primary_and_account_currency_rows_are_represent
         mixed_rates = mixed_companion.exchange_rates
         assert mixed_rates is not None
         assert {(entry["from"], entry["to"]) for entry in mixed_rates["snapshotRates"]} == {
-            ("EUR", "CZK"),
-            ("USD", "CZK"),
+            ("USD", "EUR"),
         }
         assert mixed_companion.investment_value == Decimal("184.000000")
-        assert all(entry["to"] != "EUR" for entry in mixed_rates["snapshotRates"])
+        assert all(entry["to"] == "EUR" for entry in mixed_rates["snapshotRates"])
         liability_rows = {row.currency: row for row in physical if row.account_id == f"{PREFIX}-d"}
         assert liability_rows["CZK"].liabilities_value == Decimal("2500.000000")
         assert liability_rows["EUR"].liabilities_value == Decimal("100.000000")
-        assert liability_column == 0
+        assert liability_column == 1
     finally:
         async with AsyncSession(engine) as session:
             await session.execute(
-                delete(AccountSnapshotModel).where(
-                    AccountSnapshotModel.account_id.startswith(PREFIX)
-                )
+                delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(ACCOUNT_IDS))
             )
-            await session.execute(delete(AccountModel).where(AccountModel.id.startswith(PREFIX)))
+            await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNT_IDS)))
+            await session.execute(
+                delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == GENERATION_ID)
+            )
             await session.commit()
         await engine.dispose()

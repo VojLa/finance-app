@@ -1,34 +1,22 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import Link from "next/link"
 import { fmt } from "@/lib/format"
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
 import type { AccountPageModel } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import { requestCategories } from "@/modules/categories/category-client"
+import type { Category } from "@/modules/categories/category-contract"
+import {
+  createTransaction,
+  deleteTransaction,
+  requestTransactions,
+  updateTransaction,
+} from "@/modules/transactions/transaction-client"
+import type { Transaction } from "@/modules/transactions/transaction-contract"
 
-type Category = {
-  id: string
-  name: string
-  icon: string | null
-  color: string | null
-  type: string
-}
 type Account = AccountPageModel
-type Transaction = {
-  id: string
-  date: string
-  amount: number
-  currency: string
-  type: string
-  description: string | null
-  counterparty: string | null
-  note: string | null
-  accountId: string
-  categoryId: string | null
-  category: Category | null
-  account: { name: string; currency: string }
-}
 
 type TxForm = {
   date: string
@@ -61,7 +49,7 @@ function emptyForm(defaultAccountId = ""): TxForm {
 function txToForm(tx: Transaction): TxForm {
   return {
     date: tx.date.slice(0, 10),
-    amount: String(tx.amount),
+    amount: String(Math.abs(Number(tx.amount))),
     currency: tx.currency,
     type: tx.type,
     accountId: tx.accountId,
@@ -266,6 +254,9 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("")
   const [searchInput, setSearchInput] = useState("")
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState("")
+  const transactionRequestId = useRef(0)
+  const [lastLoadedQuery, setLastLoadedQuery] = useState<string | null>(null)
 
   // Create
   const [showCreate, setShowCreate] = useState(false)
@@ -281,9 +272,7 @@ export default function TransactionsPage() {
   const [editError, setEditError] = useState("")
 
   useEffect(() => {
-    fetch("/api/categories")
-      .then((r) => r.json())
-      .then(setCategories)
+    void requestCategories().then(setCategories).catch(() => setLoadError("Kategorie se nepodařilo načíst."))
     let active = true
     void requestAccounts()
       .then((data) => {
@@ -307,18 +296,28 @@ export default function TransactionsPage() {
   }, [])
 
   const load = useCallback(async () => {
+    const requestId = ++transactionRequestId.current
+    const query = JSON.stringify([page, filterType, filterCategory, search])
     setLoading(true)
-    const params = new URLSearchParams({ page: String(page) })
-    if (filterType) params.set("type", filterType)
-    if (filterCategory) params.set("categoryId", filterCategory)
-    if (search) params.set("q", search)
-
-    const res = await fetch(`/api/transactions?${params}`)
-    const data = await res.json()
-    setTransactions(data.transactions ?? [])
-    setTotal(data.total ?? 0)
-    setPages(data.pages ?? 1)
-    setLoading(false)
+    setLoadError("")
+    try {
+      const data = await requestTransactions({
+        page,
+        type: filterType || undefined,
+        categoryId: filterCategory || undefined,
+        q: search || undefined,
+      })
+      if (requestId !== transactionRequestId.current) return
+      setTransactions(data.transactions ?? [])
+      setTotal(data.total ?? 0)
+      setPages(data.pages ?? 1)
+      setLastLoadedQuery(query)
+    } catch {
+      if (requestId !== transactionRequestId.current) return
+      setLoadError("Transakce se nepodařilo načíst. Zobrazuji poslední načtený výsledek.")
+    } finally {
+      if (requestId === transactionRequestId.current) setLoading(false)
+    }
   }, [page, filterType, filterCategory, search])
 
   useEffect(() => {
@@ -326,10 +325,9 @@ export default function TransactionsPage() {
   }, [load])
 
   async function assignCategory(txId: string, categoryId: string) {
-    await fetch("/api/transactions", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: txId, categoryId: categoryId || null }),
+    await updateTransaction(txId, {
+      categoryId: categoryId || null,
+      idempotencyKey: crypto.randomUUID(),
     })
     load()
   }
@@ -338,29 +336,26 @@ export default function TransactionsPage() {
     e.preventDefault()
     setCreateLoading(true)
     setCreateError("")
-    const res = await fetch("/api/transactions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      await createTransaction({
         date: createForm.date,
-        amount: parseFloat(createForm.amount),
+        amount: createForm.amount,
         currency: createForm.currency,
-        type: createForm.type,
+        type: createForm.type as "income" | "expense" | "transfer",
         accountId: createForm.accountId,
         description: createForm.description || null,
         counterparty: createForm.counterparty || null,
         note: createForm.note || null,
         categoryId: createForm.categoryId || null,
-      }),
-    })
-    setCreateLoading(false)
-    if (!res.ok) {
-      const d = await res.json()
-      setCreateError(d.error)
-    } else {
+        idempotencyKey: crypto.randomUUID(),
+      })
       setShowCreate(false)
       setCreateForm((f) => ({ ...emptyForm(), accountId: f.accountId }))
-      load()
+      await load()
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : "Transakci se nepodařilo vytvořit.")
+    } finally {
+      setCreateLoading(false)
     }
   }
 
@@ -382,34 +377,30 @@ export default function TransactionsPage() {
     if (!detailTx) return
     setEditLoading(true)
     setEditError("")
-    const res = await fetch("/api/transactions", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: detailTx.id,
+    try {
+      await updateTransaction(detailTx.id, {
         date: editForm.date,
-        amount: parseFloat(editForm.amount),
+        amount: editForm.amount,
         currency: editForm.currency,
-        type: editForm.type,
+        type: editForm.type as "income" | "expense" | "transfer",
         description: editForm.description || null,
         counterparty: editForm.counterparty || null,
         note: editForm.note || null,
         categoryId: editForm.categoryId || null,
-      }),
-    })
-    setEditLoading(false)
-    if (!res.ok) {
-      const d = await res.json()
-      setEditError(d.error)
-    } else {
+        idempotencyKey: crypto.randomUUID(),
+      })
       closeDetail()
-      load()
+      await load()
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "Transakci se nepodařilo upravit.")
+    } finally {
+      setEditLoading(false)
     }
   }
 
   async function handleDelete(txId: string) {
     if (!confirm("Smazat transakci?")) return
-    await fetch(`/api/transactions?id=${txId}`, { method: "DELETE" })
+    await deleteTransaction(txId)
     closeDetail()
     load()
   }
@@ -510,7 +501,7 @@ export default function TransactionsPage() {
                 <DetailRow label="Typ" value={TYPE_LABEL[detailTx.type] ?? detailTx.type} />
                 <DetailRow
                   label="Částka"
-                  value={`${TYPE_SIGN[detailTx.type]}${fmt(detailTx.amount)} ${detailTx.currency}`}
+                  value={`${TYPE_SIGN[detailTx.type]}${fmt(Math.abs(Number(detailTx.amount)))} ${detailTx.currency}`}
                   highlight={detailTx.type}
                 />
                 <DetailRow label="Účet" value={detailTx.account.name} />
@@ -639,7 +630,11 @@ export default function TransactionsPage() {
 
         {/* Table */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          {loading ? (
+          {loadError && <p role="alert" className="p-4 text-sm text-red-700">{loadError}</p>}
+          {lastLoadedQuery !== null && lastLoadedQuery !== JSON.stringify([page, filterType, filterCategory, search]) && (
+            <p role="status" className="p-4 text-sm text-amber-700">Zobrazené transakce jsou z předchozího filtru.</p>
+          )}
+          {loading && transactions.length === 0 ? (
             <div className="py-12 text-center text-gray-400">Načítám...</div>
           ) : transactions.length === 0 ? (
             <div className="py-12 text-center text-gray-400">
@@ -697,7 +692,7 @@ export default function TransactionsPage() {
                     <td className="px-4 py-3 text-right font-mono whitespace-nowrap">
                       <span className={TYPE_COLOR[tx.type] ?? "text-gray-600"}>
                         {TYPE_SIGN[tx.type]}
-                        {fmt(tx.amount)} {tx.currency}
+                        {fmt(Math.abs(Number(tx.amount)))} {tx.currency}
                       </span>
                     </td>
                   </tr>

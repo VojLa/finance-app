@@ -1,5 +1,7 @@
 import "server-only"
 
+import { createHash } from "node:crypto"
+
 import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
@@ -7,318 +9,237 @@ import { NextResponse } from "next/server"
 import { authOptions } from "@/lib/auth"
 import {
   contractError,
+  forwardedPythonError,
   normalizeAdapterError,
   toErrorResponse,
   validationError,
 } from "@/modules/python-api/server/errors"
+import { createPythonImportApi } from "./import-api"
 import {
   isPythonImportSource,
-  summarizeImportFiles,
-  withImportFinalization,
-  type ImportApiErrorResponse,
-  type ImportFinalizationRequest,
-  type ImportFinalizationResult,
-  type ImportStatusResult,
+  type PythonImportBatch,
+  type PythonImportJob,
   type PythonImportSource,
 } from "./import-contract"
-import { createPythonImportApi, runImportCanonicalWorkflow } from "./import-api"
 
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 const MAX_FILES = 10
 const MAX_FILE_SIZE = 64 * 1024 * 1024
+const MAX_TOTAL_SIZE = 64 * 1024 * 1024
+const ALREADY_IMPORTED_CODE = "import_batch_already_imported"
+const ALREADY_IMPORTED_MESSAGE = "Soubor už byl pro tento účet importován. Nebude importován znovu."
+const UPLOAD_STATE_INVALID_CODE = "import_upload_state_invalid"
 
 function authenticationRequired() {
   return NextResponse.json(
-    {
-      error: {
-        code: "authentication_required",
-        message: "Authentication is required.",
-      },
-    },
+    { error: { code: "authentication_required", message: "Authentication is required." } },
     { status: 401, headers: NO_STORE_HEADERS }
   )
 }
 
-function safeAdapterResponse(error: unknown) {
+function errorResponse(error: unknown) {
   const mapped = toErrorResponse(normalizeAdapterError(error))
-  return NextResponse.json(mapped.body, {
-    status: mapped.status,
-    headers: NO_STORE_HEADERS,
-  })
+  return NextResponse.json(mapped.body, { status: mapped.status, headers: NO_STORE_HEADERS })
 }
 
-function exactFormKeys(formData: FormData, fixedSource?: PythonImportSource): boolean {
-  const allowed = new Set(fixedSource ? ["accountId", "file"] : ["accountId", "source", "file"])
-  return [...formData.keys()].every((key) => allowed.has(key))
+function alreadyImportedError() {
+  return forwardedPythonError(409, ALREADY_IMPORTED_CODE, ALREADY_IMPORTED_MESSAGE)
 }
 
-function parseAccountId(formData: FormData): string {
+function isAlreadyImportedError(error: unknown): boolean {
+  const mapped = normalizeAdapterError(error)
+  return mapped.status === 409 && mapped.code === ALREADY_IMPORTED_CODE
+}
+
+function isUploadRaceReplay(error: unknown): boolean {
+  const mapped = normalizeAdapterError(error)
+  return (
+    mapped.status === 409 &&
+    [UPLOAD_STATE_INVALID_CODE, ALREADY_IMPORTED_CODE].includes(mapped.code)
+  )
+}
+
+function formAccountId(formData: FormData): string {
   const values = formData.getAll("accountId")
-  const value = values[0]
   if (
     values.length !== 1 ||
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value !== value.trim()
+    typeof values[0] !== "string" ||
+    !values[0].trim() ||
+    values[0] !== values[0].trim()
   ) {
-    throw validationError()
-  }
-  return value
-}
-
-function parseSource(formData: FormData, fixedSource?: PythonImportSource): PythonImportSource {
-  if (fixedSource) return fixedSource
-  const values = formData.getAll("source")
-  if (values.length !== 1 || !isPythonImportSource(values[0])) {
     throw validationError()
   }
   return values[0]
 }
 
-function parseFiles(formData: FormData): File[] {
-  const files = formData.getAll("file").filter((value): value is File => value instanceof File)
-  if (
-    files.length === 0 ||
-    files.length > MAX_FILES ||
-    files.length !== formData.getAll("file").length
-  ) {
+function formSource(formData: FormData): PythonImportSource {
+  const values = formData.getAll("source")
+  if (values.length !== 1 || !isPythonImportSource(values[0])) throw validationError()
+  return values[0]
+}
+
+function formFiles(formData: FormData): File[] {
+  if (![...formData.keys()].every((key) => ["accountId", "source", "file"].includes(key))) {
     throw validationError()
   }
-  for (const file of files) {
-    if (
-      file.name.length === 0 ||
-      !file.name.toLowerCase().endsWith(".csv") ||
-      file.size === 0 ||
-      file.size > MAX_FILE_SIZE
-    ) {
-      throw validationError()
-    }
+  const values = formData.getAll("file")
+  const files = values.filter((value): value is File => value instanceof File)
+  if (files.length === 0 || files.length !== values.length || files.length > MAX_FILES) {
+    throw validationError()
+  }
+  if (
+    files.some(
+      (file) =>
+        !file.name ||
+        !file.name.toLowerCase().endsWith(".csv") ||
+        file.size === 0 ||
+        file.size > MAX_FILE_SIZE
+    ) ||
+    files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_SIZE
+  ) {
+    throw validationError()
   }
   return files
 }
 
-function parseFinalizationRequest(value: unknown): ImportFinalizationRequest {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw validationError()
-  }
-  const record = value as Record<string, unknown>
-  if (
-    Object.keys(record).length !== 2 ||
-    !Object.hasOwn(record, "accountId") ||
-    !Object.hasOwn(record, "batchIds") ||
-    typeof record.accountId !== "string" ||
-    record.accountId.length === 0 ||
-    record.accountId !== record.accountId.trim() ||
-    !Array.isArray(record.batchIds) ||
-    record.batchIds.length === 0 ||
-    record.batchIds.length > MAX_FILES ||
-    record.batchIds.some(
-      (batchId) => typeof batchId !== "string" || batchId.length === 0 || batchId !== batchId.trim()
-    ) ||
-    new Set(record.batchIds).size !== record.batchIds.length
-  ) {
-    throw validationError()
-  }
-  return {
-    accountId: record.accountId,
-    batchIds: record.batchIds,
-  }
-}
-
-export async function handleImportPost(request: NextRequest, fixedSource?: PythonImportSource) {
+/** Register and upload files, then hand the entire durable workflow to Python. */
+export async function handleImportPost(request: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
+  if (!session?.user?.id || session.user.id !== session.user.id.trim())
     return authenticationRequired()
-  }
-
   try {
-    let formData: FormData
-    try {
-      formData = await request.formData()
-    } catch {
+    const formData = await request.formData().catch(() => {
       throw validationError()
-    }
-    if (!exactFormKeys(formData, fixedSource)) throw validationError()
-
-    const accountId = parseAccountId(formData)
-    const source = parseSource(formData, fixedSource)
-    const files = parseFiles(formData)
-    const identity = {
-      userId: session.user.id,
-      email: session.user.email || undefined,
-    }
-
-    const executions = []
-    for (const file of files) {
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      executions.push(
-        await runImportCanonicalWorkflow(identity, {
-          accountId,
-          source,
-          filename: file.name,
-          bytes,
-        })
-      )
-    }
-    const summary = summarizeImportFiles(executions.map((execution) => execution.result))
-    const failed = executions.find((execution) => execution.errorStatus !== undefined)
-    if (failed) {
-      const result = failed.result
-      const error =
-        "error" in result
-          ? result.error
-          : {
-              code: "python_api_contract_error",
-              message: "The Python API returned an incompatible response.",
-            }
-      const body: ImportApiErrorResponse = {
-        error,
-        partial: withImportFinalization(summary, "not_run"),
-      }
-      return NextResponse.json(body, {
-        status: failed.errorStatus,
-        headers: NO_STORE_HEADERS,
-      })
-    }
-    const batchIds = executions.flatMap((execution) =>
-      "batchId" in execution.result && execution.result.status !== "failed"
-        ? [execution.result.batchId]
-        : []
-    )
-    const expectedBatchIds = [...batchIds].sort()
-    let finalized
-    try {
-      finalized = await createPythonImportApi(identity).finalizeImportBatches(accountId, batchIds)
-    } catch (error) {
-      const mapped = toErrorResponse(normalizeAdapterError(error))
-      const body: ImportApiErrorResponse = {
-        error: mapped.body.error,
-        partial: withImportFinalization(summary, "not_run"),
-      }
-      return NextResponse.json(body, {
-        status: mapped.status,
-        headers: NO_STORE_HEADERS,
-      })
-    }
-    if (
-      finalized.batch_ids.length !== expectedBatchIds.length ||
-      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
-    ) {
-      throw contractError()
-    }
-    return NextResponse.json(withImportFinalization(summary, finalized.snapshot_refresh_status), {
-      headers: NO_STORE_HEADERS,
     })
-  } catch (error) {
-    return safeAdapterResponse(error)
-  }
-}
-
-export async function handleImportFinalize(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
-    return authenticationRequired()
-  }
-  try {
-    let value: unknown
-    try {
-      value = await request.json()
-    } catch {
-      throw validationError()
-    }
-    const input = parseFinalizationRequest(value)
-    const expectedBatchIds = [...input.batchIds].sort()
-    const finalized = await createPythonImportApi({
-      userId: session.user.id,
-      email: session.user.email || undefined,
-    }).finalizeImportBatches(input.accountId, input.batchIds)
-    if (
-      finalized.batch_ids.length !== expectedBatchIds.length ||
-      finalized.batch_ids.some((batchId, index) => batchId !== expectedBatchIds[index])
-    ) {
-      throw contractError()
-    }
-    return NextResponse.json(
-      {
-        batchIds: finalized.batch_ids,
-        snapshotRefreshStatus: finalized.snapshot_refresh_status,
-      } satisfies ImportFinalizationResult,
-      { headers: NO_STORE_HEADERS }
-    )
-  } catch (error) {
-    return safeAdapterResponse(error)
-  }
-}
-
-function parseStatusQuery(request: NextRequest): { accountId: string; ids: string[] } {
-  const allowed = new Set(["accountId", "ids"])
-  if ([...request.nextUrl.searchParams.keys()].some((key) => !allowed.has(key))) {
-    throw validationError()
-  }
-  const accountId = request.nextUrl.searchParams.get("accountId")
-  const rawIds = request.nextUrl.searchParams.get("ids")
-  if (
-    !accountId ||
-    accountId !== accountId.trim() ||
-    !rawIds ||
-    request.nextUrl.searchParams.getAll("accountId").length !== 1 ||
-    request.nextUrl.searchParams.getAll("ids").length !== 1
-  ) {
-    throw validationError()
-  }
-  const ids = rawIds.split(",")
-  if (
-    ids.length === 0 ||
-    ids.length > MAX_FILES ||
-    ids.some((id) => id.length === 0 || id !== id.trim()) ||
-    new Set(ids).size !== ids.length
-  ) {
-    throw validationError()
-  }
-  return { accountId, ids }
-}
-
-export async function handleImportStatus(request: NextRequest) {
-  const session = await getServerSession(authOptions)
-  if (!session?.user || session.user.id.trim().length === 0) {
-    return authenticationRequired()
-  }
-  try {
-    const { accountId, ids } = parseStatusQuery(request)
+    const accountId = formAccountId(formData)
+    const source = formSource(formData)
+    const files = formFiles(formData)
     const api = createPythonImportApi({
       userId: session.user.id,
       email: session.user.email || undefined,
     })
-    const batches: ImportStatusResult["batches"] = []
-    for (const id of ids) {
-      const batch = await api.getImportBatch(accountId, id)
-      if (
-        batch.id !== id ||
-        batch.account_id !== accountId ||
-        !isPythonImportSource(batch.source)
-      ) {
-        throw contractError()
+    const uploadRequired: Array<{
+      filename: string
+      bytes: Uint8Array
+      checksum: string
+      batch: PythonImportBatch
+    }> = []
+    const resumedJobs = new Map<string, PythonImportJob>()
+    const rejectedFiles: Array<{ filename: string; code: string; message: string }> = []
+    let firstFailure: unknown
+
+    // Registration is deliberately separated from upload: a returned resumable job
+    // must never be combined with fresh raw bytes from the same browser request.
+    for (const file of files) {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const checksum = createHash("sha256").update(bytes).digest("hex")
+        const registration = await api.createImportBatch(accountId, {
+          source,
+          filename: file.name,
+          file_size: bytes.byteLength,
+          file_encoding: null,
+          checksum,
+        })
+        if (registration.status === "resume_job") {
+          if (registration.job.account_id !== accountId) throw contractError()
+          resumedJobs.set(registration.job.id, registration.job)
+          continue
+        }
+        const batch = registration.batch
+        if (
+          batch.account_id !== accountId ||
+          batch.source !== source ||
+          batch.filename !== file.name ||
+          batch.file_size !== bytes.byteLength ||
+          batch.file_encoding !== null ||
+          batch.checksum !== checksum
+        ) {
+          throw contractError()
+        }
+        uploadRequired.push({ filename: file.name, bytes, checksum, batch })
+      } catch (error) {
+        if (isAlreadyImportedError(error)) {
+          rejectedFiles.push({
+            filename: file.name,
+            code: ALREADY_IMPORTED_CODE,
+            message: ALREADY_IMPORTED_MESSAGE,
+          })
+          continue
+        }
+        firstFailure ??= error
+        const mapped = toErrorResponse(normalizeAdapterError(error))
+        rejectedFiles.push({
+          filename: file.name,
+          code: mapped.body.error.code,
+          message: mapped.body.error.message,
+        })
       }
-      batches.push({
-        id: batch.id,
-        accountId: batch.account_id,
-        source: batch.source,
-        filename: batch.filename,
-        status: batch.status,
-        rowsTotal: batch.rows_total ?? 0,
-        rowsImported: batch.rows_imported ?? 0,
-        rowsSkipped: batch.rows_skipped ?? 0,
-      })
     }
-    return NextResponse.json({ batches } satisfies ImportStatusResult, {
-      headers: NO_STORE_HEADERS,
-    })
+    if (resumedJobs.size > 1 || (resumedJobs.size === 1 && uploadRequired.length > 0)) {
+      throw contractError()
+    }
+    if (resumedJobs.size === 1) {
+      const job = resumedJobs.values().next().value
+      if (job === undefined) throw contractError()
+      return NextResponse.json(
+        { outcome: "resumed", job, acceptedBatchIds: [], rejectedFiles },
+        { status: 202, headers: NO_STORE_HEADERS }
+      )
+    }
+
+    const batchIds: string[] = []
+    let uploadRaceReplay = false
+    for (const entry of uploadRequired) {
+      const { batch } = entry
+      try {
+        const upload = await api.uploadImportFile(accountId, batch.id, entry.bytes)
+        if (
+          upload.batch_id !== batch.id ||
+          upload.size !== entry.bytes.byteLength ||
+          upload.checksum !== entry.checksum
+        ) {
+          throw contractError()
+        }
+        if (!batchIds.includes(batch.id)) batchIds.push(batch.id)
+      } catch (error) {
+        // A worker may reach processing or terminal posting after registration but
+        // before upload. Only these exact 409 codes continue to canonical job lookup.
+        if (isUploadRaceReplay(error)) {
+          uploadRaceReplay = true
+          if (!batchIds.includes(batch.id)) batchIds.push(batch.id)
+          continue
+        }
+        firstFailure ??= error
+        const mapped = toErrorResponse(normalizeAdapterError(error))
+        rejectedFiles.push({
+          filename: entry.filename,
+          code: mapped.body.error.code,
+          message: mapped.body.error.message,
+        })
+      }
+    }
+    if (
+      batchIds.length === 0 &&
+      rejectedFiles.length === files.length &&
+      rejectedFiles.every((file) => file.code === ALREADY_IMPORTED_CODE)
+    ) {
+      throw alreadyImportedError()
+    }
+    if (batchIds.length === 0) throw firstFailure ?? contractError()
+    const job = await api.startImportJob(accountId, [...batchIds].sort())
+    if (job.account_id !== accountId) throw contractError()
+    if (uploadRaceReplay && job.status === "completed") throw alreadyImportedError()
+    return NextResponse.json(
+      {
+        outcome: uploadRaceReplay ? "resumed" : "started",
+        job,
+        acceptedBatchIds: uploadRaceReplay ? [] : [...batchIds].sort(),
+        rejectedFiles,
+      },
+      { status: 202, headers: NO_STORE_HEADERS }
+    )
   } catch (error) {
-    return safeAdapterResponse(error)
+    return errorResponse(error)
   }
 }

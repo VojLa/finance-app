@@ -16,7 +16,7 @@ from app.db.models.snapshots import (
     NetWorthSnapshotModel,
 )
 from app.modules.liabilities.evidence_service import LiabilityBalanceEvidenceService
-from app.modules.portfolio_history.repository import PortfolioHistoryRepository
+from app.modules.portfolio_snapshot.history_reader import PublishedPortfolioSnapshotHistoryReader
 from app.modules.snapshot_refresh.manual_service import (
     MANUAL_USER_SNAPSHOT_REFRESH_GRANULARITY,
     ManualUserSnapshotRefreshService,
@@ -104,15 +104,24 @@ def test_liability_persistence_is_point_in_time_evidence_not_an_event_delta() ->
     assert "len(latest) != 1" in source
 
 
-def test_history_remains_a_separate_persisted_net_worth_read() -> None:
-    source = inspect.getsource(PortfolioHistoryRepository)
+def test_history_reads_published_snapshot_evidence_without_replay() -> None:
+    source = inspect.getsource(PublishedPortfolioSnapshotHistoryReader)
 
+    assert "PortfolioSnapshotModel" in source
+    assert "AccountSnapshotModel" in source
     assert "NetWorthSnapshotModel" in source
+    assert "UserReadModelPublicationModel" in source
+    assert "SnapshotSeriesHeadModel" in source
+    assert "SnapshotSeriesPointLinkModel" in source
+    assert "DailySnapshotBaselineAccountModel" in source
+    assert "presentation_snapshot_id" in source
+    assert "assert_database_complete" not in source
     assert "TransactionModel" not in source
     assert "InvestmentEventModel" not in source
     assert "HoldingModel" not in source
     assert "PriceSnapshotModel" not in source
     assert "ExchangeRateModel" not in source
+    assert "provider" in source.lower()
 
 
 def test_active_current_service_contains_no_daily_delta_implementation() -> None:

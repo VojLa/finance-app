@@ -1,0 +1,54 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - "!docs/**"
+      - "!planning/**"
+      - "!user-docs/**"
+      - "scripts/docs/**"
+      - "src/**"
+      - "backend/python/**"
+      - "backend/rust/**"
+      - ".github/workflows/docs.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "!docs/**"
+      - "!planning/**"
+      - "!user-docs/**"
+      - "scripts/docs/**"
+      - "src/**"
+      - "backend/python/**"
+      - "backend/rust/**"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  documentation:
+    name: Check generated inventories and links
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: backend/python/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/python/uv.lock
+
+      - name: Install Python dependencies for OpenAPI export
+        working-directory: backend/python
+        run: uv sync --frozen
+
+      - name: Check generated inventories and documentation links
+        run: python scripts/docs/check_docs.py

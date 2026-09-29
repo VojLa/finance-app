@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "Asset",
     "AssetAlias",
     "AssetListing",
+    "BackgroundJob",
     "Budget",
     "BudgetAccount",
     "BudgetAlert",
@@ -31,15 +32,39 @@ EXPECTED_TABLES = {
     "ExchangeRate",
     "Holding",
     "ImportBatch",
+    "ImportJobAffectedAccount",
+    "ImportJobBatch",
+    "ImportJobPublicationTarget",
     "ImportLog",
     "ImportRow",
+    "ImportSourceOccurrence",
     "InvestmentEvent",
     "InvestmentMovement",
+    "InvestmentMovementValuationEvidence",
+    "InvestmentAccountSnapshot",
+    "InvestmentAccountSnapshotItem",
     "LiabilityBalance",
     "NetWorthSnapshot",
+    "SnapshotGeneration",
+    "SnapshotGenerationTarget",
+    "UserReadModelPublication",
+    "UserReadModelPublicationWatermark",
     "PriceSnapshot",
+    "PortfolioSnapshot",
+    "PortfolioSnapshotInput",
+    "PortfolioSnapshotItem",
+    "PortfolioSnapshotItemAccount",
+    "SnapshotSeriesRebuildJob",
+    "SnapshotSeriesDirtyState",
+    "SnapshotSeriesCanonicalInvalidation",
+    "SnapshotSeriesScheduleState",
+    "SnapshotSeriesVersionState",
+    "SnapshotSeriesHead",
+    "SnapshotSeriesPointLink",
+    "SnapshotSeriesPublicationReceipt",
     "Transaction",
     "TransactionPair",
+    "TransactionReportingEvidence",
     "TransactionSplit",
     "User",
 }
@@ -75,6 +100,9 @@ EXPECTED_ENUMS = {
         "exchange",
     ],
     "AssetType": ["stock", "etf", "crypto", "commodity", "cash", "bond", "other"],
+    "BackgroundJobKind": ["import_workflow"],
+    "BackgroundJobStatus": ["queued", "running", "retry_wait", "completed", "failed"],
+    "SnapshotSeriesJobKind": ["rebuild", "capture"],
     "BudgetAlertType": ["approaching_limit", "exceeded", "reset"],
     "BudgetPeriodType": ["monthly", "weekly", "yearly", "custom"],
     "CategoryType": ["expense", "income", "both"],
@@ -91,6 +119,7 @@ EXPECTED_ENUMS = {
         "other",
     ],
     "ExchangeRateSource": [
+        "twelve_data",
         "cnb",
         "ecb",
         "manual",
@@ -200,13 +229,26 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 36
+    assert len(tables) == 61
     assert all(table.schema == "public" for table in tables.values())
     expected_nonstandard_primary_keys = {
         "AccountCanonicalState": ["accountId"],
         "AccountCanonicalChange": ["accountId", "revision"],
         "AccountSnapshotCanonicalBoundary": ["snapshotId"],
         "DailySnapshotBaselineAccount": ["baselineId", "accountId"],
+        "SnapshotGenerationTarget": ["generationId", "userId"],
+        "UserReadModelPublication": ["userId"],
+        "UserReadModelPublicationWatermark": ["userId"],
+        "PortfolioSnapshotInput": ["portfolioSnapshotId", "investmentAccountSnapshotId"],
+        "PortfolioSnapshotItemAccount": ["portfolioSnapshotItemId", "accountId"],
+        "ImportJobPublicationTarget": ["jobId", "userId"],
+        "ImportJobBatch": ["jobId", "batchId"],
+        "ImportJobAffectedAccount": ["jobId", "accountId"],
+        "TransactionReportingEvidence": ["transactionId"],
+        "SnapshotSeriesCanonicalInvalidation": ["userId", "accountId", "canonicalRevision"],
+        "SnapshotSeriesDirtyState": ["userId"],
+        "SnapshotSeriesScheduleState": ["userId"],
+        "SnapshotSeriesVersionState": ["userId"],
     }
     for name, table in tables.items():
         assert [column.name for column in table.primary_key.columns] == (
@@ -233,7 +275,7 @@ def test_all_foreign_keys_target_mapped_tables() -> None:
 def test_complete_schema_mirror_reuses_all_postgresql_enums() -> None:
     enums = mapped_enums()
 
-    assert len(enums) == 28
+    assert len(enums) == 31
     assert {name: enum.enums for name, enum in enums.items()} == EXPECTED_ENUMS
     assert all(enum.create_type is False for enum in enums.values())
 

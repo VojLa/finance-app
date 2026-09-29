@@ -48,9 +48,9 @@ const OPERATIONAL_PAYLOAD = {
     portfolioValueCzk: 888_888,
     liabilitiesValueCzk: -777_777,
     netWorthCzk: 666_666,
-    currentMonthIncomeCzk: 1200,
-    currentMonthExpenseCzk: 450,
-    currentMonthNetCzk: 750,
+    currentMonthIncomeCzk: "1200.000000",
+    currentMonthExpenseCzk: "450.000000",
+    currentMonthNetCzk: "750.000000",
   },
   accountBalances: [{ accountId: "legacy-account", totalCzk: 123 }],
   budget: null,
@@ -124,7 +124,7 @@ describe("in-process dashboard browser flow", () => {
       tokenIds.push(String(payload.jti))
       expect(request.headers.has("Cookie")).toBe(false)
 
-      if (request.url === `${BACKEND_URL}/api/v1/dashboard/current`) {
+      if (request.url === `${BACKEND_URL}/api/v1/dashboard/published`) {
         expect(await request.text()).toBe("")
         return jsonResponse(dashboard)
       }
@@ -138,7 +138,7 @@ describe("in-process dashboard browser flow", () => {
     expect(browserFetch).toHaveBeenCalledTimes(1)
     expect(getSession).toHaveBeenCalledTimes(1)
     expect(serverFetch).toHaveBeenCalledTimes(1)
-    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/dashboard/current`])
+    expect(requestUrls).toEqual([`${BACKEND_URL}/api/v1/dashboard/published`])
     expect(tokens).toHaveLength(1)
     expect(new Set(tokens).size).toBe(1)
     expect(new Set(tokenIds).size).toBe(1)
@@ -153,6 +153,7 @@ describe("in-process dashboard browser flow", () => {
     expect(model.summary).toBe(state.data.summary)
     expect(model.accounts).toBe(state.data.accounts)
     expect(model.assetTypeAllocations).toBe(state.data.assetTypeAllocations)
+    expect(model.topPositions).toEqual(state.data.topPositions)
     expect(model.topPositions).toBe(state.data.topPositions)
     expect(model.summary.totalValue).toBe("999999999999.123456")
     expect(model.accounts.map(({ accountId }) => accountId)).toEqual(["account-z", "account-a"])
@@ -162,7 +163,7 @@ describe("in-process dashboard browser flow", () => {
   it("fails closed without a baseline while operational data remains independent", async () => {
     const serverFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init)
-      expect(request.url).toBe(`${BACKEND_URL}/api/v1/dashboard/current`)
+      expect(request.url).toBe(`${BACKEND_URL}/api/v1/dashboard/published`)
       return jsonResponse(
         { error: { code: "current_value_unavailable", message: "Unavailable." } },
         409

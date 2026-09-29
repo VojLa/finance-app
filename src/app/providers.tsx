@@ -2,6 +2,15 @@
 
 import { SessionProvider } from "next-auth/react"
 
+import { ImportJobMonitor } from "@/modules/imports/python/import-job-monitor"
+import { ReadModelVersionMonitor } from "@/modules/read-models/read-model-version-client"
+
 export function Providers({ children }: { children: React.ReactNode }) {
-  return <SessionProvider>{children}</SessionProvider>
+  return (
+    <SessionProvider>
+      <ImportJobMonitor />
+      <ReadModelVersionMonitor />
+      {children}
+    </SessionProvider>
+  )
 }

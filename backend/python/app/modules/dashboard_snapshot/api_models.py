@@ -31,10 +31,10 @@ class DashboardSnapshotSummaryResponse(BaseModel):
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
     cash_value: Decimal = Field(serialization_alias="cashValue")
     investment_value: Decimal = Field(serialization_alias="investmentValue")
-    investment_cost_basis: Decimal = Field(serialization_alias="investmentCostBasis")
-    unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
-    realized_pnl_value: Decimal = Field(serialization_alias="realizedPnlValue")
-    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
+    investment_cost_basis: Decimal | None = Field(serialization_alias="investmentCostBasis")
+    unrealized_pnl_value: Decimal | None = Field(serialization_alias="unrealizedPnlValue")
+    realized_pnl_value: Decimal | None = Field(serialization_alias="realizedPnlValue")
+    net_deposits_value: Decimal | None = Field(serialization_alias="netDepositsValue")
     fees_value: Decimal = Field(serialization_alias="feesValue")
     taxes_value: Decimal = Field(serialization_alias="taxesValue")
     account_count: int = Field(serialization_alias="accountCount")
@@ -55,8 +55,8 @@ class DashboardSnapshotSummaryResponse(BaseModel):
         "fees_value",
         "taxes_value",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return serialize_money(value)
+    def serialize_decimal(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_money(value)
 
 
 class DashboardAccountCardResponse(BaseModel):
@@ -73,8 +73,8 @@ class DashboardAccountCardResponse(BaseModel):
     cash_value: Decimal = Field(serialization_alias="cashValue")
     investment_value: Decimal = Field(serialization_alias="investmentValue")
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
-    net_deposits_value: Decimal = Field(serialization_alias="netDepositsValue")
-    unrealized_pnl_value: Decimal = Field(serialization_alias="unrealizedPnlValue")
+    net_deposits_value: Decimal | None = Field(serialization_alias="netDepositsValue")
+    unrealized_pnl_value: Decimal | None = Field(serialization_alias="unrealizedPnlValue")
     position_count: int = Field(serialization_alias="positionCount")
 
     @field_serializer(
@@ -85,8 +85,8 @@ class DashboardAccountCardResponse(BaseModel):
         "net_deposits_value",
         "unrealized_pnl_value",
     )
-    def serialize_decimal(self, value: Decimal) -> str:
-        return serialize_money(value)
+    def serialize_decimal(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_money(value)
 
 
 class DashboardAssetTypeAllocationResponse(BaseModel):
@@ -118,7 +118,7 @@ class DashboardTopPositionResponse(BaseModel):
     asset_type: AssetType = Field(serialization_alias="assetType")
     value: Decimal
     value_currency: str = Field(serialization_alias="valueCurrency")
-    unrealized_pnl: Decimal = Field(serialization_alias="unrealizedPnl")
+    unrealized_pnl: Decimal | None = Field(serialization_alias="unrealizedPnl")
     allocation_pct: Decimal = Field(serialization_alias="allocationPct")
 
     @field_serializer("value")
@@ -126,8 +126,8 @@ class DashboardTopPositionResponse(BaseModel):
         return serialize_money(value)
 
     @field_serializer("unrealized_pnl")
-    def serialize_quantity(self, value: Decimal) -> str:
-        return serialize_quantity(value)
+    def serialize_quantity(self, value: Decimal | None) -> str | None:
+        return None if value is None else serialize_quantity(value)
 
     @field_serializer("allocation_pct")
     def serialize_percentage(self, value: Decimal) -> str:

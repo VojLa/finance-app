@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5433:5432"
+      - "127.0.0.1:${FINANCE_APP_DB_PORT:-5434}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -21,26 +21,23 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: finance-app-web
-    command: sh -c "npm run db:generate && npm run dev"
+    command: npm run dev
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./:/app
       - node_modules:/app/node_modules
       - next_cache:/app/.next
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
-      NEXTAUTH_URL: http://localhost:3000
-      NEXTAUTH_SECRET: development-secret-change-me
+      NEXTAUTH_URL: "${NEXTAUTH_URL:-http://localhost:3000}"
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-development-secret-change-me}"
       PYTHON_BACKEND_URL: http://api:8010
       INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
       INTERNAL_AUTH_TOKEN_TTL_SECONDS: "60"
-      PYTHON_API_TIMEOUT_MS: "30000"
+      PYTHON_API_TIMEOUT_MS: "60000"
     depends_on:
-      db:
-        condition: service_healthy
       api:
         condition: service_healthy
 
@@ -49,17 +46,31 @@ services:
       context: .
       dockerfile: backend/python/Dockerfile
     container_name: finance-app-api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8010 --reload
     ports:
-      - "8010:8010"
+      - "127.0.0.1:8010:8010"
     volumes:
       - ./backend/python:/app/backend/python
+      - ./package.json:/app/package.json:ro
+      - ./.github/workflows:/app/.github/workflows:ro
     environment:
       ENVIRONMENT: development
       DATABASE_URL: postgresql://postgres:postgres@db:5432/finance_app
       INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me
       INTERNAL_AUTH_ISSUER: finance-app-next
       INTERNAL_AUTH_AUDIENCE: finance-app-python
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}
+      MARKET_EVIDENCE_SOURCE_MODE: "${MARKET_EVIDENCE_SOURCE_MODE:-canonical}"
+      BACKGROUND_JOBS_ENABLED: "true"
+      BACKGROUND_JOB_POLL_SECONDS: "0.75"
+      BACKGROUND_JOB_LEASE_SECONDS: "300"
+      BACKGROUND_JOB_HEARTBEAT_SECONDS: "15"
+      BACKGROUND_JOB_SHUTDOWN_GRACE_SECONDS: "5"
+      # The API image and database must be deployed at the same migration head.
+      PORTFOLIO_HISTORY_RUNTIME_ENABLED: "${PORTFOLIO_HISTORY_RUNTIME_ENABLED:-true}"
+      SCHEDULED_SNAPSHOT_REFRESH_RUNNER_ENABLED: "${SCHEDULED_SNAPSHOT_REFRESH_RUNNER_ENABLED:-true}"
+      SCHEDULED_SNAPSHOT_REFRESH_INTERVAL_SECONDS: "${SCHEDULED_SNAPSHOT_REFRESH_INTERVAL_SECONDS:-300}"
+      SCHEDULED_SNAPSHOT_REFRESH_SHUTDOWN_GRACE_SECONDS: "${SCHEDULED_SNAPSHOT_REFRESH_SHUTDOWN_GRACE_SECONDS:-5}"
     depends_on:
       db:
         condition: service_healthy

@@ -121,7 +121,12 @@ def _account(
     )
 
 
-def _access(account: AccountModel, *, membership_id: str | None = None) -> PersistedAccountAccess:
+def _access(
+    account: AccountModel,
+    *,
+    membership_id: str | None = None,
+    has_canonical_history: bool = True,
+) -> PersistedAccountAccess:
     return PersistedAccountAccess(
         account=account,
         membership=AccountMemberModel(
@@ -135,6 +140,7 @@ def _access(account: AccountModel, *, membership_id: str | None = None) -> Persi
             created_at=NOW,
             updated_at=NOW,
         ),
+        has_canonical_history=has_canonical_history,
     )
 
 
@@ -143,15 +149,12 @@ def _snapshot(
     *,
     snapshot_id: str | None = None,
 ) -> AccountSnapshotModel:
-    liability = account.type in {
-        AccountType.credit_card,
-        AccountType.loan,
-        AccountType.mortgage,
-    }
+    liability = account.type in {AccountType.loan, AccountType.mortgage}
     cash_only = account.type in {
         AccountType.bank,
         AccountType.cash,
         AccountType.savings,
+        AccountType.credit_card,
     }
     cash = Decimal(0) if liability else Decimal("100.000000")
     investment = Decimal(0) if liability or cash_only else Decimal("400.000000")
@@ -362,6 +365,29 @@ async def test_exact_required_identities_match_persisted_accounts_and_snapshots(
         _identity("account-a", "snapshot-a"),
         _identity("account-b", "snapshot-b"),
     )
+
+
+@pytest.mark.asyncio
+async def test_empty_active_account_is_excluded_from_required_snapshot_evidence() -> None:
+    posted = _account("posted")
+    empty = _account("empty", account_type=AccountType.credit_card)
+    repository = FakeRepository(
+        accesses=(
+            _access(posted),
+            _access(empty, has_canonical_history=False),
+        ),
+        snapshots=(_snapshot(posted, snapshot_id="snapshot-posted"),),
+    )
+    service, _ = _service(repository)
+
+    result = await service.build(
+        _command(required_account_snapshot_identities=(_identity("posted", "snapshot-posted"),))
+    )
+
+    assert result.selected_account_ids == ("posted",)
+    assert result.selected_identities == (_identity("posted", "snapshot-posted"),)
+    assert repository.snapshot_arguments is not None
+    assert repository.snapshot_arguments["account_ids"] == ("posted",)
 
 
 @pytest.mark.asyncio
@@ -769,6 +795,41 @@ async def test_sql_null_breakdowns_remain_unavailable() -> None:
 
     assert result.projection.cash_value_by_currency is None
     assert result.projection.portfolio_value_by_currency is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_investment_cost_metrics_do_not_hide_numeric_net_worth() -> None:
+    account = _account()
+    snapshot = _snapshot(account)
+    snapshot.investment_cost_basis = None
+    snapshot.investment_cost_basis_by_currency = None
+    snapshot.net_deposits_value = None
+    snapshot.net_deposits_by_currency = None
+    snapshot.realized_pnl_value = None
+    snapshot.realized_pnl_by_currency = None
+    snapshot.unrealized_pnl_value = None
+    snapshot.unrealized_pnl_by_currency = None
+    repository = FakeRepository(accesses=(_access(account),), snapshots=(snapshot,))
+    service, _ = _service(repository)
+
+    result = await service.build(_command())
+
+    assert result.projection.net_worth_value == Decimal("500.000000")
+    assert result.projection.portfolio_value == Decimal("400.000000")
+
+
+@pytest.mark.asyncio
+async def test_unknown_metric_scalar_rejects_nonnull_breakdown() -> None:
+    account = _account()
+    snapshot = _snapshot(account)
+    snapshot.investment_cost_basis = None
+    snapshot.unrealized_pnl_value = None
+    snapshot.unrealized_pnl_by_currency = None
+    repository = FakeRepository(accesses=(_access(account),), snapshots=(snapshot,))
+    service, _ = _service(repository)
+
+    with pytest.raises(NetWorthEvidenceStateError):
+        await service.build(_command())
 
 
 @pytest.mark.asyncio

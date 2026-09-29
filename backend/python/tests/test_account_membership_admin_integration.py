@@ -17,13 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
-from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import AccountMemberRole, AccountRelationType, AccountType
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.accounts.models import AccountMemberRoleUpdateRequest
 from app.modules.accounts.service import AccountService
+from app.modules.market_data.source_policy import LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-4e-internal-auth-secret-32-characters"
@@ -80,6 +81,12 @@ async def _seed() -> None:
     async with AsyncSession(engine) as session:
         await session.execute(delete(AccountMemberModel).where(AccountMemberModel.id.in_(MEMBERS)))
         await session.execute(delete(AccountModel).where(AccountModel.id.in_(ACCOUNTS)))
+        await session.execute(
+            delete(AccountInviteModel).where(
+                (AccountInviteModel.inviter_id.in_(USERS))
+                | (AccountInviteModel.accepted_by_id.in_(USERS))
+            )
+        )
         await session.execute(delete(UserModel).where(UserModel.id.in_(USERS)))
         for user_id in USERS:
             session.add(
@@ -180,7 +187,10 @@ async def _verify_rollback(member_id: str, *, remove: bool) -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountService(session)
+        service = AccountService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         principal = AuthenticatedPrincipal(
             user_id="user-owner",
             email="user-owner@example.com",

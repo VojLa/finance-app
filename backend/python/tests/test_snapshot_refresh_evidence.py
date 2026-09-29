@@ -142,6 +142,7 @@ def _access(
     role: AccountMemberRole = AccountMemberRole.owner,
     relation_type: AccountRelationType = AccountRelationType.owner,
     accepted_at: datetime | None = NOW,
+    has_canonical_history: bool = True,
 ) -> PersistedSnapshotRefreshAccess:
     return PersistedSnapshotRefreshAccess(
         account=account,
@@ -156,6 +157,7 @@ def _access(
             created_at=NOW,
             updated_at=NOW,
         ),
+        has_canonical_history=has_canonical_history,
     )
 
 
@@ -389,6 +391,21 @@ async def test_archived_account_is_excluded_by_5ka() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_active_account_is_validated_but_excluded_from_coverage() -> None:
+    repository = FakeRepository(
+        accesses=(
+            _access(_account("posted")),
+            _access(_account("empty"), has_canonical_history=False),
+        )
+    )
+
+    result = await _service(repository)[0].build(_command())
+
+    assert tuple(target.account_id for target in result.plan.account_targets) == ("posted",)
+    assert result.plan.net_worth_target.required_account_ids == ("posted",)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -500,6 +517,7 @@ async def test_mixed_partition_is_complete_ordered_and_disjoint() -> None:
         target.account_id for target in result.reuse_only_targets
     )
     assert repository.snapshot_arguments == {
+        "user_id": "user-a",
         "account_ids": ("z-viewer",),
         "timestamp": NOW,
         "granularity": SnapshotGranularity.day,

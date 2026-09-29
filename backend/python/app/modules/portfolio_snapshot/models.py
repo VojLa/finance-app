@@ -76,14 +76,17 @@ class PortfolioSnapshotItemSource:
     price_timestamp: datetime
     value: Decimal
     value_currency: str
-    cost_basis: Decimal
-    cost_currency: str
-    unrealized_pnl: Decimal
+    cost_basis: Decimal | None
+    cost_currency: str | None
+    unrealized_pnl: Decimal | None
     allocation_pct: Decimal
     native_value: Decimal
     native_value_currency: str
-    native_cost_basis: Decimal
-    native_cost_currency: str
+    native_cost_basis: Decimal | None
+    native_cost_currency: str | None
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
+    average_buy_price: Decimal | None
+    average_buy_price_currency: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,13 +108,13 @@ class PortfolioSnapshotSource:
     cash_value: Decimal
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
-    investment_cost_basis: Decimal
+    investment_cost_basis: Decimal | None
     liabilities_value: Decimal
     total_value: Decimal
-    net_deposits_value: Decimal
-    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
-    realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
+    net_deposits_value: Decimal | None
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
+    realized_pnl_value: Decimal | None
+    unrealized_pnl_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     items: tuple[PortfolioSnapshotItemSource, ...]
@@ -134,13 +137,13 @@ class PortfolioSummaryView:
     cash_value: Decimal
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
-    investment_cost_basis: Decimal
+    investment_cost_basis: Decimal | None
     liabilities_value: Decimal
     total_value: Decimal
-    net_deposits_value: Decimal
-    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
-    realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
+    net_deposits_value: Decimal | None
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
+    realized_pnl_value: Decimal | None
+    unrealized_pnl_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     position_count: int
@@ -161,14 +164,17 @@ class PortfolioPositionView:
     price_timestamp: datetime
     value: Decimal
     value_currency: str
-    cost_basis: Decimal
-    cost_currency: str
-    unrealized_pnl: Decimal
+    cost_basis: Decimal | None
+    cost_currency: str | None
+    unrealized_pnl: Decimal | None
     allocation_pct: Decimal
     native_value: Decimal
     native_value_currency: str
-    native_cost_basis: Decimal
-    native_cost_currency: str
+    native_cost_basis: Decimal | None
+    native_cost_currency: str | None
+    native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
+    average_buy_price: Decimal | None
+    average_buy_price_currency: str | None
 
 
 @dataclass(frozen=True, slots=True)

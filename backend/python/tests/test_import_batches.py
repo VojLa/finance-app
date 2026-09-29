@@ -1,7 +1,8 @@
 from collections.abc import AsyncIterator
 from datetime import datetime
+from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,17 +18,13 @@ from app.modules.accounts.access import AccountNotFoundError
 from app.modules.imports.api import (
     get_import_batch_post_processing_service,
     get_import_market_backed_snapshot_refresh_service,
-    get_import_multi_file_finalization_service,
 )
 from app.modules.imports.models import (
-    FinalizeImportBatchesResponse,
+    ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportPostResponse,
+    ImportRegistrationUploadRequiredResponse,
     ImportSnapshotRefreshStatus,
-)
-from app.modules.imports.multi_file_service import (
-    FinalizeImportBatchesResult,
-    ImportMultiFileFinalizationService,
 )
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
 from app.modules.imports.posting_service import (
@@ -35,7 +32,15 @@ from app.modules.imports.posting_service import (
     ImportBatchPostStateError,
     PostImportBatchResult,
 )
-from app.modules.imports.service import ImportBatchNotFoundError, ImportBatchService
+from app.modules.imports.service import (
+    ImportBatchAlreadyImportedError,
+    ImportBatchExistsError,
+    ImportBatchNotFoundError,
+    ImportBatchNotReusableError,
+    ImportBatchService,
+)
+from app.modules.jobs.service import BackgroundJobService
+from app.shared.errors import ApplicationError
 
 
 def _principal() -> AuthenticatedPrincipal:
@@ -160,8 +165,12 @@ def test_create_import_batch_uses_authenticated_principal(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    create_batch = AsyncMock(return_value=_batch())
-    monkeypatch.setattr(ImportBatchService, "create_batch", create_batch)
+    register = AsyncMock(
+        return_value=ImportRegistrationUploadRequiredResponse(
+            status="upload_required", batch=_batch()
+        )
+    )
+    monkeypatch.setattr(BackgroundJobService, "register_import_batch", register)
 
     with _client(test_settings) as client:
         response = client.post(
@@ -175,13 +184,141 @@ def test_create_import_batch_uses_authenticated_principal(
         )
 
     assert response.status_code == 201
-    assert create_batch.await_args is not None
-    assert create_batch.await_args.kwargs["principal"].user_id == "user-a"
-    assert create_batch.await_args.kwargs["account_id"] == "account-a"
-    payload = create_batch.await_args.kwargs["payload"]
+    assert register.await_args is not None
+    assert register.await_args.kwargs["principal"].user_id == "user-a"
+    assert register.await_args.kwargs["account_id"] == "account-a"
+    payload = register.await_args.kwargs["payload"]
     assert payload.filename == "history.csv"
     assert payload.file_encoding == "utf-8"
     assert payload.checksum == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_create_batch_reuses_only_an_exact_authenticated_registration_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = MagicMock()
+    service = ImportBatchService(session)
+    existing = SimpleNamespace(
+        id="batch-a",
+        account_id="account-a",
+        source=ImportSource.raiffeisenbank,
+        filename="history.csv",
+        file_size=1200,
+        file_encoding="utf-8",
+        checksum="a" * 64,
+        status=ImportStatus.pending,
+        rows_total=None,
+        rows_imported=None,
+        rows_skipped=None,
+        created_at=datetime(2026, 7, 19, 18),
+        completed_at=None,
+    )
+    repository = MagicMock()
+    repository.get_by_checksum = AsyncMock(return_value=existing)
+    service.repository = repository
+    monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
+    payload = {
+        "source": "raiffeisenbank",
+        "filename": "history.csv",
+        "file_size": 1200,
+        "file_encoding": "utf-8",
+        "checksum": "a" * 64,
+    }
+
+    replay = await service.create_batch(
+        principal=_principal(),
+        account_id="account-a",
+        payload=ImportBatchCreateRequest.model_validate(payload),
+    )
+
+    assert replay.id == "batch-a"
+    repository.add_batch.assert_not_called()
+    repository.add_log.assert_not_called()
+    session.commit.assert_not_called()
+
+    for immutable_mismatch in (
+        {"source": "anycoin"},
+        {"filename": "other.csv"},
+        {"file_size": 1201},
+        {"file_encoding": "latin-1"},
+    ):
+        with pytest.raises(ImportBatchExistsError):
+            await service.create_batch(
+                principal=_principal(),
+                account_id="account-a",
+                payload=ImportBatchCreateRequest.model_validate(payload | immutable_mismatch),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (ImportStatus.processing, None),
+        (ImportStatus.completed, ImportBatchAlreadyImportedError),
+        (ImportStatus.partially_completed, ImportBatchAlreadyImportedError),
+        (ImportStatus.failed, ImportBatchNotReusableError),
+        (ImportStatus.cancelled, ImportBatchNotReusableError),
+    ],
+)
+async def test_exact_registration_replay_has_a_stable_status_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    status: ImportStatus,
+    error_type: type[ApplicationError] | None,
+) -> None:
+    session = MagicMock()
+    service = ImportBatchService(session)
+    existing = SimpleNamespace(
+        id="batch-a",
+        account_id="account-a",
+        source=ImportSource.raiffeisenbank,
+        filename="history.csv",
+        file_size=1200,
+        file_encoding="utf-8",
+        checksum="a" * 64,
+        status=status,
+        rows_total=2 if status is not ImportStatus.processing else 0,
+        rows_imported=1 if status is not ImportStatus.processing else 0,
+        rows_skipped=1 if status is not ImportStatus.processing else 0,
+        created_at=datetime(2026, 7, 19, 18),
+        completed_at=datetime(2026, 7, 19, 19) if status not in {ImportStatus.processing} else None,
+    )
+    repository = MagicMock()
+    repository.get_by_checksum = AsyncMock(return_value=existing)
+    service.repository = repository
+    monkeypatch.setattr("app.modules.imports.service.require_account_access", AsyncMock())
+    payload = ImportBatchCreateRequest.model_validate(
+        {
+            "source": "raiffeisenbank",
+            "filename": "history.csv",
+            "file_size": 1200,
+            "file_encoding": "utf-8",
+            "checksum": "a" * 64,
+        }
+    )
+
+    if error_type is None:
+        replay = await service.create_batch(
+            principal=_principal(), account_id="account-a", payload=payload
+        )
+        assert replay.id == "batch-a"
+        assert replay.status is ImportStatus.processing
+    else:
+        with pytest.raises(error_type) as raised:
+            await service.create_batch(
+                principal=_principal(), account_id="account-a", payload=payload
+            )
+        assert raised.value.status_code == 409
+        assert raised.value.code == (
+            "import_batch_already_imported"
+            if error_type is ImportBatchAlreadyImportedError
+            else "import_batch_not_reusable"
+        )
+
+    repository.add_batch.assert_not_called()
+    repository.add_log.assert_not_called()
+    session.commit.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -217,10 +354,18 @@ def test_import_batch_openapi_contract(test_settings: Settings) -> None:
     for operation in operations:
         assert operation["security"] == [{"InternalSessionToken": []}]
     assert "201" in operations[0]["responses"]
+    registration_schema = operations[0]["responses"]["201"]["content"]["application/json"]["schema"]
+    assert registration_schema["discriminator"]["propertyName"] == "status"
+    assert set(registration_schema["discriminator"]["mapping"]) == {
+        "upload_required",
+        "resume_job",
+    }
     assert schema["paths"]["/api/v1/health/live"]["get"].get("security") is None
     assert sorted(path for path in schema["paths"] if "import" in path) == [
         "/api/v1/accounts/{account_id}/imports",
-        "/api/v1/accounts/{account_id}/imports/finalize",
+        "/api/v1/accounts/{account_id}/imports/jobs",
+        "/api/v1/accounts/{account_id}/imports/jobs/{job_id}",
+        "/api/v1/accounts/{account_id}/imports/jobs/{job_id}/retry",
         "/api/v1/accounts/{account_id}/imports/{batch_id}",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/canonical-post",
         "/api/v1/accounts/{account_id}/imports/{batch_id}/classify",
@@ -277,13 +422,10 @@ def test_import_api_composes_request_scoped_market_backed_service(
         test_settings,
     )
     service = get_import_batch_post_processing_service(session, resolved)
-    finalization_service = get_import_multi_file_finalization_service(session, resolved)
 
     constructor.assert_called_once_with(session, test_settings)
     assert service.session is session
     assert service.market_backed_service is market_backed
-    assert finalization_service.session is session
-    assert finalization_service.market_backed_service is market_backed
 
 
 def test_canonical_post_endpoint_does_not_run_post_processing(
@@ -292,8 +434,6 @@ def test_canonical_post_endpoint_does_not_run_post_processing(
 ) -> None:
     post_batch = AsyncMock(return_value=_posting_result())
     monkeypatch.setattr(ImportBatchPostingService, "post_batch", post_batch)
-    finalization = AsyncMock()
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalization)
 
     with _client(test_settings) as client:
         response = client.post("/api/v1/accounts/account-a/imports/batch-a/canonical-post")
@@ -309,61 +449,6 @@ def test_canonical_post_endpoint_does_not_run_post_processing(
         "replayed": False,
     }
     post_batch.assert_awaited_once()
-    finalization.assert_not_awaited()
-
-
-def test_finalize_endpoint_canonicalizes_batch_order_and_calls_once(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    finalize = AsyncMock(
-        return_value=FinalizeImportBatchesResult(
-            batch_ids=("batch-a", "batch-b"),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.created,
-        )
-    )
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalize)
-
-    with _client(test_settings) as client:
-        response = client.post(
-            "/api/v1/accounts/account-a/imports/finalize",
-            json={"batch_ids": ["batch-b", "batch-a"]},
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "batch_ids": ["batch-a", "batch-b"],
-        "snapshot_refresh_status": "created",
-    }
-    finalize.assert_awaited_once()
-    assert finalize.await_args is not None
-    command = finalize.await_args.args[0]
-    assert command.principal.user_id == "user-a"
-    assert command.account_id == "account-a"
-    assert command.batch_ids == ("batch-a", "batch-b")
-
-
-def test_empty_finalize_transport_is_python_owned_not_required(
-    test_settings: Settings,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    finalize = AsyncMock()
-    monkeypatch.setattr(ImportMultiFileFinalizationService, "finalize", finalize)
-
-    with _client(test_settings) as client:
-        response = client.post(
-            "/api/v1/accounts/account-a/imports/finalize",
-            json={"batch_ids": []},
-        )
-
-    assert response.status_code == 200
-    assert FinalizeImportBatchesResponse.model_validate(response.json()) == (
-        FinalizeImportBatchesResponse(
-            batch_ids=(),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.not_required,
-        )
-    )
-    finalize.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

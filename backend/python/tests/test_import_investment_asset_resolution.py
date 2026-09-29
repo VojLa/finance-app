@@ -88,12 +88,13 @@ def _asset(
     isin: str | None = "IE00B4L5Y983",
     asset_type: AssetType = AssetType.etf,
     currency: str = "EUR",
+    name: str | None = "Existing",
 ) -> AssetModel:
     return AssetModel(
         id=asset_id,
         symbol=symbol,
         isin=isin,
-        name="Existing",
+        name=name,
         asset_type=asset_type,
         currency=currency,
         updated_at=datetime.now(UTC).replace(tzinfo=None),
@@ -205,6 +206,81 @@ def test_exact_provider_listing_is_preferred_without_mutation() -> None:
     assert session.added == [] and session.flush.await_count == 0
 
 
+def test_exact_anycoin_btc_enriches_only_a_null_name_and_replays_exactly() -> None:
+    plan = _plan(
+        symbol="BTC",
+        isin=None,
+        name="Bitcoin",
+        asset_type=AssetType.crypto,
+        provider=PriceSource.exchange,
+        provider_symbol="BTC",
+        exchange="anycoin",
+        listing_currency_hint="CZK",
+        asset_currency_hint="BTC",
+    )
+    asset = _asset(
+        symbol="BTC",
+        isin=None,
+        asset_type=AssetType.crypto,
+        currency="BTC",
+        name=None,
+    )
+    listing = _listing(
+        asset,
+        symbol="BTC",
+        exchange="anycoin",
+        currency="CZK",
+        provider=PriceSource.exchange,
+        provider_symbol="BTC",
+    )
+    session = _Session(query_rows=[[(listing, asset)]])
+
+    result = asyncio_run(_resolver(session).resolve(plan=plan))
+
+    assert result.asset is asset and result.asset.name == "Bitcoin"
+    assert result.asset_created is False and result.listing_created is False
+
+    replay_session = _Session(query_rows=[[(listing, asset)]])
+    replay = asyncio_run(_resolver(replay_session).resolve(plan=plan))
+    assert replay.asset is asset and replay.asset.name == "Bitcoin"
+
+
+def test_exact_anycoin_btc_conflicting_existing_name_fails_without_rename() -> None:
+    plan = _plan(
+        symbol="BTC",
+        isin=None,
+        name="Bitcoin",
+        asset_type=AssetType.crypto,
+        provider=PriceSource.exchange,
+        provider_symbol="BTC",
+        exchange="anycoin",
+        listing_currency_hint="CZK",
+        asset_currency_hint="BTC",
+    )
+    asset = _asset(
+        symbol="BTC",
+        isin=None,
+        asset_type=AssetType.crypto,
+        currency="BTC",
+        name="Bitcoin Cash",
+    )
+    listing = _listing(
+        asset,
+        symbol="BTC",
+        exchange="anycoin",
+        currency="CZK",
+        provider=PriceSource.exchange,
+        provider_symbol="BTC",
+    )
+    session = _Session(query_rows=[[(listing, asset)]])
+
+    with pytest.raises(ImportPostStateError):
+        asyncio_run(_resolver(session).resolve(plan=plan))
+
+    assert asset.name == "Bitcoin Cash"
+    assert session.added == [] and session.flush.await_count == 0
+
+
 def test_currencyless_plan_reuses_one_provider_listing_but_rejects_ambiguity() -> None:
     asset = _asset()
     listing = _listing(asset)
@@ -294,7 +370,9 @@ def test_new_asset_listing_mapping_does_not_merge_by_symbol() -> None:
     assert isinstance(session.added[0], AssetModel)
     assert isinstance(session.added[1], AssetListingModel)
     assert result.asset.symbol == "VWCE" and result.listing.provider_symbol == "VWCE"
-    assert session.flush.await_count == 1
+    # The schema mirror has no ORM relationship ordering, so the parent Asset
+    # and child AssetListing are flushed explicitly in foreign-key order.
+    assert session.flush.await_count == 2
 
 
 def test_conflicting_provider_and_market_identities_fail_closed() -> None:

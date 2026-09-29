@@ -146,7 +146,7 @@ def test_one_investment_account_aggregates_cash_and_market_value(
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 def test_one_liability_account_preserves_positive_debt_and_negative_net(
     account_type: AccountType,
@@ -158,6 +158,24 @@ def test_one_liability_account_preserves_positive_debt_and_negative_net(
     assert result.net_worth_value == Decimal("-250")
     assert result.accounts[0].liabilities_value == Decimal("250")
     assert result.accounts[0].net_value == Decimal("-250")
+
+
+def test_credit_card_preserves_a_negative_signed_cash_balance() -> None:
+    result = build_net_worth_projection(
+        _input(
+            _investment(
+                account_type=AccountType.credit_card,
+                cash=Decimal("-250"),
+                investment=Decimal(0),
+                cash_breakdown=(_amount("CZK", "-250"),),
+                investment_breakdown=(),
+            )
+        )
+    )
+
+    assert result.cash_value == Decimal("-250")
+    assert result.liabilities_value == Decimal(0)
+    assert result.net_worth_value == Decimal("-250")
 
 
 def test_mixed_portfolio_matches_both_net_worth_formulas() -> None:
@@ -184,17 +202,19 @@ def test_mixed_portfolio_matches_both_net_worth_formulas() -> None:
                 liability=Decimal("250000"),
                 liability_breakdown=(_amount("CZK", "250000"),),
             ),
-            _liability(
+            _investment(
                 "card",
                 account_type=AccountType.credit_card,
-                liability=Decimal("20000"),
-                liability_breakdown=(_amount("CZK", "20000"),),
+                cash=Decimal("-20000"),
+                investment=Decimal(0),
+                cash_breakdown=(_amount("CZK", "-20000"),),
+                investment_breakdown=(),
             ),
         )
     )
 
-    assert result.assets_value == Decimal("600000")
-    assert result.liabilities_value == Decimal("270000")
+    assert result.assets_value == Decimal("580000")
+    assert result.liabilities_value == Decimal("250000")
     assert result.net_worth_value == Decimal("330000")
     assert sum((item.net_value for item in result.accounts), Decimal(0)) == Decimal("330000")
 
@@ -318,7 +338,7 @@ def test_every_canonical_granularity_boundary_is_accepted(
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.bank, AccountType.cash, AccountType.savings],
+    [AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card],
 )
 def test_cash_account_types_preserve_exact_cash_without_investments_or_liabilities(
     account_type: AccountType,
@@ -639,7 +659,14 @@ def test_malformed_or_contradictory_breakdowns_fail_closed(
 
 def test_account_and_type_ordering_is_deterministic_under_input_permutation() -> None:
     snapshots = (
-        _liability("z-card", account_type=AccountType.credit_card),
+        _investment(
+            "z-card",
+            account_type=AccountType.credit_card,
+            cash=Decimal("-250"),
+            investment=Decimal(0),
+            cash_breakdown=(_amount("CZK", "-250"),),
+            investment_breakdown=(),
+        ),
         _investment("b-exchange", account_type=AccountType.exchange),
         _investment("a-broker", account_type=AccountType.broker),
         _liability("m-loan", account_type=AccountType.loan),

@@ -102,8 +102,13 @@ Pokud nektery z techto bodu chybi, nema se prace tlacit do implementace silou.
 
 ### 0.1 - Architecture Locked
 
-Status: COMPLETE — internal architecture MVP. This is not public-production
-readiness, and 0.2 work has not started in this milestone.
+Status: COMPLETE / ARCHITECTURE LOCKED. Python core, odstraneni aktivniho
+TypeScript/Prisma business runtime, R11-L enforcement i regresni audit jsou
+dokonceny s verdiktem PASS. Finalni evidence je v
+[`../../ChatGPT/audits/0.1-r11-final-audit.md`](../../ChatGPT/audits/0.1-r11-final-audit.md)
+a plan dokonceni je v
+[`../architecture/12-python-backend-completion.md`](../architecture/12-python-backend-completion.md).
+Toto neni public-production readiness a prace `0.2` v tomto milniku nezacala.
 
 Detailni scope: [`../scope/0.1 - Architecture Locked.md`](../scope/0.1%20-%20Architecture%20Locked.md)
 

@@ -20,6 +20,7 @@ from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.main import create_app
 from app.modules.dashboard_snapshot.api import router as dashboard_snapshot_router
+from app.modules.dashboard_snapshot.api_models import DashboardSnapshotResponse
 from app.modules.dashboard_snapshot.authorized_service import (
     AuthorizedDashboardSnapshotService,
     ReadAuthorizedDashboardSnapshotResult,
@@ -138,6 +139,11 @@ def _view(account_id: str, value: str, cost: str) -> PortfolioSnapshotView:
         native_value_currency="USD",
         native_cost_basis=Decimal(cost).quantize(Decimal("0.0000000001")),
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(
+            PortfolioCurrencyAmount("USD", Decimal(cost).quantize(Decimal("0.0000000001"))),
+        ),
+        average_buy_price=Decimal(cost).quantize(Decimal("0.0000000001")),
+        average_buy_price_currency="USD",
     )
     return PortfolioSnapshotView(
         snapshot_id=f"{account_id}-snapshot",
@@ -348,6 +354,52 @@ def test_dashboard_adapter_maps_command_once_and_serializes_global_allocations(
     assert "priceCurrency" not in payload["topPositions"][0]
     assert "nativeValue" not in payload["topPositions"][0]
     assert "cashByCurrency" not in payload["summary"]
+
+
+def test_dashboard_public_contract_keeps_unknown_cost_metrics_as_json_null() -> None:
+    known = _view("account-a", "60", "50")
+    unknown = replace(
+        known,
+        summary=replace(
+            known.summary,
+            investment_cost_basis=None,
+            net_deposits_value=None,
+            net_deposits_by_currency=None,
+            realized_pnl_value=None,
+            unrealized_pnl_value=None,
+        ),
+        positions=(
+            replace(
+                known.positions[0],
+                cost_basis=None,
+                cost_currency=None,
+                unrealized_pnl=None,
+                native_cost_basis=None,
+                native_cost_currency=None,
+                native_cost_basis_by_currency=None,
+                average_buy_price=None,
+                average_buy_price_currency=None,
+            ),
+        ),
+    )
+    portfolio = build_multi_account_portfolio_view((unknown,))
+    dashboard = build_dashboard_snapshot_view(portfolio)
+
+    payload = DashboardSnapshotResponse.model_validate(
+        dashboard,
+        from_attributes=True,
+    ).model_dump(mode="json", by_alias=True)
+
+    assert payload["summary"]["investmentValue"] == "60.000000"
+    assert payload["summary"]["totalValue"] == "70.000000"
+    assert payload["summary"]["investmentCostBasis"] is None
+    assert payload["summary"]["netDepositsValue"] is None
+    assert payload["summary"]["realizedPnlValue"] is None
+    assert payload["summary"]["unrealizedPnlValue"] is None
+    assert payload["accounts"][0]["netDepositsValue"] is None
+    assert payload["accounts"][0]["unrealizedPnlValue"] is None
+    assert payload["topPositions"][0]["value"] == "60.000000"
+    assert payload["topPositions"][0]["unrealizedPnl"] is None
     assert "netDepositsByCurrency" not in payload["summary"]
     _audit_no_leakage(payload)
 

@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import INTERNAL_AUTH_SERVICE_SUBJECT
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel
 from app.db.models.holdings import HoldingModel
@@ -34,6 +35,7 @@ from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.main import create_app
 from app.modules.imports import posting_service
+from scripts.alembic_baseline import HEAD_REVISION
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 EXPECTED_DATABASE = "finance_app_version_0_1_r8"
@@ -42,7 +44,7 @@ UV = shutil.which("uv")
 USER_ID = "version-0-1-r8-user"
 USER_EMAIL = f"{USER_ID}@example.test"
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL,
+    not DATABASE_URL or DATABASE_URL.rsplit("/", 1)[-1].split("?", 1)[0] != EXPECTED_DATABASE,
     reason="The dedicated R8 PostgreSQL DATABASE_URL is required.",
 )
 
@@ -104,25 +106,6 @@ async def _counts() -> dict[str, int]:
         }
     await engine.dispose()
     return result
-
-
-async def _seed_user() -> None:
-    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    engine = investment_support.engine()
-    async with AsyncSession(engine) as session:
-        session.add(
-            UserModel(
-                id=USER_ID,
-                email=USER_EMAIL,
-                name="Version 0.1 R8 clean scenario",
-                password_hash=None,
-                base_currency="CZK",
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
-    await engine.dispose()
 
 
 async def _financial_state() -> dict[str, Any]:
@@ -446,11 +429,13 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    global USER_ID
+
     assert DATABASE_URL is not None
     database, version, migration = _run(_database_name_version_and_head())
     assert database == EXPECTED_DATABASE
     assert version.startswith("16.")
-    assert migration == "3i0001d1base"
+    assert migration == HEAD_REVISION
     assert _run(_counts()) == {
         "users": 0,
         "accounts": 0,
@@ -467,7 +452,6 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         "rates": 0,
     }
 
-    _run(_seed_user())
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / "imports"))
     base_bucket = datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0) - timedelta(
         minutes=8
@@ -483,6 +467,25 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     )
 
     with TestClient(app) as client:
+        registered = client.post(
+            "/api/v1/auth/register",
+            headers=investment_support.headers(INTERNAL_AUTH_SERVICE_SUBJECT),
+            json={
+                "email": USER_EMAIL,
+                "password": "version-0-1-r8-password",
+                "name": "Version 0.1 R8 clean scenario",
+            },
+        )
+        assert registered.status_code == 201
+        USER_ID = str(registered.json()["id"])
+        verified = client.post(
+            "/api/v1/auth/credentials/verify",
+            headers=investment_support.headers(INTERNAL_AUTH_SERVICE_SUBJECT),
+            json={"email": USER_EMAIL, "password": "version-0-1-r8-password"},
+        )
+        assert verified.status_code == 200
+        assert verified.json()["id"] == USER_ID
+
         account_ids = {
             "trading212": _create_account(
                 client,
@@ -751,13 +754,13 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     }
     assert all(row.from_currency == "EUR" for row in after_reimport["rates"])
     assert all(row.to_currency == "CZK" for row in after_reimport["rates"])
-    assert all(row.source.value == "cnb" for row in after_reimport["rates"])
+    assert all(row.source.value == "twelve_data" for row in after_reimport["rates"])
     assert not any(row.from_currency == "CZK" for row in after_reimport["rates"])
     assert ("twelve_data", "AAPL:XNAS") in harness.calls
     assert ("coingecko", "bitcoin") in harness.calls
-    cnb_dates = [identity for provider, identity in harness.calls if provider == "cnb"]
-    assert cnb_dates
-    assert "20.07.2026" in cnb_dates
+    fx_requests = [identity for provider, identity in harness.calls if provider == "twelve_data_fx"]
+    assert fx_requests
+    assert any(identity.endswith("@2026-07-20") for identity in fx_requests)
 
     latest_snapshots = {
         row.account_id: row
@@ -788,7 +791,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
             selected["to"],
             selected["source"],
             selected["rate"],
-        ) == ("EUR", "CZK", "cnb", "25.00000000")
+        ) == ("EUR", "CZK", "twelve_data", "25.00000000")
         assert selected["rateId"] in persisted_rate_ids
     assert len(trading_rates["historicalRateIds"]) == 1
     assert set(trading_rates["historicalRateIds"]).issubset(persisted_rate_ids)
@@ -799,7 +802,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     assert rb_snapshot.investment_value == Decimal("0")
     assert rb_snapshot.total_value == Decimal("9826.550000")
     assert latest_snapshots[account_ids["trading212"]].cash_value_by_currency == {
-        "EUR": "804.000000"
+        "EUR": "805.250000"
     }
     assert latest_snapshots[account_ids["anycoin"]].cash_value_by_currency == {"EUR": "-490.000000"}
     latest_net_worth = after_reimport["net_worth"][-1]
@@ -840,7 +843,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     assert portfolio["summary"]["liabilitiesValue"] == dashboard["summary"]["liabilitiesValue"]
     assert portfolio["summary"]["cashByCurrency"] == [
         {"currency": "CZK", "amount": "9826.550000"},
-        {"currency": "EUR", "amount": "314.000000"},
+        {"currency": "EUR", "amount": "315.250000"},
     ]
     assert portfolio["summary"]["netDepositsByCurrency"] == [
         {"currency": "EUR", "amount": "1000.000000"}
@@ -858,10 +861,20 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         set(point)
         == {
             "timestamp",
+            "resolutionMinutes",
             "cashValue",
             "investmentValue",
             "liabilitiesValue",
             "netWorthValue",
+            "netInvestedValue",
+            "portfolioSnapshotId",
+            "realizedPnlValue",
+            "unrealizedPnlValue",
+            "cashByCurrency",
+            "investmentByCurrency",
+            "liabilitiesByCurrency",
+            "netInvestedByCurrency",
+            "positions",
         }
         for point in history["points"]
     )
@@ -884,9 +897,10 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
     )
     assert '"CZK"' not in source_guard
     assert '"CZK"' not in api_guard
-    cnb_provider = (PYTHON_ROOT / "app" / "modules" / "fx" / "providers" / "cnb.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'requirement.from_currency == "CZK"' in cnb_provider
-    assert 'requirement.to_currency != "CZK"' in cnb_provider
-    assert "1 /" not in cnb_provider
+    fx_provider = (
+        PYTHON_ROOT / "app" / "modules" / "fx" / "providers" / "twelve_data.py"
+    ).read_text(encoding="utf-8")
+    assert '"CZK"' not in fx_provider
+    assert "inverse" not in fx_provider.lower()
+    assert "pivot" not in fx_provider.lower()
+    assert "1 /" not in fx_provider

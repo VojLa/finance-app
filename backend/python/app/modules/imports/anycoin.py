@@ -10,6 +10,7 @@ from hashlib import sha256
 from typing import Any
 
 from app.db.models.enums import ImportRowStatus
+from app.modules.imports.anycoin_identity import anycoin_crypto_display_name
 from app.modules.imports.normalizers import (
     MAX_OPTIONAL_FIELD_LENGTH,
     _normalize_amount,
@@ -70,6 +71,17 @@ def _text(raw: dict[str, Any], *aliases: str) -> str | None:
     return None
 
 
+def _has_overlong_text(raw: dict[str, Any], *aliases: str) -> bool:
+    wanted = {" ".join(alias.strip().casefold().split()) for alias in aliases}
+    return any(
+        value is not None
+        and bool(str(value).strip())
+        and len(str(value).strip()) > MAX_OPTIONAL_FIELD_LENGTH
+        for key, value in raw.items()
+        if " ".join(str(key).strip().casefold().split()) in wanted
+    )
+
+
 def _parse(row: AnycoinBatchRow) -> _Parsed:
     raw_type = _text(row.raw_data, "Type", "Operation", "Transaction type")
     kind = " ".join(raw_type.casefold().split()) if raw_type else ""
@@ -78,7 +90,9 @@ def _parse(row: AnycoinBatchRow) -> _Parsed:
     raw_amount = _text(row.raw_data, "Amount", "Quantity")
     raw_currency = _text(row.raw_data, "Currency", "Asset")
     date = amount = currency = None
-    invalid = False
+    external_id_aliases = ("anycoin TX ID", "Transaction ID", "TX ID")
+    external_id = _text(row.raw_data, *external_id_aliases)
+    invalid = _has_overlong_text(row.raw_data, *external_id_aliases)
     try:
         date = _normalize_date(raw_date) if raw_date else None
     except ValueError:
@@ -103,7 +117,7 @@ def _parse(row: AnycoinBatchRow) -> _Parsed:
         date,
         amount,
         currency,
-        _text(row.raw_data, "anycoin TX ID", "Transaction ID", "TX ID"),
+        external_id,
         invalid,
     )
 
@@ -164,9 +178,17 @@ def _external(rows: list[_Parsed], order_id: str, asset_currency: str) -> str | 
 
 
 def normalize_anycoin_batch(
-    *, account_id: str, rows: list[AnycoinBatchRow]
+    *, account_id: str, account_currency: str, rows: list[AnycoinBatchRow]
 ) -> list[AnycoinRowOutcome]:
     parsed = [_parse(row) for row in rows]
+    quote_currency = _account_quote_currency(account_currency)
+    conflicting_quote = any(
+        row.currency in _FIAT
+        and row.currency != quote_currency
+        and row.kind in {*_GROUPED, "deposit", "withdrawal"}
+        for row in parsed
+        if not row.invalid and row.amount is not None and not row.amount.is_zero()
+    )
     outcomes: list[AnycoinRowOutcome] = []
     groups: dict[str, list[_Parsed]] = {}
     for row in parsed:
@@ -176,17 +198,49 @@ def normalize_anycoin_batch(
             else:
                 groups.setdefault(row.order_id, []).append(row)
         elif row.kind in {"deposit", "withdrawal"}:
-            outcomes.extend(_standalone(account_id, row))
+            outcomes.extend(
+                _standalone(
+                    account_id,
+                    row,
+                    quote_currency=quote_currency,
+                    conflicting_quote=conflicting_quote,
+                )
+            )
         elif row.kind in _NEUTRAL:
             outcomes.append(_marker(row, "neutral_row"))
         else:
             outcomes.extend(_review([row], "unsupported_anycoin_row"))
     for order_id in sorted(groups):
-        outcomes.extend(_group(account_id, order_id, groups[order_id]))
+        outcomes.extend(
+            _group(
+                account_id,
+                order_id,
+                groups[order_id],
+                quote_currency=quote_currency,
+                conflicting_quote=conflicting_quote,
+            )
+        )
     return sorted(outcomes, key=lambda item: item.row_id)
 
 
-def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
+def _account_quote_currency(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or value not in _FIAT
+        or value != value.strip()
+        or value != value.upper()
+    ):
+        raise ValueError("Anycoin account quote currency is invalid.")
+    return value
+
+
+def _standalone(
+    account_id: str,
+    row: _Parsed,
+    *,
+    quote_currency: str,
+    conflicting_quote: bool,
+) -> list[AnycoinRowOutcome]:
     if (
         row.invalid
         or row.amount is None
@@ -195,9 +249,61 @@ def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
         or row.date is None
     ):
         return _review([row], "invalid_anycoin_row")
+    if conflicting_quote or (row.currency in _FIAT and row.currency != quote_currency):
+        return _review([row], "conflicting_anycoin_quote_currency")
+    expected_positive = row.kind == "deposit"
+    if (row.amount > 0) is not expected_positive:
+        return _review([row], "contradictory_transfer_direction")
     if row.currency in _FIAT:
-        return _review([row], "unsupported_anycoin_fiat_transfer")
+        action = "cash_deposit" if expected_positive else "cash_withdrawal"
+        exact_total = _decimal(row.amount)
+        payload = {
+            "schema_version": 2,
+            "source": "anycoin",
+            "kind": "investment_event",
+            "date": row.date,
+            "action": action,
+            "external_id": row.external_id,
+            "order_id": None,
+            "raw_action": row.kind,
+            "asset": {
+                "symbol": None,
+                "isin": None,
+                "name": None,
+                "asset_type_hint": None,
+            },
+            "quantity": None,
+            "price": None,
+            "total": {"amount": exact_total, "currency": row.currency},
+            "fee": None,
+            "conversion": None,
+            "realized_pnl": None,
+            "is_promotional": False,
+            "note": None,
+            "asset_direction": None,
+            "quote_currency": quote_currency,
+        }
+        identity = (
+            {"external_id": row.external_id}
+            if row.external_id
+            else {
+                "date": row.date,
+                "action": action,
+                "currency": row.currency,
+                "amount": exact_total,
+            }
+        )
+        return [
+            AnycoinRowOutcome(
+                row.row.row_id,
+                ImportRowStatus.pending,
+                payload,
+                _key(account_id, identity),
+                None,
+            )
+        ]
     direction = "in" if row.kind == "deposit" else "out"
+    exact_quantity = _decimal(row.amount)
     payload = {
         "schema_version": 2,
         "source": "anycoin",
@@ -207,8 +313,13 @@ def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
         "external_id": row.external_id,
         "order_id": None,
         "raw_action": row.kind,
-        "asset": {"symbol": row.currency, "isin": None, "name": None, "asset_type_hint": "crypto"},
-        "quantity": _decimal(row.amount),
+        "asset": {
+            "symbol": row.currency,
+            "isin": None,
+            "name": anycoin_crypto_display_name(row.currency),
+            "asset_type_hint": "crypto",
+        },
+        "quantity": exact_quantity,
         "price": None,
         "total": None,
         "fee": None,
@@ -217,6 +328,7 @@ def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
         "is_promotional": False,
         "note": None,
         "asset_direction": direction,
+        "quote_currency": quote_currency,
     }
     identity = (
         {"external_id": row.external_id}
@@ -225,7 +337,7 @@ def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
             "date": row.date,
             "action": "asset_transfer",
             "symbol": row.currency,
-            "quantity": payload["quantity"],
+            "quantity": exact_quantity,
             "direction": direction,
         }
     )
@@ -236,7 +348,14 @@ def _standalone(account_id: str, row: _Parsed) -> list[AnycoinRowOutcome]:
     ]
 
 
-def _group(account_id: str, order_id: str, rows: list[_Parsed]) -> list[AnycoinRowOutcome]:
+def _group(
+    account_id: str,
+    order_id: str,
+    rows: list[_Parsed],
+    *,
+    quote_currency: str,
+    conflicting_quote: bool,
+) -> list[AnycoinRowOutcome]:
     if any(row.invalid or row.amount is None or row.amount.is_zero() for row in rows):
         return _review(rows, "invalid_anycoin_row")
     payments = [r for r in rows if r.role == "payment"]
@@ -257,6 +376,8 @@ def _group(account_id: str, order_id: str, rows: list[_Parsed]) -> list[AnycoinR
     if len(fiats) != 1:
         return _review(rows, "multiple_fiat_currencies")
     asset, fiat = next(iter(assets)), next(iter(fiats))
+    if conflicting_quote or fiat != quote_currency:
+        return _review(rows, "conflicting_anycoin_quote_currency")
     asset_net, cash_net = nets[asset], nets[fiat]
     if asset_net == 0 or cash_net == 0:
         return _review(rows, "zero_group_net")
@@ -278,12 +399,17 @@ def _group(account_id: str, order_id: str, rows: list[_Parsed]) -> list[AnycoinR
         "external_id": external,
         "order_id": order_id,
         "raw_action": "grouped_trade",
-        "asset": {"symbol": asset, "isin": None, "name": None, "asset_type_hint": "crypto"},
-        "quantity": quantity,
-        "price": {
-            "amount": format((Decimal(total) / Decimal(quantity)).normalize(), "f"),
-            "currency": fiat,
+        "asset": {
+            "symbol": asset,
+            "isin": None,
+            "name": anycoin_crypto_display_name(asset),
+            "asset_type_hint": "crypto",
         },
+        "quantity": quantity,
+        # Anycoin supplies exact executed quantity and settlement total, but no
+        # independently observed unit price.  The canonical posting boundary
+        # derives the execution price exactly once at QUANTITY precision.
+        "price": None,
         "total": {"amount": total, "currency": fiat},
         "fee": None,
         "conversion": None,
@@ -291,6 +417,7 @@ def _group(account_id: str, order_id: str, rows: list[_Parsed]) -> list[AnycoinR
         "is_promotional": False,
         "note": None,
         "asset_direction": None,
+        "quote_currency": quote_currency,
     }
     result = [
         AnycoinRowOutcome(

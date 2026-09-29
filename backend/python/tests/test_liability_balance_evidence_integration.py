@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -23,6 +24,24 @@ from app.modules.liabilities import (
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 SNAPSHOT_AT = datetime(2026, 7, 28, 12)
+RUN_ID = uuid4().hex[:12]
+_active_prefixes: set[str] = set()
+
+
+def _prefix(value: str) -> str:
+    prefix = f"{value}-{RUN_ID}"
+    _active_prefixes.add(prefix)
+    return prefix
+
+
+@pytest.fixture(autouse=True)
+async def _cleanup_after_test():
+    try:
+        yield
+    finally:
+        for prefix in tuple(_active_prefixes):
+            await _cleanup(prefix)
+        _active_prefixes.clear()
 
 
 def _engine():
@@ -121,7 +140,6 @@ async def _seed(
     currency: str = "CZK",
     archived: bool = False,
 ) -> None:
-    await _cleanup(prefix)
     engine = _engine()
     async with AsyncSession(engine) as session:
         session.add(
@@ -166,8 +184,8 @@ async def _counts(session: AsyncSession, prefix: str) -> tuple[int, int, int, in
 
 
 @pytest.mark.asyncio
-async def test_credit_card_selects_latest_exact_eligible_observation() -> None:
-    prefix = "i5l-credit-card"
+async def test_loan_selects_latest_exact_eligible_observation() -> None:
+    prefix = _prefix("i5l-latest")
     older = _balance(
         prefix,
         suffix="older",
@@ -184,7 +202,7 @@ async def test_credit_card_selects_latest_exact_eligible_observation() -> None:
     )
     await _seed(
         prefix,
-        account_type=AccountType.credit_card,
+        account_type=AccountType.loan,
         balances=(older, latest),
     )
     engine = _engine()
@@ -233,6 +251,7 @@ async def test_liability_types_preserve_exact_money_components(
     fees: str,
     expected: str,
 ) -> None:
+    prefix = _prefix(prefix)
     balance = _balance(
         prefix,
         suffix="exact",
@@ -257,7 +276,7 @@ async def test_liability_types_preserve_exact_money_components(
 
 @pytest.mark.asyncio
 async def test_future_observation_is_ignored() -> None:
-    prefix = "i5l-future"
+    prefix = _prefix("i5l-future")
     eligible = _balance(
         prefix,
         suffix="eligible",
@@ -272,7 +291,7 @@ async def test_future_observation_is_ignored() -> None:
     )
     await _seed(
         prefix,
-        account_type=AccountType.credit_card,
+        account_type=AccountType.loan,
         balances=(eligible, future),
     )
     engine = _engine()
@@ -288,7 +307,7 @@ async def test_future_observation_is_ignored() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_evidence_fails_without_mutation() -> None:
-    prefix = "i5l-missing"
+    prefix = _prefix("i5l-missing")
     await _seed(prefix, account_type=AccountType.loan, balances=())
     engine = _engine()
     try:
@@ -307,7 +326,7 @@ async def test_missing_evidence_fails_without_mutation() -> None:
 
 @pytest.mark.asyncio
 async def test_same_latest_timestamp_from_different_sources_is_ambiguous() -> None:
-    prefix = "i5l-ambiguous"
+    prefix = _prefix("i5l-ambiguous")
     statement = _balance(
         prefix,
         suffix="statement",
@@ -323,7 +342,7 @@ async def test_same_latest_timestamp_from_different_sources_is_ambiguous() -> No
     )
     await _seed(
         prefix,
-        account_type=AccountType.credit_card,
+        account_type=AccountType.loan,
         balances=(statement, provider),
     )
     engine = _engine()
@@ -340,7 +359,7 @@ async def test_same_latest_timestamp_from_different_sources_is_ambiguous() -> No
 
 @pytest.mark.asyncio
 async def test_currency_mismatch_is_persisted_corruption() -> None:
-    prefix = "i5l-currency"
+    prefix = _prefix("i5l-currency")
     mismatch = _balance(
         prefix,
         suffix="mismatch",
@@ -372,12 +391,14 @@ async def test_currency_mismatch_is_persisted_corruption() -> None:
     [
         (AccountType.bank, "i5l-bank"),
         (AccountType.broker, "i5l-broker"),
+        (AccountType.credit_card, "i5l-credit-card"),
     ],
 )
 async def test_non_liability_account_type_is_rejected(
     account_type: AccountType,
     prefix: str,
 ) -> None:
+    prefix = _prefix(prefix)
     balance = _balance(
         prefix,
         suffix="invalid-type",
@@ -399,7 +420,7 @@ async def test_non_liability_account_type_is_rejected(
 
 @pytest.mark.asyncio
 async def test_archived_account_is_rejected() -> None:
-    prefix = "i5l-archived"
+    prefix = _prefix("i5l-archived")
     balance = _balance(
         prefix,
         suffix="archived",
@@ -426,13 +447,12 @@ async def test_archived_account_is_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_selection_respects_caller_owned_transaction_and_rollback() -> None:
-    prefix = "i5l-caller-transaction"
-    await _cleanup(prefix)
+    prefix = _prefix("i5l-caller-transaction")
     engine = _engine()
     try:
         async with AsyncSession(engine) as session:
             await session.begin()
-            session.add(_account(prefix, account_type=AccountType.credit_card))
+            session.add(_account(prefix, account_type=AccountType.loan))
             session.add(
                 _balance(
                     prefix,

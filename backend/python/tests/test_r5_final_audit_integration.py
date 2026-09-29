@@ -60,7 +60,7 @@ def test_production_provider_registries_have_only_the_approved_r5_sources() -> N
     fx_registry = create_production_exchange_rate_registry(settings)
 
     assert price_registry.sources == frozenset({PriceSource.coingecko, PriceSource.twelve_data})
-    assert fx_registry.sources == frozenset({ExchangeRateSource.cnb})
+    assert fx_registry.sources == frozenset({ExchangeRateSource.twelve_data})
 
 
 def test_public_boundaries_delegate_to_the_market_backed_coordinator() -> None:

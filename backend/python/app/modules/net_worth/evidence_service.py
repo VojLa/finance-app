@@ -278,6 +278,7 @@ def _active_accounts(
             or membership_id in membership_ids
             or membership.user_id != user_id
             or membership.account_id != account_id
+            or not isinstance(access.has_canonical_history, bool)
             or not isinstance(membership.role, AccountMemberRole)
             or not isinstance(membership.relation_type, AccountRelationType)
             or membership.accepted_at is None
@@ -301,6 +302,8 @@ def _active_accounts(
         _currency(account.currency)
         if account.type not in _SUPPORTED_ACCOUNT_TYPES:
             raise _fail()
+        if not access.has_canonical_history:
+            continue
         accounts.append(account)
     return tuple(sorted(accounts, key=lambda account: account.id))
 
@@ -313,19 +316,35 @@ def _validate_snapshot_financial_fields(
 ]:
     cash_value = _exact(snapshot.cash_value, MONEY)
     investment_value = _exact(snapshot.investment_value, MONEY, nonnegative=True)
-    investment_cost_basis = _exact(
-        snapshot.investment_cost_basis,
-        MONEY,
-        nonnegative=True,
+    investment_cost_basis = (
+        None
+        if snapshot.investment_cost_basis is None
+        else _exact(
+            snapshot.investment_cost_basis,
+            MONEY,
+            nonnegative=True,
+        )
     )
     _exact(snapshot.liabilities_value, MONEY, nonnegative=True)
     _exact(snapshot.total_value, MONEY)
-    _exact(snapshot.net_deposits_value, MONEY)
-    _exact(snapshot.realized_pnl_value, MONEY)
-    unrealized_pnl = _exact(snapshot.unrealized_pnl_value, MONEY)
+    net_deposits = (
+        None if snapshot.net_deposits_value is None else _exact(snapshot.net_deposits_value, MONEY)
+    )
+    realized_pnl = (
+        None if snapshot.realized_pnl_value is None else _exact(snapshot.realized_pnl_value, MONEY)
+    )
+    unrealized_pnl = (
+        None
+        if snapshot.unrealized_pnl_value is None
+        else _exact(snapshot.unrealized_pnl_value, MONEY)
+    )
     _exact(snapshot.fees_value, MONEY, nonnegative=True)
     _exact(snapshot.taxes_value, MONEY, nonnegative=True)
-    if investment_value - investment_cost_basis != unrealized_pnl:
+    if (investment_cost_basis is None) != (unrealized_pnl is None) or (
+        investment_cost_basis is not None
+        and unrealized_pnl is not None
+        and investment_value - investment_cost_basis != unrealized_pnl
+    ):
         raise _fail()
 
     cash = _parse_breakdown(snapshot.cash_value_by_currency, numeric=MONEY)
@@ -333,13 +352,32 @@ def _validate_snapshot_financial_fields(
         snapshot.investment_value_by_currency,
         numeric=QUANTITY,
     )
-    _parse_breakdown(snapshot.investment_cost_basis_by_currency, numeric=QUANTITY)
-    _parse_breakdown(snapshot.net_deposits_by_currency, numeric=MONEY)
-    _parse_breakdown(snapshot.realized_pnl_by_currency, numeric=MONEY)
-    _parse_breakdown(snapshot.unrealized_pnl_by_currency, numeric=MONEY)
+    investment_cost_basis_breakdown = _parse_breakdown(
+        snapshot.investment_cost_basis_by_currency,
+        numeric=QUANTITY,
+    )
+    net_deposits_breakdown = _parse_breakdown(
+        snapshot.net_deposits_by_currency,
+        numeric=MONEY,
+    )
+    realized_pnl_breakdown = _parse_breakdown(
+        snapshot.realized_pnl_by_currency,
+        numeric=MONEY,
+    )
+    unrealized_pnl_breakdown = _parse_breakdown(
+        snapshot.unrealized_pnl_by_currency,
+        numeric=MONEY,
+    )
     _parse_breakdown(snapshot.fees_by_currency, numeric=MONEY)
     _parse_breakdown(snapshot.taxes_by_currency, numeric=MONEY)
     if snapshot.exchange_rates is not None and not isinstance(snapshot.exchange_rates, dict):
+        raise _fail()
+    if (
+        (investment_cost_basis is None and investment_cost_basis_breakdown is not None)
+        or (net_deposits is None and net_deposits_breakdown is not None)
+        or (realized_pnl is None and realized_pnl_breakdown is not None)
+        or (unrealized_pnl is None and unrealized_pnl_breakdown is not None)
+    ):
         raise _fail()
 
     if cash is not None and not cash and cash_value != 0:
@@ -442,6 +480,13 @@ class NetWorthEvidenceService:
                 if account_ids
                 else ()
             )
+            # Generation-bound callers provide the exact immutable inputs.
+            # Older generations may legitimately share this coordinate.
+            if required_identities is not None:
+                required_snapshot_ids = {identity.snapshot_id for identity in required_identities}
+                snapshots = tuple(
+                    snapshot for snapshot in snapshots if snapshot.id in required_snapshot_ids
+                )
 
             snapshots_by_account: dict[str, list[AccountSnapshotModel]] = {}
             snapshot_ids: set[str] = set()

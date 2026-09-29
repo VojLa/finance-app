@@ -122,7 +122,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  "/api/v1/accounts/{account_id}/imports/finalize": {
+  "/api/v1/accounts/{account_id}/imports/jobs": {
     parameters: {
       query?: never
       header?: never
@@ -131,8 +131,42 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** Finalize Import Batches */
-    post: operations["finalize_import_batches_api_v1_accounts__account_id__imports_finalize_post"]
+    /** Start Import Job */
+    post: operations["start_import_job_api_v1_accounts__account_id__imports_jobs_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/accounts/{account_id}/imports/jobs/{job_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Import Job */
+    get: operations["get_import_job_api_v1_accounts__account_id__imports_jobs__job_id__get"]
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/accounts/{account_id}/imports/jobs/{job_id}/retry": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Retry Import Job */
+    post: operations["retry_import_job_api_v1_accounts__account_id__imports_jobs__job_id__retry_post"]
     delete?: never
     options?: never
     head?: never
@@ -310,6 +344,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/accounts/{account_id}/liability-balances": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Create Manual Liability Balance */
+    post: operations["create_manual_liability_balance_api_v1_accounts__account_id__liability_balances_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/accounts/{account_id}/members": {
     parameters: {
       query?: never
@@ -379,6 +430,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/auth/credentials/verify": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Verify Credentials */
+    post: operations["verify_credentials_api_v1_auth_credentials_verify_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/auth/me": {
     parameters: {
       query?: never
@@ -399,6 +467,111 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/auth/me/base-currency": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /** Change Base Currency */
+    put: operations["change_base_currency_api_v1_auth_me_base_currency_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/auth/password": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /** Change Password */
+    put: operations["change_password_api_v1_auth_password_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/auth/register": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Register User */
+    post: operations["register_user_api_v1_auth_register_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/budgets/monthly": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Monthly Budget */
+    get: operations["get_monthly_budget_api_v1_budgets_monthly_get"]
+    /** Save Monthly Budget */
+    put: operations["save_monthly_budget_api_v1_budgets_monthly_put"]
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/categories": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Categories */
+    get: operations["list_categories_api_v1_categories_get"]
+    put?: never
+    /** Create Category */
+    post: operations["create_category_api_v1_categories_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/categories/{category_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /** Delete Category */
+    delete: operations["delete_category_api_v1_categories__category_id__delete"]
+    options?: never
+    head?: never
+    /** Update Category */
+    patch: operations["update_category_api_v1_categories__category_id__patch"]
+    trace?: never
+  }
   "/api/v1/dashboard/current": {
     parameters: {
       query?: never
@@ -408,8 +581,28 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** Read Current Dashboard */
+    /**
+     * Read Current Dashboard
+     * @deprecated
+     */
     post: operations["read_current_dashboard_api_v1_dashboard_current_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/dashboard/published": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Published Dashboard */
+    post: operations["read_published_dashboard_api_v1_dashboard_published_post"]
     delete?: never
     options?: never
     head?: never
@@ -467,6 +660,40 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/investments/manual": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Create Manual Investment */
+    post: operations["create_manual_investment_api_v1_investments_manual_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/investments/symbols/{symbol}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read Symbol Detail */
+    get: operations["read_symbol_detail_api_v1_investments_symbols__symbol__get"]
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/net-worth/snapshots/recalculate": {
     parameters: {
       query?: never
@@ -478,6 +705,23 @@ export interface paths {
     put?: never
     /** Recalculate Net Worth Snapshot */
     post: operations["recalculate_net_worth_snapshot_api_v1_net_worth_snapshots_recalculate_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/operational-dashboard": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Operational Dashboard */
+    get: operations["get_operational_dashboard_api_v1_operational_dashboard_get"]
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -527,7 +771,10 @@ export interface paths {
     }
     get?: never
     put?: never
-    /** Read Current Portfolio */
+    /**
+     * Read Current Portfolio
+     * @deprecated
+     */
     post: operations["read_current_portfolio_api_v1_portfolio_current_post"]
     delete?: never
     options?: never
@@ -552,6 +799,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/portfolio/published": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Read Published Portfolio */
+    post: operations["read_published_portfolio_api_v1_portfolio_published_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   "/api/v1/portfolio/snapshot": {
     parameters: {
       query?: never
@@ -563,6 +827,23 @@ export interface paths {
     put?: never
     /** Read Multi Account Portfolio Snapshot */
     post: operations["read_multi_account_portfolio_snapshot_api_v1_portfolio_snapshot_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/read-model-version": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read Model Version */
+    get: operations["read_model_version_api_v1_read_model_version_get"]
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -586,6 +867,42 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  "/api/v1/transactions": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Transactions */
+    get: operations["list_transactions_api_v1_transactions_get"]
+    put?: never
+    /** Create Transaction */
+    post: operations["create_transaction_api_v1_transactions_post"]
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  "/api/v1/transactions/{transaction_id}": {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /** Delete Transaction */
+    delete: operations["delete_transaction_api_v1_transactions__transaction_id__delete"]
+    options?: never
+    head?: never
+    /** Update Transaction */
+    patch: operations["update_transaction_api_v1_transactions__transaction_id__patch"]
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -594,6 +911,8 @@ export interface components {
     AccountCreateRequest: {
       /** Color */
       color?: string | null
+      /** Credit Limit */
+      credit_limit?: number | string | null
       /** Currency */
       currency: string
       /** Name */
@@ -745,6 +1064,8 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      /** Credit Limit */
+      credit_limit?: string | null
       /** Currency */
       currency: string
       /** Id */
@@ -817,6 +1138,8 @@ export interface components {
     AccountUpdateRequest: {
       /** Color */
       color?: string | null
+      /** Credit Limit */
+      credit_limit?: number | string | null
       /** Currency */
       currency?: string | null
       /** Name */
@@ -826,10 +1149,238 @@ export interface components {
     }
     /**
      * AssetType
-     * @description Asset classification copied into the portfolio presentation contract.
      * @enum {string}
      */
-    AssetType: "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
+    "AssetType-Input": "stock" | "etf" | "crypto" | "commodity" | "cash" | "bond" | "other"
+    /** AuthenticatedUserResponse */
+    AuthenticatedUserResponse: {
+      /** Email */
+      email: string
+      /** Id */
+      id: string
+      /** Name */
+      name?: string | null
+    }
+    /**
+     * BackgroundJobKind
+     * @enum {string}
+     */
+    BackgroundJobKind: "import_workflow"
+    /**
+     * BackgroundJobStatus
+     * @enum {string}
+     */
+    BackgroundJobStatus: "queued" | "running" | "retry_wait" | "completed" | "failed"
+    /**
+     * BaseCurrencyChangeRequest
+     * @description Exact persisted aggregate currency selected by the authenticated user.
+     */
+    BaseCurrencyChangeRequest: {
+      /** Basecurrency */
+      baseCurrency: string
+    }
+    /** BaseCurrencyChangeResponse */
+    BaseCurrencyChangeResponse: {
+      /** Basecurrency */
+      baseCurrency: string
+    }
+    /** BudgetAlertResponse */
+    BudgetAlertResponse: {
+      /** Acknowledgedat */
+      acknowledgedAt?: string | null
+      /** Categoryid */
+      categoryId: string
+      /** Categoryname */
+      categoryName: string
+      /** Id */
+      id: string
+      /** Threshold */
+      threshold: string
+      /**
+       * Triggeredat
+       * Format: date-time
+       */
+      triggeredAt: string
+      /** Type */
+      type: string
+    }
+    /** BudgetCategoryResponse */
+    BudgetCategoryResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Name */
+      name: string
+    }
+    /** BudgetProgressItemResponse */
+    BudgetProgressItemResponse: {
+      /** Amount */
+      amount: string
+      category: components["schemas"]["BudgetCategoryResponse"]
+      /** Categoryid */
+      categoryId: string
+      /** Currency */
+      currency: string
+      /** Effectiveamount */
+      effectiveAmount: string
+      /** Id */
+      id: string
+      /** Isapproaching */
+      isApproaching: boolean
+      /** Isover */
+      isOver: boolean
+      /** Progresspct */
+      progressPct: string
+      /** Remaining */
+      remaining: string
+      /** Rolloveramount */
+      rolloverAmount: string
+      /** Spent */
+      spent: string
+    }
+    /** BudgetProgressResponse */
+    BudgetProgressResponse: {
+      /** Accountids */
+      accountIds: string[]
+      /** Alerts */
+      alerts: components["schemas"]["BudgetAlertResponse"][]
+      /** Currency */
+      currency: string
+      /** Id */
+      id: string
+      /** Isover */
+      isOver: boolean
+      /** Items */
+      items: components["schemas"]["BudgetProgressItemResponse"][]
+      /** Month */
+      month: number
+      /** Periodtype */
+      periodType: string
+      /** Progresspct */
+      progressPct: string
+      /** Rollover */
+      rollover: boolean
+      /** Totalbaselimit */
+      totalBaseLimit: string
+      /** Totallimit */
+      totalLimit: string
+      /** Totalremaining */
+      totalRemaining: string
+      /** Totalrollover */
+      totalRollover: string
+      /** Totalspent */
+      totalSpent: string
+      /** Year */
+      year: number
+    }
+    /** BudgetSaveItemRequest */
+    BudgetSaveItemRequest: {
+      /** Amount */
+      amount: number | string
+      /** Categoryid */
+      categoryId: string
+      /**
+       * Currency
+       * @default CZK
+       */
+      currency: string
+    }
+    /** BudgetSaveRequest */
+    BudgetSaveRequest: {
+      /** Items */
+      items?: components["schemas"]["BudgetSaveItemRequest"][]
+      /** Month */
+      month: number
+      /**
+       * Rollover
+       * @default false
+       */
+      rollover: boolean
+      /** Year */
+      year: number
+    }
+    /** CategoryChildResponse */
+    CategoryChildResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isdefault */
+      isDefault: boolean
+      /** Name */
+      name: string
+      type: components["schemas"]["CategoryType"]
+      /** Userid */
+      userId: string | null
+    }
+    /** CategoryCreateRequest */
+    CategoryCreateRequest: {
+      /** Color */
+      color?: string | null
+      /** Icon */
+      icon?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Name */
+      name: string
+      /** Parentid */
+      parentId?: string | null
+      type: components["schemas"]["CategoryType"]
+    }
+    /** CategoryDeleteResponse */
+    CategoryDeleteResponse: {
+      /** Ok */
+      ok: boolean
+    }
+    /** CategoryResponse */
+    CategoryResponse: {
+      /** Children */
+      children: components["schemas"]["CategoryChildResponse"][]
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isdefault */
+      isDefault: boolean
+      /** Name */
+      name: string
+      /** Parentid */
+      parentId: string | null
+      type: components["schemas"]["CategoryType"]
+      /** Userid */
+      userId: string | null
+    }
+    /**
+     * CategoryType
+     * @enum {string}
+     */
+    CategoryType: "expense" | "income" | "both"
+    /** CategoryUpdateRequest */
+    CategoryUpdateRequest: {
+      /** Color */
+      color?: string | null
+      /** Icon */
+      icon?: string | null
+      /** Name */
+      name?: string | null
+      /** Parentid */
+      parentId?: string | null
+      type?: components["schemas"]["CategoryType"] | null
+    }
+    /** CredentialVerificationRequest */
+    CredentialVerificationRequest: {
+      /** Email */
+      email: string
+      /** Password */
+      password: string
+    }
     /** CurrentDashboardAccountResponse */
     CurrentDashboardAccountResponse: {
       /** Accountcurrency */
@@ -840,15 +1391,15 @@ export interface components {
       /** Baselinesnapshotid */
       baselineSnapshotId: string
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Name */
       name: string
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Outputcurrency */
       outputCurrency: string
       /** Positioncount */
@@ -856,9 +1407,9 @@ export interface components {
       /** Primarybaselinesnapshotid */
       primaryBaselineSnapshotId: string
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** CurrentDashboardResponse */
     CurrentDashboardResponse: {
@@ -876,9 +1427,13 @@ export interface components {
       currency: string
       /** Historyanchorsnapshotid */
       historyAnchorSnapshotId: string
+      /** Isstale */
+      isStale: boolean
       summary: components["schemas"]["DashboardSnapshotSummaryResponse"]
       /** Toppositions */
       topPositions: components["schemas"]["DashboardTopPositionResponse"][]
+      /** Valuationtimestamp */
+      valuationTimestamp: string
     }
     /** CurrentPortfolioAccountResponse */
     CurrentPortfolioAccountResponse: {
@@ -909,7 +1464,11 @@ export interface components {
       currency: string
       /** Historyanchorsnapshotid */
       historyAnchorSnapshotId: string
+      /** Isstale */
+      isStale: boolean
       summary: components["schemas"]["MultiAccountPortfolioSummaryResponse"]
+      /** Valuationtimestamp */
+      valuationTimestamp: string
     }
     /** CurrentUserResponse */
     CurrentUserResponse: {
@@ -928,15 +1487,15 @@ export interface components {
       accountId: string
       accountType: components["schemas"]["app__modules__portfolio_snapshot__models__AccountType"]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Name */
       name: string
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Outputcurrency */
       outputCurrency: string
       /** Positioncount */
@@ -946,9 +1505,9 @@ export interface components {
       /** Snapshotid */
       snapshotId: string
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** DashboardAssetTypeAllocationResponse */
     DashboardAssetTypeAllocationResponse: {
@@ -956,7 +1515,7 @@ export interface components {
       accountCount: number
       /** Allocationpct */
       allocationPct: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Positioncount */
       positionCount: number
       /** Value */
@@ -984,33 +1543,33 @@ export interface components {
       /** Accountcount */
       accountCount: number
       /** Assetsvalue */
-      assetsValue: string
+      assetsValue: string | null
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentaccountcount */
       investmentAccountCount: number
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Liabilityaccountcount */
       liabilityAccountCount: number
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** DashboardTopPositionResponse */
     DashboardTopPositionResponse: {
@@ -1020,7 +1579,7 @@ export interface components {
       allocationPct: string
       /** Assetid */
       assetId: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Listingid */
       listingId: string
       /** Name */
@@ -1028,7 +1587,7 @@ export interface components {
       /** Symbol */
       symbol: string
       /** Unrealizedpnl */
-      unrealizedPnl: string
+      unrealizedPnl: string | null
       /** Value */
       value: string
       /** Valuecurrency */
@@ -1075,22 +1634,55 @@ export interface components {
        */
       timestamp: string
     }
-    /** FinalizeImportBatchesRequest */
-    FinalizeImportBatchesRequest: {
-      /** Batch Ids */
-      batch_ids: string[]
-    }
-    /** FinalizeImportBatchesResponse */
-    FinalizeImportBatchesResponse: {
-      /** Batch Ids */
-      batch_ids: string[]
-      snapshot_refresh_status: components["schemas"]["ImportSnapshotRefreshStatus"]
+    /** GenerationPortfolioHistoryPointResponse */
+    GenerationPortfolioHistoryPointResponse: {
+      /** Cashbycurrency */
+      cashByCurrency?: components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][] | null
+      /** Cashvalue */
+      cashValue: string
+      /** Investmentbycurrency */
+      investmentByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Investmentvalue */
+      investmentValue: string
+      /** Liabilitiesbycurrency */
+      liabilitiesByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Liabilitiesvalue */
+      liabilitiesValue: string
+      /** Netinvestedbycurrency */
+      netInvestedByCurrency?:
+        | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
+        | null
+      /** Netinvestedvalue */
+      netInvestedValue?: string
+      /** Networthvalue */
+      netWorthValue: string
+      /** Portfoliosnapshotid */
+      portfolioSnapshotId?: string | null
+      /** Positions */
+      positions?: components["schemas"]["PortfolioHistoryPositionResponse"][] | null
+      /** Realizedpnlvalue */
+      realizedPnlValue?: string
+      /** Resolutionminutes */
+      resolutionMinutes: number
+      /** Timestamp */
+      timestamp: string
+      /** Unrealizedpnlvalue */
+      unrealizedPnlValue?: string
     }
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][]
     }
+    /**
+     * HistoryPublicRange
+     * @enum {string}
+     */
+    HistoryPublicRange: "1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "5Y" | "10Y" | "ALL"
     /** HoldingRebuildResponse */
     HoldingRebuildResponse: {
       /** Account Id */
@@ -1232,6 +1824,117 @@ export interface components {
       rows_unique: number
       status: components["schemas"]["ImportStatus"]
     }
+    /** ImportJobError */
+    ImportJobError: {
+      /** Code */
+      code: string
+      /** Message */
+      message: string
+    }
+    /**
+     * ImportJobPhase
+     * @enum {string}
+     */
+    ImportJobPhase:
+      | "queued"
+      | "parsing"
+      | "normalizing"
+      | "deduplicating"
+      | "classifying"
+      | "posting"
+      | "reconciling"
+      | "acquiring_reporting_fx"
+      | "validating_liability"
+      | "rebuilding_holdings"
+      | "refreshing_snapshot"
+      | "completed"
+    /** ImportJobProgress */
+    ImportJobProgress: {
+      /** Completed Batches */
+      completed_batches: number
+      /** Completed Units */
+      completed_units: number
+      phase: components["schemas"]["ImportJobPhase"]
+      /**
+       * Schema Version
+       * @default 1
+       * @constant
+       */
+      schema_version: 1
+      /** Total Batches */
+      total_batches: number
+      /** Total Units */
+      total_units: number
+    }
+    /** ImportJobResponse */
+    ImportJobResponse: {
+      /** Account Id */
+      account_id: string
+      /** Attempt Count */
+      attempt_count: number
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      error: components["schemas"]["ImportJobError"] | null
+      /** Finished At */
+      finished_at: string | null
+      /** Id */
+      id: string
+      kind: components["schemas"]["BackgroundJobKind"]
+      /** Manual Retry Count */
+      manual_retry_count: number
+      /** Max Attempts */
+      max_attempts: number
+      progress: components["schemas"]["ImportJobProgress"]
+      result: components["schemas"]["ImportJobResult"] | null
+      /**
+       * Run After
+       * Format: date-time
+       */
+      run_after: string
+      /** Started At */
+      started_at: string | null
+      status: components["schemas"]["BackgroundJobStatus"]
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string
+    }
+    /** ImportJobResult */
+    ImportJobResult: {
+      /** Batch Ids */
+      batch_ids: string[]
+      /**
+       * Completed At
+       * Format: date-time
+       */
+      completed_at: string
+      /** Rows Imported */
+      rows_imported: number
+      /** Rows Skipped */
+      rows_skipped: number
+      /** Rows Total */
+      rows_total: number
+      /**
+       * Schema Version
+       * @default 1
+       * @constant
+       */
+      schema_version: 1
+      /**
+       * Snapshot Refresh Status
+       * @enum {string}
+       */
+      snapshot_refresh_status: "created" | "replayed" | "not_required"
+    }
+    /** ImportJobStartRequest */
+    ImportJobStartRequest: {
+      /** Batch Ids */
+      batch_ids: string[]
+    }
     /** ImportNormalizeResponse */
     ImportNormalizeResponse: {
       /** Batch Id */
@@ -1277,6 +1980,34 @@ export interface components {
       rows_total: number
       snapshot_refresh_status: components["schemas"]["ImportSnapshotRefreshStatus"]
       status: components["schemas"]["ImportStatus"]
+    }
+    /**
+     * ImportRegistrationResumeJobResponse
+     * @description A safe registration result for an already durable import workflow.
+     */
+    ImportRegistrationResumeJobResponse: {
+      /** Batch */
+      batch?: null
+      job: components["schemas"]["ImportJobResponse"]
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      status: "resume_job"
+    }
+    /**
+     * ImportRegistrationUploadRequiredResponse
+     * @description A safe registration result that still requires the raw-file upload.
+     */
+    ImportRegistrationUploadRequiredResponse: {
+      batch: components["schemas"]["ImportBatchResponse"]
+      /** Job */
+      job?: null
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      status: "upload_required"
     }
     /**
      * ImportSnapshotRefreshStatus
@@ -1327,6 +2058,131 @@ export interface components {
        */
       status: "ok"
     }
+    /**
+     * ManualInvestmentAction
+     * @enum {string}
+     */
+    ManualInvestmentAction:
+      | "buy"
+      | "sell"
+      | "dividend"
+      | "interest"
+      | "staking_reward"
+      | "deposit"
+      | "withdrawal"
+      | "fee"
+      | "currency_conversion"
+      | "airdrop"
+    /** ManualInvestmentCreateRequest */
+    ManualInvestmentCreateRequest: {
+      /** Accountid */
+      accountId: string
+      assetType?: components["schemas"]["AssetType-Input"] | null
+      /** Conversionfromamount */
+      conversionFromAmount?: number | string | null
+      /** Conversionfromcurrency */
+      conversionFromCurrency?: string | null
+      /** Conversiontoamount */
+      conversionToAmount?: number | string | null
+      /** Conversiontocurrency */
+      conversionToCurrency?: string | null
+      /** Date */
+      date: string
+      /** Fee */
+      fee?: number | string | null
+      /** Feecurrency */
+      feeCurrency?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Name */
+      name?: string | null
+      /** Pricecurrency */
+      priceCurrency?: string | null
+      /** Priceperunit */
+      pricePerUnit?: number | string | null
+      /** Quantity */
+      quantity?: number | string | null
+      /** Symbol */
+      symbol?: string | null
+      /** Totalamount */
+      totalAmount?: number | string | null
+      /** Totalcurrency */
+      totalCurrency?: string | null
+      type: components["schemas"]["ManualInvestmentAction"]
+    }
+    /** ManualInvestmentCreateResponse */
+    ManualInvestmentCreateResponse: {
+      /** Eventid */
+      eventId: string
+      holdings: components["schemas"]["ManualInvestmentHoldingResult"]
+      /** Replayed */
+      replayed: boolean
+      snapshot: components["schemas"]["ManualInvestmentSnapshotResult"]
+    }
+    /** ManualInvestmentHoldingResult */
+    ManualInvestmentHoldingResult: {
+      /** Created */
+      created: number
+      /** Deleted */
+      deleted: number
+      /** Replayed */
+      replayed: boolean
+      /** Total */
+      total: number
+      /** Updated */
+      updated: number
+    }
+    /** ManualInvestmentSnapshotResult */
+    ManualInvestmentSnapshotResult: {
+      /** Networthsnapshotid */
+      netWorthSnapshotId?: string | null
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "ready" | "unavailable" | "conflict"
+      /** Timestamp */
+      timestamp?: string | null
+    }
+    /** ManualLiabilityBalanceCreateRequest */
+    ManualLiabilityBalanceCreateRequest: {
+      /** Accruedinterest */
+      accruedInterest: number | string
+      /** Currency */
+      currency: string
+      /**
+       * Effectiveat
+       * Format: date-time
+       */
+      effectiveAt: string
+      /** Feesoutstanding */
+      feesOutstanding: number | string
+      /** Outstandingprincipal */
+      outstandingPrincipal: number | string
+    }
+    /** ManualLiabilityBalanceCreateResponse */
+    ManualLiabilityBalanceCreateResponse: {
+      /** Accountid */
+      accountId: string
+      /** Balanceid */
+      balanceId: string
+      /** Currency */
+      currency: string
+      /** Effectiveat */
+      effectiveAt: string
+      /**
+       * Source
+       * @constant
+       */
+      source: "manual"
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "created" | "replayed"
+      /** Totaloutstanding */
+      totalOutstanding: string
+    }
     /** MultiAccountPortfolioAccountResponse */
     MultiAccountPortfolioAccountResponse: {
       account: components["schemas"]["PortfolioSnapshotAccountResponse"]
@@ -1376,29 +2232,29 @@ export interface components {
       /** Cashbycurrency */
       cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Netdepositsbycurrency */
-      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][] | null
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** NetWorthSnapshotRecalculateResponse */
     NetWorthSnapshotRecalculateResponse: {
@@ -1419,6 +2275,134 @@ export interface components {
       /** Timestamp */
       timestamp: string
     }
+    /** OperationalBudgetItemResponse */
+    OperationalBudgetItemResponse: {
+      /** Categoryid */
+      categoryId: string
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Isover */
+      isOver: boolean
+      /** Limitczk */
+      limitCzk: string
+      /** Name */
+      name: string
+      /** Progresspct */
+      progressPct: string
+      /** Remainingczk */
+      remainingCzk: string
+      /** Spentczk */
+      spentCzk: string
+    }
+    /** OperationalBudgetResponse */
+    OperationalBudgetResponse: {
+      /** Id */
+      id: string
+      /** Items */
+      items: components["schemas"]["OperationalBudgetItemResponse"][]
+      /** Limitczk */
+      limitCzk: string
+      /** Month */
+      month: number
+      /** Progresspct */
+      progressPct: string
+      /** Remainingczk */
+      remainingCzk: string
+      /** Spentczk */
+      spentCzk: string
+      /** Year */
+      year: number
+    }
+    /** OperationalDashboardResponse */
+    OperationalDashboardResponse: {
+      budget: components["schemas"]["OperationalBudgetResponse"] | null
+      /** Expensebycategory */
+      expenseByCategory: components["schemas"]["OperationalExpenseCategoryResponse"][]
+      /** Monthlytrends */
+      monthlyTrends: components["schemas"]["OperationalMonthlyTrendResponse"][]
+      /** Recenttransactions */
+      recentTransactions: components["schemas"]["OperationalRecentTransactionResponse"][]
+      summary: components["schemas"]["OperationalSummaryResponse"]
+    }
+    /** OperationalExpenseCategoryResponse */
+    OperationalExpenseCategoryResponse: {
+      /** Amountczk */
+      amountCzk: string
+      /** Categoryid */
+      categoryId: string | null
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Name */
+      name: string
+    }
+    /** OperationalMonthlyTrendResponse */
+    OperationalMonthlyTrendResponse: {
+      /** Expenseczk */
+      expenseCzk: string
+      /** Incomeczk */
+      incomeCzk: string
+      /** Label */
+      label: string
+      /** Month */
+      month: string
+      /** Netczk */
+      netCzk: string
+    }
+    /** OperationalRecentTransactionResponse */
+    OperationalRecentTransactionResponse: {
+      /** Accountname */
+      accountName: string
+      /** Amount */
+      amount: string
+      /** Amountczk */
+      amountCzk: string
+      /** Categoryicon */
+      categoryIcon: string | null
+      /** Categoryname */
+      categoryName: string | null
+      /** Counterparty */
+      counterparty: string | null
+      /** Currency */
+      currency: string
+      /**
+       * Date
+       * Format: date-time
+       */
+      date: string
+      /** Description */
+      description: string | null
+      /** Id */
+      id: string
+      /** Type */
+      type: string
+    }
+    /** OperationalSummaryResponse */
+    OperationalSummaryResponse: {
+      /** Currentmonthexpenseczk */
+      currentMonthExpenseCzk: string
+      /** Currentmonthincomeczk */
+      currentMonthIncomeCzk: string
+      /** Currentmonthnetczk */
+      currentMonthNetCzk: string
+    }
+    /** PasswordChangeRequest */
+    PasswordChangeRequest: {
+      /** Current Password */
+      current_password: string
+      /** New Password */
+      new_password: string
+    }
+    /** PasswordChangeResponse */
+    PasswordChangeResponse: {
+      /** Ok */
+      ok: boolean
+    }
     /** PortfolioCurrencyAmountResponse */
     PortfolioCurrencyAmountResponse: {
       /** Amount */
@@ -1426,32 +2410,93 @@ export interface components {
       /** Currency */
       currency: string
     }
-    /** PortfolioHistoryPointResponse */
-    PortfolioHistoryPointResponse: {
-      /** Cashvalue */
-      cashValue: string
-      /** Investmentvalue */
-      investmentValue: string
-      /** Liabilitiesvalue */
-      liabilitiesValue: string
-      /** Networthvalue */
-      netWorthValue: string
-      /** Timestamp */
-      timestamp: string
+    /** PortfolioHistoryCoverageResponse */
+    PortfolioHistoryCoverageResponse: {
+      /** End */
+      end: string
+      /** Resolutionminutes */
+      resolutionMinutes: number
+      /** Start */
+      start: string
     }
-    /**
-     * PortfolioHistoryRange
-     * @description Supported calendar ranges for public portfolio history.
-     * @enum {string}
-     */
-    PortfolioHistoryRange: "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL"
-    /** PortfolioHistoryResponse */
-    PortfolioHistoryResponse: {
+    /** PortfolioHistoryCurrencyAmountResponse */
+    PortfolioHistoryCurrencyAmountResponse: {
       /** Currency */
       currency: string
+      /** Value */
+      value: string
+    }
+    /** PortfolioHistoryPositionAccountResponse */
+    PortfolioHistoryPositionAccountResponse: {
+      /** Accountid */
+      accountId: string
+      /** Allocationpct */
+      allocationPct: string
+      /** Costbasis */
+      costBasis?: string
+      /** Quantity */
+      quantity: string
+      /** Value */
+      value: string
+    }
+    /** PortfolioHistoryPositionResponse */
+    PortfolioHistoryPositionResponse: {
+      /**
+       * Accounts
+       * @default []
+       */
+      accounts: components["schemas"]["PortfolioHistoryPositionAccountResponse"][]
+      /** Allocationpct */
+      allocationPct: string
+      /** Costbasis */
+      costBasis?: string
+      /** Listingid */
+      listingId: string
+      /** Quantity */
+      quantity: string
+      /** Symbol */
+      symbol: string
+      /** Value */
+      value: string
+    }
+    /**
+     * PortfolioHistoryReadState
+     * @enum {string}
+     */
+    PortfolioHistoryReadState: "ready" | "rebuilding" | "failed" | "empty"
+    /** PortfolioHistoryResponse */
+    PortfolioHistoryResponse: {
+      /** Coverage */
+      coverage: components["schemas"]["PortfolioHistoryCoverageResponse"][]
+      /** Coveredthrough */
+      coveredThrough?: string
+      /** Currency */
+      currency: string
+      /** Generationid */
+      generationId?: string | null
+      /** Isstale */
+      isStale?: boolean | null
       /** Points */
-      points: components["schemas"]["PortfolioHistoryPointResponse"][]
-      range: components["schemas"]["PortfolioHistoryRange"]
+      points: components["schemas"]["GenerationPortfolioHistoryPointResponse"][]
+      /** Preferredresolutionminutes */
+      preferredResolutionMinutes?: number | null
+      /** Publicationid */
+      publicationId?: string | null
+      /** Publicationversion */
+      publicationVersion?: number | null
+      range: components["schemas"]["HistoryPublicRange"]
+      /** Resolutions */
+      resolutions: number[]
+      state: components["schemas"]["PortfolioHistoryReadState"]
+      /** Valuationtimestamp */
+      valuationTimestamp?: string
+    }
+    /** PortfolioQuantityCurrencyAmountResponse */
+    PortfolioQuantityCurrencyAmountResponse: {
+      /** Amount */
+      amount: string
+      /** Currency */
+      currency: string
     }
     /** PortfolioSnapshotAccountResponse */
     PortfolioSnapshotAccountResponse: {
@@ -1469,35 +2514,39 @@ export interface components {
       allocationPct: string
       /** Assetid */
       assetId: string
-      assetType: components["schemas"]["AssetType"]
+      assetType: components["schemas"]["app__modules__portfolio_snapshot__models__AssetType"]
       /** Costbasis */
-      costBasis: string
+      costBasis: string | null
       /** Costcurrency */
-      costCurrency: string
+      costCurrency: string | null
       /** Listingid */
       listingId: string
       /** Name */
       name: string
       /** Nativecostbasis */
-      nativeCostBasis: string
+      nativeCostBasis: string | null
+      /** Nativecostbasisbycurrency */
+      nativeCostBasisByCurrency:
+        | components["schemas"]["PortfolioQuantityCurrencyAmountResponse"][]
+        | null
       /** Nativecostcurrency */
-      nativeCostCurrency: string
+      nativeCostCurrency: string | null
       /** Nativevalue */
-      nativeValue: string
+      nativeValue: string | null
       /** Nativevaluecurrency */
       nativeValueCurrency: string
       /** Pricecurrency */
       priceCurrency: string
       /** Priceperunit */
-      pricePerUnit: string
+      pricePerUnit: string | null
       /** Pricetimestamp */
       priceTimestamp: string
       /** Quantity */
-      quantity: string
+      quantity: string | null
       /** Symbol */
       symbol: string
       /** Unrealizedpnl */
-      unrealizedPnl: string
+      unrealizedPnl: string | null
       /** Value */
       value: string
       /** Valuecurrency */
@@ -1525,29 +2574,29 @@ export interface components {
       /** Cashbycurrency */
       cashByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
       /** Cashvalue */
-      cashValue: string
+      cashValue: string | null
       /** Feesvalue */
-      feesValue: string
+      feesValue: string | null
       /** Investmentcostbasis */
-      investmentCostBasis: string
+      investmentCostBasis: string | null
       /** Investmentvalue */
-      investmentValue: string
+      investmentValue: string | null
       /** Liabilitiesvalue */
-      liabilitiesValue: string
+      liabilitiesValue: string | null
       /** Netdepositsbycurrency */
-      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][]
+      netDepositsByCurrency: components["schemas"]["PortfolioCurrencyAmountResponse"][] | null
       /** Netdepositsvalue */
-      netDepositsValue: string
+      netDepositsValue: string | null
       /** Positioncount */
       positionCount: number
       /** Realizedpnlvalue */
-      realizedPnlValue: string
+      realizedPnlValue: string | null
       /** Taxesvalue */
-      taxesValue: string
+      taxesValue: string | null
       /** Totalvalue */
-      totalValue: string
+      totalValue: string | null
       /** Unrealizedpnlvalue */
-      unrealizedPnlValue: string
+      unrealizedPnlValue: string | null
     }
     /** PortfolioSummary */
     PortfolioSummary: {
@@ -1562,6 +2611,13 @@ export interface components {
       /** Warnings */
       warnings?: string[]
     }
+    /** ReadModelVersionResponse */
+    ReadModelVersionResponse: {
+      /** Scopes */
+      scopes: string[]
+      /** Version */
+      version: string
+    }
     /** ReadinessDependencies */
     ReadinessDependencies: {
       /**
@@ -1569,6 +2625,16 @@ export interface components {
        * @enum {string}
        */
       database: "available" | "unavailable"
+      /**
+       * Portfoliohistoryruntime
+       * @enum {string}
+       */
+      portfolioHistoryRuntime: "available" | "unavailable" | "disabled"
+      /**
+       * Scheduledsnapshotrefreshruntime
+       * @enum {string}
+       */
+      scheduledSnapshotRefreshRuntime: "available" | "unavailable" | "disabled"
     }
     /** ReadinessResponse */
     ReadinessResponse: {
@@ -1612,6 +2678,205 @@ export interface components {
       | "holdings_recalculation"
       | "scheduled"
       | "manual_recalculation"
+    /** SymbolDetailResponse */
+    SymbolDetailResponse: {
+      /** Events */
+      events: components["schemas"]["SymbolEventResponse"][]
+      /** Positions */
+      positions: components["schemas"]["SymbolPositionResponse"][]
+      /** Symbol */
+      symbol: string
+    }
+    /** SymbolEventResponse */
+    SymbolEventResponse: {
+      /** Accountid */
+      accountId: string
+      /** Accountname */
+      accountName: string
+      /** Date */
+      date: string
+      /** Description */
+      description: string | null
+      /** Fee */
+      fee: string | null
+      /** Feecurrency */
+      feeCurrency: string | null
+      /** Id */
+      id: string
+      /** Pricecurrency */
+      priceCurrency: string | null
+      /** Priceperunit */
+      pricePerUnit: string | null
+      /** Quantity */
+      quantity: string | null
+      /** Realizedpnl */
+      realizedPnl: string | null
+      /** Realizedpnlcurrency */
+      realizedPnlCurrency: string | null
+      /** Totalamount */
+      totalAmount: string | null
+      /** Totalcurrency */
+      totalCurrency: string | null
+      /** Type */
+      type: components["schemas"]["ManualInvestmentAction"] | "transfer"
+    }
+    /** SymbolPositionResponse */
+    SymbolPositionResponse: {
+      /** Accountid */
+      accountId: string
+      /** Accountname */
+      accountName: string
+      /** Assetid */
+      assetId: string | null
+      assetType: components["schemas"]["app__db__models__enums__AssetType"]
+      /** Avgbuyprice */
+      avgBuyPrice: string
+      /** Calculatedat */
+      calculatedAt: string
+      /** Currency */
+      currency: string
+      /** Currentprice */
+      currentPrice: string | null
+      /** Currentvalue */
+      currentValue: string | null
+      /** Id */
+      id: string
+      /** Listingid */
+      listingId: string
+      /** Name */
+      name: string | null
+      /** Quantity */
+      quantity: string
+      /** Realizedpnl */
+      realizedPnl: string | null
+      /** Symbol */
+      symbol: string
+      /** Unrealizedpnl */
+      unrealizedPnl: string | null
+    }
+    /** TransactionAccountResponse */
+    TransactionAccountResponse: {
+      /** Currency */
+      currency: string
+      /** Name */
+      name: string
+    }
+    /** TransactionCategoryResponse */
+    TransactionCategoryResponse: {
+      /** Color */
+      color: string | null
+      /** Icon */
+      icon: string | null
+      /** Id */
+      id: string
+      /** Name */
+      name: string
+      type: components["schemas"]["CategoryType"]
+    }
+    /** TransactionCreateRequest */
+    TransactionCreateRequest: {
+      /** Accountid */
+      accountId: string
+      /** Amount */
+      amount: number | string
+      /** Categoryid */
+      categoryId?: string | null
+      /** Counterparty */
+      counterparty?: string | null
+      /** Currency */
+      currency: string
+      /** Date */
+      date: string
+      /** Description */
+      description?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Note */
+      note?: string | null
+      type: components["schemas"]["TransactionType"]
+    }
+    /** TransactionDeleteRequest */
+    TransactionDeleteRequest: {
+      /** Idempotencykey */
+      idempotencyKey: string
+    }
+    /** TransactionDeleteResponse */
+    TransactionDeleteResponse: {
+      /** Ok */
+      ok: boolean
+    }
+    /** TransactionPageResponse */
+    TransactionPageResponse: {
+      /** Page */
+      page: number
+      /** Pages */
+      pages: number
+      /** Total */
+      total: number
+      /** Transactions */
+      transactions: components["schemas"]["TransactionResponse"][]
+    }
+    /** TransactionResponse */
+    TransactionResponse: {
+      account: components["schemas"]["TransactionAccountResponse"]
+      /** Accountid */
+      accountId: string
+      /** Amount */
+      amount: string
+      category: components["schemas"]["TransactionCategoryResponse"] | null
+      /** Categoryid */
+      categoryId: string | null
+      /** Counterparty */
+      counterparty: string | null
+      /** Currency */
+      currency: string
+      /**
+       * Date
+       * Format: date-time
+       */
+      date: string
+      /** Description */
+      description: string | null
+      /** Id */
+      id: string
+      /** Note */
+      note: string | null
+      type: components["schemas"]["TransactionType"]
+    }
+    /**
+     * TransactionType
+     * @enum {string}
+     */
+    TransactionType: "income" | "expense" | "transfer"
+    /** TransactionUpdateRequest */
+    TransactionUpdateRequest: {
+      /** Amount */
+      amount?: number | string | null
+      /** Categoryid */
+      categoryId?: string | null
+      /** Counterparty */
+      counterparty?: string | null
+      /** Currency */
+      currency?: string | null
+      /** Date */
+      date?: string | null
+      /** Description */
+      description?: string | null
+      /** Idempotencykey */
+      idempotencyKey: string
+      /** Note */
+      note?: string | null
+      type?: components["schemas"]["TransactionType"] | null
+    }
+    /** UserRegistrationRequest */
+    UserRegistrationRequest: {
+      /** Email */
+      email: string
+      /** Name */
+      name?: string | null
+      /** Password */
+      password: string
+    }
     /** UserSnapshotRefreshRecalculateResponse */
     UserSnapshotRefreshRecalculateResponse: {
       /** Accounts */
@@ -1671,6 +2936,18 @@ export interface components {
       | "loan"
       | "mortgage"
     /**
+     * AssetType
+     * @enum {string}
+     */
+    app__db__models__enums__AssetType:
+      | "stock"
+      | "etf"
+      | "crypto"
+      | "commodity"
+      | "cash"
+      | "bond"
+      | "other"
+    /**
      * SnapshotGranularity
      * @enum {string}
      */
@@ -1690,6 +2967,19 @@ export interface components {
       | "credit_card"
       | "loan"
       | "mortgage"
+    /**
+     * AssetType
+     * @description Asset classification copied into the portfolio presentation contract.
+     * @enum {string}
+     */
+    app__modules__portfolio_snapshot__models__AssetType:
+      | "stock"
+      | "etf"
+      | "crypto"
+      | "commodity"
+      | "cash"
+      | "bond"
+      | "other"
     /**
      * SnapshotGranularity
      * @description Persisted AccountSnapshot bucket alignment.
@@ -1965,7 +3255,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          "application/json": components["schemas"]["ImportBatchResponse"]
+          "application/json":
+            | components["schemas"]["ImportRegistrationUploadRequiredResponse"]
+            | components["schemas"]["ImportRegistrationResumeJobResponse"]
         }
       }
       /** @description Validation Error */
@@ -1979,7 +3271,7 @@ export interface operations {
       }
     }
   }
-  finalize_import_batches_api_v1_accounts__account_id__imports_finalize_post: {
+  start_import_job_api_v1_accounts__account_id__imports_jobs_post: {
     parameters: {
       query?: never
       header?: never
@@ -1990,9 +3282,41 @@ export interface operations {
     }
     requestBody: {
       content: {
-        "application/json": components["schemas"]["FinalizeImportBatchesRequest"]
+        "application/json": components["schemas"]["ImportJobStartRequest"]
       }
     }
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportJobResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  get_import_job_api_v1_accounts__account_id__imports_jobs__job_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+        job_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -2000,7 +3324,39 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          "application/json": components["schemas"]["FinalizeImportBatchesResponse"]
+          "application/json": components["schemas"]["ImportJobResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  retry_import_job_api_v1_accounts__account_id__imports_jobs__job_id__retry_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+        job_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ImportJobResponse"]
         }
       }
       /** @description Validation Error */
@@ -2370,6 +3726,41 @@ export interface operations {
       }
     }
   }
+  create_manual_liability_balance_api_v1_accounts__account_id__liability_balances_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ManualLiabilityBalanceCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ManualLiabilityBalanceCreateResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   list_account_members_api_v1_accounts__account_id__members_get: {
     parameters: {
       query?: never
@@ -2533,6 +3924,57 @@ export interface operations {
       }
     }
   }
+  verify_credentials_api_v1_auth_credentials_verify_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CredentialVerificationRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["AuthenticatedUserResponse"]
+        }
+      }
+      /** @description Invalid credentials or service token. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
   get_current_user_api_v1_auth_me_get: {
     parameters: {
       query?: never
@@ -2571,7 +4013,400 @@ export interface operations {
       }
     }
   }
+  change_base_currency_api_v1_auth_me_base_currency_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BaseCurrencyChangeRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BaseCurrencyChangeResponse"]
+        }
+      }
+      /** @description Authentication is required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Portfolio-history invalidation cannot be established safely. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  change_password_api_v1_auth_password_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PasswordChangeRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["PasswordChangeResponse"]
+        }
+      }
+      /** @description Authentication is required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Current password is invalid. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  register_user_api_v1_auth_register_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UserRegistrationRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["AuthenticatedUserResponse"]
+        }
+      }
+      /** @description Invalid service token. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Email is already registered. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Invalid request. */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Authentication is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  get_monthly_budget_api_v1_budgets_monthly_get: {
+    parameters: {
+      query: {
+        month: number
+        year: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BudgetProgressResponse"] | null
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  save_monthly_budget_api_v1_budgets_monthly_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BudgetSaveRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["BudgetProgressResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  list_categories_api_v1_categories_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"][]
+        }
+      }
+    }
+  }
+  create_category_api_v1_categories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CategoryCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  delete_category_api_v1_categories__category_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryDeleteResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  update_category_api_v1_categories__category_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CategoryUpdateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CategoryResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   read_current_dashboard_api_v1_dashboard_current_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentDashboardResponse"]
+        }
+      }
+    }
+  }
+  read_published_dashboard_api_v1_dashboard_published_post: {
     parameters: {
       query?: never
       header?: never
@@ -2673,6 +4508,88 @@ export interface operations {
       }
     }
   }
+  create_manual_investment_api_v1_investments_manual_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ManualInvestmentCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ManualInvestmentCreateResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  read_symbol_detail_api_v1_investments_symbols__symbol__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        symbol: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["SymbolDetailResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   recalculate_net_worth_snapshot_api_v1_net_worth_snapshots_recalculate_post: {
     parameters: {
       query?: never
@@ -2689,6 +4606,35 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["NetWorthSnapshotRecalculateResponse"]
+        }
+      }
+    }
+  }
+  get_operational_dashboard_api_v1_operational_dashboard_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["OperationalDashboardResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
         }
       }
     }
@@ -2784,7 +4730,8 @@ export interface operations {
   read_portfolio_history_api_v1_portfolio_history_get: {
     parameters: {
       query?: {
-        range?: components["schemas"]["PortfolioHistoryRange"]
+        range?: components["schemas"]["HistoryPublicRange"]
+        accountId?: string | null
       }
       header?: never
       path?: never
@@ -2808,6 +4755,26 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  read_published_portfolio_api_v1_portfolio_published_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["CurrentPortfolioResponse"]
         }
       }
     }
@@ -2845,6 +4812,37 @@ export interface operations {
       }
     }
   }
+  read_model_version_api_v1_read_model_version_get: {
+    parameters: {
+      query?: {
+        after?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ReadModelVersionResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
   recalculate_user_snapshot_refresh_api_v1_snapshot_refresh_recalculate_post: {
     parameters: {
       query?: never
@@ -2861,6 +4859,153 @@ export interface operations {
         }
         content: {
           "application/json": components["schemas"]["UserSnapshotRefreshRecalculateResponse"]
+        }
+      }
+    }
+  }
+  list_transactions_api_v1_transactions_get: {
+    parameters: {
+      query?: {
+        page?: number
+        type?: components["schemas"]["TransactionType"] | null
+        categoryId?: string | null
+        accountId?: string | null
+        q?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionPageResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  create_transaction_api_v1_transactions_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionCreateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionResponse"]
+        }
+      }
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"]
+        }
+      }
+    }
+  }
+  delete_transaction_api_v1_transactions__transaction_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        transaction_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionDeleteRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionDeleteResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
+        }
+      }
+    }
+  }
+  update_transaction_api_v1_transactions__transaction_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        transaction_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TransactionUpdateRequest"]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["TransactionResponse"]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"]
         }
       }
     }

@@ -1,9 +1,11 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.models.enums import ImportSource, ImportStatus
+from app.modules.jobs.models import ImportJobResponse
 
 
 class ImportSnapshotRefreshStatus(StrEnum):
@@ -66,6 +68,32 @@ class ImportBatchResponse(BaseModel):
     rows_skipped: int | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class ImportRegistrationUploadRequiredResponse(BaseModel):
+    """A safe registration result that still requires the raw-file upload."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["upload_required"]
+    batch: ImportBatchResponse
+    job: None = None
+
+
+class ImportRegistrationResumeJobResponse(BaseModel):
+    """A safe registration result for an already durable import workflow."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["resume_job"]
+    batch: None = None
+    job: ImportJobResponse
+
+
+ImportRegistrationResponse = Annotated[
+    ImportRegistrationUploadRequiredResponse | ImportRegistrationResumeJobResponse,
+    Field(discriminator="status"),
+]
 
 
 class ImportUploadResponse(BaseModel):
@@ -137,25 +165,3 @@ class ImportCanonicalPostResponse(BaseModel):
     rows_skipped: int
     completed_at: datetime
     replayed: bool
-
-
-class FinalizeImportBatchesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    batch_ids: tuple[str, ...] = Field(max_length=10)
-
-    @field_validator("batch_ids")
-    @classmethod
-    def validate_batch_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not batch_id or batch_id != batch_id.strip() for batch_id in value):
-            raise ValueError("Batch IDs must be non-blank canonical strings.")
-        if len(set(value)) != len(value):
-            raise ValueError("Batch IDs must be unique.")
-        return value
-
-
-class FinalizeImportBatchesResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    batch_ids: tuple[str, ...]
-    snapshot_refresh_status: ImportSnapshotRefreshStatus

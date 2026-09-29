@@ -20,6 +20,12 @@ describe("account page Python cutover", () => {
     expect(source).toContain('status: "error"')
   })
 
+  it("does not publish an obsolete account request", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+    expect(source).toContain("accountRequestId.current")
+    expect(source).toContain("requestId !== accountRequestId.current")
+  })
+
   it("uses generated create/update/archive client operations with explicit loading states", async () => {
     const source = await readFile(PAGE_PATH, "utf8")
 
@@ -29,7 +35,7 @@ describe("account page Python cutover", () => {
     expect(source).toContain('action: "create"')
     expect(source).toContain('action: "update"')
     expect(source).toContain('action: "archive"')
-    expect(source.match(/await loadAccounts\("reload"\)/g)).toHaveLength(3)
+    expect(source.match(/await loadAccounts\("reload"\)/g)).toHaveLength(4)
   })
 
   it("keeps account type readonly during edit and omits it from PATCH", async () => {
@@ -84,6 +90,24 @@ describe("account page Python cutover", () => {
     expect(source).toContain("Sdílený účet")
   })
 
+  it("offers explicit manual liability entry only through the generated scoped client", async () => {
+    const source = await readFile(PAGE_PATH, "utf8")
+
+    expect(source).toContain("requestCreateManualLiabilityBalance")
+    expect(source).toContain("LIABILITY_ACCOUNT_TYPES")
+    expect(source).toContain("Zadat zůstatek dluhu")
+    expect(source).toContain("Import transakcí dluh neodvozuje.")
+    expect(source).toContain("toNaiveUtcLiabilityTimestamp(liabilityForm.effectiveAt)")
+    expect(source).toContain("effectiveAt: defaultLiabilityEffectiveAt()")
+    expect(source).toContain("outstandingPrincipal: liabilityForm.outstandingPrincipal")
+    expect(source).toContain("accruedInterest: liabilityForm.accruedInterest")
+    expect(source).toContain("feesOutstanding: liabilityForm.feesOutstanding")
+    expect(source).toContain("Všechny tři částky mohou být 0.")
+    expect(source).toContain('await loadAccounts("reload")')
+    expect(source).not.toMatch(/liabilit(?:y|ies).*transaction.*derive/i)
+    expect(source).not.toContain("fetch(")
+  })
+
   it("scopes update and archive errors to their exact account ID", async () => {
     const source = await readFile(PAGE_PATH, "utf8")
 
@@ -112,6 +136,7 @@ describe("account page Python cutover", () => {
       name: "Broker",
       type: "broker",
       currency: "EUR",
+      creditLimit: null,
       color: null,
       notes: "Long term",
       role: "owner",

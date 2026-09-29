@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
@@ -18,6 +20,9 @@ from app.modules.market_data.models import (
     MarketEvidenceStateError,
 )
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
+from app.modules.market_data.source_policy import (
+    market_evidence_source_policy_from_settings,
+)
 from app.modules.net_worth.evidence_service import SelectedAccountSnapshotIdentity
 from app.modules.net_worth.writer import NetWorthSnapshotWriteDisposition
 from app.modules.snapshot_refresh.executor import (
@@ -141,6 +146,13 @@ def _validate_command(
         or not isinstance(value.source, SnapshotSource)
         or not isinstance(value.is_recalculated, bool)
         or value.is_recalculated is not (value.source is SnapshotSource.manual_recalculation)
+        or (
+            value.publication_job_id is not None
+            and not (
+                value.granularity is SnapshotGranularity.minute
+                and value.source is SnapshotSource.import_event
+            )
+        )
     ):
         raise _unavailable()
     _nonblank(value.user_id)
@@ -148,6 +160,17 @@ def _validate_command(
     _calculation_version(value.calculation_version)
     _timestamp(value.calculated_at)
     _timestamp(value.created_at)
+    if value.publication_job_id is not None:
+        _nonblank(value.publication_job_id)
+    if (
+        not isinstance(value.publication_account_ids, tuple)
+        or tuple(_nonblank(account_id) for account_id in value.publication_account_ids)
+        != value.publication_account_ids
+        or value.publication_account_ids != tuple(sorted(value.publication_account_ids))
+        or len(set(value.publication_account_ids)) != len(value.publication_account_ids)
+        or (value.publication_job_id is None) != (not value.publication_account_ids)
+    ):
+        raise _unavailable()
     return value
 
 
@@ -324,7 +347,7 @@ class MarketBackedSnapshotRefreshService:
         settings: Settings,
         *,
         market_service_factory: MarketServiceFactory = (create_production_market_evidence_service),
-        executor_factory: SnapshotExecutorFactory = UserSnapshotRefreshExecutor,
+        executor_factory: SnapshotExecutorFactory | None = None,
         market_service: _MarketService | None = None,
         snapshot_executor: _SnapshotExecutor | None = None,
     ) -> None:
@@ -334,6 +357,7 @@ class MarketBackedSnapshotRefreshService:
         self.executor_factory = executor_factory
         self.market_service = market_service
         self.snapshot_executor = snapshot_executor
+        self.source_policy = market_evidence_source_policy_from_settings(settings)
 
     def _require_idle_entry(self) -> None:
         if self.session.in_transaction():
@@ -363,6 +387,9 @@ class MarketBackedSnapshotRefreshService:
                     user_id=canonical.user_id,
                     snapshot_timestamp=canonical.snapshot_timestamp,
                     created_at=canonical.created_at,
+                    reuse_persisted_fx_on_conflict=(
+                        canonical.source is SnapshotSource.manual_recalculation
+                    ),
                 )
             )
         except MarketEvidenceConflictError as exc:
@@ -379,7 +406,14 @@ class MarketBackedSnapshotRefreshService:
 
         snapshot_executor = self.snapshot_executor
         if snapshot_executor is None:
-            snapshot_executor = self.executor_factory(self.session)
+            snapshot_executor = (
+                UserSnapshotRefreshExecutor(
+                    self.session,
+                    source_policy=self.source_policy,
+                )
+                if self.executor_factory is None
+                else self.executor_factory(self.session)
+            )
         await self._dependency_must_leave_idle("snapshot")
         try:
             snapshots = await snapshot_executor.execute(
@@ -392,12 +426,34 @@ class MarketBackedSnapshotRefreshService:
                     calculated_at=canonical.calculated_at,
                     created_at=canonical.created_at,
                     is_recalculated=canonical.is_recalculated,
+                    publication_job_id=canonical.publication_job_id,
+                    publication_account_ids=canonical.publication_account_ids,
                 )
             )
         except SnapshotRefreshExecutionConflictError as exc:
             await self._dependency_must_leave_idle("snapshot")
             raise _conflict() from exc
         except SnapshotRefreshExecutionStateError as exc:
+            cause = exc.__cause__
+            cause_frames = traceback.extract_tb(cause.__traceback__) if cause is not None else ()
+            cause_frame = next(
+                (
+                    frame
+                    for frame in reversed(cause_frames)
+                    if "/daily_baselines/" in frame.filename.replace("\\", "/")
+                    and frame.name != "_fail"
+                ),
+                None,
+            )
+            structlog.get_logger(__name__).warning(
+                "snapshot_refresh_execution_state",
+                user_id=canonical.user_id,
+                publication_job_id=canonical.publication_job_id,
+                cause_type=type(cause).__name__ if cause is not None else None,
+                cause_location=(
+                    f"{cause_frame.name}:{cause_frame.lineno}" if cause_frame is not None else None
+                ),
+            )
             await self._dependency_must_leave_idle("snapshot")
             raise _unavailable() from exc
         except Exception:

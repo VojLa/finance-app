@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import Numeric, inspect
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.models.common import MONEY, PERCENTAGE, QUANTITY
 from app.db.models.enums import (
@@ -20,6 +21,7 @@ from app.db.models.enums import (
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.holdings import HoldingModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.modules.snapshots import (
     AccountSnapshotPersistenceMetadata,
@@ -59,6 +61,7 @@ def _holding(
     quantity: Decimal = Decimal("2"),
     average_buy_price: Decimal = Decimal("80"),
     currency: str = "EUR",
+    cost_basis_by_currency: tuple[CurrencyAmount, ...] | None = None,
 ) -> SnapshotHoldingEvidence:
     return SnapshotHoldingEvidence(
         holding_id=holding_id,
@@ -71,6 +74,11 @@ def _holding(
         quantity=quantity,
         average_buy_price=average_buy_price,
         cost_currency=currency,
+        cost_basis_by_currency=(
+            cost_basis_by_currency
+            if cost_basis_by_currency is not None
+            else (CurrencyAmount(currency, quantity * average_buy_price),)
+        ),
     )
 
 
@@ -278,7 +286,8 @@ def _mixed_investment_evidence(
                 _holding(
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("10"),
-                    currency="USD",
+                    currency="GBP",
+                    cost_basis_by_currency=(CurrencyAmount("USD", Decimal("20")),),
                 ),
             ),
             prices=(
@@ -331,7 +340,14 @@ def _evidence(
     historical_rate_ids: tuple[str, ...] = ("historical-eur",),
 ) -> CompleteAccountSnapshotEvidence:
     selected = valuation or _valuation()
-    unrealized = selected.investment_value - selected.investment_cost_basis
+    selected_unrealized_pnl = unrealized_pnl
+    if selected_unrealized_pnl is None:
+        if selected.investment_cost_basis is None:
+            raise AssertionError("Unknown cost basis requires explicit unrealized-P/L evidence.")
+        selected_unrealized_pnl = ExactSnapshotMetric(
+            selected.investment_value - selected.investment_cost_basis,
+            None,
+        )
     return CompleteAccountSnapshotEvidence(
         valuation=selected,
         net_deposits=cast(
@@ -348,7 +364,7 @@ def _evidence(
         ),
         unrealized_pnl=cast(
             Any,
-            unrealized_pnl if unrealized_pnl is not None else ExactSnapshotMetric(unrealized, None),
+            selected_unrealized_pnl,
         ),
         fees=cast(
             Any,
@@ -487,6 +503,7 @@ def test_mixed_currency_investment_maps_native_and_converted_physical_fields() -
     assert row.unrealized_pnl_value == Decimal("18.000000")
     assert row.total_value == Decimal("36.000000")
     assert row.investment_value_by_currency.to_json() == {"GBP": "30.0000000000"}
+    assert row.investment_cost_basis_by_currency is not None
     assert row.investment_cost_basis_by_currency.to_json() == {"USD": "20.0000000000"}
     assert item.price_currency == "GBP"
     assert item.value_currency == "GBP"
@@ -525,6 +542,39 @@ def test_mixed_currency_investment_maps_native_and_converted_physical_fields() -
     }
 
 
+def test_provider_quote_currency_persists_separately_from_average_cost_currency() -> None:
+    valuation = _valuation(
+        holdings=(
+            _holding(
+                average_buy_price=Decimal("80"),
+                currency="EUR",
+                cost_basis_by_currency=(CurrencyAmount("EUR", Decimal("160")),),
+            ),
+        ),
+        prices=(_price(price=Decimal("100"), currency="USD"),),
+        rates=(
+            _rate("EUR", Decimal("25")),
+            _rate("USD", Decimal("23")),
+        ),
+    )
+
+    result = _project(_evidence(valuation))
+
+    item = result.items[0]
+    assert (item.price_currency, item.value_currency, item.value) == (
+        "USD",
+        "USD",
+        Decimal("4600"),
+    )
+    assert (
+        item.average_buy_price,
+        item.average_buy_price_currency,
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.cost_basis,
+    ) == (Decimal("80"), "EUR", Decimal("160"), "EUR", Decimal("4000"))
+
+
 def test_output_currency_changes_snapshot_and_item_identity_only_at_currency_boundary() -> None:
     eur = _project(_mixed_investment_evidence(output_currency="EUR"))
     czk = _project(_mixed_investment_evidence(output_currency="CZK"))
@@ -542,9 +592,21 @@ def test_output_currency_changes_snapshot_and_item_identity_only_at_currency_bou
     assert eur.items[0].id == "a14af172-cf94-598b-bcde-67b719476681"
 
 
+def test_generation_changes_snapshot_and_item_identity() -> None:
+    first = _project(metadata=_metadata(generation_id="generation-1"))
+    repeated = _project(metadata=_metadata(generation_id="generation-1"))
+    second = _project(metadata=_metadata(generation_id="generation-2"))
+
+    assert first.snapshot.id == repeated.snapshot.id
+    assert first.items[0].id == repeated.items[0].id
+    assert first.snapshot.id != second.snapshot.id
+    assert first.items[0].id != second.items[0].id
+    assert first.snapshot.generation_id == "generation-1"
+
+
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 def test_liability_snapshot_maps_positive_liability_and_negative_total(
     account_type: AccountType,
@@ -575,7 +637,7 @@ def test_liability_snapshot_maps_positive_liability_and_negative_total(
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 def test_mixed_currency_liability_maps_one_direct_rate_and_native_breakdown(
     account_type: AccountType,
@@ -886,6 +948,51 @@ def test_each_unsupported_metric_rejects_the_complete_projection(field_name: str
         _project(corrupted)
 
 
+def test_unknown_cost_basis_persists_null_evidence_without_coercing_value_to_zero() -> None:
+    unknown = replace(
+        _holding(),
+        average_buy_price=None,
+        cost_basis_by_currency=None,
+    )
+    valuation = _valuation(holdings=(unknown,))
+    evidence = _evidence(
+        valuation,
+        net_deposits=UnsupportedSnapshotMetric(
+            SnapshotMetricUnsupportedReason.external_cash_flow_classification_unavailable
+        ),
+        realized_pnl=UnsupportedSnapshotMetric(
+            SnapshotMetricUnsupportedReason.realized_pnl_evidence_unavailable
+        ),
+        unrealized_pnl=UnsupportedSnapshotMetric(
+            SnapshotMetricUnsupportedReason.cost_basis_evidence_unavailable
+        ),
+    )
+
+    result = _project(evidence)
+
+    assert result.snapshot.investment_value == Decimal("5000")
+    assert result.snapshot.total_value == Decimal("5100")
+    assert result.snapshot.investment_cost_basis is None
+    assert result.snapshot.investment_cost_basis_by_currency is None
+    assert result.snapshot.net_deposits_value is None
+    assert result.snapshot.net_deposits_by_currency is None
+    assert result.snapshot.realized_pnl_value is None
+    assert result.snapshot.realized_pnl_by_currency is None
+    assert result.snapshot.unrealized_pnl_value is None
+    assert result.snapshot.unrealized_pnl_by_currency is None
+    item = result.items[0]
+    assert item.value == Decimal("5000")
+    assert (
+        item.native_cost_basis,
+        item.native_cost_currency,
+        item.native_cost_basis_by_currency,
+        item.average_buy_price,
+        item.average_buy_price_currency,
+        item.cost_basis,
+        item.cost_currency,
+    ) == (None, None, None, None, None, None, None)
+
+
 def test_cash_account_evidence_with_structural_unrealized_zero_is_not_persistable() -> None:
     valuation = build_account_snapshot_projection(
         AccountSnapshotProjectionInput(
@@ -959,6 +1066,9 @@ def test_breakdowns_use_sorted_fixed_scale_decimal_strings() -> None:
     )
     row = _project(evidence).snapshot
 
+    assert row.net_deposits_by_currency is not None
+    assert row.realized_pnl_by_currency is not None
+    assert row.investment_cost_basis_by_currency is not None
     assert row.net_deposits_by_currency.to_json() == {
         "EUR": "20.000000",
         "USD": "-1.250000",
@@ -1312,10 +1422,6 @@ def test_physical_numeric_and_nullability_contracts_match_models() -> None:
     for name in (
         "cashValue",
         "investmentValue",
-        "investmentCostBasis",
-        "netDepositsValue",
-        "realizedPnlValue",
-        "unrealizedPnlValue",
         "feesValue",
         "taxesValue",
         "liabilitiesValue",
@@ -1324,6 +1430,15 @@ def test_physical_numeric_and_nullability_contracts_match_models() -> None:
         numeric = cast(Numeric, snapshot_table.c[name].type)
         assert (numeric.precision, numeric.scale) == (MONEY.precision, MONEY.scale)
         assert snapshot_table.c[name].nullable is False
+    for name in (
+        "investmentCostBasis",
+        "netDepositsValue",
+        "realizedPnlValue",
+        "unrealizedPnlValue",
+    ):
+        numeric = cast(Numeric, snapshot_table.c[name].type)
+        assert (numeric.precision, numeric.scale) == (MONEY.precision, MONEY.scale)
+        assert snapshot_table.c[name].nullable is True
     for name in (
         "quantity",
         "pricePerUnit",
@@ -1341,12 +1456,32 @@ def test_physical_numeric_and_nullability_contracts_match_models() -> None:
     assert item_table.c.assetId.nullable is True
     assert item_table.c.listingId.nullable is False
     assert snapshot_table.c.exchangeRates.nullable is True
+    holding_cost_json = HoldingModel.__table__.c.costBasisByCurrency.type
+    item_cost_json = item_table.c.nativeCostBasisByCurrency.type
+    assert isinstance(holding_cost_json, JSONB)
+    assert isinstance(item_cost_json, JSONB)
+    assert holding_cost_json.none_as_null is True
+    assert item_cost_json.none_as_null is True
+    for name in (
+        "cashValueByCurrency",
+        "investmentValueByCurrency",
+        "investmentCostBasisByCurrency",
+        "netDepositsByCurrency",
+        "realizedPnlByCurrency",
+        "unrealizedPnlByCurrency",
+        "feesByCurrency",
+        "taxesByCurrency",
+        "exchangeRates",
+    ):
+        json_type = snapshot_table.c[name].type
+        assert isinstance(json_type, JSONB)
+        assert json_type.none_as_null is True
 
 
-def test_audit_metadata_is_not_invented_as_physical_columns() -> None:
+def test_audit_metadata_is_separate_while_liability_currency_evidence_is_persisted() -> None:
     result = _project()
     values = result.snapshot.model_values()
     assert "selected_price_ids" not in values
     assert "selected_snapshot_exchange_rate_ids" not in values
     assert "selected_historical_exchange_rate_ids" not in values
-    assert "liabilities_value_by_currency" not in values
+    assert values["liabilities_value_by_currency"] == {}

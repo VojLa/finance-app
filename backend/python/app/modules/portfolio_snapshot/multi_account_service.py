@@ -7,12 +7,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
-from app.modules.accounts.access import AccountAccessDeniedError, AccountNotFoundError
+from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.modules.accounts.access import (
+    AccountAccessDeniedError,
+    AccountNotFoundError,
+    AuthorizedAccount,
+)
 from app.modules.portfolio_snapshot.aggregate_models import (
     AccountPortfolioPresentationView,
     MultiAccountPortfolioView,
@@ -32,6 +37,11 @@ from app.modules.portfolio_snapshot.authorized_reader import (
 from app.modules.portfolio_snapshot.models import (
     PortfolioSnapshotView,
     SnapshotGranularity,
+)
+from app.modules.portfolio_snapshot.reader import (
+    _GRANULARITY_TO_DB,
+    PortfolioSnapshotReader,
+    PreloadedPortfolioSnapshotRepository,
 )
 
 
@@ -61,6 +71,7 @@ class ReadAuthorizedMultiAccountPortfolioSnapshotResult:
 
     portfolio: MultiAccountPortfolioView
     account_presentations: tuple[AccountPortfolioPresentationView, ...]
+    valuation_timestamp: datetime | None = None
 
 
 def _presentation_account(
@@ -99,8 +110,9 @@ def _presentation_account(
             position.price_timestamp,
             position.native_value,
             position.native_value_currency,
-            position.native_cost_basis,
-            position.native_cost_currency,
+            position.native_cost_basis_by_currency,
+            position.average_buy_price,
+            position.average_buy_price_currency,
         )
         for position in primary.positions
     )
@@ -114,8 +126,9 @@ def _presentation_account(
             position.price_timestamp,
             position.native_value,
             position.native_value_currency,
-            position.native_cost_basis,
-            position.native_cost_currency,
+            position.native_cost_basis_by_currency,
+            position.average_buy_price,
+            position.average_buy_price_currency,
         )
         for position in presentation.positions
     )
@@ -257,9 +270,10 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
         try:
             async with self.session.begin():
                 await self.session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
-                authorized_reader = self.authorized_reader_factory(self.session)
+                authorized_reader, preloaded_repository = await self._batched_reader(canonical)
                 views: list[PortfolioSnapshotView] = []
                 presentations: list[AccountPortfolioPresentationView] = []
+                valuation_timestamps: list[datetime] = []
                 for selector in canonical.accounts:
                     result = await authorized_reader.read(
                         ReadAuthorizedPortfolioSnapshotCommand(
@@ -278,8 +292,23 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
                     if primary.currency != canonical.currency:
                         raise portfolio_snapshot_unavailable()
                     views.append(primary)
+                    if result.valuation_timestamp is not None:
+                        valuation_timestamps.append(result.valuation_timestamp)
                     presentation = primary
                     if primary.account.currency != canonical.currency:
+                        companion_snapshot_id = None
+                        if preloaded_repository is not None:
+                            companion_snapshot_id = (
+                                preloaded_repository.resolve_generation_peer_snapshot_id(
+                                    primary_snapshot_id=primary.snapshot_id,
+                                    account_id=selector.account_id,
+                                    timestamp=canonical.timestamp,
+                                    granularity=_GRANULARITY_TO_DB[canonical.granularity],
+                                    currency=primary.account.currency,
+                                )
+                            )
+                            if companion_snapshot_id is None:
+                                raise portfolio_snapshot_unavailable()
                         companion_result = await authorized_reader.read(
                             ReadAuthorizedPortfolioSnapshotCommand(
                                 principal=canonical.principal,
@@ -288,12 +317,14 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
                                 granularity=canonical.granularity,
                                 currency=primary.account.currency,
                                 calculation_version=canonical.calculation_version,
-                                required_snapshot_id=None,
+                                required_snapshot_id=companion_snapshot_id,
                             )
                         )
                         if type(companion_result) is not ReadAuthorizedPortfolioSnapshotResult:
                             raise portfolio_snapshot_unavailable()
                         presentation = companion_result.view
+                        if companion_result.valuation_timestamp is not None:
+                            valuation_timestamps.append(companion_result.valuation_timestamp)
                     presentations.append(_presentation_account(primary, presentation))
                 portfolio = self.aggregate_builder(tuple(views))
                 if type(portfolio) is not MultiAccountPortfolioView:
@@ -324,6 +355,7 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
         return ReadAuthorizedMultiAccountPortfolioSnapshotResult(
             portfolio=portfolio,
             account_presentations=tuple(presentations),
+            valuation_timestamp=min(valuation_timestamps, default=portfolio.timestamp),
         )
 
     async def _require_idle(self, message: str) -> None:
@@ -334,3 +366,56 @@ class AuthorizedMultiAccountPortfolioSnapshotService:
     async def _close_active_transaction(self) -> None:
         if self.session.in_transaction():
             await self.session.rollback()
+
+    async def _batched_reader(
+        self, command: ReadAuthorizedMultiAccountPortfolioSnapshotCommand
+    ) -> tuple[_AuthorizedReader, PreloadedPortfolioSnapshotRepository | None]:
+        if self.authorized_reader_factory is not AuthorizedExactPortfolioSnapshotReader:
+            return self.authorized_reader_factory(self.session), None
+        account_ids = tuple(selector.account_id for selector in command.accounts)
+        rows = (
+            await self.session.execute(
+                select(
+                    AccountMemberModel.account_id,
+                    AccountMemberModel.role,
+                    AccountMemberModel.relation_type,
+                    AccountModel.currency,
+                )
+                .join(AccountModel, AccountModel.id == AccountMemberModel.account_id)
+                .where(
+                    AccountMemberModel.user_id == command.principal.user_id,
+                    AccountMemberModel.account_id.in_(account_ids),
+                    AccountMemberModel.accepted_at.is_not(None),
+                    AccountModel.is_archived.is_(False),
+                )
+            )
+        ).all()
+        authorized = {
+            account_id: AuthorizedAccount(account_id, role, relation_type)
+            for account_id, role, relation_type, _ in rows
+        }
+        if set(authorized) != set(account_ids):
+            raise AccountNotFoundError()
+        repository = await PreloadedPortfolioSnapshotRepository.load(
+            self.session,
+            account_ids=account_ids,
+            timestamp=command.timestamp,
+            granularity=_GRANULARITY_TO_DB[command.granularity],
+            currencies=tuple(sorted({command.currency, *(currency for _, _, _, currency in rows)})),
+        )
+
+        async def access_checker(**kwargs: object) -> AuthorizedAccount:
+            account_id = kwargs["account_id"]
+            if not isinstance(account_id, str) or account_id not in authorized:
+                raise AccountNotFoundError()
+            return authorized[account_id]
+
+        def reader_factory(session: AsyncSession) -> PortfolioSnapshotReader:
+            return PortfolioSnapshotReader(session, repository=repository)
+
+        return (
+            AuthorizedExactPortfolioSnapshotReader(
+                self.session, reader_factory=reader_factory, access_checker=access_checker
+            ),
+            repository,
+        )

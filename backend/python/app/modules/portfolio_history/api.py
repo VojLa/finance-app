@@ -1,4 +1,4 @@
-"""Authenticated HTTP adapter for snapshot-backed portfolio history."""
+"""Authenticated HTTP adapter for published portfolio snapshot history."""
 
 from typing import Annotated
 
@@ -7,49 +7,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
-from app.modules.portfolio_history.api_models import PortfolioHistoryResponse
-from app.modules.portfolio_history.models import PortfolioHistoryRange
-from app.modules.portfolio_history.service import (
-    Clock,
-    ReadPortfolioHistoryCommand,
-    SnapshotBackedPortfolioHistoryService,
-    current_portfolio_history_timestamp,
-)
+from app.modules.portfolio_snapshot.history_api_models import PortfolioHistoryResponse
+from app.modules.portfolio_snapshot.history_contracts import HistoryPublicRange
+from app.modules.portfolio_snapshot.history_reader import PublishedPortfolioSnapshotHistoryReader
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio-history"])
 
 
-def get_portfolio_history_clock() -> Clock:
-    return current_portfolio_history_timestamp
-
-
-def get_snapshot_backed_portfolio_history_service(
+def get_published_portfolio_snapshot_history_reader(
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    clock: Annotated[Clock, Depends(get_portfolio_history_clock)],
-) -> SnapshotBackedPortfolioHistoryService:
-    return SnapshotBackedPortfolioHistoryService(session, clock=clock)
+) -> PublishedPortfolioSnapshotHistoryReader:
+    return PublishedPortfolioSnapshotHistoryReader(session)
 
 
 @router.get(
     "/history",
     response_model=PortfolioHistoryResponse,
     response_model_by_alias=True,
+    response_model_exclude_none=True,
 )
 async def read_portfolio_history(
     principal: CurrentPrincipal,
-    service: Annotated[
-        SnapshotBackedPortfolioHistoryService,
-        Depends(get_snapshot_backed_portfolio_history_service),
+    reader: Annotated[
+        PublishedPortfolioSnapshotHistoryReader,
+        Depends(get_published_portfolio_snapshot_history_reader),
     ],
     history_range: Annotated[
-        PortfolioHistoryRange,
+        HistoryPublicRange,
         Query(alias="range"),
-    ] = PortfolioHistoryRange.one_year,
+    ] = HistoryPublicRange.one_year,
+    account_id: Annotated[str | None, Query(alias="accountId")] = None,
 ) -> PortfolioHistoryResponse:
-    result = await service.read(
-        ReadPortfolioHistoryCommand(
-            principal=principal,
-            range=history_range,
-        )
+    return await reader.read(
+        principal=principal,
+        history_range=history_range,
+        account_id=account_id,
     )
-    return PortfolioHistoryResponse.model_validate(result.history, from_attributes=True)

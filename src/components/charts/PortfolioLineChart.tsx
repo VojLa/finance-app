@@ -1,10 +1,11 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import {
   Area,
   AreaChart,
   CartesianGrid,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,6 +17,7 @@ import type { SnapshotPortfolioHistoryRange } from "@/modules/portfolio/snapshot
 import { formatSnapshotAmount } from "@/modules/portfolio/snapshot-page-format"
 import {
   buildPortfolioHistoryChartPoints,
+  formatHistoryResolution,
   type PortfolioHistoryChartPoint,
   type PortfolioHistoryChartProps,
   type PortfolioHistoryValueMode,
@@ -27,11 +29,14 @@ const RANGES: ReadonlyArray<{
   label: string
   value: SnapshotPortfolioHistoryRange
 }> = [
+  { label: "Den", value: "1D" },
   { label: "Týden", value: "1W" },
   { label: "Měsíc", value: "1M" },
   { label: "3 měs.", value: "3M" },
   { label: "6 měs.", value: "6M" },
   { label: "1 rok", value: "1Y" },
+  { label: "5 let", value: "5Y" },
+  { label: "10 let", value: "10Y" },
   { label: "Vše", value: "ALL" },
 ]
 
@@ -46,7 +51,7 @@ function valueModeLabel(valueMode: PortfolioHistoryValueMode): string {
 function formatAxisValue(value: number, currency: string): string {
   const formatted = new Intl.NumberFormat("cs-CZ", {
     notation: "compact",
-    maximumFractionDigits: 1,
+    maximumFractionDigits: 2,
   }).format(value)
   return `${formatted} ${currency}`
 }
@@ -62,7 +67,12 @@ export function PortfolioLineChart({
   onRangeChange,
   valueMode,
   onValueModeChange,
+  preferredResolutionMinutes,
+  resolutions,
+  coverage,
+  onPointSelect,
 }: PortfolioHistoryChartProps) {
+  const [showNetInvested, setShowNetInvested] = useState(false)
   const chartData = useMemo(
     () => buildPortfolioHistoryChartPoints(points, valueMode),
     [points, valueMode]
@@ -79,6 +89,12 @@ export function PortfolioLineChart({
         <p className="font-medium text-gray-900">
           {formatSnapshotAmount(point.exactValue, currency)}
         </p>
+        {showNetInvested && point.netInvestedExactValue !== null && (
+          <p className="text-xs text-gray-600">
+            Vložené prostředky: {formatSnapshotAmount(point.netInvestedExactValue, currency)}
+          </p>
+        )}
+        <p className="text-xs text-gray-500">Rozlišení bodu: {point.resolutionLabel}</p>
       </div>
     )
   }
@@ -89,6 +105,11 @@ export function PortfolioLineChart({
         <div>
           <h3 className="text-lg font-medium">{chartTitle(valueMode)}</h3>
           <p className="text-sm text-gray-500">Měna historie: {currency}</p>
+          <p className="text-xs text-gray-500">
+            {preferredResolutionMinutes === undefined
+              ? "Zatím není publikovaná žádná historická vrstva."
+              : `Preferované rozlišení: ${formatHistoryResolution(preferredResolutionMinutes)} · Použité vrstvy: ${resolutions.map(formatHistoryResolution).join(", ")} · Pokrytí: ${coverage.length}${coverage.length === 1 ? " úsek" : " úseků"}`}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex gap-1 rounded-lg bg-gray-100 p-1" aria-label="Hodnota grafu">
@@ -107,6 +128,22 @@ export function PortfolioLineChart({
                 {valueModeLabel(mode)}
               </button>
             ))}
+          </div>
+          <div className="flex items-center gap-2" aria-label="Doplňková řada grafu">
+            <button
+              type="button"
+              disabled={!points.some((point) => point.netInvestedValue !== undefined)}
+              aria-pressed={showNetInvested}
+              onClick={() => setShowNetInvested((value) => !value)}
+              title="Zobrazit vložené prostředky"
+              className={`rounded-md border px-3 py-1 text-xs font-medium ${
+                showNetInvested
+                  ? "border-gray-500 bg-gray-100 text-gray-800"
+                  : "border-gray-200 text-gray-600"
+              } disabled:cursor-not-allowed disabled:text-gray-400`}
+            >
+              Vložené prostředky
+            </button>
           </div>
           <div
             className="flex flex-wrap gap-1 rounded-lg bg-gray-100 p-1"
@@ -137,7 +174,16 @@ export function PortfolioLineChart({
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={240}>
-          <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <AreaChart
+            data={chartData}
+            margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+            onClick={(event) => {
+              const index = event?.activeTooltipIndex
+              if (typeof index === "number" && chartData[index]) {
+                onPointSelect?.(chartData[index].source)
+              }
+            }}
+          >
             <defs>
               <linearGradient id="portfolioHistoryGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#10b981" stopOpacity={0.15} />
@@ -176,6 +222,19 @@ export function PortfolioLineChart({
               dot={chartData.length === 1 ? { r: 4 } : false}
               activeDot={{ r: 4 }}
             />
+            {showNetInvested && (
+              <Line
+                type="linear"
+                dataKey="netInvestedDisplayValue"
+                name="Vložené prostředky"
+                stroke="#6b7280"
+                strokeWidth={2}
+                strokeDasharray="6 5"
+                dot={false}
+                activeDot={{ r: 3 }}
+                connectNulls
+              />
+            )}
           </AreaChart>
         </ResponsiveContainer>
       )}

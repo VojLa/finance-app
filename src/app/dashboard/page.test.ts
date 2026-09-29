@@ -26,9 +26,9 @@ const operationalPayload = {
     portfolioValueCzk: 2,
     liabilitiesValueCzk: -1,
     netWorthCzk: 2,
-    currentMonthIncomeCzk: 100,
-    currentMonthExpenseCzk: 40,
-    currentMonthNetCzk: 60,
+    currentMonthIncomeCzk: "100.000000",
+    currentMonthExpenseCzk: "40.000000",
+    currentMonthNetCzk: "60.000000",
   },
   accountBalances: [{ accountId: "legacy-financial-data" }],
   budget: null,
@@ -45,6 +45,15 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 describe("dashboard snapshot cutover clients", () => {
+  it("refreshes only after the completed-import event and retains a ready snapshot on refresh error", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/dashboard/page.tsx"), "utf8")
+
+    expect(page).toContain(
+      'window.addEventListener("finance:import-completed", refreshOnImportCompleted)'
+    )
+    expect(page).toContain("resolveSnapshotPublication")
+  })
+
   it("uses one bodyless no-store POST and preserves the ready snapshot response", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -165,6 +174,13 @@ describe("dashboard snapshot cutover clients", () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === OPERATIONAL_DASHBOARD_PATH)).toHaveLength(
       1
     )
+  })
+
+  it("refreshes both dashboard payloads and guards operational response order", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/dashboard/page.tsx"), "utf8")
+    expect(page).toContain("loadDashboard(true)")
+    expect(page).toContain("operationalRequestId.current")
+    expect(page).toContain("requestOperationalDashboardState()")
   })
 
   it("keeps operational failure independent from ready snapshot financial data", async () => {

@@ -147,6 +147,7 @@ async def test_sqlalchemy_repository_reads_prisma_migrated_schema() -> None:
                     asset_type=AssetType.etf,
                     quantity=Decimal("2"),
                     avg_buy_price=Decimal("100"),
+                    cost_basis_by_currency={"USD": "200"},
                     currency="USD",
                     current_price=None,
                     current_value=None,

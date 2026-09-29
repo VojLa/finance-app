@@ -8,9 +8,11 @@ import { beforeEach, describe, expect, it, vi, type Mock } from "vitest"
 import {
   runDashboardSnapshotWorkflow,
   runPortfolioSnapshotWorkflow,
+  refreshPortfolioSnapshotWorkflow,
 } from "@/modules/python-api/server/snapshot-workflow"
 import * as dashboardRoute from "@/app/api/snapshot-workflow/dashboard/route"
 import * as portfolioRoute from "@/app/api/snapshot-workflow/portfolio/route"
+import * as portfolioRefreshRoute from "@/app/api/snapshot-workflow/portfolio/refresh/route"
 
 vi.mock("next-auth", () => ({
   getServerSession: vi.fn(),
@@ -23,6 +25,7 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/modules/python-api/server/snapshot-workflow", () => ({
   runPortfolioSnapshotWorkflow: vi.fn(),
   runDashboardSnapshotWorkflow: vi.fn(),
+  refreshPortfolioSnapshotWorkflow: vi.fn(),
 }))
 
 const ROOT = process.cwd()
@@ -47,6 +50,7 @@ const AUDIT_FILES = [
 const getSession = vi.mocked(getServerSession)
 const runPortfolio = vi.mocked(runPortfolioSnapshotWorkflow)
 const runDashboard = vi.mocked(runDashboardSnapshotWorkflow)
+const runPortfolioRefresh = vi.mocked(refreshPortfolioSnapshotWorkflow)
 
 const EMPTY_RESULT = {
   status: "empty" as const,
@@ -67,7 +71,7 @@ const EMPTY_RESULT = {
 }
 
 type RouteAudit = {
-  name: "portfolio" | "dashboard"
+  name: "portfolio" | "dashboard" | "portfolio-refresh"
   module: Record<string, unknown>
   post: () => Promise<Response>
   workflow: Mock
@@ -81,6 +85,13 @@ const ROUTES: RouteAudit[] = [
     post: portfolioRoute.POST,
     workflow: runPortfolio as unknown as Mock,
     source: "src/app/api/snapshot-workflow/portfolio/route.ts",
+  },
+  {
+    name: "portfolio-refresh",
+    module: portfolioRefreshRoute,
+    post: portfolioRefreshRoute.POST,
+    workflow: runPortfolioRefresh as unknown as Mock,
+    source: "src/app/api/snapshot-workflow/portfolio/refresh/route.ts",
   },
   {
     name: "dashboard",
@@ -143,7 +154,7 @@ describe("5M production file freeze", () => {
 describe.each(ROUTES)(
   "$name workflow route final audit",
   ({ module, post, workflow, source: file }) => {
-    it("is one of exactly two POST-only bodyless route modules", async () => {
+    it("is one of the explicit POST-only bodyless route modules", async () => {
       const routeFiles = (await filesBelow("src/app/api/snapshot-workflow"))
         .filter((candidate) => candidate.endsWith("route.ts"))
         .map((candidate) => candidate.replaceAll("\\", "/"))
@@ -152,6 +163,7 @@ describe.each(ROUTES)(
 
       expect(routeFiles).toEqual([
         "src/app/api/snapshot-workflow/dashboard/route.ts",
+        "src/app/api/snapshot-workflow/portfolio/refresh/route.ts",
         "src/app/api/snapshot-workflow/portfolio/route.ts",
       ])
       expect(Object.keys(module)).toEqual(["POST"])

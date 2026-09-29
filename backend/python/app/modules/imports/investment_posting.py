@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.common import TIMESTAMP
-from app.db.models.enums import ImportRowStatus
+from app.db.models.enums import ImportRowStatus, ImportSource, InvestmentEventType
 from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.modules.canonical_state import (
@@ -67,6 +67,17 @@ def _event_matches(
     event_id: str,
     plan: InvestmentEventPostingPlan,
 ) -> bool:
+    realized_pnl_matches = (
+        event.realized_pnl == plan.realized_pnl
+        and event.realized_pnl_currency == plan.realized_pnl_currency
+    ) or (
+        plan.source is ImportSource.anycoin
+        and plan.event_type is InvestmentEventType.trade
+        and plan.realized_pnl is None
+        and plan.realized_pnl_currency is None
+        and event.realized_pnl is not None
+        and event.realized_pnl_currency == plan.quote_currency
+    )
     return (
         event.id == event_id
         and event.account_id == plan.account_id
@@ -76,8 +87,7 @@ def _event_matches(
         and event.external_id == plan.external_id
         and event.order_id == plan.order_id
         and event.description == plan.description
-        and event.realized_pnl == plan.realized_pnl
-        and event.realized_pnl_currency == plan.realized_pnl_currency
+        and realized_pnl_matches
         and event.import_batch_id == plan.import_batch_id
         and event.archived_at is None
         and event.deleted_at is None

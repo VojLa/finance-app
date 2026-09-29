@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -37,6 +38,16 @@ MANIFEST_FIELDS = (
     "calculationVersion",
     "accounts",
 )
+
+
+@pytest.fixture
+def isolated_current_head_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    admin_url, database_name, database_url = asyncio.run(support._create_database())
+    monkeypatch.setattr(support, "DATABASE_URL", database_url)
+    try:
+        yield
+    finally:
+        asyncio.run(support._drop_database(admin_url, database_name))
 
 
 async def _database_evidence(
@@ -85,8 +96,9 @@ async def _database_evidence(
 def test_cash_only_fixture_reaches_snapshots_and_both_exact_reads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    isolated_current_head_database: None,
 ) -> None:
-    prefix = "r2-rb-cash-e2e"
+    prefix = f"r2-rb-cash-e2e-{support.uuid4().hex}"
     asyncio.run(support._seed(prefix, include_concurrent=False))
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path))
     app = support.create_app(support._settings())
@@ -198,4 +210,4 @@ def test_cash_only_fixture_reaches_snapshots_and_both_exact_reads(
         assert dashboard_payload["assetTypeAllocations"] == []
         assert dashboard_payload["topPositions"] == []
     finally:
-        asyncio.run(support._cleanup(prefix))
+        pass

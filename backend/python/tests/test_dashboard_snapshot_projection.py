@@ -90,6 +90,9 @@ def _item(
         native_value_currency="USD",
         native_cost_basis=cost_value,
         native_cost_currency="USD",
+        native_cost_basis_by_currency=(PortfolioCurrencyAmount("USD", cost_value),),
+        average_buy_price=cost_value,
+        average_buy_price_currency="USD",
     )
 
 
@@ -112,7 +115,6 @@ def _source(
     snapshot_source: SnapshotSource = SnapshotSource.manual_recalculation,
 ) -> PortfolioSnapshotSource:
     liability = account_type in {
-        AccountType.credit_card,
         AccountType.loan,
         AccountType.mortgage,
     }
@@ -120,6 +122,7 @@ def _source(
         AccountType.bank,
         AccountType.cash,
         AccountType.savings,
+        AccountType.credit_card,
     }
     if items is None:
         items = (
@@ -137,7 +140,11 @@ def _source(
             )
         )
     investment = sum((item.value for item in items), Decimal(0))
-    investment_cost = sum((item.cost_basis for item in items), Decimal(0))
+    investment_costs: list[Decimal] = []
+    for item in items:
+        assert item.cost_basis is not None
+        investment_costs.append(item.cost_basis)
+    investment_cost = sum(investment_costs, Decimal(0))
     cash_value = _money("0" if liability else cash)
     liabilities = _money("25" if liability else "0")
     structural_zero = liability or cash_only
@@ -228,7 +235,7 @@ def test_full_pipeline_projects_exact_dashboard_summary() -> None:
         (AccountType.bank, 0, 0),
         (AccountType.cash, 0, 0),
         (AccountType.savings, 0, 0),
-        (AccountType.credit_card, 0, 1),
+        (AccountType.credit_card, 0, 0),
         (AccountType.loan, 0, 1),
         (AccountType.mortgage, 0, 1),
     ],

@@ -18,13 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
-from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import AccountMemberRole, AccountRelationType, AccountType
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
 from app.modules.accounts.models import AccountCreateRequest
 from app.modules.accounts.service import AccountService
+from app.modules.market_data.source_policy import LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET = "step-4c-internal-auth-secret-32-characters"
@@ -83,6 +84,12 @@ async def _seed() -> None:
                     AccountModel.id.in_(["account-shared", "account-foreign", "account-archived"]),
                     AccountModel.name == "Created account",
                 )
+            )
+        )
+        await session.execute(
+            delete(AccountInviteModel).where(
+                (AccountInviteModel.inviter_id.in_(users))
+                | (AccountInviteModel.accepted_by_id.in_(users))
             )
         )
         await session.execute(delete(UserModel).where(UserModel.id.in_(users)))
@@ -164,7 +171,10 @@ async def _verify_atomic_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
     ids = iter([failed_id, member_id])
     monkeypatch.setattr("app.modules.accounts.service.uuid4", lambda: next(ids))
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        service = AccountService(session)
+        service = AccountService(
+            session,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        )
         with pytest.raises(IntegrityError):
             await service.create_account(
                 principal=AuthenticatedPrincipal(

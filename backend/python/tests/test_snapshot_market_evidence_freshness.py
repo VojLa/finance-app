@@ -69,7 +69,7 @@ def _holding() -> tuple[PersistedHoldingEvidence, ...]:
         mic=None,
         currency="EUR",
         country=None,
-        provider=PriceSource.yahoo_finance,
+        provider=PriceSource.twelve_data,
         provider_symbol="EXACT",
         is_primary=False,
         updated_at=NOW,
@@ -82,6 +82,7 @@ def _holding() -> tuple[PersistedHoldingEvidence, ...]:
         quantity=Decimal("2"),
         avg_buy_price=Decimal("100"),
         currency="EUR",
+        cost_basis_by_currency={"EUR": "200.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
@@ -102,7 +103,7 @@ def _price(timestamp: datetime) -> PriceSnapshotModel:
         listing_id="listing-1",
         price=Decimal("110"),
         currency="EUR",
-        source=PriceSource.yahoo_finance,
+        source=PriceSource.twelve_data,
         timestamp=timestamp,
     )
 
@@ -114,7 +115,7 @@ def _rate(timestamp: datetime, rate_id: str) -> ExchangeRateModel:
         to_currency="CZK",
         rate=Decimal("25"),
         date=timestamp,
-        source=ExchangeRateSource.ecb,
+        source=ExchangeRateSource.twelve_data,
     )
 
 

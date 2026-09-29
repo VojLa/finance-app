@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import delete, event, func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from support.cnb_fx import cnb_xml
 
 from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -33,12 +33,12 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
-    AccountSnapshotItemModel,
     AccountSnapshotModel,
     NetWorthSnapshotModel,
 )
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.dashboard_snapshot.authorized_service import (
     AuthorizedDashboardSnapshotService,
 )
@@ -68,6 +68,7 @@ from app.modules.snapshots.evidence_service import (
     AccountSnapshotEvidenceService,
     BuildAccountSnapshotEvidenceCommand,
 )
+from tests.support.investment_fixture_e2e import cleanup as cleanup_fixture
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -281,6 +282,7 @@ async def _seed_mixed_user(
                         account_id=broker_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"USD": "400.0000000000"},
                     ),
                     HoldingModel(
                         id=f"{prefix}-holding-crypto",
@@ -299,6 +301,7 @@ async def _seed_mixed_user(
                         account_id=exchange_id,
                         calculated_at=CREATED_AT,
                         updated_at=CREATED_AT,
+                        cost_basis_by_currency={"EUR": "400.0000000000"},
                     ),
                 )
             )
@@ -345,6 +348,19 @@ async def _seed_mixed_user(
                         updated_at=CREATED_AT,
                     )
                 )
+            await session.flush()
+            for account_id, currency in ((broker_id, "USD"), (exchange_id, "EUR")):
+                recorded = await CanonicalStateService(session).record(
+                    account_id=account_id,
+                    kind=CanonicalChangeKind.investment_event,
+                    entity_id=f"{prefix}-event-{currency.lower()}",
+                    financial_timestamp=EVENT_AT,
+                    created_at=CREATED_AT,
+                    replay=False,
+                )
+                state = await session.get(AccountCanonicalStateModel, account_id)
+                assert state is not None
+                state.holding_revision = recorded.revision
             await session.commit()
     finally:
         await engine.dispose()
@@ -358,98 +374,7 @@ async def _seed_mixed_user(
 
 async def _cleanup(prefix: str) -> None:
     """Remove one committed E2E graph so exact provider aliases stay isolated."""
-
-    engine = _engine()
-    try:
-        async with AsyncSession(engine) as session:
-            user_ids = tuple(
-                await session.scalars(
-                    select(UserModel.id).where(UserModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            account_ids = tuple(
-                await session.scalars(
-                    select(AccountModel.id).where(AccountModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            asset_ids = tuple(
-                await session.scalars(
-                    select(AssetModel.id).where(AssetModel.id.startswith(f"{prefix}-"))
-                )
-            )
-            listing_ids = tuple(
-                await session.scalars(
-                    select(AssetListingModel.id).where(
-                        AssetListingModel.id.startswith(f"{prefix}-")
-                    )
-                )
-            )
-            event_ids = tuple(
-                await session.scalars(
-                    select(InvestmentEventModel.id).where(
-                        InvestmentEventModel.account_id.in_(account_ids)
-                    )
-                )
-            )
-            snapshot_ids = tuple(
-                await session.scalars(
-                    select(AccountSnapshotModel.id).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-            )
-            if snapshot_ids:
-                await session.execute(
-                    delete(AccountSnapshotItemModel).where(
-                        AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
-                    )
-                )
-            if user_ids:
-                await session.execute(
-                    delete(NetWorthSnapshotModel).where(NetWorthSnapshotModel.user_id.in_(user_ids))
-                )
-            if account_ids:
-                await session.execute(
-                    delete(AccountSnapshotModel).where(
-                        AccountSnapshotModel.account_id.in_(account_ids)
-                    )
-                )
-                await session.execute(
-                    delete(HoldingModel).where(HoldingModel.account_id.in_(account_ids))
-                )
-            if listing_ids:
-                await session.execute(
-                    delete(PriceSnapshotModel).where(PriceSnapshotModel.listing_id.in_(listing_ids))
-                )
-            if event_ids:
-                await session.execute(
-                    delete(InvestmentMovementModel).where(
-                        InvestmentMovementModel.event_id.in_(event_ids)
-                    )
-                )
-                await session.execute(
-                    delete(InvestmentEventModel).where(InvestmentEventModel.id.in_(event_ids))
-                )
-            if asset_ids:
-                await session.execute(
-                    delete(AssetAliasModel).where(AssetAliasModel.asset_id.in_(asset_ids))
-                )
-            if listing_ids:
-                await session.execute(
-                    delete(AssetListingModel).where(AssetListingModel.id.in_(listing_ids))
-                )
-            if asset_ids:
-                await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
-            if account_ids:
-                await session.execute(
-                    delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
-                )
-                await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
-            if user_ids:
-                await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
-            await session.commit()
-    finally:
-        await engine.dispose()
+    await cleanup_fixture(prefix)
 
 
 def _transports(
@@ -459,7 +384,7 @@ def _transports(
     crypto_alias: str,
     twelve_status: int = 200,
     coingecko_stale: bool = False,
-    cnb_status: int = 200,
+    fx_status: int = 200,
 ) -> tuple[
     httpx.MockTransport,
     httpx.MockTransport,
@@ -496,34 +421,38 @@ def _transports(
             ).encode(),
         )
 
-    def cnb_handler(request: httpx.Request) -> httpx.Response:
+    def fx_handler(request: httpx.Request) -> httpx.Response:
         assert not session.in_transaction()
-        requested = request.url.params["date"]
-        calls.append(("cnb", requested))
-        if cnb_status != 200:
+        symbol = request.url.params["symbol"]
+        publication = datetime.fromisoformat(request.url.params["end_date"]).date() - timedelta(
+            days=1
+        )
+        calls.append(("twelve_data_fx", f"{symbol}@{publication.isoformat()}"))
+        if fx_status != 200:
             return httpx.Response(
-                cnb_status,
-                headers={"content-type": "text/xml"},
-                content=b"unavailable",
+                fx_status,
+                headers={"content-type": "application/json"},
+                content=b'{"status":"error"}',
             )
-        publication = datetime.strptime(requested, "%d.%m.%Y").date()
         is_event = publication == EVENT_AT.date()
+        rate = {
+            "EUR/CZK": "24.00000000" if is_event else "25.00000000",
+            "USD/CZK": "22.00000000" if is_event else "23.00000000",
+        }[symbol]
         return httpx.Response(
             200,
-            headers={"content-type": "text/xml"},
-            content=cnb_xml(
-                publication,
-                (
-                    ("EUR", "1", "24,000" if is_event else "25,000"),
-                    ("USD", "1", "22,000" if is_event else "23,000"),
-                ),
-            ),
+            headers={"content-type": "application/json"},
+            content=(
+                f'{{"meta":{{"symbol":"{symbol}"}},"values":['
+                f'{{"datetime":"{publication.isoformat()}","close":"{rate}"}}],'
+                '"status":"ok"}'
+            ).encode(),
         )
 
     return (
         httpx.MockTransport(twelve_handler),
         httpx.MockTransport(coingecko_handler),
-        httpx.MockTransport(cnb_handler),
+        httpx.MockTransport(fx_handler),
         calls,
     )
 
@@ -535,23 +464,23 @@ def _service(
     crypto_alias: str,
     twelve_status: int = 200,
     coingecko_stale: bool = False,
-    cnb_status: int = 200,
+    fx_status: int = 200,
     snapshot_executor: object | None = None,
 ) -> tuple[MarketBackedSnapshotRefreshService, list[tuple[str, str]]]:
-    twelve, coingecko, cnb, calls = _transports(
+    twelve, coingecko, fx, calls = _transports(
         session,
         listed_symbol=listed_symbol,
         crypto_alias=crypto_alias,
         twelve_status=twelve_status,
         coingecko_stale=coingecko_stale,
-        cnb_status=cnb_status,
+        fx_status=fx_status,
     )
 
     def factory(active_session: AsyncSession, settings: Settings):
         return create_production_market_evidence_service(
             active_session,
             settings,
-            http_transport=cnb,
+            twelve_data_fx_http_transport=fx,
             coingecko_http_transport=coingecko,
             twelve_data_http_transport=twelve,
         )
@@ -600,10 +529,11 @@ async def _counts(
 @pytest.mark.asyncio
 async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
     prefix = f"r5b3a-mixed-{uuid4()}"
-    listed_symbol = "AAPL"
-    listed_alias = '{"symbol":"AAPL","mic_code":"XNAS"}'
-    crypto_symbol = "BTC"
-    crypto_alias = "bitcoin"
+    unique = uuid4().hex[:10]
+    listed_symbol = f"T{unique.upper()}"
+    listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
+    crypto_symbol = f"C{unique.upper()}"
+    crypto_alias = f"coin-{unique}"
     user_id, account_ids, asset_ids, listing_ids = await _seed_mixed_user(
         prefix,
         listed_aliases=(listed_alias,),
@@ -645,15 +575,20 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
             combined = await service.execute(_command(user_id))
             assert not session.in_transaction()
             assert provider_calls == [
-                ("twelve_data", "AAPL"),
-                ("coingecko", "bitcoin"),
-                ("cnb", "01.08.2026"),
-                ("cnb", "06.08.2026"),
-                ("cnb", "01.08.2026"),
-                ("cnb", "06.08.2026"),
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
+                ("twelve_data_fx", "EUR/CZK@2026-08-01"),
+                ("twelve_data_fx", "EUR/CZK@2026-08-06"),
+                ("twelve_data_fx", "USD/CZK@2026-08-01"),
+                ("twelve_data_fx", "USD/CZK@2026-08-06"),
             ]
             assert insert_order.index('"PriceSnapshot"') < insert_order.index('"AccountSnapshot"')
-            assert insert_order.index('"ExchangeRate"') < insert_order.index('"AccountSnapshot"')
+            if '"ExchangeRate"' in insert_order:
+                assert insert_order.index('"ExchangeRate"') < insert_order.index(
+                    '"AccountSnapshot"'
+                )
+            else:
+                assert combined.market.rates_replayed == 4
 
             market = combined.market
             snapshots = combined.snapshots
@@ -691,7 +626,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
                         ExchangeRateObservation(
                             from_currency=currency,
                             to_currency="CZK",
-                            provider=ExchangeRateSource.cnb,
+                            provider=ExchangeRateSource.twelve_data,
                             rate=rate,
                             effective_at=through,
                         )
@@ -741,7 +676,7 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
                             ExchangeRateObservation(
                                 currency,
                                 "CZK",
-                                ExchangeRateSource.cnb,
+                                ExchangeRateSource.twelve_data,
                                 rate,
                                 SNAPSHOT_AT,
                             )
@@ -845,17 +780,17 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected_calls"),
+    ("failure", "expected_fx_calls"),
     [
-        ("twelve-429", 1),
-        ("coingecko-stale", 2),
-        ("cnb-failure", 3),
+        ("twelve-429", 4),
+        ("coingecko-stale", 4),
+        ("fx-failure", 1),
     ],
 )
 @pytest.mark.asyncio
 async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
     failure: str,
-    expected_calls: int,
+    expected_fx_calls: int,
 ) -> None:
     unique = uuid4().hex[:10]
     prefix = f"r5b3a-{failure}-{uuid4()}"
@@ -880,11 +815,23 @@ async def test_provider_failure_matrix_writes_no_market_batch_or_snapshot_graph(
                 crypto_alias=crypto_alias,
                 twelve_status=429 if failure == "twelve-429" else 200,
                 coingecko_stale=failure == "coingecko-stale",
-                cnb_status=503 if failure == "cnb-failure" else 200,
+                fx_status=503 if failure == "fx-failure" else 200,
             )
             with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
                 await service.execute(_command(user_id))
-            assert len(provider_calls) == expected_calls
+            assert provider_calls == [
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
+                *[
+                    ("twelve_data_fx", identity)
+                    for identity in (
+                        "EUR/CZK@2026-08-01",
+                        "EUR/CZK@2026-08-06",
+                        "USD/CZK@2026-08-01",
+                        "USD/CZK@2026-08-06",
+                    )[:expected_fx_calls]
+                ],
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             counts = await _counts(
@@ -980,7 +927,14 @@ async def test_snapshot_failure_after_market_writer_preserves_market_evidence() 
             )
             with pytest.raises(MarketBackedSnapshotRefreshUnavailableError):
                 await service.execute(_command(user_id))
-            assert len(provider_calls) == 6
+            assert provider_calls == [
+                ("twelve_data", listed_symbol),
+                ("coingecko", crypto_alias),
+                ("twelve_data_fx", "EUR/CZK@2026-08-01"),
+                ("twelve_data_fx", "EUR/CZK@2026-08-06"),
+                ("twelve_data_fx", "USD/CZK@2026-08-01"),
+                ("twelve_data_fx", "USD/CZK@2026-08-06"),
+            ]
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             prices, rates, snapshots, net_worth = await _counts(
@@ -996,7 +950,7 @@ async def test_snapshot_failure_after_market_writer_preserves_market_evidence() 
                     select(func.count())
                     .select_from(ExchangeRateModel)
                     .where(
-                        ExchangeRateModel.source == ExchangeRateSource.cnb,
+                        ExchangeRateModel.source == ExchangeRateSource.twelve_data,
                         ExchangeRateModel.from_currency.in_(("EUR", "USD")),
                         ExchangeRateModel.to_currency == "CZK",
                         ExchangeRateModel.date.in_((EVENT_AT.replace(hour=0), SNAPSHOT_AT)),

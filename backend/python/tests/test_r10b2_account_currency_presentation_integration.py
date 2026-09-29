@@ -58,6 +58,7 @@ async def _add_usd_companion(
         companion = AccountSnapshotModel(
             id=companion_id,
             account_id=account_id,
+            generation_id=primary.generation_id,
             timestamp=primary.timestamp,
             granularity=primary.granularity,
             source=primary.source,
@@ -122,6 +123,9 @@ async def _add_usd_companion(
                     value_currency=item.value_currency,
                     native_cost_basis=item.native_cost_basis,
                     native_cost_currency=item.native_cost_currency,
+                    native_cost_basis_by_currency=item.native_cost_basis_by_currency,
+                    average_buy_price=item.average_buy_price,
+                    average_buy_price_currency=item.average_buy_price_currency,
                 )
             )
         await session.commit()

@@ -22,8 +22,8 @@ created later, it must be added to the inventory and deployed only through the A
 - Revision `3e0001cutover` records the ownership boundary and performs no application DDL.
 - All 30 application tables and 27 PostgreSQL enums inherit `alembic_owned` status.
 - The Prisma migration history remains a frozen read-only archive.
-- Prisma Client remains enabled for the Next.js runtime.
-- `schema.prisma` is a runtime compatibility mirror, not the migration source of truth.
+- Prisma runtime, schema, generator, and deployment tooling have been removed.
+- The historical Prisma SQL directory remains only as an immutable hash-verified archive.
 
 ## Active commands
 
@@ -45,15 +45,10 @@ baseline, stamps `3d0001base`, upgrades to `3e0001cutover`, and verifies the fin
 
 ## Frozen Prisma archive
 
-The old Prisma migration history is retained solely to prove that a historical database can still
-be reconstructed in CI. The only allowed deployment path is:
-
-```bash
-CI=true ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY=1 npm run db:prisma:archive:verify
-```
-
-The wrapper refuses non-CI use and refuses a non-empty target schema. Normal deployment workflows
-must never run Prisma Migrate.
+The old Prisma migration history is retained solely as audit evidence. Python
+policy verifies its aggregate hash with `npm run db:archive:verify`. It is not
+an executable reconstruction or deployment path; clean databases use
+`db:bootstrap` and the canonical baseline plus Alembic revisions.
 
 ## Runtime safety
 
@@ -79,6 +74,5 @@ Existing externally supplied databases must pass canonical baseline and SQLAlche
 be explicitly stamped at `3d0001base`, and then be upgraded through the Alembic runner. Credentials,
 connection strings, personal data, and financial data must never be committed to this directory.
 
-The next schema step is 3F: the first real Alembic-owned schema migration. It must be separate from
-this ownership marker and include SQLAlchemy metadata, Prisma compatibility, upgrade, rollback, and
-integration-test changes.
+All later schema changes are single-head Alembic revisions with SQLAlchemy
+metadata, revision artifacts, upgrade/rollback policy, and PostgreSQL tests.

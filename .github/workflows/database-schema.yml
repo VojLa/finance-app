@@ -6,8 +6,6 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
-      - "scripts/prisma-migrations-frozen.mjs"
-      - "scripts/prisma-archive-verify.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -26,8 +24,6 @@ on:
       - "prisma/**"
       - "package.json"
       - "package-lock.json"
-      - "scripts/prisma-migrations-frozen.mjs"
-      - "scripts/prisma-archive-verify.mjs"
       - "backend/python/alembic.ini"
       - "backend/python/migrations/**"
       - "backend/python/app/db/**"
@@ -71,15 +67,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install Node dependencies
-        run: npm ci
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -100,19 +87,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-16
 
-      - name: Apply frozen Prisma archive for historical verification
-        env:
-          ALLOW_FROZEN_PRISMA_ARCHIVE_DEPLOY: "1"
-        run: npm run db:prisma:archive:verify
-
-      - name: Verify Prisma runtime compatibility tooling
-        run: |
-          npm run db:prisma:validate
-          npm run db:prisma:generate
-
       - name: Enforce Alembic migration and schema artifact policy
         working-directory: backend/python
         run: uv run python scripts/migration_policy.py --check
+
+      - name: Load immutable inherited schema baseline
+        working-directory: backend/python
+        run: |
+          psql --host localhost --username postgres --dbname finance_app --command 'DROP SCHEMA public CASCADE;'
+          psql --host localhost --username postgres --dbname finance_app --set ON_ERROR_STOP=1 --file database/baseline/schema.sql
 
       - name: Verify inherited canonical schema
         working-directory: backend/python
@@ -137,6 +120,12 @@ jobs:
         working-directory: backend/python
         run: uv run pytest tests/test_alembic_integration.py -v
 
+      - name: Upgrade inherited schema to Alembic head
+        working-directory: backend/python
+        run: |
+          uv run alembic -c alembic.ini stamp 3d0001base
+          uv run python scripts/database_migrate.py upgrade
+
       - name: Verify head persistence and live metadata parity
         working-directory: backend/python
         run: >-
@@ -144,6 +133,10 @@ jobs:
           tests/test_sqlalchemy_schema_parity.py
           tests/test_sqlalchemy_persistence.py
           -v
+
+      - name: Verify Python default seed and idempotent replay
+        working-directory: backend/python
+        run: uv run pytest tests/test_seed_defaults_integration.py -v
 
       - name: Verify migration runner and advisory lock
         working-directory: backend/python
@@ -157,8 +150,10 @@ jobs:
         run: |
           uv run alembic -c alembic.ini current --check-heads
           uv run alembic -c alembic.ini check
-          uv run python scripts/database_schema.py --check --revision 3i0001d1base
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run python scripts/sqlalchemy_schema.py --check
+          uv run python scripts/seed_defaults.py
+          uv run python scripts/seed_defaults.py
           uv run python scripts/alembic_baseline.py --verify
 
       - name: Verify clean bootstrap through all Alembic revisions
@@ -170,5 +165,56 @@ jobs:
           export DATABASE_URL="$BOOTSTRAP_DATABASE_URL"
           uv run python scripts/database_migrate.py bootstrap
           uv run python scripts/database_migrate.py check
-          uv run python scripts/database_schema.py --check --revision 3i0001d1base
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
+          uv run python scripts/sqlalchemy_schema.py --check
+
+      - name: Verify final PostgreSQL business boundary matrix
+        working-directory: backend/python
+        run: >-
+          uv run pytest
+          tests/test_auth_credentials_integration.py
+          tests/test_accounts_integration.py
+          tests/test_transactions_categories_integration.py
+          tests/test_budgets_operational_dashboard_integration.py
+          tests/test_account_invitations_integration.py
+          -v
+
+      - name: Verify version 0.1 persisted authorization acceptance
+        working-directory: backend/python
+        env:
+          ACCEPTANCE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_version_0_1_acceptance
+        run: |
+          createdb --host localhost --username postgres finance_app_version_0_1_acceptance
+          export DATABASE_URL="$ACCEPTANCE_DATABASE_URL"
+          uv run python scripts/database_migrate.py bootstrap
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
+          uv run pytest tests/test_version_0_1_acceptance_integration.py -v
+
+      - name: Verify clean register-to-dashboard acceptance
+        working-directory: backend/python
+        env:
+          CLEAN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_version_0_1_r8
+        run: |
+          createdb --host localhost --username postgres finance_app_version_0_1_r8
+          export DATABASE_URL="$CLEAN_DATABASE_URL"
+          uv run python scripts/database_migrate.py bootstrap
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
+          uv run pytest tests/test_version_0_1_clean_main_scenario_integration.py -v
+
+      - name: Rehearse backup recovery without financial data loss
+        working-directory: backend/python
+        env:
+          SOURCE_DATABASE: finance_app_version_0_1_r8
+          RECOVERY_DATABASE: finance_app_r11_recovery
+          RECOVERY_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_app_r11_recovery
+        run: |
+          pg_dump --host localhost --username postgres --format=custom --file="$RUNNER_TEMP/r11-recovery.dump" "$SOURCE_DATABASE"
+          createdb --host localhost --username postgres "$RECOVERY_DATABASE"
+          pg_restore --host localhost --username postgres --dbname="$RECOVERY_DATABASE" --exit-on-error "$RUNNER_TEMP/r11-recovery.dump"
+          pg_dump --host localhost --username postgres --data-only --column-inserts --no-owner --no-privileges "$SOURCE_DATABASE" | sed '/^\\restrict /d;/^\\unrestrict /d' > "$RUNNER_TEMP/r11-source.sql"
+          pg_dump --host localhost --username postgres --data-only --column-inserts --no-owner --no-privileges "$RECOVERY_DATABASE" | sed '/^\\restrict /d;/^\\unrestrict /d' > "$RUNNER_TEMP/r11-restored.sql"
+          diff --strip-trailing-cr "$RUNNER_TEMP/r11-source.sql" "$RUNNER_TEMP/r11-restored.sql"
+          export DATABASE_URL="$RECOVERY_DATABASE_URL"
+          uv run python scripts/database_migrate.py check
+          uv run python scripts/database_schema.py --check --revision 410001serieslinks
           uv run python scripts/sqlalchemy_schema.py --check

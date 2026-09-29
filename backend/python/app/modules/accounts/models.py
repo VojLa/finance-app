@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -12,6 +13,7 @@ class AccountResponse(BaseModel):
     name: str
     type: AccountType
     currency: str
+    credit_limit: Decimal | None = None
     color: str | None
     notes: str | None
     is_archived: bool
@@ -53,6 +55,7 @@ class AccountCreateRequest(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     color: str | None = Field(default=None, max_length=64)
     notes: str | None = Field(default=None, max_length=2000)
+    credit_limit: Decimal | None = Field(default=None, ge=0)
 
     @field_validator("name")
     @classmethod
@@ -78,6 +81,12 @@ class AccountCreateRequest(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    @model_validator(mode="after")
+    def validate_credit_limit_scope(self) -> "AccountCreateRequest":
+        if self.type is not AccountType.credit_card and self.credit_limit is not None:
+            raise ValueError("Credit limit is only supported for credit-card accounts.")
+        return self
+
 
 class AccountUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +95,7 @@ class AccountUpdateRequest(BaseModel):
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     color: str | None = Field(default=None, max_length=64)
     notes: str | None = Field(default=None, max_length=2000)
+    credit_limit: Decimal | None = Field(default=None, ge=0)
 
     @field_validator("name")
     @classmethod

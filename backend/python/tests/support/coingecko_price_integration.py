@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountCanonicalStateModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -26,9 +27,14 @@ from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.snapshot_refresh.executor import ExecuteUserSnapshotRefreshCommand
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+
+def unique_alias(prefix: str, coin: str = "bitcoin") -> str:
+    return f"{coin}-{prefix}"
 
 
 def coingecko_engine():
@@ -41,7 +47,7 @@ async def seed_crypto_holding(
     *,
     event_at: datetime,
     created_at: datetime,
-    aliases: tuple[str, ...] = ("bitcoin",),
+    aliases: tuple[str, ...] | None = None,
     listing_provider_symbol: str | None = None,
 ) -> tuple[str, str, str, str]:
     user_id = f"{prefix}-user"
@@ -118,7 +124,10 @@ async def seed_crypto_holding(
                     updated_at=created_at,
                 )
             )
-            for index, alias in enumerate(aliases, start=1):
+            for index, alias in enumerate(
+                (unique_alias(prefix),) if aliases is None else aliases,
+                start=1,
+            ):
                 session.add(
                     AssetAliasModel(
                         id=f"{prefix}-alias-{index}",
@@ -137,6 +146,7 @@ async def seed_crypto_holding(
                     asset_type=AssetType.crypto,
                     quantity=Decimal("1000"),
                     avg_buy_price=Decimal("50000"),
+                    cost_basis_by_currency={"EUR": "50000000.0000000000"},
                     currency="EUR",
                     current_price=None,
                     current_value=None,
@@ -191,6 +201,17 @@ async def seed_crypto_holding(
                     updated_at=created_at,
                 )
             )
+            recorded = await CanonicalStateService(session).record(
+                account_id=account_id,
+                kind=CanonicalChangeKind.investment_event,
+                entity_id=event_id,
+                financial_timestamp=event_at,
+                created_at=created_at,
+                replay=False,
+            )
+            state = await session.get(AccountCanonicalStateModel, account_id)
+            assert state is not None
+            state.holding_revision = recorded.revision
             await session.commit()
     finally:
         await engine.dispose()

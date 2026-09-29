@@ -66,6 +66,67 @@ def _batch(
     )
 
 
+def _anycoin_batch(*, total: int = 2) -> ImportBatchModel:
+    batch = _batch(total=total)
+    batch.source = ImportSource.anycoin
+    batch.filename = "anycoin.csv"
+    return batch
+
+
+def _anycoin_cash_row(row_id: str, quote_currency: str, row_number: int) -> ImportRowModel:
+    canonical: dict[str, Any] = {
+        "schema_version": 2,
+        "source": "anycoin",
+        "kind": "investment_event",
+        "date": "2026-07-25T10:00:00+00:00",
+        "action": "cash_deposit",
+        "external_id": row_id,
+        "raw_action": "deposit",
+        "asset": {
+            "symbol": None,
+            "isin": None,
+            "name": None,
+            "asset_type_hint": None,
+        },
+        "quantity": None,
+        "price": None,
+        "total": {"amount": "10", "currency": quote_currency},
+        "fee": None,
+        "conversion": None,
+        "realized_pnl": None,
+        "is_promotional": False,
+        "note": None,
+        "order_id": None,
+        "asset_direction": None,
+        "quote_currency": quote_currency,
+    }
+    intent = classify_import_row(
+        source=ImportSource.anycoin,
+        normalized_data=canonical,
+    ).model_dump(mode="json")
+    return cast(
+        ImportRowModel,
+        SimpleNamespace(
+            id=row_id,
+            import_batch_id="batch",
+            row_number=row_number,
+            raw_data={"preserved": True},
+            normalized_data={
+                **canonical,
+                "deduplication": {"schema_version": 1, "status": "unique"},
+                "posting_intent": intent,
+            },
+            validation_errors=None,
+            deduplication_key=f"key-{row_id}",
+            status=ImportRowStatus.pending,
+            error_message=None,
+            created_transaction_id=None,
+            created_investment_event_id=None,
+            created_at=datetime(2026, 7, 25, 10),
+        ),
+    )
+
+
 def _pending(row_id: str = "row", row_number: int = 2) -> ImportRowModel:
     canonical: dict[str, Any] = {
         "schema_version": 1,
@@ -603,6 +664,43 @@ def test_later_preflight_error_prevents_earlier_writer_call(
     writer.assert_not_awaited()
     session.commit.assert_not_awaited()
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_anycoin_mixed_quote_currencies_fail_preflight_before_writers_or_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    reverse: bool,
+) -> None:
+    import app.modules.imports.posting_service as posting
+
+    session = _session()
+    batch = _anycoin_batch()
+    rows = [
+        _anycoin_cash_row("czk", "CZK", 2),
+        _anycoin_cash_row("eur", "EUR", 3),
+    ]
+    if reverse:
+        rows.reverse()
+    before = [(row.id, row.status, deepcopy(row.normalized_data)) for row in rows]
+    writer = AsyncMock()
+
+    class _ForbiddenWriter:
+        def __init__(self, _: object) -> None:
+            self.post_row = writer
+
+    monkeypatch.setattr(posting, "require_account_access", AsyncMock())
+    monkeypatch.setattr(posting, "ImportInvestmentPostingWriter", _ForbiddenWriter)
+    service = _service(session, batch, rows)
+
+    with pytest.raises(ImportBatchPostStateError):
+        _run(service.post_batch(_command()))
+
+    writer.assert_not_awaited()
+    session.flush.assert_not_awaited()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_awaited_once()
+    assert [(row.id, row.status, row.normalized_data) for row in rows] == before
+    assert batch.status is ImportStatus.processing
 
 
 def test_duplicate_persisted_posting_identity_fails_preflight(

@@ -125,6 +125,7 @@ class InvestmentEventPostingIntent(_PostingIntentBase):
     note: str | None
     order_id: str | None = None
     asset_direction: Literal["in", "out"] | None = None
+    quote_currency: str | None = None
 
 
 class NeedsReviewPostingIntent(_PostingIntentBase):
@@ -136,6 +137,26 @@ PostingIntent = TransactionPostingIntent | InvestmentEventPostingIntent | NeedsR
 
 _TRANSACTION_SOURCES: Final = frozenset({ImportSource.raiffeisenbank, ImportSource.manual})
 _INVESTMENT_SOURCES: Final = frozenset({ImportSource.trading212, ImportSource.anycoin})
+_TRADING_CARD_TRANSACTION_RULES: Final[
+    Mapping[str, tuple[int, TransactionType, TransactionClassification]]
+] = MappingProxyType(
+    {
+        # Trading Card spending is operational activity even where its
+        # provider export appears alongside broker activity.  It must
+        # therefore never acquire the investment-transfer classification
+        # that feeds the investment branch of a mixed account.
+        "card_withdrawal": (
+            -1,
+            TransactionType.expense,
+            TransactionClassification.real_expense,
+        ),
+        "card_cashback": (
+            1,
+            TransactionType.income,
+            TransactionClassification.real_income,
+        ),
+    }
+)
 
 _TRANSACTION_TYPE_RULES: Final[Mapping[str, tuple[TransactionType, TransactionClassification]]] = (
     MappingProxyType(
@@ -347,7 +368,7 @@ def _investment_field_review(
     return _review(_issue(field, code, message))
 
 
-def _investment_money(value: object) -> InvestmentMoneyPostingIntent | None | bool:
+def _investment_money(value: object) -> InvestmentMoneyPostingIntent | bool | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -427,6 +448,8 @@ def _classify_investment(
     note = normalized_data.get("note")
     order_id = normalized_data.get("order_id")
     asset_direction = normalized_data.get("asset_direction")
+    quote_currency_raw = normalized_data.get("quote_currency")
+    quote_currency = None if quote_currency_raw is None else _validated_currency(quote_currency_raw)
     promotional = normalized_data.get("is_promotional")
     if (
         (external_id is not None and not isinstance(external_id, str))
@@ -434,10 +457,13 @@ def _classify_investment(
         or (note is not None and not isinstance(note, str))
         or (order_id is not None and not isinstance(order_id, str))
         or asset_direction not in {None, "in", "out"}
+        or (quote_currency_raw is not None and quote_currency is None)
         or type(promotional) is not bool
     ):
         return _investment_review()
-    if source is ImportSource.trading212 and (order_id is not None or asset_direction is not None):
+    if source is ImportSource.trading212 and (
+        order_id is not None or asset_direction is not None or quote_currency is not None
+    ):
         return _investment_review()
     if source is ImportSource.anycoin:
         grouped_trade = action in {InvestmentAction.buy, InvestmentAction.sell}
@@ -446,7 +472,8 @@ def _classify_investment(
             isinstance(order_id, str) and bool(order_id.strip()) and len(order_id) <= 256
         )
         if (
-            (grouped_trade and (not valid_order_id or asset_direction is not None))
+            quote_currency is None
+            or (grouped_trade and (not valid_order_id or asset_direction is not None))
             or (transfer and (order_id is not None or asset_direction not in {"in", "out"}))
             or (
                 not grouped_trade
@@ -454,6 +481,8 @@ def _classify_investment(
                 and (order_id is not None or asset_direction is not None)
             )
         ):
+            return _investment_review()
+        if price is not None or (total is not None and total.currency != quote_currency):
             return _investment_review()
     asset = InvestmentAssetPostingIntent(
         symbol=asset_values[0],
@@ -608,6 +637,35 @@ def _classify_investment(
         note=note,
         order_id=order_id,
         asset_direction=asset_direction,
+        quote_currency=quote_currency,
+    )
+
+
+def _classify_trading_card_transaction(
+    normalized_data: Mapping[str, object],
+) -> PostingIntent:
+    """Accept only Trading Card cash movements explicitly normalized by this importer."""
+    financial_fields = _validated_financial_fields(normalized_data)
+    if isinstance(financial_fields, NeedsReviewPostingIntent):
+        return financial_fields
+    normalized_date, amount, currency = financial_fields
+    action = normalized_data.get("action")
+    rule = _TRADING_CARD_TRANSACTION_RULES.get(action) if isinstance(action, str) else None
+    if rule is None or amount.is_zero() or (1 if amount > 0 else -1) != rule[0]:
+        return _review(
+            _issue(
+                "action",
+                PostingIntentIssueCode.invalid_investment_payload,
+                "Trading212 transaction data is not an explicit Trading Card cash movement.",
+            )
+        )
+    return TransactionPostingIntent(
+        source=ImportSource.trading212,
+        date=normalized_date,
+        amount=amount,
+        currency=currency,
+        transaction_type=rule[1],
+        transaction_classification=rule[2],
     )
 
 
@@ -645,7 +703,11 @@ def classify_import_row(
 
     if schema_version == 2:
         if source in {ImportSource.trading212, ImportSource.anycoin}:
-            if normalized_data.get("kind") != "investment_event":
+            if normalized_data.get("kind") == "investment_event":
+                return _classify_investment(source=source, normalized_data=normalized_data)
+            if source is ImportSource.trading212 and normalized_data.get("kind") == "transaction":
+                return _classify_trading_card_transaction(normalized_data)
+            else:
                 return _review(
                     _issue(
                         "normalized_data",
@@ -653,7 +715,6 @@ def classify_import_row(
                         "Normalized data is not postable.",
                     )
                 )
-            return _classify_investment(source=source, normalized_data=normalized_data)
         return _review(
             _issue(
                 "schema_version",

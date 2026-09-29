@@ -21,13 +21,13 @@ class MultiAccountPortfolioSummary:
     cash_value: Decimal
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     investment_value: Decimal
-    investment_cost_basis: Decimal
+    investment_cost_basis: Decimal | None
     liabilities_value: Decimal
     total_value: Decimal
-    net_deposits_value: Decimal
-    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...]
-    realized_pnl_value: Decimal
-    unrealized_pnl_value: Decimal
+    net_deposits_value: Decimal | None
+    net_deposits_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
+    realized_pnl_value: Decimal | None
+    unrealized_pnl_value: Decimal | None
     fees_value: Decimal
     taxes_value: Decimal
     account_count: int

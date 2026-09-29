@@ -7,8 +7,6 @@ from app.db.connection import get_db_session
 from app.modules.imports.classification_service import ImportClassificationService
 from app.modules.imports.deduplication import ImportDeduplicationService
 from app.modules.imports.models import (
-    FinalizeImportBatchesRequest,
-    FinalizeImportBatchesResponse,
     ImportBatchCreateRequest,
     ImportBatchResponse,
     ImportCanonicalPostResponse,
@@ -17,18 +15,15 @@ from app.modules.imports.models import (
     ImportNormalizeResponse,
     ImportParseResponse,
     ImportPostResponse,
-    ImportSnapshotRefreshStatus,
+    ImportRegistrationResponse,
     ImportUploadResponse,
-)
-from app.modules.imports.multi_file_service import (
-    FinalizeImportBatchesCommand,
-    ImportMultiFileFinalizationService,
 )
 from app.modules.imports.normalization import ImportNormalizationService
 from app.modules.imports.post_processing_service import ImportBatchPostProcessingService
 from app.modules.imports.posting_service import ImportBatchPostingService, PostImportBatchCommand
 from app.modules.imports.processing import ImportParserService
 from app.modules.imports.service import ImportBatchService
+from app.modules.jobs.service import BackgroundJobService
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
@@ -55,26 +50,14 @@ def get_import_batch_post_processing_service(
     )
 
 
-def get_import_multi_file_finalization_service(
-    session: AsyncSession = Depends(get_db_session),
-    market_backed_service: MarketBackedSnapshotRefreshService = Depends(
-        get_import_market_backed_snapshot_refresh_service
-    ),
-) -> ImportMultiFileFinalizationService:
-    return ImportMultiFileFinalizationService(
-        session,
-        market_backed_service=market_backed_service,
-    )
-
-
-@router.post("", response_model=ImportBatchResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ImportRegistrationResponse, status_code=status.HTTP_201_CREATED)
 async def create_import_batch(
     account_id: str,
     payload: ImportBatchCreateRequest,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
-) -> ImportBatchResponse:
-    return await ImportBatchService(session).create_batch(
+) -> ImportRegistrationResponse:
+    return await BackgroundJobService(session).register_import_batch(
         principal=principal,
         account_id=account_id,
         payload=payload,
@@ -213,33 +196,6 @@ async def canonical_post_import_batch(
         rows_skipped=result.rows_skipped,
         completed_at=result.completed_at,
         replayed=result.replayed,
-    )
-
-
-@router.post("/finalize", response_model=FinalizeImportBatchesResponse)
-async def finalize_import_batches(
-    account_id: str,
-    payload: FinalizeImportBatchesRequest,
-    principal: CurrentPrincipal,
-    service: ImportMultiFileFinalizationService = Depends(
-        get_import_multi_file_finalization_service
-    ),
-) -> FinalizeImportBatchesResponse:
-    if not payload.batch_ids:
-        return FinalizeImportBatchesResponse(
-            batch_ids=(),
-            snapshot_refresh_status=ImportSnapshotRefreshStatus.not_required,
-        )
-    result = await service.finalize(
-        FinalizeImportBatchesCommand(
-            principal=principal,
-            account_id=account_id,
-            batch_ids=tuple(sorted(payload.batch_ids)),
-        )
-    )
-    return FinalizeImportBatchesResponse(
-        batch_ids=result.batch_ids,
-        snapshot_refresh_status=result.snapshot_refresh_status,
     )
 
 

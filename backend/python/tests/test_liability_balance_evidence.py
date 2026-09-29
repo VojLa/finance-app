@@ -25,7 +25,7 @@ NOW = datetime(2026, 7, 28, 10, 20)
 
 def _account(
     *,
-    account_type: AccountType = AccountType.credit_card,
+    account_type: AccountType = AccountType.loan,
     account_id: str = "account-a",
     currency: str = "CZK",
     archived: bool = False,
@@ -198,7 +198,7 @@ async def _select(
 
 @pytest.mark.parametrize(
     "account_type",
-    [AccountType.credit_card, AccountType.loan, AccountType.mortgage],
+    [AccountType.loan, AccountType.mortgage],
 )
 async def test_supported_liability_accounts_return_exact_immutable_evidence(
     account_type: AccountType,

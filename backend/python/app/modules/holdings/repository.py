@@ -14,7 +14,13 @@ from app.db.models.canonical_lineage import (
 )
 from app.db.models.enums import ImportSource
 from app.db.models.holdings import HoldingModel
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
+from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
+from app.modules.investments.transfer_valuation import validate_transfer_valuation_citations
 
 
 def advisory_lock_id(scope: str) -> int:
@@ -111,6 +117,50 @@ class HoldingRebuildRepository:
             .execution_options(populate_existing=True)
         )
         return list(result.all())
+
+    async def load_transfer_valuations_for_update(
+        self,
+        movement_ids: tuple[str, ...],
+    ) -> list[InvestmentMovementValuationEvidenceModel]:
+        if not movement_ids:
+            return []
+        result = await self.session.execute(
+            select(
+                InvestmentMovementValuationEvidenceModel,
+                PriceSnapshotModel,
+                ExchangeRateModel,
+                InvestmentMovementModel,
+            )
+            .join(
+                PriceSnapshotModel,
+                PriceSnapshotModel.id == InvestmentMovementValuationEvidenceModel.price_snapshot_id,
+            )
+            .outerjoin(
+                ExchangeRateModel,
+                ExchangeRateModel.id == InvestmentMovementValuationEvidenceModel.exchange_rate_id,
+            )
+            .join(
+                InvestmentMovementModel,
+                InvestmentMovementModel.id == InvestmentMovementValuationEvidenceModel.movement_id,
+            )
+            .where(InvestmentMovementValuationEvidenceModel.movement_id.in_(movement_ids))
+            .order_by(
+                InvestmentMovementValuationEvidenceModel.movement_id,
+                InvestmentMovementValuationEvidenceModel.revision,
+            )
+            .with_for_update(of=InvestmentMovementValuationEvidenceModel)
+            .execution_options(populate_existing=True)
+        )
+        rows: list[InvestmentMovementValuationEvidenceModel] = []
+        for evidence, price, rate, movement in result.all():
+            validate_transfer_valuation_citations(
+                evidence=evidence,
+                movement=movement,
+                price=price,
+                exchange_rate=rate,
+            )
+            rows.append(evidence)
+        return rows
 
     async def lock_account_holdings(self, account_id: str) -> list[HoldingModel]:
         result = await self.session.scalars(

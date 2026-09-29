@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from datetime import datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,6 +59,20 @@ def _client(test_settings: Settings) -> TestClient:
 def _session() -> tuple[AsyncSession, AsyncMock, AsyncMock]:
     session = cast(AsyncSession, AsyncMock(spec=AsyncSession))
     return session, cast(AsyncMock, session.commit), cast(AsyncMock, session.rollback)
+
+
+def _service(session: AsyncSession) -> AccountService:
+    history = SimpleNamespace(
+        lock_generation_users=AsyncMock(),
+        invalidate_scope_users=AsyncMock(),
+    )
+    service = AccountService(session, history=cast(Any, history))
+    repository = cast(Any, service.repository)
+    repository.accepted_user_ids = AsyncMock(return_value=("user-a",))
+    repository.lock_accepted_memberships = AsyncMock(
+        return_value=(SimpleNamespace(user_id="user-a"),)
+    )
+    return service
 
 
 @pytest.mark.parametrize(
@@ -137,7 +151,7 @@ async def test_archive_sets_archive_fields_and_commits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, commit, _rollback = _session()
-    service = AccountService(session)
+    service = _service(session)
     account = SimpleNamespace(
         id="account-a",
         name="Main account",
@@ -169,12 +183,13 @@ async def test_archive_sets_archive_fields_and_commits(
     assert account.archived_at is not None
     assert account.updated_at == account.archived_at
     commit.assert_awaited_once()
-    access.assert_awaited_once()
+    assert access.await_count == 2
     assert access.await_args is not None
     assert access.await_args.kwargs["allowed_roles"] == {
         AccountMemberRole.owner,
         AccountMemberRole.admin,
     }
+    assert access.await_args.kwargs["for_update"] is True
 
 
 @pytest.mark.asyncio
@@ -182,7 +197,7 @@ async def test_restore_requires_archived_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, commit, _rollback = _session()
-    service = AccountService(session)
+    service = _service(session)
     account = SimpleNamespace(is_archived=False)
     access = AsyncMock(
         return_value=SimpleNamespace(
@@ -211,7 +226,7 @@ async def test_lifecycle_commit_failure_rolls_back(
 ) -> None:
     session, commit, rollback = _session()
     commit.side_effect = RuntimeError("commit failed")
-    service = AccountService(session)
+    service = _service(session)
     account = SimpleNamespace(
         id="account-a",
         name="Main account",
@@ -250,7 +265,7 @@ async def test_restore_clears_archive_fields_and_commits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, commit, rollback = _session()
-    service = AccountService(session)
+    service = _service(session)
     created_at = datetime(2026, 7, 19, 8, 0, 0)
     previous_updated_at = datetime(2026, 7, 19, 9, 0, 0)
     account = SimpleNamespace(
@@ -293,7 +308,7 @@ async def test_restore_commit_failure_rolls_back(
 ) -> None:
     session, commit, rollback = _session()
     commit.side_effect = RuntimeError("commit failed")
-    service = AccountService(session)
+    service = _service(session)
     account = SimpleNamespace(
         id="account-a",
         name="Main account",
@@ -334,7 +349,7 @@ async def test_authorization_failure_prevents_lifecycle_lookup_and_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session, commit, rollback = _session()
-    service = AccountService(session)
+    service = _service(session)
     authorize = AsyncMock(side_effect=AccountAccessDeniedError())
     lookup = AsyncMock()
     monkeypatch.setattr("app.modules.accounts.service.require_account_access", authorize)

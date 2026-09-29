@@ -6,7 +6,7 @@ import { NextRequest } from "next/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { forwardedPythonError, unavailableError } from "@/modules/python-api/server/errors"
-import { readSnapshotBackedPortfolioHistory } from "@/modules/python-api/server/portfolio-history"
+import { readGenerationPortfolioHistory } from "@/modules/python-api/server/portfolio-history"
 import { GET } from "./route"
 
 vi.mock("next-auth", () => ({
@@ -18,17 +18,31 @@ vi.mock("@/lib/auth", () => ({
 }))
 
 vi.mock("@/modules/python-api/server/portfolio-history", () => ({
-  readSnapshotBackedPortfolioHistory: vi.fn(),
+  readGenerationPortfolioHistory: vi.fn(),
 }))
 
 const getSession = vi.mocked(getServerSession)
-const readHistory = vi.mocked(readSnapshotBackedPortfolioHistory)
+const readHistory = vi.mocked(readGenerationPortfolioHistory)
 const HISTORY = {
   range: "1Y" as const,
+  state: "ready" as const,
   currency: "EUR",
+  generationId: "generation-1",
+  publicationVersion: 1,
+  coveredThrough: "2036-01-01T23:59:00.000",
+  preferredResolutionMinutes: 1440,
+  resolutions: [1440],
+  coverage: [
+    {
+      resolutionMinutes: 1440,
+      start: "2036-01-01T00:00:00.000",
+      end: "2036-01-02T00:00:00.000",
+    },
+  ],
   points: [
     {
       timestamp: "2036-01-01T00:00:00.000",
+      resolutionMinutes: 1440,
       cashValue: "10.000000",
       investmentValue: "20.000000",
       liabilitiesValue: "5.000000",
@@ -81,12 +95,17 @@ describe("portfolio history route", () => {
     const response = await GET(request())
 
     expect(readHistory).toHaveBeenCalledTimes(1)
-    expect(readHistory).toHaveBeenCalledWith({ userId: "user-1", email: "user@example.test" }, "1Y")
+    expect(readHistory).toHaveBeenCalledWith(
+      { userId: "user-1", email: "user@example.test" },
+      "1Y",
+      undefined,
+      undefined
+    )
     expect(response.headers.get("Cache-Control")).toBe("no-store")
     expect(await response.json()).toEqual(HISTORY)
   })
 
-  it.each(["1W", "1M", "3M", "6M", "1Y", "ALL"] as const)(
+  it.each(["1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "10Y", "ALL"] as const)(
     "forwards the exact %s range",
     async (range) => {
       readHistory.mockResolvedValue({ ...HISTORY, range })
@@ -96,7 +115,9 @@ describe("portfolio history route", () => {
       expect(readHistory).toHaveBeenCalledTimes(1)
       expect(readHistory).toHaveBeenCalledWith(
         { userId: "user-1", email: "user@example.test" },
-        range
+        range,
+        undefined,
+        undefined
       )
     }
   )
@@ -104,7 +125,6 @@ describe("portfolio history route", () => {
   it.each([
     "?range=YEAR",
     "?range=",
-    "?accountId=account-1",
     "?userId=user-2",
     "?currency=EUR",
     "?from=2036-01-01",
@@ -122,6 +142,29 @@ describe("portfolio history route", () => {
         message: "Request validation failed.",
       },
     })
+    expect(readHistory).not.toHaveBeenCalled()
+  })
+
+  it("forwards a single canonical selected account identifier", async () => {
+    const response = await GET(request("?range=1Y&accountId=account-1"))
+
+    expect(response.status).toBe(200)
+    expect(readHistory).toHaveBeenCalledWith(
+      { userId: "user-1", email: "user@example.test" },
+      "1Y",
+      undefined,
+      "account-1"
+    )
+  })
+
+  it.each([
+    "?range=1Y&accountId=",
+    "?range=1Y&accountId=%20account-1",
+    "?range=1Y&accountId=a&accountId=b",
+  ])("rejects an invalid selected account identifier %s", async (query) => {
+    const response = await GET(request(query))
+
+    expect(response.status).toBe(422)
     expect(readHistory).not.toHaveBeenCalled()
   })
 
@@ -174,7 +217,7 @@ describe("portfolio history route", () => {
       "utf8"
     )
 
-    expect(source).toContain("readSnapshotBackedPortfolioHistory")
+    expect(source).toContain("readGenerationPortfolioHistory")
     expect(source).not.toMatch(
       /@\/modules\/snapshots|@\/lib\/accountAccess|@\/lib\/prisma|portfolio\/rates|getPortfolioSnapshotHistory/
     )

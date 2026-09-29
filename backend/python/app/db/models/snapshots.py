@@ -2,7 +2,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,8 +29,37 @@ from app.db.models.enums import (
 class NetWorthSnapshotModel(Base):
     __tablename__ = "NetWorthSnapshot"
     __table_args__ = (
-        UniqueConstraint("userId", "timestamp", "currency", "granularity"),
+        UniqueConstraint(
+            "userId",
+            "timestamp",
+            "currency",
+            "granularity",
+            "generationId",
+            name="NetWorthSnapshot_coordinate_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            "userId",
+            name="NetWorthSnapshot_id_generation_user_key",
+        ),
+        ForeignKeyConstraint(
+            ("generationId", "userId"),
+            (
+                "public.SnapshotGenerationTarget.generationId",
+                "public.SnapshotGenerationTarget.userId",
+            ),
+            name="NetWorthSnapshot_generation_target_fkey",
+            ondelete="RESTRICT",
+        ),
         Index(None, "userId", "granularity", "timestamp"),
+        Index(
+            "NetWorthSnapshot_generation_coordinate_idx",
+            "generationId",
+            "userId",
+            "granularity",
+            "timestamp",
+        ),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
     )
@@ -91,13 +129,39 @@ class NetWorthSnapshotModel(Base):
         JSONB,
     )
     exchange_rates: Mapped[dict[str, Any] | None] = mapped_column("exchangeRates", JSONB)
+    generation_id: Mapped[str] = mapped_column("generationId", Text, nullable=False)
 
 
 class AccountSnapshotModel(Base):
     __tablename__ = "AccountSnapshot"
     __table_args__ = (
-        UniqueConstraint("accountId", "timestamp", "currency", "granularity"),
+        UniqueConstraint(
+            "accountId",
+            "timestamp",
+            "currency",
+            "granularity",
+            "generationId",
+            name="AccountSnapshot_coordinate_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            name="AccountSnapshot_id_generation_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "generationId",
+            "accountId",
+            name="AccountSnapshot_id_generation_account_key",
+        ),
         Index(None, "accountId", "granularity", "timestamp"),
+        Index(
+            "AccountSnapshot_generation_coordinate_idx",
+            "generationId",
+            "accountId",
+            "granularity",
+            "timestamp",
+        ),
         Index(None, "source", "timestamp"),
         {"schema": "public"},
     )
@@ -121,11 +185,9 @@ class AccountSnapshotModel(Base):
     )
     cash_value: Mapped[Decimal] = mapped_column("cashValue", MONEY, nullable=False)
     investment_value: Mapped[Decimal] = mapped_column("investmentValue", MONEY, nullable=False)
-    investment_cost_basis: Mapped[Decimal] = mapped_column(
+    investment_cost_basis: Mapped[Decimal | None] = mapped_column(
         "investmentCostBasis",
         MONEY,
-        nullable=False,
-        server_default=text("0"),
     )
     liabilities_value: Mapped[Decimal] = mapped_column(
         "liabilitiesValue",
@@ -156,23 +218,17 @@ class AccountSnapshotModel(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
-    net_deposits_value: Mapped[Decimal] = mapped_column(
+    net_deposits_value: Mapped[Decimal | None] = mapped_column(
         "netDepositsValue",
         MONEY,
-        nullable=False,
-        server_default=text("0"),
     )
-    realized_pnl_value: Mapped[Decimal] = mapped_column(
+    realized_pnl_value: Mapped[Decimal | None] = mapped_column(
         "realizedPnlValue",
         MONEY,
-        nullable=False,
-        server_default=text("0"),
     )
-    unrealized_pnl_value: Mapped[Decimal] = mapped_column(
+    unrealized_pnl_value: Mapped[Decimal | None] = mapped_column(
         "unrealizedPnlValue",
         MONEY,
-        nullable=False,
-        server_default=text("0"),
     )
     fees_value: Mapped[Decimal] = mapped_column(
         "feesValue",
@@ -188,43 +244,70 @@ class AccountSnapshotModel(Base):
     )
     cash_value_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "cashValueByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     investment_value_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "investmentValueByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     investment_cost_basis_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "investmentCostBasisByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     net_deposits_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "netDepositsByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     realized_pnl_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "realizedPnlByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     unrealized_pnl_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "unrealizedPnlByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     fees_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "feesByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
     taxes_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
         "taxesByCurrency",
-        JSONB,
+        JSONB(none_as_null=True),
     )
-    exchange_rates: Mapped[dict[str, Any] | None] = mapped_column("exchangeRates", JSONB)
+    exchange_rates: Mapped[dict[str, Any] | None] = mapped_column(
+        "exchangeRates",
+        JSONB(none_as_null=True),
+    )
+    generation_id: Mapped[str] = mapped_column(
+        "generationId",
+        ForeignKey("public.SnapshotGeneration.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    liabilities_value_by_currency: Mapped[dict[str, Any] | None] = mapped_column(
+        "liabilitiesValueByCurrency",
+        JSONB(none_as_null=True),
+    )
 
 
 class AccountSnapshotItemModel(Base):
     __tablename__ = "AccountSnapshotItem"
     __table_args__ = (
         UniqueConstraint("snapshotId", "listingId"),
+        CheckConstraint(
+            '"nativeCostBasisByCurrency" IS NULL OR '
+            "(jsonb_typeof(\"nativeCostBasisByCurrency\") = 'object' "
+            "AND \"nativeCostBasisByCurrency\" <> '{}'::jsonb)",
+            name="AccountSnapshotItem_nativeCostBasisByCurrency_nonempty_object",
+        ),
+        CheckConstraint(
+            '("costBasis" IS NULL) = ("costCurrency" IS NULL) '
+            'AND ("costBasis" IS NULL) = ("nativeCostBasis" IS NULL) '
+            'AND ("costBasis" IS NULL) = ("nativeCostCurrency" IS NULL) '
+            'AND ("costBasis" IS NULL) = ("nativeCostBasisByCurrency" IS NULL) '
+            'AND ("costBasis" IS NULL) = ("averageBuyPrice" IS NULL) '
+            'AND ("costBasis" IS NULL) = ("averageBuyPriceCurrency" IS NULL)',
+            name="AccountSnapshotItem_cost_basis_completeness",
+        ),
         Index(None, "assetId"),
         Index(None, "listingId"),
         {"schema": "public"},
@@ -265,3 +348,12 @@ class AccountSnapshotItemModel(Base):
     value_currency: Mapped[str | None] = mapped_column("valueCurrency", Text)
     native_cost_basis: Mapped[Decimal | None] = mapped_column("nativeCostBasis", QUANTITY)
     native_cost_currency: Mapped[str | None] = mapped_column("nativeCostCurrency", Text)
+    native_cost_basis_by_currency: Mapped[dict[str, object] | None] = mapped_column(
+        "nativeCostBasisByCurrency",
+        JSONB(none_as_null=True),
+    )
+    average_buy_price: Mapped[Decimal | None] = mapped_column("averageBuyPrice", QUANTITY)
+    average_buy_price_currency: Mapped[str | None] = mapped_column(
+        "averageBuyPriceCurrency",
+        Text,
+    )

@@ -5,6 +5,8 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
     asOf: "2032-08-02T12:30:00.000",
     baselineTimestamp: "2032-08-02T00:00:00.000",
     historyAnchorSnapshotId: "net-worth-baseline",
+    valuationTimestamp: "2032-08-02T12:29:00.000",
+    isStale: false,
     currency: "EUR",
     calculationVersion: 7,
     summary: {
@@ -72,6 +74,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             listingId: "listing-a",
             name: "Asset A",
             nativeCostBasis: "2500.0000000000",
+            nativeCostBasisByCurrency: [{ currency: "CZK", amount: "2500.0000000000" }],
             nativeCostCurrency: "CZK",
             nativeValue: "3000.1234560000",
             nativeValueCurrency: "CZK",
@@ -124,6 +127,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             listingId: "listing-b",
             name: "Asset B",
             nativeCostBasis: "35.0000000000",
+            nativeCostBasisByCurrency: [{ currency: "USD", amount: "35.0000000000" }],
             nativeCostCurrency: "USD",
             nativeValue: "45.0000000000",
             nativeValueCurrency: "USD",
@@ -153,6 +157,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           listingId: "listing-a",
           name: "Asset A",
           nativeCostBasis: "2500.0000000000",
+          nativeCostBasisByCurrency: [{ currency: "CZK", amount: "2500.0000000000" }],
           nativeCostCurrency: "CZK",
           nativeValue: "3000.1234560000",
           nativeValueCurrency: "CZK",
@@ -179,6 +184,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           listingId: "listing-b",
           name: "Asset B",
           nativeCostBasis: "35.0000000000",
+          nativeCostBasisByCurrency: [{ currency: "USD", amount: "35.0000000000" }],
           nativeCostCurrency: "USD",
           nativeValue: "45.0000000000",
           nativeValueCurrency: "USD",
@@ -194,4 +200,38 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
       },
     ],
   }
+}
+
+export function anycoinIncompletePortfolioSnapshotFixture(): PortfolioSnapshotData {
+  const fixture = portfolioSnapshotFixture()
+  const anycoinAccount = fixture.accounts[1]
+  const anycoinAggregate = fixture.aggregatePositions[1]
+  if (anycoinAccount === undefined || anycoinAggregate === undefined) {
+    throw new Error("Portfolio fixture is missing the Anycoin account.")
+  }
+
+  fixture.summary.investmentCostBasis = null
+  fixture.summary.netDepositsValue = null
+  fixture.summary.netDepositsByCurrency = null
+  fixture.summary.realizedPnlValue = null
+  fixture.summary.unrealizedPnlValue = null
+
+  anycoinAccount.account.name = "Anycoin BTC"
+  anycoinAccount.summary.investmentCostBasis = null
+  anycoinAccount.summary.netDepositsValue = null
+  anycoinAccount.summary.netDepositsByCurrency = null
+  anycoinAccount.summary.realizedPnlValue = null
+  anycoinAccount.summary.unrealizedPnlValue = null
+
+  for (const position of [anycoinAccount.positions[0], anycoinAggregate.position]) {
+    if (position === undefined)
+      throw new Error("Portfolio fixture is missing the Anycoin position.")
+    position.costBasis = null
+    position.costCurrency = null
+    position.unrealizedPnl = null
+    position.nativeCostBasis = null
+    position.nativeCostCurrency = null
+    position.nativeCostBasisByCurrency = null
+  }
+  return fixture
 }

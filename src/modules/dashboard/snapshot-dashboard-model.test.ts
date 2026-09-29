@@ -6,7 +6,7 @@ import { dashboardSnapshotFixture } from "@/test/dashboard-snapshot-fixture"
 import { buildSnapshotDashboardModel } from "./snapshot-dashboard-model"
 
 describe("snapshot dashboard model", () => {
-  it("preserves every server-owned collection, identity, order, and Decimal string", () => {
+  it("preserves server-owned evidence and top-position ordering", () => {
     const model = buildSnapshotDashboardModel(dashboardSnapshotFixture)
 
     expect(model).toMatchObject({
@@ -38,6 +38,27 @@ describe("snapshot dashboard model", () => {
     expect(model.topPositions.map(({ symbol }) => symbol)).toEqual(["ZZZ", "AAA"])
   })
 
+  it("does not reinterpret or reorder exact server-owned position values", () => {
+    const fixture = structuredClone(dashboardSnapshotFixture)
+    const [zeta, alpha] = fixture.topPositions
+    if (zeta === undefined || alpha === undefined) throw new Error("Missing top-position fixture.")
+    zeta.value = "900000000000.000001"
+    alpha.value = "900000000000.000001"
+    alpha.accountId = "account-a"
+    alpha.listingId = "listing-a"
+    fixture.topPositions = [zeta, alpha]
+
+    const model = buildSnapshotDashboardModel(fixture)
+
+    expect(
+      model.topPositions.map(({ accountId, listingId }) => `${accountId}:${listingId}`)
+    ).toEqual(["account-z:listing-z", "account-a:listing-a"])
+    expect(fixture.topPositions.map(({ accountId }) => accountId)).toEqual([
+      "account-z",
+      "account-a",
+    ])
+  })
+
   it("is deterministic and does not mutate its input", () => {
     const before = structuredClone(dashboardSnapshotFixture)
 
@@ -47,7 +68,7 @@ describe("snapshot dashboard model", () => {
     expect(dashboardSnapshotFixture).toEqual(before)
   })
 
-  it("contains no financial calculation, lookup, sorting, or numeric conversion", async () => {
+  it("contains no financial aggregation, lookup, or lossy numeric conversion", async () => {
     const content = await readFile(
       path.join(process.cwd(), "src/modules/dashboard/snapshot-dashboard-model.ts"),
       "utf8"
@@ -56,7 +77,6 @@ describe("snapshot dashboard model", () => {
     expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
     expect(content).not.toMatch(/\bMath\./)
     expect(content).not.toContain(".toFixed(")
-    expect(content).not.toContain(".sort(")
     expect(content).not.toContain(".reduce(")
     expect(content).not.toMatch(/\b(?:fetch|Prisma|latest|FX|price)\b/i)
   })

@@ -245,20 +245,61 @@ async def _post(prefix: str, *, commit: bool = True):
     return result
 
 
-async def _counts() -> dict[str, int]:
+async def _counts(prefix: str) -> dict[str, int]:
     engine = _engine()
+    account_id, batch_id = f"{prefix}-account", f"{prefix}-batch"
+    linked_event_ids = select(ImportRowModel.created_investment_event_id).where(
+        ImportRowModel.import_batch_id == batch_id,
+        ImportRowModel.created_investment_event_id.is_not(None),
+    )
+    event_ids = select(InvestmentEventModel.id).where(
+        or_(
+            InvestmentEventModel.account_id == account_id,
+            InvestmentEventModel.import_batch_id == batch_id,
+            InvestmentEventModel.id.in_(linked_event_ids),
+        )
+    )
+    owned_movements = or_(
+        InvestmentMovementModel.account_id == account_id,
+        InvestmentMovementModel.event_id.in_(event_ids),
+    )
+    asset_ids = select(InvestmentMovementModel.asset_id).where(
+        owned_movements, InvestmentMovementModel.asset_id.is_not(None)
+    )
+    listing_ids = select(InvestmentMovementModel.listing_id).where(
+        owned_movements, InvestmentMovementModel.listing_id.is_not(None)
+    )
+    owned_assets = or_(AssetModel.id.like(f"{prefix}-%"), AssetModel.id.in_(asset_ids))
+    owned_listings = or_(
+        AssetListingModel.id.like(f"{prefix}-%"),
+        AssetListingModel.id.in_(listing_ids),
+        AssetListingModel.asset_id.in_(asset_ids),
+        AssetListingModel.asset_id.like(f"{prefix}-%"),
+    )
     async with AsyncSession(engine) as session:
         result = {
             model.__tablename__: int(
-                await session.scalar(select(func.count()).select_from(model)) or 0
+                await session.scalar(select(func.count()).select_from(model).where(scope)) or 0
             )
-            for model in (
-                AssetModel,
-                AssetListingModel,
-                AssetAliasModel,
-                InvestmentEventModel,
-                InvestmentMovementModel,
-                TransactionModel,
+            for model, scope in (
+                (AssetModel, owned_assets),
+                (AssetListingModel, owned_listings),
+                (
+                    AssetAliasModel,
+                    or_(
+                        AssetAliasModel.asset_id.in_(asset_ids),
+                        AssetAliasModel.asset_id.like(f"{prefix}-%"),
+                    ),
+                ),
+                (InvestmentEventModel, InvestmentEventModel.id.in_(event_ids)),
+                (InvestmentMovementModel, owned_movements),
+                (
+                    TransactionModel,
+                    or_(
+                        TransactionModel.account_id == account_id,
+                        TransactionModel.import_batch_id == batch_id,
+                    ),
+                ),
             )
         }
     await engine.dispose()
@@ -421,7 +462,7 @@ async def _history(prefix: str) -> tuple[InvestmentEventModel, tuple[InvestmentM
 
 async def _assert_scope_counts(prefix: str, *, events: int, movements: int) -> None:
     assert await _batch_history_counts(prefix) == (events, movements)
-    counts = await _counts()
+    counts = await _counts(prefix)
     assert counts["AssetAlias"] == 0
     assert counts["Transaction"] == 0
 
@@ -502,7 +543,7 @@ def test_trading212_buy_persists_event_movements_and_exact_replay() -> None:
             )
             assert state is not None and change is not None
             assert (state.last_revision, state.last_investment_revision) == (1, 1)
-            assert state.holding_revision is None
+            assert state.holding_revision == 0
             assert change.revision == 1
             assert change.financial_timestamp == first.event.date
             assert change.created_at == first.event.updated_at
@@ -512,7 +553,7 @@ def test_trading212_buy_persists_event_movements_and_exact_replay() -> None:
         assert tuple(movement.id for movement in second.movements) == original_movement_ids
         assert len(first.movements) == 2
         assert await _batch_history_counts(prefix) == (1, 2)
-        counts = await _counts()
+        counts = await _counts(prefix)
         assert counts["AssetAlias"] == 0 and counts["Transaction"] == 0
 
     asyncio.run(scenario())
@@ -705,10 +746,10 @@ def test_dividend_reuses_exact_provider_listing() -> None:
         )
         await _prepare(prefix)
         asset_id, listing_id = await _seed_compatible_listing(prefix)
-        before = await _counts()
+        before = await _counts(prefix)
         before_batch = await _batch_snapshot(prefix)
         posted = await _post(prefix)
-        after = await _counts()
+        after = await _counts(prefix)
         assert posted.asset is not None and posted.asset.id == asset_id
         assert posted.listing is not None and posted.listing.id == listing_id
         assert after["Asset"] == before["Asset"]
@@ -737,12 +778,12 @@ def test_dividend_without_listing_evidence_fails_closed() -> None:
         await _prepare(prefix)
         before_row = await _row_snapshot(prefix)
         before_batch = await _batch_snapshot(prefix)
-        before = await _counts()
+        before = await _counts(prefix)
         with pytest.raises(ImportPostStateError):
             await _post(prefix)
         assert await _row_snapshot(prefix) == before_row
         assert await _batch_snapshot(prefix) == before_batch
-        after = await _counts()
+        after = await _counts(prefix)
         assert after["Asset"] == before["Asset"]
         assert after["AssetListing"] == before["AssetListing"]
         await _assert_scope_counts(prefix, events=0, movements=0)
@@ -754,7 +795,7 @@ def test_dividend_without_listing_evidence_fails_closed() -> None:
     ("action", "prefix", "movement_count"),
     [
         ("Currency conversion", "b3-conversion", 2),
-        ("Spending cashback", "b3-interest", 1),
+        ("Interest on cash", "b3-interest", 1),
     ],
 )
 def test_cash_only_events_are_asset_free_and_replay_read_only(
@@ -775,7 +816,7 @@ def test_cash_only_events_are_asset_free_and_replay_read_only(
             )
         await _seed(prefix, source=ImportSource.trading212, rows=[raw])
         await _prepare(prefix)
-        before_assets = await _counts()
+        before_assets = await _counts(prefix)
         before_batch = await _batch_snapshot(prefix)
         first = await _post(prefix)
         event, movements = await _history(prefix)
@@ -791,7 +832,7 @@ def test_cash_only_events_are_asset_free_and_replay_read_only(
                 (MovementDirection.outgoing, "EUR"),
                 (MovementDirection.incoming, "USD"),
             }
-        after_assets = await _counts()
+        after_assets = await _counts(prefix)
         assert after_assets["Asset"] == before_assets["Asset"]
         assert after_assets["AssetListing"] == before_assets["AssetListing"]
         assert await _batch_snapshot(prefix) == before_batch
@@ -827,7 +868,7 @@ def test_event_corruption_matrix_is_never_repaired(field: str) -> None:
         await _prepare(prefix)
         posted = await _post(prefix)
         before_batch = await _batch_snapshot(prefix)
-        before_counts = await _counts()
+        before_counts = await _counts(prefix)
         engine = _engine()
         async with AsyncSession(engine) as session:
             event = await session.get(InvestmentEventModel, posted.event.id)
@@ -873,7 +914,7 @@ def test_event_corruption_matrix_is_never_repaired(field: str) -> None:
             assert getattr(event, field) == tampered
             assert row.created_investment_event_id == posted.event.id
         await engine.dispose()
-        assert await _counts() == before_counts
+        assert await _counts(prefix) == before_counts
         assert await _batch_snapshot(prefix) == before_batch
 
     asyncio.run(scenario())
@@ -1003,10 +1044,10 @@ def test_movement_corruption_matrix_is_never_repaired(mutation: str) -> None:
                     target.listing_id = other_listing.id
             await session.commit()
         await engine.dispose()
-        corrupted_counts = await _counts()
+        corrupted_counts = await _counts(prefix)
         with pytest.raises(ImportPostStateError):
             await _post(prefix)
-        assert await _counts() == corrupted_counts
+        assert await _counts(prefix) == corrupted_counts
         assert await _batch_snapshot(prefix) == before_batch
         assert (await _row_snapshot(prefix))[-1] == posted.event.id
 
@@ -1028,7 +1069,7 @@ def test_missing_listing_replay_fails_without_replacement() -> None:
             await session.delete(listing)
             await session.commit()
         await engine.dispose()
-        corrupted_counts = await _counts()
+        corrupted_counts = await _counts(prefix)
         event_before, movements_before = await _history(prefix)
         with pytest.raises(ImportPostStateError):
             await _post(prefix)
@@ -1037,7 +1078,7 @@ def test_missing_listing_replay_fails_without_replacement() -> None:
         assert [(m.id, m.asset_id, m.listing_id) for m in movements_after] == [
             (m.id, m.asset_id, m.listing_id) for m in movements_before
         ]
-        assert await _counts() == corrupted_counts
+        assert await _counts(prefix) == corrupted_counts
         assert (await _row_snapshot(prefix))[-1] == posted.event.id
 
     asyncio.run(scenario())
@@ -1128,12 +1169,12 @@ def test_full_graph_caller_rollback_retry_and_replay() -> None:
         await _prepare(prefix)
         before_row = await _row_snapshot(prefix)
         before_batch = await _batch_snapshot(prefix)
-        before_counts = await _counts()
+        before_counts = await _counts(prefix)
         rolled_back = await _post(prefix, commit=False)
         assert rolled_back.created is True
         assert await _row_snapshot(prefix) == before_row
         assert await _batch_snapshot(prefix) == before_batch
-        assert await _counts() == before_counts
+        assert await _counts(prefix) == before_counts
         retry = await _post(prefix)
         replay = await _post(prefix)
         assert retry.created is True and replay.created is False

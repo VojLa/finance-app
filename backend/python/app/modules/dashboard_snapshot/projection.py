@@ -35,10 +35,10 @@ _POSTGRES_INTEGER_MAX = 2_147_483_647
 _INVESTMENT_ACCOUNT_TYPES = frozenset(
     (AccountType.broker, AccountType.exchange, AccountType.crypto_wallet)
 )
-_CASH_ACCOUNT_TYPES = frozenset((AccountType.bank, AccountType.cash, AccountType.savings))
-_LIABILITY_ACCOUNT_TYPES = frozenset(
-    (AccountType.credit_card, AccountType.loan, AccountType.mortgage)
+_CASH_ACCOUNT_TYPES = frozenset(
+    (AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card)
 )
+_LIABILITY_ACCOUNT_TYPES = frozenset((AccountType.loan, AccountType.mortgage))
 
 
 class DashboardSnapshotProjectionError(ValueError):
@@ -181,12 +181,16 @@ def _validate_summary(summary: object) -> MultiAccountPortfolioSummary:
         raise _fail()
     cash = _exact(summary.cash_value, _MONEY)
     investment = _exact(summary.investment_value, _MONEY, nonnegative=True)
-    _exact(summary.investment_cost_basis, _MONEY, nonnegative=True)
+    if summary.investment_cost_basis is not None:
+        _exact(summary.investment_cost_basis, _MONEY, nonnegative=True)
     liabilities = _exact(summary.liabilities_value, _MONEY, nonnegative=True)
     total = _exact(summary.total_value, _MONEY)
-    _exact(summary.unrealized_pnl_value, _MONEY)
-    _exact(summary.net_deposits_value, _MONEY)
-    _exact(summary.realized_pnl_value, _MONEY)
+    if summary.unrealized_pnl_value is not None:
+        _exact(summary.unrealized_pnl_value, _MONEY)
+    if summary.net_deposits_value is not None:
+        _exact(summary.net_deposits_value, _MONEY)
+    if summary.realized_pnl_value is not None:
+        _exact(summary.realized_pnl_value, _MONEY)
     _exact(summary.fees_value, _MONEY, nonnegative=True)
     _exact(summary.taxes_value, _MONEY, nonnegative=True)
     _count(summary.account_count, positive=True)
@@ -211,10 +215,10 @@ def _validate_position(
     if type(position.asset_type) is not AssetType:
         raise _fail()
     _exact(position.value, _MONEY, nonnegative=True)
-    _exact(position.unrealized_pnl, _QUANTITY)
-    if (
-        _currency(position.value_currency) != output_currency
-        or _currency(position.cost_currency) != output_currency
+    if position.unrealized_pnl is not None:
+        _exact(position.unrealized_pnl, _QUANTITY)
+    if _currency(position.value_currency) != output_currency or (
+        position.cost_currency is not None and _currency(position.cost_currency) != output_currency
     ):
         raise _fail()
     return position
@@ -260,12 +264,20 @@ def _account_card(
     summary = account_view.summary
     cash = _exact(summary.cash_value, _MONEY)
     investment = _exact(summary.investment_value, _MONEY, nonnegative=True)
-    _exact(summary.investment_cost_basis, _MONEY, nonnegative=True)
+    if summary.investment_cost_basis is not None:
+        _exact(summary.investment_cost_basis, _MONEY, nonnegative=True)
     liabilities = _exact(summary.liabilities_value, _MONEY, nonnegative=True)
     total = _exact(summary.total_value, _MONEY)
-    net_deposits = _exact(summary.net_deposits_value, _MONEY)
-    _exact(summary.realized_pnl_value, _MONEY)
-    unrealized = _exact(summary.unrealized_pnl_value, _MONEY)
+    net_deposits = (
+        None if summary.net_deposits_value is None else _exact(summary.net_deposits_value, _MONEY)
+    )
+    if summary.realized_pnl_value is not None:
+        _exact(summary.realized_pnl_value, _MONEY)
+    unrealized = (
+        None
+        if summary.unrealized_pnl_value is None
+        else _exact(summary.unrealized_pnl_value, _MONEY)
+    )
     _exact(summary.fees_value, _MONEY, nonnegative=True)
     _exact(summary.taxes_value, _MONEY, nonnegative=True)
     if _count(summary.position_count) != len(account_view.positions):
@@ -362,7 +374,12 @@ def _top_positions(
             positions,
             key=lambda item: (
                 item[1].value.copy_negate(),
-                item[1].unrealized_pnl.copy_negate(),
+                item[1].unrealized_pnl is None,
+                (
+                    Decimal(0)
+                    if item[1].unrealized_pnl is None
+                    else item[1].unrealized_pnl.copy_negate()
+                ),
                 item[1].asset_type.value,
                 item[1].symbol,
                 item[0],

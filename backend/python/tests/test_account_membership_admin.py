@@ -180,12 +180,21 @@ async def test_update_member_role_authorizes_owner_and_commits(
     service = AccountService(session)
     membership = SimpleNamespace(
         id="member-a",
+        user_id="user-a",
         role=AccountMemberRole.viewer,
+        accepted_at=datetime(2026, 7, 19, 13, 0, 0),
         updated_at=datetime(2026, 7, 19, 13, 0, 0),
     )
     access = AsyncMock()
     monkeypatch.setattr("app.modules.accounts.service.require_account_access", access)
     monkeypatch.setattr(service.repository, "get_member", AsyncMock(return_value=membership))
+    monkeypatch.setattr(
+        service.repository,
+        "get_member_for_update",
+        AsyncMock(return_value=membership),
+    )
+    monkeypatch.setattr(service.history, "lock_generation_users", AsyncMock())
+    monkeypatch.setattr(service.history, "invalidate_scope_users", AsyncMock())
     monkeypatch.setattr(
         service.repository,
         "get_member_response",
@@ -235,6 +244,58 @@ async def test_owner_membership_cannot_be_changed_or_removed(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_remove_invalidates_only_an_accepted_target(
+    accepted: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, commit, _rollback = _session()
+    service = AccountService(session)
+    membership = SimpleNamespace(
+        id="member-a",
+        user_id="target-user",
+        role=AccountMemberRole.viewer,
+        accepted_at=datetime(2026, 7, 19, 13) if accepted else None,
+    )
+    monkeypatch.setattr("app.modules.accounts.service.require_account_access", AsyncMock())
+    monkeypatch.setattr(
+        service.repository,
+        "get_account_for_update",
+        AsyncMock(return_value=SimpleNamespace(id="account-a")),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "get_member",
+        AsyncMock(return_value=membership),
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "get_member_for_update",
+        AsyncMock(return_value=membership),
+    )
+    monkeypatch.setattr(service.repository, "delete_membership", AsyncMock())
+    monkeypatch.setattr(service.history, "lock_generation_users", AsyncMock())
+    monkeypatch.setattr(service.history, "invalidate_scope_users", AsyncMock())
+
+    await service.remove_member(
+        principal=_principal(),
+        account_id="account-a",
+        member_id="member-a",
+    )
+
+    generation_lock = cast(AsyncMock, service.history.lock_generation_users)
+    scope_invalidation = cast(AsyncMock, service.history.invalidate_scope_users)
+    if accepted:
+        generation_lock.assert_awaited_once_with(("target-user",))
+        assert scope_invalidation.await_args is not None
+        assert scope_invalidation.await_args.kwargs["user_ids"] == ("target-user",)
+    else:
+        generation_lock.assert_not_awaited()
+        scope_invalidation.assert_not_awaited()
+    commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_missing_member_response_is_controlled_after_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,11 +332,20 @@ async def test_membership_commit_failure_rolls_back(
     service = AccountService(session)
     membership = SimpleNamespace(
         id="member-a",
+        user_id="user-a",
         role=AccountMemberRole.viewer,
+        accepted_at=datetime(2026, 7, 19, 13, 0, 0),
         updated_at=datetime(2026, 7, 19, 13, 0, 0),
     )
     monkeypatch.setattr("app.modules.accounts.service.require_account_access", AsyncMock())
     monkeypatch.setattr(service.repository, "get_member", AsyncMock(return_value=membership))
+    monkeypatch.setattr(
+        service.repository,
+        "get_member_for_update",
+        AsyncMock(return_value=membership),
+    )
+    monkeypatch.setattr(service.history, "lock_generation_users", AsyncMock())
+    monkeypatch.setattr(service.history, "invalidate_scope_users", AsyncMock())
     delete_membership = AsyncMock()
     monkeypatch.setattr(service.repository, "delete_membership", delete_membership)
 

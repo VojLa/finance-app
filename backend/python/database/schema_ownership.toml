@@ -1,4 +1,4 @@
-schema_version = 10
+schema_version = 25
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -15,17 +15,19 @@ cutover_status = "alembic_owned"
 users = ["User"]
 accounts = ["Account", "AccountMember", "AccountInvite"]
 liabilities = ["LiabilityBalance"]
-transactions = ["Transaction", "TransactionPair", "TransactionSplit"]
+transactions = ["Transaction", "TransactionPair", "TransactionSplit", "TransactionReportingEvidence"]
 counterparties = ["Counterparty", "CounterpartyAlias"]
 categories = ["Category", "CategoryRule"]
 budgets = ["Budget", "BudgetItem", "BudgetItemCategory", "BudgetAccount", "BudgetAlert"]
 assets = ["Asset", "AssetListing", "AssetAlias"]
 prices_fx = ["PriceSnapshot", "ExchangeRate"]
-ledger = ["InvestmentEvent", "InvestmentMovement"]
+ledger = ["InvestmentEvent", "InvestmentMovement", "InvestmentMovementValuationEvidence"]
 holdings = ["Holding"]
-imports = ["ImportBatch", "ImportRow", "ImportLog"]
-snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem"]
-canonical_lineage = ["AccountCanonicalState", "AccountCanonicalChange", "AccountSnapshotCanonicalBoundary", "DailySnapshotBaseline", "DailySnapshotBaselineAccount"]
+imports = ["ImportBatch", "ImportRow", "ImportLog", "ImportSourceOccurrence"]
+jobs = ["BackgroundJob", "ImportJobPublicationTarget", "ImportJobBatch", "ImportJobAffectedAccount"]
+snapshot_series_jobs = ["SnapshotSeriesRebuildJob", "SnapshotSeriesCanonicalInvalidation", "SnapshotSeriesDirtyState", "SnapshotSeriesScheduleState"]
+snapshots = ["NetWorthSnapshot", "AccountSnapshot", "AccountSnapshotItem", "InvestmentAccountSnapshot", "InvestmentAccountSnapshotItem", "PortfolioSnapshot", "PortfolioSnapshotInput", "PortfolioSnapshotItem", "PortfolioSnapshotItemAccount"]
+canonical_lineage = ["AccountCanonicalState", "AccountCanonicalChange", "AccountSnapshotCanonicalBoundary", "SnapshotGeneration", "SnapshotGenerationTarget", "DailySnapshotBaseline", "DailySnapshotBaselineAccount", "UserReadModelPublication", "UserReadModelPublicationWatermark", "SnapshotSeriesVersionState", "SnapshotSeriesHead", "SnapshotSeriesPointLink", "SnapshotSeriesPublicationReceipt"]
 
 [objects.enums]
 accounts = ["AccountMemberRole", "AccountRelationType", "AccountInviteStatus", "AccountType"]
@@ -38,13 +40,9 @@ assets = ["AssetAliasProvider", "AssetType"]
 prices_fx = ["PriceSource", "ExchangeRateSource"]
 ledger = ["InvestmentEventType", "InvestmentMovementKind", "MovementDirection"]
 imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", "ImportLogEvent"]
+jobs = ["BackgroundJobStatus", "BackgroundJobKind"]
+snapshot_series_jobs = ["SnapshotSeriesJobKind"]
 snapshots = ["SnapshotGranularity", "SnapshotSource"]
-
-[python_usage]
-read_tables = ["Account", "AccountMember", "Holding", "ExchangeRate", "LiabilityBalance"]
-read_enums = ["LiabilityBalanceSource"]
-transitive_read_tables = ["User", "Asset", "AssetListing"]
-transitive_read_enums = ["AccountMemberRole", "AccountRelationType", "AccountType", "PriceSource", "AssetType", "ExchangeRateSource"]
 
 [sqlalchemy_mirror]
 state = "mirrored_in_sqlalchemy"
@@ -57,6 +55,7 @@ tables = [
   "LiabilityBalance",
   "Transaction",
   "TransactionPair",
+  "TransactionReportingEvidence",
   "TransactionSplit",
   "Counterparty",
   "CounterpartyAlias",
@@ -74,18 +73,42 @@ tables = [
   "ExchangeRate",
   "InvestmentEvent",
   "InvestmentMovement",
+  "InvestmentMovementValuationEvidence",
   "Holding",
   "ImportBatch",
   "ImportRow",
   "ImportLog",
+  "ImportSourceOccurrence",
+  "BackgroundJob",
+  "ImportJobPublicationTarget",
+  "ImportJobBatch",
+  "ImportJobAffectedAccount",
+  "SnapshotSeriesRebuildJob",
+  "SnapshotSeriesCanonicalInvalidation",
+  "SnapshotSeriesDirtyState",
+  "SnapshotSeriesScheduleState",
   "NetWorthSnapshot",
   "AccountSnapshot",
   "AccountSnapshotItem",
+  "InvestmentAccountSnapshot",
+  "InvestmentAccountSnapshotItem",
+  "PortfolioSnapshot",
+  "PortfolioSnapshotInput",
+  "PortfolioSnapshotItem",
+  "PortfolioSnapshotItemAccount",
   "AccountCanonicalState",
   "AccountCanonicalChange",
   "AccountSnapshotCanonicalBoundary",
+  "SnapshotGeneration",
+  "SnapshotGenerationTarget",
   "DailySnapshotBaseline",
   "DailySnapshotBaselineAccount",
+  "UserReadModelPublication",
+  "UserReadModelPublicationWatermark",
+  "SnapshotSeriesVersionState",
+  "SnapshotSeriesHead",
+  "SnapshotSeriesPointLink",
+  "SnapshotSeriesPublicationReceipt",
 ]
 enums = [
   "AccountMemberRole",
@@ -114,6 +137,9 @@ enums = [
   "ImportRowStatus",
   "ImportLogLevel",
   "ImportLogEvent",
+  "BackgroundJobStatus",
+  "BackgroundJobKind",
+  "SnapshotSeriesJobKind",
   "SnapshotGranularity",
   "SnapshotSource",
 ]
@@ -131,9 +157,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 6
+revision_count = 26
 head_count = 1
-head_revision = "3i0001d1base"
+head_revision = "410001serieslinks"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -153,14 +179,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "3i0001d1base"
-revision_count = 6
+head_revision = "410001serieslinks"
+revision_count = 26
 head_count = 1
 
 [current_schema]
-revision = "3i0001d1base"
-schema_source = "database/revisions/3i0001d1base/schema.sql"
-checksum_source = "database/revisions/3i0001d1base/schema.sha256"
+revision = "410001serieslinks"
+schema_source = "database/revisions/410001serieslinks/schema.sql"
+checksum_source = "database/revisions/410001serieslinks/schema.sha256"
 
 [cutover]
 phase = "completed"
@@ -184,9 +210,9 @@ archive_manifest = "database/prisma_migration_archive.toml"
 archive_sha256 = "beac94880bdd44822530a39f120d2ea44b0414e04a76eeccf9bb5b8d35233cee"
 
 [prisma_runtime]
-state = "compatibility_mirror"
-client_enabled = true
-schema_is_migration_source = false
+state = "removed"
+client_enabled = false
+schema_present = false
 
 [cutover_evidence]
 environment_inventory = "database/cutover/environments.toml"

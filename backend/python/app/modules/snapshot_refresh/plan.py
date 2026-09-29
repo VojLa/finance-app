@@ -66,6 +66,7 @@ class SnapshotRefreshAccountEvidence:
     accepted_at: datetime
     is_archived: bool
     archived_at: datetime | None
+    has_canonical_history: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,7 @@ class SnapshotRefreshPlanInput:
     created_at: datetime
     is_recalculated: bool
     accounts: tuple[SnapshotRefreshAccountEvidence, ...]
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +220,7 @@ def _validate_account(
     calculated_at: datetime,
     created_at: datetime,
     is_recalculated: bool,
+    publication_account_ids: frozenset[str],
 ) -> tuple[str, str, ExpectedAccountSnapshotRefreshTarget] | None:
     if not isinstance(value, SnapshotRefreshAccountEvidence):
         raise _fail()
@@ -236,12 +239,24 @@ def _validate_account(
         raise _fail()
     if value.account_type not in _SUPPORTED_ACCOUNT_TYPES:
         raise _fail()
-
     membership_id = _nonblank(value.membership_id)
-    mode = _refresh_mode(value.membership_role)
+    membership_mode = _refresh_mode(value.membership_role)
     if not isinstance(value.relation_type, AccountRelationType):
         raise _fail()
     _timestamp(value.accepted_at)
+    if not isinstance(value.has_canonical_history, bool):
+        raise _fail()
+    # An account with no canonical financial history has no valuation evidence to
+    # snapshot. It remains part of access validation, but is deliberately absent
+    # from both account and net-worth snapshot dependencies.
+    if not value.has_canonical_history:
+        return None
+
+    mode = (
+        AccountSnapshotRefreshMode.refresh
+        if account_id in publication_account_ids
+        else membership_mode
+    )
 
     return (
         account_id,
@@ -289,9 +304,16 @@ def build_user_snapshot_refresh_plan(
         not isinstance(value.is_recalculated, bool)
         or value.is_recalculated is not (value.source is SnapshotSource.manual_recalculation)
         or not isinstance(value.accounts, tuple)
+        or not isinstance(value.publication_account_ids, tuple)
     ):
         raise _fail()
 
+    publication_account_ids = tuple(_nonblank(item) for item in value.publication_account_ids)
+    if publication_account_ids != tuple(sorted(publication_account_ids)) or len(
+        set(publication_account_ids)
+    ) != len(publication_account_ids):
+        raise _fail()
+    publication_accounts = frozenset(publication_account_ids)
     validated: list[tuple[str, str, ExpectedAccountSnapshotRefreshTarget]] = []
     account_ids: set[str] = set()
     membership_ids: set[str] = set()
@@ -306,6 +328,7 @@ def build_user_snapshot_refresh_plan(
             calculated_at=calculated_at,
             created_at=created_at,
             is_recalculated=value.is_recalculated,
+            publication_account_ids=publication_accounts,
         )
         if result is None:
             continue

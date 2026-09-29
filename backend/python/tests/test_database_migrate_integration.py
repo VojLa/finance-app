@@ -15,12 +15,17 @@ from scripts.database_migrate import DEFAULT_ADVISORY_LOCK_KEY
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("DATABASE_URL")
+POSTGRES_BIN = Path(r"C:\Program Files\PostgreSQL\16\bin")
 
 
 def run_script(*arguments: str) -> subprocess.CompletedProcess[str]:
     assert DATABASE_URL is not None
     environment = os.environ.copy()
     environment["DATABASE_URL"] = DATABASE_URL
+    if (POSTGRES_BIN / "pg_dump.exe").is_file():
+        environment.setdefault("PG_DUMP", str(POSTGRES_BIN / "pg_dump.exe"))
+    if (POSTGRES_BIN / "psql.exe").is_file():
+        environment.setdefault("PSQL", str(POSTGRES_BIN / "psql.exe"))
     return subprocess.run(
         [sys.executable, "scripts/database_migrate.py", *arguments],
         cwd=BACKEND_ROOT,

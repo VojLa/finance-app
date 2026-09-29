@@ -99,6 +99,9 @@ def local_table_snapshot(table: Table) -> dict[str, Any]:
         for constraint in table.constraints
         if isinstance(constraint, UniqueConstraint)
     ]
+    unique_constraints.extend(
+        [column.name for column in index.columns] for index in table.indexes if index.unique
+    )
 
     indexes = [
         {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -20,12 +19,6 @@ async function filesBelow(relativeDirectory: string): Promise<string[]> {
     })
   )
   return nested.flat()
-}
-
-async function sha256(relativePath: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(path.join(ROOT, relativePath)))
-    .digest("hex")
 }
 
 describe("snapshot workflow static boundaries", () => {
@@ -52,13 +45,10 @@ describe("snapshot workflow static boundaries", () => {
     }
   })
 
-  it("keeps the legacy routes byte-identical after page cutovers", async () => {
-    await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
-      "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
-    )
-    await expect(sha256("src/app/api/dashboard/route.ts")).resolves.toBe(
-      "018dfe28e81da5b780df309805ae81ff7c83fb35b9ce8b1ba8e33dda264ce9ee"
-    )
+  it("keeps dashboard operational route thin", async () => {
+    const dashboard = await source("src/app/api/dashboard/route.ts")
+    expect(dashboard).toContain("createPythonOperationalDashboardApi")
+    expect(dashboard).not.toMatch(/@\/lib\/prisma|getCzkRates|toCzk|accountAccess/)
   })
 
   it("registers exactly the two bodyless POST-only workflow route modules", async () => {
@@ -138,12 +128,14 @@ describe("snapshot workflow static boundaries", () => {
       'INTERNAL_AUTH_ISSUER="finance-app-next"',
       'INTERNAL_AUTH_AUDIENCE="finance-app-python"',
       'INTERNAL_AUTH_TOKEN_TTL_SECONDS="60"',
-      'PYTHON_API_TIMEOUT_MS="30000"',
+      'PYTHON_API_TIMEOUT_MS="60000"',
     ]) {
       expect(exampleEnvironment).toContain(line)
     }
 
     const compose = await source("docker-compose.yml")
+    expect(compose).toContain('NEXTAUTH_URL: "${NEXTAUTH_URL:-http://localhost:3000}"')
+    expect(compose).toContain('NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-development-secret-change-me}"')
     expect(
       compose.match(/INTERNAL_AUTH_SECRET: development-internal-auth-secret-change-me/g)
     ).toHaveLength(2)

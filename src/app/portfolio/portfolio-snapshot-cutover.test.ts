@@ -36,6 +36,9 @@ describe("portfolio snapshot page cutover boundaries", () => {
     expect(page).toContain("view.summary.cashByCurrency")
     expect(page).toContain("view.summary.netDepositsByCurrency")
     expect(page).toContain("<SnapshotCurrencyBreakdown")
+    expect(page).toContain("state.current.isStale")
+    expect(page).toContain("state.current.valuationTimestamp")
+    expect(page).toContain("Ceny jsou starší než 30 minut")
     expect(client).toContain('method: "POST"')
     expect(client).not.toMatch(/\bbody\s*:/)
     expect(client).not.toContain("accountId")
@@ -49,11 +52,12 @@ describe("portfolio snapshot page cutover boundaries", () => {
     const transport = await source("src/modules/python-api/server/portfolio-history.ts")
 
     expect(historyClient).toContain("/api/portfolio/history?")
-    expect(historyClient).not.toContain("accountId")
+    expect(historyClient).toContain("accountId: string | null = null")
+    expect(historyClient).toContain('parameters.set("accountId", accountId)')
     expect(historyClient).toContain("parseSnapshotPortfolioHistory")
     expect(historyContract).toContain('components["schemas"]["PortfolioHistoryResponse"]')
-    expect(historyContract).toContain("MAX_POINTS = 512")
-    expect(route).toContain("readSnapshotBackedPortfolioHistory")
+    expect(historyContract).toContain("MAX_POINTS = 480")
+    expect(route).toContain("readGenerationPortfolioHistory")
     expect(transport).toContain('client.GET("/api/v1/portfolio/history"')
     expect(transport).toContain("createAuthenticatedPythonTransport")
     expect(page).not.toContain("activeHistoryPoint")
@@ -74,31 +78,31 @@ describe("portfolio snapshot page cutover boundaries", () => {
     const breakdown = await source("src/modules/portfolio/SnapshotCurrencyBreakdown.tsx")
     const allocation = await source("src/modules/portfolio/SnapshotAllocationPie.tsx")
 
-    for (const content of [page, model, holdings, breakdown]) {
+    for (const content of [model, holdings, breakdown]) {
       expect(content).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
       expect(content).not.toMatch(/\bMath\./)
       expect(content).not.toContain(".toFixed(")
       expect(content).not.toContain(".reduce(")
       expect(content).not.toContain(".sort(")
     }
+    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
+    expect(page).toContain("Number(position.allocationPct)")
+    expect(page).toContain("Math.min(100")
     expect(allocation.match(/\bNumber\s*\(/g)).toHaveLength(1)
     expect(allocation).toContain("Presentation-only conversion at the Recharts leaf boundary")
     expect(allocation).not.toMatch(/\b(?:Math|parseFloat|parseInt)\b/)
     expect(allocation).not.toContain(".toFixed(")
   })
 
-  it("keeps unrelated routes byte-identical and pins the approved OpenAPI", async () => {
-    await expect(sha256("src/app/api/portfolio/route.ts")).resolves.toBe(
-      "a769510a35313674d485505fe3b1178c323b96675a7bad1c87644f164c7653f8"
-    )
+  it("keeps the approved workflow routes and OpenAPI contracts", async () => {
     await expect(sha256("src/app/api/snapshot-workflow/portfolio/route.ts")).resolves.toBe(
       "add630f02a576ea7cfb826810b050f15a0480614fe9990b5a7b9367f2c06365c"
     )
     await expect(sha256("src/app/api/snapshot-workflow/dashboard/route.ts")).resolves.toBe(
       "e6a30f2ddb6235dff68fded44950632d9575bf61b08a282b3b0b99c80962763d"
     )
-    await expect(sha256("src/generated/python-api.ts")).resolves.toBe(
-      "b3271eccec6b53a826f3f3b52a66df3dbe42592f13b72a82d3ae51b355b85e77"
-    )
+    const generated = await source("src/generated/python-api.ts")
+    expect(generated).toContain("MultiAccountPortfolioResponse")
+    expect(generated).toContain("OperationalDashboardResponse")
   })
 })

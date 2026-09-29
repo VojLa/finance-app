@@ -34,6 +34,10 @@ from app.modules.market_data.requirements import (
     MarketEvidenceRequirementsPlanner,
 )
 from app.modules.market_data.requirements_repository import PersistedMarketHolding
+from app.modules.market_data.source_policy import (
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+    MarketEvidenceSourcePolicy,
+)
 from app.modules.prices.models import PriceObservation
 from app.modules.prices.providers import create_production_price_registry
 
@@ -153,13 +157,15 @@ def _holding(
     provider: PriceSource | None = PriceSource.yahoo_finance,
     provider_symbol: str | None = "EXACT",
     aliases: tuple[AssetAliasModel, ...] = (),
+    symbol: str = "SAME",
+    asset_type: AssetType = AssetType.etf,
 ) -> PersistedMarketHolding:
     asset = AssetModel(
         id=f"asset-{suffix}",
-        symbol="SAME",
+        symbol=symbol,
         isin=None,
         name="Exact asset",
-        asset_type=AssetType.etf,
+        asset_type=asset_type,
         currency=listing_currency,
         created_at=SNAPSHOT_AT,
         updated_at=SNAPSHOT_AT,
@@ -167,7 +173,7 @@ def _holding(
     listing = AssetListingModel(
         id=f"listing-{suffix}",
         asset_id=asset.id,
-        symbol="SAME",
+        symbol=symbol,
         exchange=f"EX{suffix}",
         mic=None,
         currency=listing_currency,
@@ -180,12 +186,13 @@ def _holding(
     )
     holding = HoldingModel(
         id=f"holding-{suffix}",
-        symbol="SAME",
+        symbol=symbol,
         name="Exact holding",
-        asset_type=AssetType.etf,
+        asset_type=asset_type,
         quantity=Decimal(quantity),
         avg_buy_price=Decimal("10"),
-        currency=cost_currency,
+        currency=listing_currency,
+        cost_basis_by_currency={cost_currency: "10.0000000000"},
         current_price=None,
         current_value=None,
         unrealized_pnl=None,
@@ -303,12 +310,14 @@ def _planner(
     *,
     price_sources: frozenset[PriceSource] = frozenset({PriceSource.yahoo_finance}),
     fx_source: ExchangeRateSource | None = ExchangeRateSource.ecb,
+    source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> MarketEvidenceRequirementsPlanner:
     return MarketEvidenceRequirementsPlanner(
         cast(Any, object()),
         price_sources=price_sources,
         fx_source=fx_source,
         repository=repository,
+        source_policy=source_policy,
     )
 
 
@@ -397,6 +406,75 @@ async def test_plan_uses_one_exact_supported_asset_alias() -> None:
 
     assert plan.price_requirements[0].provider is PriceSource.coingecko
     assert plan.price_requirements[0].provider_symbol == "exact-coin"
+
+
+@pytest.mark.asyncio
+async def test_local_free_crypto_uses_explicit_usd_quote_and_direct_fx_only() -> None:
+    repository = _Repository()
+    policy = LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
+    provider = policy.price_source_for(AssetType.crypto)
+    repository.holdings = (
+        _holding(
+            symbol="BTC",
+            asset_type=AssetType.crypto,
+            cost_currency="EUR",
+            listing_currency="EUR",
+            provider=PriceSource.broker,
+            provider_symbol="ANYCOIN",
+            aliases=(_alias(AssetAliasProvider(provider.value), "BTC-USD"),),
+        ),
+    )
+
+    plan = await _planner(
+        repository,
+        price_sources=policy.price_sources,
+        fx_source=policy.fx_source,
+        source_policy=policy,
+    ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+
+    requirement = plan.price_requirements[0]
+    assert (
+        requirement.provider,
+        requirement.provider_symbol,
+        requirement.listing_currency,
+    ) == (provider, "BTC-USD", "USD")
+    assert {(item.from_currency, item.to_currency) for item in plan.fx_requirements} == {
+        ("EUR", "CZK"),
+        ("USD", "CZK"),
+        ("USD", "EUR"),
+    }
+    assert not {
+        ("CZK", "USD"),
+        ("EUR", "USD"),
+    } & {(item.from_currency, item.to_currency) for item in plan.fx_requirements}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_symbol", ["bitcoin", "BTC-EUR"])
+async def test_local_free_crypto_rejects_wrong_alias_or_quote_currency(
+    provider_symbol: str,
+) -> None:
+    repository = _Repository()
+    policy = LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
+    provider = policy.price_source_for(AssetType.crypto)
+    repository.holdings = (
+        _holding(
+            symbol="BTC",
+            asset_type=AssetType.crypto,
+            listing_currency="EUR",
+            provider=PriceSource.broker,
+            provider_symbol="ANYCOIN",
+            aliases=(_alias(AssetAliasProvider(provider.value), provider_symbol),),
+        ),
+    )
+
+    with pytest.raises(MarketEvidenceStateError):
+        await _planner(
+            repository,
+            price_sources=policy.price_sources,
+            fx_source=policy.fx_source,
+            source_policy=policy,
+        ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
 
 
 @pytest.mark.asyncio
@@ -526,6 +604,52 @@ async def test_zero_holding_is_not_a_price_requirement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unknown_holding_basis_keeps_price_and_omits_only_cost_fx() -> None:
+    repository = _Repository()
+    persisted = _holding(cost_currency="USD", listing_currency="EUR")
+    persisted.holding.avg_buy_price = None
+    persisted.holding.cost_basis_by_currency = None
+    repository.holdings = (persisted,)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert len(plan.price_requirements) == 1
+    assert plan.price_requirements[0].listing_id == "listing-1"
+    assert {
+        (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
+    } == {
+        ("EUR", "CZK", SNAPSHOT_AT),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("average", "costs"),
+    [
+        (None, {"USD": "10.0000000000"}),
+        (Decimal("10"), None),
+        (Decimal("0"), {"USD": "10.0000000000"}),
+    ],
+)
+async def test_incomplete_or_invalid_holding_basis_pair_fails_closed(
+    average: Decimal | None,
+    costs: dict[str, str] | None,
+) -> None:
+    repository = _Repository()
+    persisted = _holding()
+    persisted.holding.avg_buy_price = average
+    persisted.holding.cost_basis_by_currency = cast(dict[str, object] | None, costs)
+    repository.holdings = (persisted,)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await _planner(repository).build(
+            BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+        )
+
+
+@pytest.mark.asyncio
 async def test_fx_requirements_separate_snapshot_and_event_time() -> None:
     repository = _Repository()
     repository.events = (_event(),)
@@ -545,7 +669,8 @@ async def test_fx_requirements_separate_snapshot_and_event_time() -> None:
     assert ("USD", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert ("GBP", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("CHF", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
-    assert ("EUR", "CZK", EVENT_AT, ExchangeRateSource.ecb) in identities
+    assert ("GBP", "EUR", EVENT_AT, ExchangeRateSource.ecb) in identities
+    assert ("CHF", "EUR", EVENT_AT, ExchangeRateSource.ecb) in identities
     assert ("JPY", "CZK", SNAPSHOT_AT, ExchangeRateSource.ecb) in identities
     assert (
         "CAD",
@@ -586,16 +711,32 @@ async def test_direct_fx_requirement_never_inverts_or_derives() -> None:
     plan = await _planner(repository).build(
         BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
     )
-    assert all(
-        item.to_currency == "CZK" and item.from_currency != "CZK" for item in plan.fx_requirements
-    )
-    assert not any(
-        item.from_currency == "CZK" and item.to_currency == "EUR" for item in plan.fx_requirements
-    )
+    assert all(item.from_currency != item.to_currency for item in plan.fx_requirements)
+    assert ("USD", "EUR", SNAPSHOT_AT) in {
+        (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
+    }
 
 
 @pytest.mark.asyncio
-async def test_non_czk_targets_plan_only_direct_czk_pivot_observations() -> None:
+async def test_multi_settlement_holding_requires_each_direct_snapshot_pair() -> None:
+    repository = _Repository()
+    persisted = _holding(cost_currency="EUR", listing_currency="USD")
+    persisted.holding.cost_basis_by_currency = {
+        "EUR": "100.0000000000",
+        "USD": "110.0000000000",
+    }
+    repository.holdings = (persisted,)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    pairs = {(item.from_currency, item.to_currency) for item in plan.fx_requirements}
+    assert {("EUR", "CZK"), ("USD", "EUR"), ("USD", "CZK")} <= pairs
+
+
+@pytest.mark.asyncio
+async def test_non_czk_targets_plan_only_direct_output_observations() -> None:
     repository = _Repository()
     repository.user = _user(currency="EUR")
     repository.accounts = (_account(currency="USD"),)
@@ -608,9 +749,10 @@ async def test_non_czk_targets_plan_only_direct_czk_pivot_observations() -> None
     assert {
         (item.from_currency, item.to_currency, item.through) for item in plan.fx_requirements
     } == {
-        ("EUR", "CZK", SNAPSHOT_AT),
-        ("GBP", "CZK", SNAPSHOT_AT),
-        ("USD", "CZK", SNAPSHOT_AT),
+        ("EUR", "USD", SNAPSHOT_AT),
+        ("GBP", "EUR", SNAPSHOT_AT),
+        ("GBP", "USD", SNAPSHOT_AT),
+        ("USD", "EUR", SNAPSHOT_AT),
     }
 
 

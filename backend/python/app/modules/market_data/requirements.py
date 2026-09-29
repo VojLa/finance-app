@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,7 @@ from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.enums import (
     AccountType,
     AssetAliasProvider,
+    AssetType,
     ExchangeRateSource,
     InvestmentMovementKind,
     PriceSource,
@@ -33,19 +34,31 @@ from app.modules.market_data.requirements_repository import (
     MarketEvidenceRequirementsRepository,
     PersistedMarketHolding,
 )
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
+)
 
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
     AccountType.exchange,
     AccountType.crypto_wallet,
 }
-_FX_PIVOT = "CZK"
 
 
 @dataclass(frozen=True, slots=True)
 class BuildMarketEvidenceRefreshPlanCommand:
     user_id: str
     snapshot_timestamp: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPriceIdentity:
+    """Exact persisted provider identity selected by the source policy."""
+
+    provider: PriceSource
+    provider_symbol: str
+    price_currency: str
 
 
 class _Repository(Protocol):
@@ -120,6 +133,37 @@ def _finite_decimal(value: object) -> Decimal:
     return value
 
 
+def _holding_cost_currencies(holding: HoldingModel) -> tuple[str, ...]:
+    average = holding.avg_buy_price
+    value = holding.cost_basis_by_currency
+    if average is None and value is None:
+        return ()
+    if average is None or value is None:
+        raise _fail()
+    if _finite_decimal(average) <= 0 or not isinstance(value, dict) or not value:
+        raise _fail()
+    currencies: list[str] = []
+    for raw_currency, raw_amount in sorted(value.items()):
+        currency = _currency(raw_currency)
+        if not isinstance(raw_amount, str):
+            raise _fail()
+        try:
+            amount = Decimal(raw_amount)
+        except InvalidOperation as exc:
+            raise _fail() from exc
+        if (
+            not amount.is_finite()
+            or amount <= 0
+            or amount >= Decimal("1000000000000000000")
+            or format(amount, ".10f") != raw_amount
+        ):
+            raise _fail()
+        currencies.append(currency)
+    if len(set(currencies)) != len(currencies):
+        raise _fail()
+    return tuple(currencies)
+
+
 def _alias_price_source(provider: AssetAliasProvider) -> PriceSource:
     try:
         return PriceSource(provider.value)
@@ -135,14 +179,52 @@ def build_price_requirement(
     aliases: tuple[AssetAliasModel, ...],
     supported_sources: frozenset[PriceSource],
     through: datetime,
+    source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> PriceRequirement:
     """Resolve one trusted persisted listing identity without consulting Holdings."""
+
+    identity = resolve_price_identity(
+        listing=listing,
+        asset=asset,
+        aliases=aliases,
+        supported_sources=supported_sources,
+        source_policy=source_policy,
+    )
+    return PriceRequirement(
+        account_id=_nonblank(account_id),
+        asset_id=_nonblank(asset.id),
+        listing_id=_nonblank(listing.id),
+        listing_currency=identity.price_currency,
+        provider=identity.provider,
+        provider_symbol=identity.provider_symbol,
+        through=_timestamp(through),
+    )
+
+
+def resolve_price_identity(
+    *,
+    listing: AssetListingModel,
+    asset: AssetModel,
+    aliases: tuple[AssetAliasModel, ...],
+    supported_sources: frozenset[PriceSource],
+    source_policy: MarketEvidenceSourcePolicy | None = None,
+) -> ResolvedPriceIdentity:
+    """Resolve the provider alias without inventing a ticker or a timestamp."""
 
     if not isinstance(listing, AssetListingModel) or not isinstance(asset, AssetModel):
         raise _fail()
     if listing.asset_id != asset.id:
         raise _fail()
-    if listing.provider in supported_sources:
+    expected_source: PriceSource | None = None
+    policy: MarketEvidenceSourcePolicy | None = None
+    if source_policy is not None:
+        policy = validate_market_evidence_source_policy(source_policy)
+        if policy.price_sources != supported_sources:
+            raise _fail()
+        expected_source = policy.price_source_for(asset.asset_type)
+    if listing.provider in supported_sources and (
+        expected_source is None or listing.provider is expected_source
+    ):
         if listing.provider is None:
             raise _fail()
         provider, symbol = listing.provider, _nonblank(listing.provider_symbol)
@@ -156,19 +238,23 @@ def build_price_requirement(
             ):
                 raise _fail()
             source = _alias_price_source(alias.provider)
-            if source in supported_sources:
+            if source in supported_sources and (
+                expected_source is None or source is expected_source
+            ):
                 identities.append((source, _nonblank(alias.external_id)))
         if len(identities) != 1:
             raise _fail()
         provider, symbol = identities[0]
-    return PriceRequirement(
-        account_id=_nonblank(account_id),
-        asset_id=_nonblank(asset.id),
-        listing_id=_nonblank(listing.id),
-        listing_currency=_currency(listing.currency),
+    price_currency = _currency(listing.currency)
+    if policy is not None and policy.mode == "local_free" and asset.asset_type is AssetType.crypto:
+        expected_symbol = f"{_nonblank(asset.symbol)}-USD"
+        if symbol != expected_symbol:
+            raise _fail()
+        price_currency = "USD"
+    return ResolvedPriceIdentity(
         provider=provider,
         provider_symbol=symbol,
-        through=_timestamp(through),
+        price_currency=price_currency,
     )
 
 
@@ -178,6 +264,7 @@ def _price_requirements(
     accounts: dict[str, AccountModel],
     supported_sources: frozenset[PriceSource],
     through: datetime,
+    source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> tuple[PriceRequirement, ...]:
     by_identity: dict[tuple[str, PriceSource, datetime], PriceRequirement] = {}
     holding_ids: set[str] = set()
@@ -212,6 +299,7 @@ def _price_requirements(
             aliases=persisted.aliases,
             supported_sources=supported_sources,
             through=through,
+            source_policy=source_policy,
         )
         key = (requirement.listing_id, requirement.provider, requirement.through)
         existing = by_identity.get(key)
@@ -285,21 +373,13 @@ def _add_conversion_requirements(
     target = _currency(target_currency)
     if source == target:
         return
-    bases: tuple[str, ...]
-    if target == _FX_PIVOT:
-        bases = (source,)
-    elif source == _FX_PIVOT:
-        bases = (target,)
-    else:
-        bases = tuple(sorted({source, target}))
-    for base in bases:
-        _add_fx_requirement(
-            requirements,
-            from_currency=base,
-            to_currency=_FX_PIVOT,
-            through=through,
-            provider=provider,
-        )
+    _add_fx_requirement(
+        requirements,
+        from_currency=source,
+        to_currency=target,
+        through=through,
+        provider=provider,
+    )
 
 
 def _add_account_conversion_requirements(
@@ -334,12 +414,18 @@ class MarketEvidenceRequirementsPlanner:
         price_sources: frozenset[PriceSource],
         fx_source: ExchangeRateSource | None,
         repository: _Repository | None = None,
+        source_policy: MarketEvidenceSourcePolicy | None = None,
     ) -> None:
         if PriceSource.manual in price_sources or fx_source is ExchangeRateSource.manual:
             raise _fail()
         self.session = session
         self.price_sources = price_sources
         self.fx_source = fx_source
+        if source_policy is not None:
+            policy = validate_market_evidence_source_policy(source_policy)
+            if policy.price_sources != price_sources or policy.fx_source is not fx_source:
+                raise _fail()
+        self.source_policy = source_policy
         self.repository = repository or MarketEvidenceRequirementsRepository(session)
 
     async def build(
@@ -390,6 +476,7 @@ class MarketEvidenceRequirementsPlanner:
             accounts=accounts,
             supported_sources=self.price_sources,
             through=snapshot_timestamp,
+            source_policy=self.source_policy,
         )
 
         fx: dict[
@@ -416,14 +503,15 @@ class MarketEvidenceRequirementsPlanner:
         for persisted in holdings:
             if _finite_decimal(persisted.holding.quantity) == 0:
                 continue
-            _add_account_conversion_requirements(
-                fx,
-                source_currency=persisted.holding.currency,
-                account=accounts[persisted.holding.account_id],
-                output_currency=output_currency,
-                through=snapshot_timestamp,
-                provider=self.fx_source,
-            )
+            for source_currency in _holding_cost_currencies(persisted.holding):
+                _add_account_conversion_requirements(
+                    fx,
+                    source_currency=source_currency,
+                    account=accounts[persisted.holding.account_id],
+                    output_currency=output_currency,
+                    through=snapshot_timestamp,
+                    provider=self.fx_source,
+                )
         liability_ids: set[str] = set()
         for liability in liability_balances:
             liability_id = _nonblank(liability.id)

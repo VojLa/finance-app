@@ -5,7 +5,7 @@ export const IMPORT_SOURCE_OPTIONS = [
   {
     value: "raiffeisenbank",
     label: "Raiffeisenbank",
-    accepts: ["bank"] as PythonAccount["type"][],
+    accepts: ["bank", "savings", "credit_card"] as PythonAccount["type"][],
   },
   {
     value: "trading212",

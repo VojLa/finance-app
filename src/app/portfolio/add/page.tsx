@@ -1,12 +1,14 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 
 import { AccountClientError, requestAccounts } from "@/modules/accounts/account-client"
 import type { AccountPageModel } from "@/modules/accounts/account-contract"
 import { toAccountPageModel } from "@/modules/accounts/account-contract"
+import { createManualInvestment } from "@/modules/investments/investment-client"
+import type { ManualInvestmentCreateRequest } from "@/modules/investments/investment-contract"
 
 const INVESTMENT_ACCOUNT_TYPES = ["broker", "exchange", "crypto_wallet"]
 
@@ -38,7 +40,7 @@ const ASSET_TYPES = [
   { value: "other", label: "Jiné" },
 ]
 
-const CURRENCIES = ["EUR", "USD", "CZK", "GBP", "BTC", "ETH", "USDT"]
+const CURRENCIES = ["EUR", "USD", "CZK", "GBP", "BTC", "ETH"]
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -73,6 +75,11 @@ export default function AddTransactionPage() {
   const [totalCurrency, setTotalCurrency] = useState("EUR")
   const [fee, setFee] = useState("")
   const [feeCurrency, setFeeCurrency] = useState("EUR")
+  const [conversionFromAmount, setConversionFromAmount] = useState("")
+  const [conversionFromCurrency, setConversionFromCurrency] = useState("EUR")
+  const [conversionToAmount, setConversionToAmount] = useState("")
+  const [conversionToCurrency, setConversionToCurrency] = useState("USD")
+  const idempotencyKey = useRef<string | null>(null)
 
   useEffect(() => {
     let active = true
@@ -103,40 +110,50 @@ export default function AddTransactionPage() {
 
   const accounts = accountLoadState.status === "ready" ? accountLoadState.accounts : []
 
-  const needsAsset = ["buy", "sell", "dividend", "interest", "staking_reward", "airdrop"].includes(
-    type
-  )
+  const needsAsset = ["buy", "sell", "dividend", "staking_reward", "airdrop"].includes(type)
+  const needsQuantity = ["buy", "sell", "staking_reward", "airdrop"].includes(type)
+  const needsPrice = ["buy", "sell", "staking_reward", "airdrop"].includes(type)
+  const isConversion = type === "currency_conversion"
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     setError("")
 
-    const res = await fetch("/api/portfolio/transactions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accountId,
-        date,
-        type,
-        symbol: needsAsset && symbol ? symbol : null,
-        name: needsAsset && name ? name : null,
-        assetType: needsAsset ? assetType : null,
-        quantity: needsAsset && quantity ? parseFloat(quantity) : null,
-        pricePerUnit: needsAsset && pricePerUnit ? parseFloat(pricePerUnit) : null,
-        priceCurrency: needsAsset ? priceCurrency : null,
-        totalAmount: totalAmount ? parseFloat(totalAmount) : null,
-        totalCurrency,
-        fee: fee ? parseFloat(fee) : null,
-        feeCurrency: fee ? feeCurrency : null,
-      }),
-    })
+    if (idempotencyKey.current === null) idempotencyKey.current = crypto.randomUUID()
+    const payload: ManualInvestmentCreateRequest = {
+      accountId,
+      idempotencyKey: idempotencyKey.current,
+      date,
+      type: type as ManualInvestmentCreateRequest["type"],
+      symbol: needsAsset && symbol ? symbol : null,
+      name: needsAsset && name ? name : null,
+      assetType: needsAsset ? (assetType as ManualInvestmentCreateRequest["assetType"]) : null,
+      quantity: needsQuantity && quantity ? quantity : null,
+      pricePerUnit: needsPrice && pricePerUnit ? pricePerUnit : null,
+      priceCurrency: needsPrice && pricePerUnit ? priceCurrency : null,
+      totalAmount: !isConversion && totalAmount ? totalAmount : null,
+      totalCurrency: !isConversion && totalAmount ? totalCurrency : null,
+      fee: type !== "fee" && fee ? fee : null,
+      feeCurrency: type !== "fee" && fee ? feeCurrency : null,
+      conversionFromAmount: isConversion && conversionFromAmount ? conversionFromAmount : null,
+      conversionFromCurrency: isConversion && conversionFromAmount ? conversionFromCurrency : null,
+      conversionToAmount: isConversion && conversionToAmount ? conversionToAmount : null,
+      conversionToCurrency: isConversion && conversionToAmount ? conversionToCurrency : null,
+    }
 
-    if (res.ok) {
-      router.push("/portfolio")
-    } else {
-      const data = await res.json()
-      setError(data.error ?? "Nepodařilo se uložit transakci.")
+    try {
+      const result = await createManualInvestment(payload)
+      if (result.snapshot.status === "ready") {
+        router.push("/portfolio")
+        return
+      }
+      setError(
+        "Operace je uložená, ale aktuální ocenění zatím není připravené. Opakováním se nevytvoří duplicita."
+      )
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Nepodařilo se uložit transakci.")
+    } finally {
       setSaving(false)
     }
   }
@@ -265,31 +282,140 @@ export default function AddTransactionPage() {
               />
             </Field>
 
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Množství">
+            {(needsQuantity || needsPrice) && (
+              <div className="grid grid-cols-2 gap-4">
+                {needsQuantity && (
+                  <Field label="Množství">
+                    <input
+                      type="number"
+                      step="any"
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      placeholder="0"
+                      className={INPUT_CLS + " font-mono"}
+                    />
+                  </Field>
+                )}
+
+                {needsPrice && (
+                  <Field label="Cena / ks">
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        step="any"
+                        value={pricePerUnit}
+                        onChange={(e) => setPricePerUnit(e.target.value)}
+                        placeholder="0"
+                        className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <select
+                        value={priceCurrency}
+                        onChange={(e) => setPriceCurrency(e.target.value)}
+                        className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {CURRENCIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </Field>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {isConversion ? (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Z měny">
+              <div className="flex gap-2">
                 <input
                   type="number"
                   step="any"
-                  value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
-                  placeholder="0"
+                  value={conversionFromAmount}
+                  onChange={(e) => setConversionFromAmount(e.target.value)}
+                  required
                   className={INPUT_CLS + " font-mono"}
                 />
-              </Field>
+                <select
+                  value={conversionFromCurrency}
+                  onChange={(e) => setConversionFromCurrency(e.target.value)}
+                  className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm"
+                >
+                  {CURRENCIES.map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Field>
+            <Field label="Do měny">
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  step="any"
+                  value={conversionToAmount}
+                  onChange={(e) => setConversionToAmount(e.target.value)}
+                  required
+                  className={INPUT_CLS + " font-mono"}
+                />
+                <select
+                  value={conversionToCurrency}
+                  onChange={(e) => setConversionToCurrency(e.target.value)}
+                  className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm"
+                >
+                  {CURRENCIES.map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Field>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Celková částka">
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  step="any"
+                  value={totalAmount}
+                  onChange={(e) => setTotalAmount(e.target.value)}
+                  placeholder="0"
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <select
+                  value={totalCurrency}
+                  onChange={(e) => setTotalCurrency(e.target.value)}
+                  className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Field>
 
-              <Field label="Cena / ks">
+            {type !== "fee" && (
+              <Field label="Poplatek (volitelné)">
                 <div className="flex gap-2">
                   <input
                     type="number"
                     step="any"
-                    value={pricePerUnit}
-                    onChange={(e) => setPricePerUnit(e.target.value)}
+                    value={fee}
+                    onChange={(e) => setFee(e.target.value)}
                     placeholder="0"
                     className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   <select
-                    value={priceCurrency}
-                    onChange={(e) => setPriceCurrency(e.target.value)}
+                    value={feeCurrency}
+                    onChange={(e) => setFeeCurrency(e.target.value)}
                     className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     {CURRENCIES.map((c) => (
@@ -300,60 +426,9 @@ export default function AddTransactionPage() {
                   </select>
                 </div>
               </Field>
-            </div>
-          </>
+            )}
+          </div>
         )}
-
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Celková částka">
-            <div className="flex gap-2">
-              <input
-                type="number"
-                step="any"
-                value={totalAmount}
-                onChange={(e) => setTotalAmount(e.target.value)}
-                placeholder="0"
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <select
-                value={totalCurrency}
-                onChange={(e) => setTotalCurrency(e.target.value)}
-                className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </Field>
-
-          <Field label="Poplatek (volitelné)">
-            <div className="flex gap-2">
-              <input
-                type="number"
-                step="any"
-                value={fee}
-                onChange={(e) => setFee(e.target.value)}
-                placeholder="0"
-                className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <select
-                value={feeCurrency}
-                onChange={(e) => setFeeCurrency(e.target.value)}
-                className="w-20 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </Field>
-        </div>
-
         <div className="flex gap-3 pt-2">
           <button
             type="submit"

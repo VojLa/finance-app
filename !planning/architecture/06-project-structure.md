@@ -65,7 +65,8 @@ engine/
             snapshot_builder/
             fx_math/
 
-prisma/                     # docasne po dobu hybridni migrace
+prisma/
+    migrations/             # nemenny historicky SQL archiv; nikdy runtime
 
 docs/
 !planning/
@@ -158,23 +159,21 @@ Cilovy stav:
 - Alembic je jediny vlastnik databazovych migraci po dokonceni backendove migrace
 - domenove entity nesmi byt automaticky totozne s ORM modely jen kvuli pohodli
 
-Prechodny stav:
+Aktualni stav:
 
-- `prisma/` je docasna soucast hybridni migrace ze soucasneho TypeScript backendu
-- existujici Prisma schema muze byt po omezenou dobu referenci pro soucasny fyzicky DB model
-- nove tabulky nebo zmeny vlastnene Python backendem se musi ridit explicitnim migracnim planem
-- Prisma a Alembic nesmi dlouhodobe soucasne spravovat stejne tabulky
-- pred prevzetim tabulky Alembicem musi byt jasne zaznamenano, ktery migracni system ji vlastni
-- po uplnem prevzeti databazoveho schematu Python backendem bude `prisma/` odstraneno
+- SQLAlchemy mapuje kompletni fyzicke schema a Alembic je jeho jediny migracni vlastnik
+- `prisma/migrations/` je nemenny historicky SQL archiv overovany agregatnim hashem
+- Prisma runtime, `schema.prisma`, generator a migracni prikazy v repozitari nejsou
+- nove tabulky nebo zmeny vznikaji pouze pres explicitni Alembic plan a revizni artefakt
 
 ---
 
 ## Migracni pravidlo
 
-Dokud projekt bezi hybridne:
+Po dokonceni runtime cutoveru:
 
 - nova business logika patri do budouciho Python backend modulu, ne do novych `Next.js` route handleru
 - `Next.js` route muze byt docasny adapter, ale ne dlouhodoby vlastnik logiky
 - nove API kontrakty vznikaji v Python API a frontend z nich generuje klienta a TypeScript typy
 - existujici TypeScript kontrakty se pri migraci postupne nahrazuji generovanymi kontrakty
-- kazdy presun DB ownershipu z Prisma do Alembicu musi byt explicitni a nesmi vzniknout dvojite rizeni migraci
+- nesmi znovu vzniknout druhy ORM nebo migracni vlastnik stejnych tabulek

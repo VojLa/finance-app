@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
-from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -177,19 +176,25 @@ async def _prepare(prefix: str) -> None:
     await engine.dispose()
 
 
-async def _assert_no_entities() -> None:
+async def _assert_no_entities(prefix: str) -> None:
     assert DATABASE_URL is not None
     engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    account_id, batch_id = f"{prefix}-account", f"{prefix}-batch"
     async with AsyncSession(engine) as session:
-        for model in (
-            AssetModel,
-            AssetListingModel,
-            AssetAliasModel,
-            InvestmentEventModel,
-            InvestmentMovementModel,
-            TransactionModel,
+        for model, scope in (
+            (
+                InvestmentEventModel,
+                (InvestmentEventModel.account_id == account_id)
+                | (InvestmentEventModel.import_batch_id == batch_id),
+            ),
+            (InvestmentMovementModel, InvestmentMovementModel.account_id == account_id),
+            (
+                TransactionModel,
+                (TransactionModel.account_id == account_id)
+                | (TransactionModel.import_batch_id == batch_id),
+            ),
         ):
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+            assert await session.scalar(select(func.count()).select_from(model).where(scope)) == 0
     await engine.dispose()
 
 
@@ -302,7 +307,7 @@ def test_trading212_buy_builds_from_freshly_reloaded_persisted_jsonb() -> None:
             assert plan.movements[0].quantity == Decimal("2")
         await engine.dispose()
         assert await _snapshot(prefix) == before
-        await _assert_no_entities()
+        await _assert_no_entities(prefix)
 
     asyncio.run(scenario())
 
@@ -356,7 +361,7 @@ def test_anycoin_grouped_anchor_builds_plan_and_members_remain_skipped() -> None
             assert "posting_intent" not in member.normalized_data
         await engine.dispose()
         assert await _snapshot(prefix) == before
-        await _assert_no_entities()
+        await _assert_no_entities(prefix)
 
     asyncio.run(scenario())
 
@@ -400,7 +405,7 @@ def test_anycoin_incoming_and_outgoing_transfers_have_explicit_movements() -> No
             assert all(len(plan.movements) == 1 for plan in plans)
         await engine.dispose()
         assert await _snapshot(prefix) == before
-        await _assert_no_entities()
+        await _assert_no_entities(prefix)
 
     asyncio.run(scenario())
 
@@ -438,7 +443,7 @@ def test_directionless_trading212_transfer_is_review_and_has_no_plan() -> None:
                 build_investment_posting_plan(account_id=f"{prefix}-account", batch=batch, row=row)
         await engine.dispose()
         assert await _snapshot(prefix) == before
-        await _assert_no_entities()
+        await _assert_no_entities(prefix)
 
     asyncio.run(scenario())
 
@@ -470,6 +475,6 @@ def test_unrepresentable_persisted_values_fail_without_mutation(
                 build_investment_posting_plan(account_id=f"{prefix}-account", batch=batch, row=row)
         await engine.dispose()
         assert await _snapshot(prefix) == before
-        await _assert_no_entities()
+        await _assert_no_entities(prefix)
 
     asyncio.run(scenario())

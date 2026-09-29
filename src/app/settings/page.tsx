@@ -67,21 +67,25 @@ export default function SettingsPage() {
     }
 
     setPwSaving(true)
-    const res = await fetch("/api/auth/password", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ currentPassword, newPassword }),
-    })
-    setPwSaving(false)
-
-    if (res.ok) {
-      setPwSuccess(true)
-      setCurrentPassword("")
-      setNewPassword("")
-      setConfirmPassword("")
-    } else {
-      const data = await res.json()
-      setPwError(data.error ?? "Nepodařilo se změnit heslo")
+    try {
+      const res = await fetch("/api/auth/password", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      })
+      if (res.ok) {
+        setPwSuccess(true)
+        setCurrentPassword("")
+        setNewPassword("")
+        setConfirmPassword("")
+      } else {
+        const data = await res.json().catch(() => null)
+        setPwError(typeof data?.error === "string" ? data.error : "Nepodařilo se změnit heslo")
+      }
+    } catch {
+      setPwError("Nepodařilo se změnit heslo")
+    } finally {
+      setPwSaving(false)
     }
   }
 

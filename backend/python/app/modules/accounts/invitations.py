@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from secrets import token_urlsafe
@@ -11,8 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentPrincipal
+from app.auth.dependencies import CurrentPrincipal, get_request_settings
 from app.auth.models import AuthenticatedPrincipal
+from app.auth.validation import normalize_email
+from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.accounts import AccountInviteModel, AccountMemberModel, AccountModel
 from app.db.models.enums import (
@@ -22,6 +23,13 @@ from app.db.models.enums import (
 )
 from app.db.models.users import UserModel
 from app.modules.accounts.access import require_account_access
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    market_evidence_source_policy_from_settings,
+)
+from app.modules.portfolio_history.invalidation.service import (
+    PortfolioHistoryInvalidationService,
+)
 from app.shared.errors import ApplicationError
 
 router = APIRouter(prefix="/accounts", tags=["account invitations"])
@@ -31,12 +39,11 @@ INVITABLE_ROLES = {
     AccountMemberRole.editor,
     AccountMemberRole.viewer,
 }
-EMAIL_LOCAL_PATTERN = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", re.ASCII)
-EMAIL_DOMAIN_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    value = datetime.now(UTC)
+    return value.replace(tzinfo=None, microsecond=value.microsecond // 1_000 * 1_000)
 
 
 def _token_hash(token: str) -> str:
@@ -53,22 +60,7 @@ class AccountInviteCreateRequest(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        local, separator, domain = normalized.partition("@")
-        domain_labels = domain.split(".")
-        if (
-            not separator
-            or len(local) > 64
-            or EMAIL_LOCAL_PATTERN.fullmatch(local) is None
-            or local.startswith(".")
-            or local.endswith(".")
-            or ".." in local
-            or len(domain) > 253
-            or len(domain_labels) < 2
-            or any(EMAIL_DOMAIN_LABEL_PATTERN.fullmatch(label) is None for label in domain_labels)
-        ):
-            raise ValueError("A valid email address is required.")
-        return normalized
+        return normalize_email(value)
 
     @model_validator(mode="after")
     def forbid_owner_role(self) -> AccountInviteCreateRequest:
@@ -169,7 +161,19 @@ class AccountInvitationRepository:
                 AccountInviteModel.token_hash == token_hash,
                 AccountModel.is_archived.is_(False),
             )
-            .with_for_update()
+        )
+
+    async def get_for_update_by_token_hash(
+        self, *, invite_id: str, token_hash: str
+    ) -> AccountInviteModel | None:
+        return await self.session.scalar(
+            select(AccountInviteModel)
+            .where(
+                AccountInviteModel.id == invite_id,
+                AccountInviteModel.token_hash == token_hash,
+            )
+            .with_for_update(of=AccountInviteModel)
+            .execution_options(populate_existing=True)
         )
 
     async def user_has_membership(self, *, account_id: str, user_id: str) -> bool:
@@ -181,14 +185,35 @@ class AccountInvitationRepository:
         )
         return membership_id is not None
 
+    async def lock_membership(self, *, account_id: str, user_id: str) -> AccountMemberModel | None:
+        return await self.session.scalar(
+            select(AccountMemberModel)
+            .where(
+                AccountMemberModel.account_id == account_id,
+                AccountMemberModel.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     async def get_user_email(self, user_id: str) -> str | None:
         return await self.session.scalar(select(UserModel.email).where(UserModel.id == user_id))
 
 
 class AccountInvitationService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        source_policy: MarketEvidenceSourcePolicy | None = None,
+        history: PortfolioHistoryInvalidationService | None = None,
+    ) -> None:
         self.session = session
         self.repository = AccountInvitationRepository(session)
+        self.history = history or PortfolioHistoryInvalidationService(
+            session,
+            source_policy=source_policy,
+        )
 
     async def create_invite(
         self,
@@ -269,8 +294,30 @@ class AccountInvitationService:
         principal: AuthenticatedPrincipal,
         payload: AccountInviteAcceptRequest,
     ) -> AccountInviteAcceptedResponse:
-        invite = await self.repository.get_active_by_token_hash(_token_hash(payload.token))
-        if invite is None:
+        token_hash = _token_hash(payload.token)
+        candidate = await self.repository.get_active_by_token_hash(token_hash)
+        if candidate is None:
+            raise AccountInviteNotFoundError()
+        user_email = await self.repository.get_user_email(principal.user_id)
+        if user_email is None or user_email.lower() != candidate.email.lower():
+            raise AccountInviteNotFoundError()
+        await self.history.lock_generation_users((principal.user_id,))
+        account = await self.session.scalar(
+            select(AccountModel)
+            .where(
+                AccountModel.id == candidate.account_id,
+                AccountModel.is_archived.is_(False),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if account is None:
+            raise AccountInviteNotFoundError()
+        invite = await self.repository.get_for_update_by_token_hash(
+            invite_id=candidate.id,
+            token_hash=token_hash,
+        )
+        if invite is None or invite.account_id != account.id:
             raise AccountInviteNotFoundError()
         now = _now()
         if invite.status is not AccountInviteStatus.pending:
@@ -286,12 +333,14 @@ class AccountInvitationService:
                 "account_invite_expired",
                 "The invitation has expired.",
             )
-        user_email = await self.repository.get_user_email(principal.user_id)
-        if user_email is None or user_email.lower() != invite.email.lower():
+        if user_email.lower() != invite.email.lower():
             raise AccountInviteNotFoundError()
-        if await self.repository.user_has_membership(
-            account_id=invite.account_id,
-            user_id=principal.user_id,
+        if (
+            await self.repository.lock_membership(
+                account_id=invite.account_id,
+                user_id=principal.user_id,
+            )
+            is not None
         ):
             raise AccountInviteConflictError(
                 "account_membership_exists",
@@ -314,6 +363,10 @@ class AccountInvitationService:
         invite.accepted_by_id = principal.user_id
         invite.accepted_at = now
         invite.updated_at = now
+        await self.history.invalidate_scope_users(
+            user_ids=(principal.user_id,),
+            now=now,
+        )
         await self._commit()
         return AccountInviteAcceptedResponse(
             account_id=membership.account_id,
@@ -367,8 +420,12 @@ async def create_account_invite(
     payload: AccountInviteCreateRequest,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_request_settings),
 ) -> AccountInviteCreatedResponse:
-    return await AccountInvitationService(session).create_invite(
+    return await AccountInvitationService(
+        session,
+        source_policy=market_evidence_source_policy_from_settings(settings),
+    ).create_invite(
         principal=principal,
         account_id=account_id,
         payload=payload,
@@ -380,8 +437,12 @@ async def list_account_invites(
     account_id: str,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_request_settings),
 ) -> list[AccountInviteResponse]:
-    return await AccountInvitationService(session).list_invites(
+    return await AccountInvitationService(
+        session,
+        source_policy=market_evidence_source_policy_from_settings(settings),
+    ).list_invites(
         principal=principal,
         account_id=account_id,
     )
@@ -397,8 +458,12 @@ async def revoke_account_invite(
     invite_id: str,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_request_settings),
 ) -> Response:
-    await AccountInvitationService(session).revoke_invite(
+    await AccountInvitationService(
+        session,
+        source_policy=market_evidence_source_policy_from_settings(settings),
+    ).revoke_invite(
         principal=principal,
         account_id=account_id,
         invite_id=invite_id,
@@ -415,8 +480,12 @@ async def accept_account_invite(
     payload: AccountInviteAcceptRequest,
     principal: CurrentPrincipal,
     session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_request_settings),
 ) -> AccountInviteAcceptedResponse:
-    return await AccountInvitationService(session).accept_invite(
+    return await AccountInvitationService(
+        session,
+        source_policy=market_evidence_source_policy_from_settings(settings),
+    ).accept_invite(
         principal=principal,
         payload=payload,
     )

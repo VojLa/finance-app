@@ -110,9 +110,9 @@ modules replace migration code.
 
 ## Database schema inventory
 
-Prisma remains the only migration owner during the hybrid migration. The target owner is
-Alembic, but SQLAlchemy mappings or Alembic revisions are not introduced by the inventory
-step.
+Alembic is the only migration owner. SQLAlchemy is the complete runtime mapping;
+the Prisma runtime/schema/generator are removed and its historical SQL is a frozen
+hash-verified archive.
 
 The current physical PostgreSQL schema is recorded in:
 
@@ -125,14 +125,14 @@ database/
         schema.sha256
 ```
 
-`schema_ownership.toml` inventories all Prisma tables and PostgreSQL enum types and records
-the first Python persistence slice. Table-owned indexes, unique constraints, foreign keys,
-and checks inherit the ownership of their table.
+`schema_ownership.toml` inventories all Alembic-owned tables and PostgreSQL enum
+types. Table-owned indexes, unique constraints, foreign keys, and checks inherit
+the ownership of their table.
 
-To regenerate the baseline intentionally after applying all committed Prisma migrations:
+To verify the current revision artifact:
 
 ```bash
-uv run python scripts/database_schema.py --write
+uv run python scripts/database_schema.py --check --revision 3p0001rbfoundation
 ```
 
 To compare a migrated PostgreSQL database with the committed baseline:
@@ -145,9 +145,9 @@ Both commands require `DATABASE_URL` and PostgreSQL 16 `pg_dump`. The drift chec
 `_prisma_migrations`, because it is migration-system metadata rather than an application
 schema object.
 
-The `Database Schema` GitHub Actions workflow creates a clean PostgreSQL 16 database,
-applies all committed Prisma migrations, compares the resulting schema with the baseline,
-and validates the ownership manifest.
+The `Database Schema` GitHub Actions workflow creates clean PostgreSQL 16
+databases from the canonical baseline and Alembic graph, verifies schema artifacts,
+SQLAlchemy parity, the frozen archive hash, and the ownership manifest.
 
 ## Environment variables
 
@@ -255,8 +255,9 @@ instead of the application error envelope.
 change. It installs the locked dependencies with `uv sync --frozen` and runs Ruff, mypy,
 and pytest quality checks.
 
-`.github/workflows/database-schema.yml` additionally verifies Prisma migrations, the
-canonical PostgreSQL schema baseline, its checksum, and the ownership inventory.
+`.github/workflows/database-schema.yml` additionally verifies Alembic migrations,
+the canonical PostgreSQL schema artifacts and checksums, SQLAlchemy parity, the
+frozen historical archive hash, and the ownership inventory.
 
 ## Project structure
 
@@ -271,7 +272,7 @@ app/
     main.py              FastAPI application factory
 
 database/
-    baseline/             canonical PostgreSQL schema generated from Prisma migrations
+    baseline/             immutable inherited PostgreSQL schema evidence
     schema_ownership.toml database object ownership and Python usage inventory
 
 scripts/
@@ -289,14 +290,3 @@ Rules:
 - `db/` contains shared runtime database infrastructure, not financial rules.
 - `database/` records physical schema ownership and migration evidence.
 - New business logic must not use Next.js route handlers as its long-term source of truth.
-
-## Portfolio parity check
-
-The current Next.js endpoint still uses NextAuth. Until shared authentication exists, the
-parity script requires a valid browser session cookie:
-
-```powershell
-$env:PARITY_USER_ID="<user-id>"
-$env:NEXT_SESSION_COOKIE="<next-auth cookie from browser>"
-npm run api:compare:portfolio -- --account-id <optional-account-id>
-```

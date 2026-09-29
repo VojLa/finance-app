@@ -28,4 +28,5 @@ async def test_list_accessible_filters_membership_and_archived_accounts_in_stabl
     assert '"AccountMember"."userId" = \'authenticated-user\'' in compiled
     assert 'public."AccountMember"."accountId" = public."Account".id' in compiled
     assert 'public."Account"."isArchived" IS false' in compiled
+    assert 'public."AccountMember"."acceptedAt" IS NOT NULL' in compiled
     assert 'ORDER BY public."Account"."createdAt" ASC, public."Account".id ASC' in compiled

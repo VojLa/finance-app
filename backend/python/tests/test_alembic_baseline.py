@@ -8,10 +8,19 @@ from types import ModuleType
 import pytest
 
 from scripts.alembic_baseline import (
+    BACKGROUND_JOB_REVISION,
     BASELINE_REVISION,
     CUTOVER_REVISION,
+    DAILY_BASELINE_REVISION,
+    DIRECT_FX_REVISION,
+    EMPTY_INVESTMENT_HOLDING_REVISION,
     HEAD_REVISION,
+    HISTORY_GENERATION_REVISION,
+    IMPORT_PUBLICATION_ANCHOR_REVISION,
+    MULTI_CURRENCY_COST_BASIS_REVISION,
     PREVIOUS_HEAD_REVISION,
+    RB_SCHEMA_FOUNDATION_REVISION,
+    UNKNOWN_INVESTMENT_COST_BASIS_REVISION,
     DatabaseState,
     verify_database_state,
     verify_manifest,
@@ -29,6 +38,36 @@ TWELVE_DATA_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3h0001twdata_add_twelve_data_provider_identity.py"
 )
 HEAD_PATH = BACKEND_ROOT / "migrations" / "versions" / "3i0001d1base_add_daily_baseline_lineage.py"
+MULTI_CURRENCY_COST_BASIS_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3k0001mcost_add_multicurrency_holding_cost_basis.py"
+)
+BACKGROUND_JOB_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "3l0001bgjob_add_persisted_background_jobs.py"
+)
+IMPORT_PUBLICATION_ANCHOR_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3m0001importanchor_allow_minute_import_publication_anchor.py"
+)
+EMPTY_INVESTMENT_HOLDING_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3n0001emptyhold_initialize_empty_investment_holdings.py"
+)
+UNKNOWN_INVESTMENT_COST_BASIS_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3o0001unkbasis_allow_unknown_investment_cost_basis.py"
+)
+RB_SCHEMA_FOUNDATION_PATH = (
+    BACKEND_ROOT
+    / "migrations"
+    / "versions"
+    / "3p0001rbfoundation_add_reconciliation_schema_foundation.py"
+)
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
 
@@ -120,7 +159,7 @@ def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> Non
     revision = load_revision(HEAD_PATH, "daily_baseline_lineage")
     source = HEAD_PATH.read_text(encoding="utf-8")
 
-    assert revision.revision == HEAD_REVISION
+    assert revision.revision == DAILY_BASELINE_REVISION
     assert revision.down_revision == PREVIOUS_HEAD_REVISION
     assert revision.schema_change is True
     assert revision.schema_change_kind == "add_daily_baseline_lineage"
@@ -137,18 +176,175 @@ def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> Non
     assert 'DROP TABLE "public"."DailySnapshotBaseline"' not in source
 
 
+def test_multicurrency_cost_basis_revision_metadata_and_data_loss_guards() -> None:
+    revision = load_revision(MULTI_CURRENCY_COST_BASIS_PATH, "multicurrency_cost_basis")
+    source = MULTI_CURRENCY_COST_BASIS_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == MULTI_CURRENCY_COST_BASIS_REVISION
+    assert revision.down_revision == DIRECT_FX_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_multicurrency_holding_cost_basis"
+    assert revision.affected_tables == ("Holding", "AccountSnapshotItem")
+    assert revision.data_migration is True
+    assert "jsonb_typeof" in source
+    assert "complete native cost pair" in source
+    assert '"averageBuyPriceCurrency" <> "nativeCostCurrency"' in source
+    assert "Cannot remove multi-currency or quote-average" in source
+
+
+def test_background_job_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(BACKGROUND_JOB_PATH, "background_jobs")
+    source = BACKGROUND_JOB_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == BACKGROUND_JOB_REVISION
+    assert revision.down_revision == MULTI_CURRENCY_COST_BASIS_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_persisted_background_job_lifecycle"
+    assert revision.affected_tables == ("BackgroundJob",)
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    assert revision.STATUS_VALUES == ("queued", "running", "retry_wait", "completed", "failed")
+    assert revision.KIND_VALUES == ("import_workflow",)
+    for token in (
+        '"maxAttempts" BETWEEN 1 AND 20',
+        '"attemptCount" <= "maxAttempts"',
+        "BackgroundJob_completed_has_result",
+        "BackgroundJob_userId_accountId_kind_idempotencyKey_key",
+        "BackgroundJob_claim_idx",
+        "BackgroundJob_one_running_per_account_key",
+        "Cannot remove BackgroundJob while durable job evidence exists.",
+    ):
+        assert token in source
+
+
+def test_import_publication_anchor_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(IMPORT_PUBLICATION_ANCHOR_PATH, "import_publication_anchor")
+    source = IMPORT_PUBLICATION_ANCHOR_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == IMPORT_PUBLICATION_ANCHOR_REVISION
+    assert revision.down_revision == BACKGROUND_JOB_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "allow_import_current_value_publication_anchor"
+    assert revision.affected_tables == ("DailySnapshotBaseline", "ImportJobPublicationTarget")
+    assert revision.affected_columns == (
+        "DailySnapshotBaseline.granularity",
+        "DailySnapshotBaseline.source",
+        "DailySnapshotBaseline.backgroundJobId",
+        "ImportJobPublicationTarget.jobId",
+        "ImportJobPublicationTarget.userId",
+        "ImportJobPublicationTarget.bucket",
+        "ImportJobPublicationTarget.publishedAt",
+    )
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    for token in (
+        "DailySnapshotBaseline_day_only",
+        "DailySnapshotBaseline_day_or_import_anchor",
+        "\\'minute\\'::\"SnapshotGranularity\"",
+        "\\'import_event\\'::\"SnapshotSource\"",
+        '"backgroundJobId"',
+        "ImportJobPublicationTarget",
+        "DailySnapshotBaseline_backgroundJob_user_fkey",
+        "Cannot remove minute import publication anchors while evidence exists.",
+    ):
+        assert token in source
+
+
+def test_empty_investment_holding_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(EMPTY_INVESTMENT_HOLDING_PATH, "empty_investment_holding")
+    source = EMPTY_INVESTMENT_HOLDING_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == EMPTY_INVESTMENT_HOLDING_REVISION
+    assert revision.down_revision == IMPORT_PUBLICATION_ANCHOR_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "initialize_empty_investment_holding_revision"
+    assert revision.affected_tables == ("Account", "AccountCanonicalState", "Holding")
+    assert revision.affected_columns == (
+        "Account.type",
+        "AccountCanonicalState.lastInvestmentRevision",
+        "AccountCanonicalState.holdingRevision",
+        "Holding.accountId",
+    )
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is True
+    for token in (
+        'CREATE OR REPLACE FUNCTION "public"."initializeAccountCanonicalState"()',
+        "'broker', 'exchange', 'crypto_wallet'",
+        'state."lastInvestmentRevision" = 0',
+        'state."holdingRevision" IS NULL',
+        'FROM "public"."Holding" AS holding',
+        'FROM "public"."AccountCanonicalChange" AS change',
+        "Cannot remove initialized empty investment Holding revisions automatically.",
+    ):
+        assert token in source
+
+
+def test_unknown_cost_basis_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(UNKNOWN_INVESTMENT_COST_BASIS_PATH, "unknown_cost_basis")
+    source = UNKNOWN_INVESTMENT_COST_BASIS_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == UNKNOWN_INVESTMENT_COST_BASIS_REVISION
+    assert revision.down_revision == EMPTY_INVESTMENT_HOLDING_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "allow_unknown_investment_cost_basis"
+    assert revision.affected_tables == ("Holding", "AccountSnapshot", "AccountSnapshotItem")
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    for token in (
+        "Holding_cost_basis_completeness_pair",
+        "AccountSnapshotItem_cost_basis_completeness",
+        "Cannot remove unknown investment cost-basis support while incomplete evidence exists.",
+    ):
+        assert token in source
+
+
+def test_reconciliation_foundation_revision_metadata_and_data_loss_guard() -> None:
+    revision = load_revision(RB_SCHEMA_FOUNDATION_PATH, "rb_schema_foundation")
+    source = RB_SCHEMA_FOUNDATION_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == RB_SCHEMA_FOUNDATION_REVISION
+    assert revision.down_revision == UNKNOWN_INVESTMENT_COST_BASIS_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_import_reconciliation_evidence_foundation"
+    assert revision.affected_tables == (
+        "ImportBatch",
+        "ImportRow",
+        "Transaction",
+        "ExchangeRate",
+        "BackgroundJob",
+        "ImportSourceOccurrence",
+        "TransactionReportingEvidence",
+        "ImportJobBatch",
+        "ImportJobAffectedAccount",
+        "TransactionPair",
+    )
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is True
+    for token in (
+        "ImportSourceOccurrence_fp_identity_key",
+        "ImportSourceOccurrence_ordinal_positive",
+        '"ordinal" >= 1',
+        "TransactionReportingEvidence_fx_direction_fkey",
+        "ImportJobBatch_job_scope_fkey",
+        "ImportJobAffectedAccount_member_fkey",
+        "TransactionPair_reconciliation_evidence_complete_or_legacy",
+        "Cannot remove import reconciliation evidence while durable evidence exists.",
+    ):
+        assert token in source
+
+
 def test_manifest_records_first_alembic_schema_head() -> None:
     manifest = tomllib.loads(OWNERSHIP_PATH.read_text(encoding="utf-8"))
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 10
+    assert manifest["schema_version"] == 25
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 6
+    assert baseline["revision_count"] == 26
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 6
+    assert alembic["revision_count"] == 26
 
     verify_manifest()
     verify_revision_graph()
@@ -160,13 +356,19 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(30, 27, (CUTOVER_REVISION,)))
     verify_database_state(DatabaseState(30, 27, ("3f0001acctnote",)))
     verify_database_state(DatabaseState(31, 28, (PREVIOUS_HEAD_REVISION,)))
-    verify_database_state(DatabaseState(36, 28, (HEAD_REVISION,)))
+    verify_database_state(DatabaseState(36, 28, (MULTI_CURRENCY_COST_BASIS_REVISION,)))
+    verify_database_state(DatabaseState(38, 30, (BACKGROUND_JOB_REVISION,)))
+    verify_database_state(DatabaseState(38, 30, (IMPORT_PUBLICATION_ANCHOR_REVISION,)))
+    verify_database_state(DatabaseState(38, 30, (UNKNOWN_INVESTMENT_COST_BASIS_REVISION,)))
+    verify_database_state(DatabaseState(42, 30, (RB_SCHEMA_FOUNDATION_REVISION,)))
+    verify_database_state(DatabaseState(54, 34, (HISTORY_GENERATION_REVISION,)))
+    verify_database_state(DatabaseState(61, 31, (HEAD_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:
-    with pytest.raises(RuntimeError, match="Expected 36 application tables"):
-        verify_database_state(DatabaseState(31, 28, (HEAD_REVISION,)))
-    with pytest.raises(RuntimeError, match="Expected 28 enums"):
-        verify_database_state(DatabaseState(36, 27, (HEAD_REVISION,)))
+    with pytest.raises(RuntimeError, match="Expected 61 application tables"):
+        verify_database_state(DatabaseState(31, 30, (HEAD_REVISION,)))
+    with pytest.raises(RuntimeError, match="Expected 31 enums"):
+        verify_database_state(DatabaseState(61, 27, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="unknown Alembic revisions"):
         verify_database_state(DatabaseState(30, 27, ("unknown",)))

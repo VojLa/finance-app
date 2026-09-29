@@ -14,12 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import AssetType, PriceSource
+from app.modules.imports.anycoin_identity import (
+    ANYCOIN_BTC_DISPLAY_NAME,
+    is_exact_anycoin_btc_resolution,
+)
 from app.modules.imports.investment_posting_plan import InvestmentAssetResolutionPlan
 from app.modules.imports.posting_common import ImportPostStateError, bounded_optional_text
 
 _PROVIDER_EXCHANGES: Final = {
     PriceSource.broker: "trading212",
     PriceSource.exchange: "anycoin",
+    PriceSource.manual: "manual",
 }
 
 
@@ -112,7 +117,38 @@ def _asset_is_compatible(asset: AssetModel, plan: InvestmentAssetResolutionPlan)
         return False
     if plan.asset_currency_hint is not None and asset.currency != plan.asset_currency_hint:
         return False
+    if _is_exact_anycoin_btc(plan) and asset.name not in {
+        None,
+        ANYCOIN_BTC_DISPLAY_NAME,
+    }:
+        return False
     return not (plan.provider is PriceSource.exchange and asset.asset_type is not AssetType.crypto)
+
+
+def _is_exact_anycoin_btc(plan: InvestmentAssetResolutionPlan) -> bool:
+    return is_exact_anycoin_btc_resolution(
+        symbol=plan.symbol,
+        name=plan.name,
+        isin=plan.isin,
+        asset_type=plan.asset_type,
+        provider=plan.provider,
+        provider_symbol=plan.provider_symbol,
+        exchange=plan.exchange,
+        asset_currency_hint=plan.asset_currency_hint,
+    )
+
+
+def _enrich_exact_anycoin_btc_name(
+    asset: AssetModel,
+    plan: InvestmentAssetResolutionPlan,
+) -> None:
+    if not _is_exact_anycoin_btc(plan):
+        return
+    if asset.name is None:
+        asset.name = ANYCOIN_BTC_DISPLAY_NAME
+        asset.updated_at = _current_updated_at()
+    elif asset.name != ANYCOIN_BTC_DISPLAY_NAME:
+        raise ImportPostStateError()
 
 
 def _listing_is_compatible(
@@ -230,6 +266,7 @@ class ImportInvestmentAssetResolver:
     ) -> ResolvedInvestmentAsset:
         if plan.listing_currency_hint is None or plan.asset_currency_hint is None:
             raise ImportPostStateError()
+        _enrich_exact_anycoin_btc_name(asset, plan)
         provider_candidates, market_candidates = await self._identity_candidates(plan=plan)
         if len(provider_candidates) > 1 or len(market_candidates) > 1:
             raise ImportPostStateError()
@@ -291,6 +328,7 @@ class ImportInvestmentAssetResolver:
             listing, asset = provider_candidates[0]
             if not _listing_is_compatible(listing, asset, canonical_plan):
                 raise ImportPostStateError()
+            _enrich_exact_anycoin_btc_name(asset, canonical_plan)
             return ResolvedInvestmentAsset(
                 asset=asset,
                 listing=listing,
@@ -333,6 +371,9 @@ class ImportInvestmentAssetResolver:
             updated_at=now,
         )
         self.session.add(asset)
+        # SQLAlchemy mirrors the physical schema without ORM relationships, so
+        # make the parent visible before the explicit AssetListing foreign key.
+        await self.session.flush()
         return await self._create_listing(
             plan=canonical_plan,
             asset=asset,

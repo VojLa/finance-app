@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -13,14 +14,24 @@ from app.db.models.assets import AssetListingModel, AssetModel
 from app.db.models.common import QUANTITY, TIMESTAMP
 from app.db.models.enums import AssetType
 from app.db.models.holdings import HoldingModel
-from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.ledger import (
+    InvestmentEventModel,
+    InvestmentMovementModel,
+    InvestmentMovementValuationEvidenceModel,
+)
 from app.modules.holdings.persistence_projection import (
     ExpectedPersistedHoldingPlan,
+    ExpectedRealizedPnlPlan,
     HoldingPersistenceEvent,
     HoldingPersistenceMovement,
     build_holding_persistence_projection,
 )
 from app.modules.holdings.repository import HoldingRebuildRepository
+from app.modules.investments.transfer_valuation import (
+    TransferValuationStateError,
+    index_latest_transfer_valuations,
+    resolve_transfer_valuation,
+)
 
 _ERROR_MESSAGE = "Canonical investment history cannot rebuild holdings."
 _HOLDING_ID_NAMESPACE = UUID("9a39a6d8-7192-5f5c-b49a-e6e62a6ae907")
@@ -80,8 +91,9 @@ class CurrentHoldingState:
     name: str | None
     asset_type: AssetType
     quantity: Decimal
-    avg_buy_price: Decimal
+    avg_buy_price: Decimal | None
     currency: str
+    cost_basis_by_currency: tuple[tuple[str, Decimal], ...] | None
     current_price: Decimal | None
     current_value: Decimal | None
     unrealized_pnl: Decimal | None
@@ -104,7 +116,7 @@ def _nonblank(value: object) -> str:
 
 def _currency(value: object) -> str:
     result = _nonblank(value)
-    if result != result.upper():
+    if len(result) != 3 or not result.isascii() or not result.isalpha() or result != result.upper():
         raise HoldingRebuildStateError()
     return result
 
@@ -141,8 +153,81 @@ def _optional_numeric(value: object) -> Decimal | None:
     return None if value is None else _exact_numeric(value)
 
 
+def _cost_breakdown(value: object) -> tuple[tuple[str, Decimal], ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value:
+        raise HoldingRebuildStateError()
+    result: list[tuple[str, Decimal]] = []
+    for raw_currency, raw_amount in value.items():
+        currency = _currency(raw_currency)
+        if not isinstance(raw_amount, str):
+            raise HoldingRebuildStateError()
+        try:
+            amount = _exact_numeric(Decimal(raw_amount))
+        except InvalidOperation as exc:
+            raise HoldingRebuildStateError() from exc
+        if amount <= 0:
+            raise HoldingRebuildStateError()
+        result.append((currency, amount))
+    ordered = tuple(sorted(result))
+    if len({currency for currency, _ in ordered}) != len(ordered):
+        raise HoldingRebuildStateError()
+    return ordered
+
+
+def _cost_breakdown_json(
+    value: tuple[tuple[str, Decimal], ...] | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not value:
+        raise HoldingRebuildStateError()
+    result: dict[str, object] = {}
+    for currency, amount in value:
+        canonical_currency = _currency(currency)
+        canonical_amount = _exact_numeric(amount)
+        if canonical_amount <= 0 or canonical_currency in result:
+            raise HoldingRebuildStateError()
+        result[canonical_currency] = format(canonical_amount, ".10f")
+    if tuple(result) != tuple(sorted(result)):
+        raise HoldingRebuildStateError()
+    return result
+
+
 def _validate_rebuilt_at(value: object) -> datetime:
     return _exact_timestamp(value)
+
+
+def materialize_realized_pnl(
+    *,
+    events_by_id: dict[str, InvestmentEventModel],
+    expected: tuple[ExpectedRealizedPnlPlan, ...],
+    rebuilt_at: datetime,
+) -> bool:
+    timestamp = _validate_rebuilt_at(rebuilt_at)
+    changed = False
+    event_ids: set[str] = set()
+    for item in expected:
+        if item.event_id in event_ids:
+            raise HoldingRebuildStateError()
+        event_ids.add(item.event_id)
+        event = events_by_id.get(item.event_id)
+        if event is None:
+            raise HoldingRebuildStateError()
+        amount = _exact_numeric(item.amount)
+        currency = _currency(item.currency)
+        if event.realized_pnl is None and event.realized_pnl_currency is None:
+            event.realized_pnl = amount
+            event.realized_pnl_currency = currency
+            event.updated_at = timestamp
+            changed = True
+        elif (
+            _optional_numeric(event.realized_pnl) != amount
+            or _currency(event.realized_pnl_currency) != currency
+        ):
+            raise HoldingRebuildStateError()
+    return changed
 
 
 def _validate_relation(
@@ -177,6 +262,8 @@ def adapt_persisted_history(
     movements: list[InvestmentMovementModel],
     listings: dict[str, AssetListingModel],
     assets: dict[str, AssetModel],
+    transfer_valuations: Mapping[str, InvestmentMovementValuationEvidenceModel] | None = None,
+    canonical_revisions: Mapping[str, int] | None = None,
 ) -> tuple[HoldingPersistenceEvent, ...]:
     canonical_account_id = _nonblank(account_id)
     event_ids: set[str] = set()
@@ -210,6 +297,55 @@ def adapt_persisted_history(
             raise HoldingRebuildStateError()
         event_ids.add(event_id)
         event_movements = sorted(grouped.pop(event_id, []), key=lambda movement: movement.id)
+        persisted_movements: list[HoldingPersistenceMovement] = []
+        for movement in event_movements:
+            try:
+                valuation = resolve_transfer_valuation(
+                    event=event,
+                    movement=movement,
+                    evidence=(transfer_valuations or {}).get(movement.id),
+                    canonical_revision=(canonical_revisions or {}).get(event.id),
+                )
+            except TransferValuationStateError as exc:
+                raise HoldingRebuildStateError() from exc
+            persisted_movements.append(
+                HoldingPersistenceMovement(
+                    movement_id=movement.id,
+                    event_id=movement.event_id,
+                    account_id=movement.account_id,
+                    kind=movement.kind,
+                    direction=movement.direction,
+                    quantity=movement.quantity,
+                    currency=movement.currency,
+                    asset_id=movement.asset_id,
+                    listing_id=movement.listing_id,
+                    listing_asset_id=(
+                        listings[movement.listing_id].asset_id
+                        if movement.listing_id in listings
+                        else None
+                    ),
+                    listing_currency=(
+                        listings[movement.listing_id].currency
+                        if movement.listing_id in listings
+                        else None
+                    ),
+                    source_symbol=movement.source_symbol,
+                    source_asset_type=movement.source_asset_type,
+                    price_per_unit=(
+                        valuation.price_per_unit
+                        if valuation is not None
+                        else movement.price_per_unit
+                    ),
+                    value_amount=(
+                        valuation.value_amount if valuation is not None else movement.value_amount
+                    ),
+                    value_currency=(
+                        valuation.value_currency
+                        if valuation is not None
+                        else movement.value_currency
+                    ),
+                )
+            )
         result.append(
             HoldingPersistenceEvent(
                 event_id=event_id,
@@ -217,30 +353,10 @@ def adapt_persisted_history(
                 event_type=event.type,
                 event_date=event.date,
                 external_id=event.external_id,
-                movements=tuple(
-                    HoldingPersistenceMovement(
-                        movement_id=movement.id,
-                        event_id=movement.event_id,
-                        account_id=movement.account_id,
-                        kind=movement.kind,
-                        direction=movement.direction,
-                        quantity=movement.quantity,
-                        currency=movement.currency,
-                        asset_id=movement.asset_id,
-                        listing_id=movement.listing_id,
-                        listing_asset_id=(
-                            listings[movement.listing_id].asset_id
-                            if movement.listing_id in listings
-                            else None
-                        ),
-                        source_symbol=movement.source_symbol,
-                        source_asset_type=movement.source_asset_type,
-                        price_per_unit=movement.price_per_unit,
-                        value_amount=movement.value_amount,
-                        value_currency=movement.value_currency,
-                    )
-                    for movement in event_movements
-                ),
+                source=event.source,
+                realized_pnl=event.realized_pnl,
+                realized_pnl_currency=event.realized_pnl_currency,
+                movements=tuple(persisted_movements),
             )
         )
     if grouped:
@@ -274,10 +390,14 @@ def validate_current_holdings(
             or listing.asset_id != asset_id
             or holding.symbol != listing.symbol
             or holding.asset_type is not asset.asset_type
+            or _currency(holding.currency) != _currency(listing.currency)
             or not isinstance(holding.name, (str, type(None)))
             or _exact_numeric(holding.quantity) <= 0
-            or _exact_numeric(holding.avg_buy_price) <= 0
         ):
+            raise HoldingRebuildStateError()
+        average = _optional_numeric(holding.avg_buy_price)
+        cost_breakdown = _cost_breakdown(holding.cost_basis_by_currency)
+        if (average is None) != (cost_breakdown is None) or (average is not None and average <= 0):
             raise HoldingRebuildStateError()
         ids.add(holding_id)
         listing_ids.add(listing_id)
@@ -291,8 +411,9 @@ def validate_current_holdings(
                 name=holding.name,
                 asset_type=holding.asset_type,
                 quantity=holding.quantity,
-                avg_buy_price=holding.avg_buy_price,
+                avg_buy_price=average,
                 currency=_currency(holding.currency),
+                cost_basis_by_currency=cost_breakdown,
                 current_price=_optional_numeric(holding.current_price),
                 current_value=_optional_numeric(holding.current_value),
                 unrealized_pnl=_optional_numeric(holding.unrealized_pnl),
@@ -315,6 +436,7 @@ def _matches(current: CurrentHoldingState, expected: ExpectedPersistedHoldingPla
         and current.quantity == expected.quantity
         and current.avg_buy_price == expected.avg_buy_price
         and current.currency == expected.currency
+        and current.cost_basis_by_currency == expected.cost_basis_by_currency
         and current.current_price == expected.current_price
         and current.current_value == expected.current_value
         and current.unrealized_pnl == expected.unrealized_pnl
@@ -417,6 +539,18 @@ class HoldingRebuildService:
         movements = await self.repository.load_active_account_movements_for_update(
             canonical_account_id
         )
+        load_transfer_valuations = getattr(
+            self.repository, "load_transfer_valuations_for_update", None
+        )
+        valuation_rows = (
+            []
+            if load_transfer_valuations is None
+            else await load_transfer_valuations(tuple(movement.id for movement in movements))
+        )
+        try:
+            transfer_valuations = index_latest_transfer_valuations(valuation_rows)
+        except TransferValuationStateError as exc:
+            raise HoldingRebuildStateError() from exc
         holdings = await self.repository.lock_account_holdings(canonical_account_id)
 
         listing_ids = tuple(
@@ -456,10 +590,19 @@ class HoldingRebuildService:
             movements=movements,
             listings=listings,
             assets=assets,
+            transfer_valuations=transfer_valuations,
+            canonical_revisions={
+                change.entity_id: change.revision for change in investment_changes
+            },
         )
         projection = build_holding_persistence_projection(
             account_id=canonical_account_id,
             events=history,
+        )
+        realized_changed = materialize_realized_pnl(
+            events_by_id=events_by_id,
+            expected=projection.realized_pnl,
+            rebuilt_at=timestamp,
         )
         current = validate_current_holdings(
             account_id=canonical_account_id,
@@ -476,7 +619,7 @@ class HoldingRebuildService:
         create_ids = tuple(item.holding_id for item in plan.creates)
         if await self.repository.load_holdings_by_ids_for_update(create_ids):
             raise HoldingRebuildStateError()
-        replayed = not (plan.creates or plan.updates or plan.deletes)
+        replayed = not (plan.creates or plan.updates or plan.deletes or realized_changed)
         if not replayed:
             by_id = {holding.id: holding for holding in holdings}
             for create in plan.creates:
@@ -493,6 +636,9 @@ class HoldingRebuildService:
                         quantity=expected.quantity,
                         avg_buy_price=expected.avg_buy_price,
                         currency=expected.currency,
+                        cost_basis_by_currency=_cost_breakdown_json(
+                            expected.cost_basis_by_currency
+                        ),
                         current_price=None,
                         current_value=None,
                         unrealized_pnl=None,
@@ -513,6 +659,9 @@ class HoldingRebuildService:
                 holding.quantity = expected.quantity
                 holding.avg_buy_price = expected.avg_buy_price
                 holding.currency = expected.currency
+                holding.cost_basis_by_currency = _cost_breakdown_json(
+                    expected.cost_basis_by_currency
+                )
                 holding.current_price = None
                 holding.current_value = None
                 holding.unrealized_pnl = None

@@ -329,6 +329,32 @@ async def test_writer_exact_replay_is_read_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_writer_can_reuse_an_immutable_fx_rate_after_provider_revision() -> None:
+    writer, _, repository = _writer()
+    stored = _rate(rate="25.12345678")
+    revised = _rate(rate="25.99999999")
+    stored_row = _rate_row(stored)
+    repository.rates[
+        (stored.from_currency, stored.to_currency, stored.effective_at, stored.provider)
+    ] = stored_row
+    repository.rate_ids[stored_row.id] = stored_row
+
+    result = await writer.write(
+        PersistMarketEvidenceCommand(
+            price_observations=(),
+            exchange_rate_observations=(revised,),
+            created_at=CREATED_AT,
+            reuse_persisted_fx_on_conflict=True,
+        )
+    )
+
+    assert result.rates_created == 0
+    assert result.rates_replayed == 1
+    assert repository.rate_ids[stored_row.id].rate == Decimal("25.12345678")
+    assert not any(isinstance(call, tuple) and call[0] == "add-rate" for call in repository.calls)
+
+
+@pytest.mark.asyncio
 async def test_writer_supports_mix_of_create_and_replay() -> None:
     writer, _, repository = _writer()
     first = _price(listing_id="listing-1")

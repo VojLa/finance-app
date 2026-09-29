@@ -30,6 +30,10 @@ def test_cli_rejects_unsupported_provider_as_safe_json(
     assert json.loads(captured.err) == {"error": {"code": "asset_alias_invalid"}}
 
 
+def test_cli_accepts_yahoo_finance_as_operator_owned_provider() -> None:
+    assert asset_alias._provider("yahoo_finance").value == "yahoo_finance"
+
+
 def test_cli_rejects_missing_required_argument_without_traceback(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

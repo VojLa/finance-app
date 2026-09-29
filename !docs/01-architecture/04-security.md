@@ -1,77 +1,9 @@
-# Security
+# Security legacy path
 
-## Authentication and authorization
+Type: historical
+Status: historical
+Owns: compatibility routing only
+Code: none
+Update when: the final legacy link is removed
 
-Protected FastAPI endpoints require `Authorization: Bearer <token>`. The service
-accepts only a short-lived HS256 token from the trusted Next.js session bridge.
-It validates the signature, issuer, audience, `iat`, `exp`, and non-empty
-subject before opening a database session, then resolves the subject against
-`User`. Token configuration is controlled by `INTERNAL_AUTH_SECRET`,
-`INTERNAL_AUTH_ISSUER`, `INTERNAL_AUTH_AUDIENCE`, and
-`INTERNAL_AUTH_CLOCK_SKEW_SECONDS`.
-
-Account authorization is enforced server-side on every account-scoped operation:
-
-- `owner` can manage members and invitations; ownership cannot be assigned or
-  removed through member APIs.
-- `owner`, `admin`, and `editor` may create import batches, upload, parse,
-  normalize, and run duplicate detection.
-- any membership can read an accessible account, its imports, and its portfolio.
-- archived accounts are absent from normal access; lifecycle operations have an
-  explicit archived-account path.
-
-The Next.js server implements the issuing adapter for the snapshot workflow
-bridge. Its two bodyless workflow routes validate the NextAuth session, then
-issue a fresh short-lived token immediately before each FastAPI request. Tokens
-use HS256 with the configured shared secret and contain only subject, optional
-email, issuer, audience, `iat`, `exp`, and unique `jti`.
-
-The browser session cookie is never a FastAPI credential and is not forwarded
-to Python. Browser authorization headers are also ignored. The shared secret
-and internal token remain server-only: they are not exposed to client
-components, returned in JSON, cached globally, reused across the two-request
-workflow, or written to logs. A Python 401/403 after a valid NextAuth session is
-treated as an internal bridge failure rather than browser authentication
-failure.
-
-## Imports and sensitive data
-
-Raw imports are stored outside the database in `IMPORT_STORAGE_ROOT`, defaulting
-to `.data/imports`. Files are addressed by a SHA-256 hash of the batch id, are
-written through a temporary file, and are published atomically after checksum
-verification. This is local development storage, not a complete production
-retention or encrypted-object-storage design. The schema has retention fields,
-but no purge worker, deletion workflow, or GDPR anonymization implementation
-exists yet.
-
-Upload controls include a binary content-type requirement, a 1 GiB upload cap,
-filename path-separator rejection, declared-size and SHA-256 checks, and a
-64 MiB synchronous parser limit. The application must not log raw financial
-payloads.
-
-## Operational controls
-
-Each request gets an `X-Request-ID`; a valid client UUID is reused, otherwise a
-new UUID is generated. Structured logs include request metadata and duration but
-exclude request bodies, cookies, authorization headers, and financial payloads.
-Application errors return a stable envelope without tracebacks. In production,
-startup requires a database URL, JSON logging, disabled interactive API docs,
-and an internal authentication secret of at least 32 characters.
-
-Secrets belong in environment configuration and must never be committed,
-returned by endpoints, or printed in diagnostics.
-
-## Snapshot cutover audit evidence
-
-The 5M final audit verifies the server-only bridge across both runtimes. Tokens
-issued by the Next.js HS256 issuer are accepted by the real Python
-`InternalTokenVerifier` with the configured issuer and audience. Refresh and
-exact-read requests receive distinct tokens and `jti` values. Tokens travel
-only in server-side authorization headers through a no-store client; the
-browser cookie is never forwarded to FastAPI, and the token, secret, backend
-URL, raw response, and manifest do not appear in public workflow responses or
-errors.
-
-Missing or blank NextAuth identity fails before any FastAPI request. The
-browser cannot supply or override the token subject through a request body.
-The audit made no production security changes.
+Current owner: [Security](../security/README.md) and [security invariants](../architecture/invariants/security-and-isolation.md).

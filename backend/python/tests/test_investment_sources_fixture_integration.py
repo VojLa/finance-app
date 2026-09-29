@@ -9,7 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from support import investment_fixture_e2e as support
 
 from app.db.models.enums import (
     ImportRowStatus,
@@ -23,6 +22,7 @@ from app.db.models.imports import ImportBatchModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.transactions import TransactionModel
 from app.main import create_app
+from tests.support import investment_fixture_e2e as support
 
 pytestmark = pytest.mark.skipif(
     not support.DATABASE_URL,
@@ -109,7 +109,10 @@ def test_public_staged_fixture_api_creates_exact_canonical_investment_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prefix = f"r3-stage-{source.value}"
-    user_id, account_id = asyncio.run(support.seed_identity(prefix, source=source))
+    quote_currency = "USD" if source is ImportSource.anycoin else "EUR"
+    user_id, account_id = asyncio.run(
+        support.seed_identity(prefix, source=source, quote_currency=quote_currency)
+    )
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / source.value))
     try:
         with TestClient(create_app(support.settings())) as client:
@@ -118,11 +121,13 @@ def test_public_staged_fixture_api_creates_exact_canonical_investment_evidence(
                 source=source,
                 user_id=user_id,
                 account_id=account_id,
-                content=support.fixture(source, filename),
+                content=support.fixture(source, filename, quote_currency=quote_currency),
                 filename=filename,
                 post=False,
             )
-            asyncio.run(support.seed_asset_listing(prefix, source=source))
+            asyncio.run(
+                support.seed_asset_listing(prefix, source=source, quote_currency=quote_currency)
+            )
             posted = support.post_batch(
                 client,
                 user_id=user_id,
@@ -163,7 +168,7 @@ def test_public_staged_fixture_api_creates_exact_canonical_investment_evidence(
         if source is ImportSource.trading212:
             _assert_trading212_evidence(result["batch_id"], evidence)
         else:
-            _assert_anycoin_evidence(result["batch_id"], evidence)
+            _assert_anycoin_evidence(result["batch_id"], evidence, quote_currency)
     finally:
         asyncio.run(support.cleanup(prefix))
 
@@ -229,7 +234,7 @@ def _assert_trading212_evidence(batch_id: str, evidence: dict[str, Any]) -> None
     assert holdings[0].avg_buy_price == Decimal("100")
 
 
-def _assert_anycoin_evidence(batch_id: str, evidence: dict[str, Any]) -> None:
+def _assert_anycoin_evidence(batch_id: str, evidence: dict[str, Any], currency: str) -> None:
     rows = evidence["rows"]
     events = evidence["events"]
     movements = evidence["movements"]
@@ -267,7 +272,7 @@ def _assert_anycoin_evidence(batch_id: str, evidence: dict[str, Any]) -> None:
             InvestmentMovementKind.cash,
             MovementDirection.outgoing,
             Decimal("490"),
-            "EUR",
+            currency,
         ),
     }
     asset_movement = next(
@@ -275,7 +280,7 @@ def _assert_anycoin_evidence(batch_id: str, evidence: dict[str, Any]) -> None:
     )
     assert asset_movement.price_per_unit == Decimal("49000")
     assert asset_movement.value_amount == Decimal("490")
-    assert asset_movement.value_currency == "EUR"
+    assert asset_movement.value_currency == currency
     assert len(holdings) == 1
     assert holdings[0].symbol == "BTC"
     assert holdings[0].quantity == Decimal("0.01")
@@ -289,7 +294,7 @@ def _assert_anycoin_evidence(batch_id: str, evidence: dict[str, Any]) -> None:
         (ImportSource.anycoin, "history.csv", "history_issues.csv"),
     ],
 )
-def test_issue_fixtures_remain_persisted_review_evidence_without_canonical_rows(
+def test_issue_fixtures_preserve_review_evidence_and_only_valid_operational_rows(
     source: ImportSource,
     main_fixture: str,
     issue_fixture: str,
@@ -315,17 +320,21 @@ def test_issue_fixtures_remain_persisted_review_evidence_without_canonical_rows(
         assert result["parse"]["rows_total"] == len(evidence["rows"])
         assert result["parse"]["rows_failed"] >= 2
         assert result["normalize"]["rows_needs_review"] > 0
-        assert result["post"]["rows_imported"] == 0
+        assert result["post"]["rows_imported"] == (1 if source is ImportSource.trading212 else 0)
         assert evidence["events"] == ()
         assert evidence["movements"] == ()
         assert evidence["holdings"] == ()
-        assert evidence["transactions"] == 0
+        assert evidence["transactions"] == (1 if source is ImportSource.trading212 else 0)
+        assert [row.status for row in evidence["rows"]].count(ImportRowStatus.imported) == (
+            1 if source is ImportSource.trading212 else 0
+        )
         assert all(
             row.status
             in {
                 ImportRowStatus.failed,
                 ImportRowStatus.needs_review,
                 ImportRowStatus.skipped,
+                ImportRowStatus.imported,
             }
             for row in evidence["rows"]
         )
@@ -349,12 +358,15 @@ def test_fixture_replay_variants_are_deterministic_and_account_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prefix = f"r3-replay-{source.value}"
+    quote_currency = "GBP" if source is ImportSource.anycoin else "EUR"
     user_id, account_id = asyncio.run(
-        support.seed_identity(prefix, source=source, second_account=True)
+        support.seed_identity(
+            prefix, source=source, second_account=True, quote_currency=quote_currency
+        )
     )
     other_account = f"{prefix}-account-two"
     monkeypatch.setenv("IMPORT_STORAGE_ROOT", str(tmp_path / source.value))
-    content = support.fixture(source, filename)
+    content = support.fixture(source, filename, quote_currency=quote_currency)
     try:
         with TestClient(create_app(support.settings())) as client:
             first = support.run_stages(
@@ -366,7 +378,9 @@ def test_fixture_replay_variants_are_deterministic_and_account_scoped(
                 filename=filename,
                 post=False,
             )
-            asyncio.run(support.seed_asset_listing(prefix, source=source))
+            asyncio.run(
+                support.seed_asset_listing(prefix, source=source, quote_currency=quote_currency)
+            )
             support.post_batch(
                 client,
                 user_id=user_id,
@@ -387,7 +401,11 @@ def test_fixture_replay_variants_are_deterministic_and_account_scoped(
                     },
                 )
                 assert repeated.status_code == 409
-                assert repeated.json()["error"]["code"] == "import_batch_exists"
+                assert repeated.json()["error"]["code"] == (
+                    "import_batch_already_imported"
+                    if repeated_filename == filename
+                    else "import_batch_exists"
+                )
 
             for variant_name in ("bom", "reordered"):
                 duplicate = support.run_stages(

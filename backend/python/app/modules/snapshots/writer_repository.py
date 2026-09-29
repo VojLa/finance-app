@@ -154,6 +154,7 @@ class AccountSnapshotWriterRepository:
         timestamp: datetime,
         currency: str,
         granularity: SnapshotGranularity,
+        generation_id: str,
     ) -> AccountSnapshotModel | None:
         return await self.session.scalar(
             select(AccountSnapshotModel)
@@ -162,6 +163,7 @@ class AccountSnapshotWriterRepository:
                 AccountSnapshotModel.timestamp == timestamp,
                 AccountSnapshotModel.currency == currency,
                 AccountSnapshotModel.granularity == granularity,
+                AccountSnapshotModel.generation_id == generation_id,
             )
             .with_for_update()
             .execution_options(populate_existing=True)

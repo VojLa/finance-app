@@ -1,5 +1,9 @@
 # ADR 0006 - Prevod vlastnictvi DB schema z Prisma na Alembic
 
+Implementation update (2026-08-10): cutover je dokoncen. Alembic je jediny
+migracni vlastnik, SQLAlchemy kompletni runtime mapa a Prisma runtime/schema/
+generator jsou odstraneny. Puvodni Prisma SQL zustava pouze jako nemenny archiv.
+
 Status: Accepted
 Date: 2026-07-16
 Decision owners: VojLa

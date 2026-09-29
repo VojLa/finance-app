@@ -13,6 +13,7 @@ from app.db.models.accounts import AccountModel
 from app.db.models.common import MONEY, TIMESTAMP
 from app.db.models.enums import AccountType, LiabilityBalanceSource
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.modules.canonical_state import CanonicalChangeKind, RecordedCanonicalChange
 from app.modules.liabilities.writer import (
     ExpectedLiabilityBalanceRow,
     LiabilityBalanceWriteConflictError,
@@ -36,7 +37,25 @@ CREATED_AT = datetime(2026, 7, 28, 10, 21, 0, 456000)
 
 
 class _CanonicalState:
-    async def record(self, **_: object) -> None:
+    async def record(self, **values: object) -> RecordedCanonicalChange:
+        return RecordedCanonicalChange(
+            account_id=cast(str, values["account_id"]),
+            revision=1,
+            kind=cast(CanonicalChangeKind, values["kind"]),
+            entity_id=cast(str, values["entity_id"]),
+            financial_timestamp=cast(datetime, values["financial_timestamp"]),
+            created_at=cast(datetime, values["created_at"]),
+            created=not cast(bool, values["replay"]),
+        )
+
+
+class _HistoryInvalidation:
+    async def lock_current_memberships(
+        self, account_ids: tuple[str, ...]
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple((account_id, "user-1") for account_id in account_ids)
+
+    async def invalidate_recorded_changes(self, **_: object) -> None:
         return None
 
 
@@ -124,7 +143,7 @@ class _Repository:
 def _account(
     *,
     account_id: str = "account-1",
-    account_type: AccountType = AccountType.credit_card,
+    account_type: AccountType = AccountType.loan,
     currency: str = "CZK",
     archived: bool = False,
 ) -> AccountModel:
@@ -175,6 +194,7 @@ def _writer() -> tuple[LiabilityBalanceWriter, _Session, _Repository]:
             cast(Any, session),
             repository=repository,
             canonical_state=cast(Any, _CanonicalState()),
+            history_invalidation=_HistoryInvalidation(),
         ),
         session,
         repository,
@@ -386,6 +406,27 @@ async def test_manual_create_uses_only_timestamp_identity_lock_and_no_external_l
     assert not any(isinstance(call, tuple) and call[0] == "external" for call in repository.calls)
     lock_ids = cast(tuple[str, tuple[int, ...]], repository.calls[1])[1]
     assert len(lock_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_replay_ignores_only_server_created_at() -> None:
+    writer, session, repository = _writer()
+    first = _command(source=LiabilityBalanceSource.manual, external_id=None)
+    repository.by_timestamp = _model(
+        build_expected_liability_balance(first),
+    )
+
+    result = await writer.write(
+        _command(
+            source=LiabilityBalanceSource.manual,
+            external_id=None,
+            created_at=CREATED_AT.replace(second=1),
+        )
+    )
+
+    assert result.disposition is LiabilityBalanceWriteDisposition.replayed
+    assert repository.inserted is None
+    assert session.commit_count == 1
 
 
 @pytest.mark.asyncio

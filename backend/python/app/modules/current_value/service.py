@@ -31,6 +31,7 @@ from app.modules.current_value.delta_projection import (
     CurrentTransaction,
     add_currency_breakdowns,
     apply_cash_transactions,
+    apply_investment_cash_transactions,
     apply_investment_events,
 )
 from app.modules.current_value.models import CurrentPortfolioResult, CurrentValuePlan
@@ -51,13 +52,24 @@ from app.modules.market_data.models import (
     MarketEvidenceRefreshResult,
     MarketEvidenceStateError,
 )
-from app.modules.market_data.policy import MarketEvidencePolicy
+from app.modules.market_data.policy import (
+    DEFAULT_MARKET_EVIDENCE_POLICY,
+    MarketEvidencePolicy,
+)
 from app.modules.market_data.requirements import (
     BuildMarketEvidenceRefreshPlanCommand,
     build_price_requirement,
 )
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
-from app.modules.portfolio_snapshot.aggregate_models import AccountPortfolioPresentationView
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    market_evidence_source_policy_from_settings,
+)
+from app.modules.portfolio_snapshot.aggregate_models import (
+    AccountPortfolioPresentationView,
+    MultiAccountPortfolioSummary,
+    MultiAccountPortfolioView,
+)
 from app.modules.portfolio_snapshot.aggregation import build_multi_account_portfolio_view
 from app.modules.portfolio_snapshot.currency_breakdown import (
     PortfolioCurrencyBreakdownError,
@@ -86,6 +98,7 @@ from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
+    CurrencyAmount,
     LiabilityBalanceEvidence,
     SnapshotHoldingEvidence,
     build_account_snapshot_projection,
@@ -106,11 +119,9 @@ from app.modules.snapshots.financial_metrics import (
 )
 from app.shared.errors import ApplicationError
 
-_CASH_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings}
+_CASH_TYPES = {AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card}
 _INVESTMENT_TYPES = {AccountType.broker, AccountType.exchange, AccountType.crypto_wallet}
-_LIABILITY_TYPES = {AccountType.credit_card, AccountType.loan, AccountType.mortgage}
-_PRICE_SOURCES = frozenset((PriceSource.coingecko, PriceSource.twelve_data))
-_FX_PIVOT = "CZK"
+_LIABILITY_TYPES = {AccountType.loan, AccountType.mortgage}
 
 
 class CurrentValueUnavailableError(ApplicationError):
@@ -120,6 +131,10 @@ class CurrentValueUnavailableError(ApplicationError):
             message="Current portfolio value cannot be produced from the available evidence.",
             status_code=409,
         )
+
+
+class _PublicationStateChangedError(RuntimeError):
+    """The durable import fence changed between stable current-value reads."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +153,7 @@ class _PreparedAccount:
     holdings: tuple[ExpectedPersistedHoldingPlan, ...]
     cash_by_currency: tuple[PortfolioCurrencyAmount, ...]
     forward_metrics: tuple[HistoricalMetricEvidence, ...]
+    forward_asset_transfer: bool
     liability: LiabilityBalanceModel | None
 
 
@@ -145,6 +161,53 @@ class _PreparedAccount:
 class _PreparedState:
     baseline: DailySnapshotBaseline
     accounts: tuple[_PreparedAccount, ...]
+
+
+def _select_account_types(
+    state: _PreparedState,
+    account_types: frozenset[AccountType] | None,
+) -> _PreparedState:
+    if account_types is None:
+        return state
+    return _PreparedState(
+        baseline=state.baseline,
+        accounts=tuple(
+            account for account in state.accounts if account.lineage.account_type in account_types
+        ),
+    )
+
+
+def _empty_portfolio(
+    *,
+    as_of: datetime,
+    baseline: DailySnapshotBaseline,
+) -> MultiAccountPortfolioView:
+    """Represent an authorized user with no accounts in the requested portfolio scope."""
+
+    zero = Decimal(0).quantize(Decimal("0.000001"))
+    return MultiAccountPortfolioView(
+        timestamp=as_of,
+        granularity=PortfolioGranularity.minute,
+        currency=baseline.currency,
+        calculation_version=baseline.calculation_version,
+        summary=MultiAccountPortfolioSummary(
+            cash_value=zero,
+            cash_by_currency=(),
+            investment_value=zero,
+            investment_cost_basis=zero,
+            liabilities_value=zero,
+            total_value=zero,
+            net_deposits_value=zero,
+            net_deposits_by_currency=(),
+            realized_pnl_value=zero,
+            unrealized_pnl_value=zero,
+            fees_value=zero,
+            taxes_value=zero,
+            account_count=0,
+            position_count=0,
+        ),
+        accounts=(),
+    )
 
 
 class _MarketService(Protocol):
@@ -238,6 +301,12 @@ def _add_money(left: Decimal, right: Decimal) -> Decimal:
         raise _fail() from exc
 
 
+def _add_optional_money(left: Decimal | None, right: Decimal | None) -> Decimal | None:
+    if left is None or right is None:
+        return None
+    return _add_money(left, right)
+
+
 def _subtract_quantity(left: Decimal, right: Decimal) -> Decimal:
     try:
         with localcontext() as context:
@@ -263,13 +332,144 @@ def _principal(command: object) -> str:
     return _text(principal.user_id)
 
 
-def _account_view(lineage: DailyBaselineAccount, baseline: PortfolioSnapshotView) -> None:
+def _account_view(
+    lineage: DailyBaselineAccount,
+    baseline: PortfolioSnapshotView,
+    *,
+    granularity: SnapshotGranularity,
+) -> None:
     if (
         baseline.account.account_id != lineage.account_id
         or baseline.account.currency != lineage.account_currency
         or baseline.timestamp.tzinfo is not None
-        or baseline.granularity is not PortfolioGranularity.day
+        or baseline.granularity.value != granularity.value
     ):
+        raise _fail()
+
+
+def _baseline_snapshot_rate_ids(
+    snapshot: AccountSnapshotModel,
+    *,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> tuple[str, ...]:
+    """Validate the immutable FX audit before reusing a baseline scalar.
+
+    The snapshot's JSON is an audit index, not a valuation input.  Its exact
+    rate IDs are reloaded below so historical entries (which intentionally do
+    not duplicate a source field in v1) are checked against the active source
+    policy as well.
+    """
+
+    audit = snapshot.exchange_rates
+    if not isinstance(audit, dict):
+        raise _fail()
+    version = audit.get("version")
+    snapshot_rates = audit.get("snapshotRates")
+    historical_ids = audit.get("historicalRateIds")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in {1, 2}
+        or not isinstance(snapshot_rates, list)
+        or not isinstance(historical_ids, list)
+    ):
+        raise _fail()
+
+    snapshot_ids: list[str] = []
+    for entry in snapshot_rates:
+        if not isinstance(entry, dict):
+            raise _fail()
+        rate_id = _text(entry.get("rateId"))
+        if entry.get("source") != source_policy.fx_source.value:
+            raise _fail()
+        snapshot_ids.append(rate_id)
+
+    historical: list[str] = []
+    for rate_id in historical_ids:
+        historical.append(_text(rate_id))
+
+    if version == 2:
+        historical_rates = audit.get("historicalRates")
+        if not isinstance(historical_rates, list):
+            raise _fail()
+        parsed_historical_ids: list[str] = []
+        for entry in historical_rates:
+            if not isinstance(entry, dict):
+                raise _fail()
+            parsed_historical_ids.append(_text(entry.get("rateId")))
+        if set(parsed_historical_ids) != set(historical):
+            raise _fail()
+    elif "historicalRates" in audit:
+        raise _fail()
+
+    if len(set(snapshot_ids)) != len(snapshot_ids) or len(set(historical)) != len(historical):
+        raise _fail()
+    return tuple(sorted({*snapshot_ids, *historical}))
+
+
+async def _validate_baseline_market_evidence(
+    repository: CurrentValueRepository,
+    *,
+    primary: PortfolioSnapshotView,
+    presentation: PortfolioSnapshotView,
+    primary_snapshot: AccountSnapshotModel,
+    presentation_snapshot: AccountSnapshotModel,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> None:
+    """Do not combine an old policy's persisted baseline with new evidence."""
+
+    expected_item_counts: dict[str, int] = {}
+    snapshots_by_id: dict[str, AccountSnapshotModel] = {}
+    for view, snapshot in (
+        (primary, primary_snapshot),
+        (presentation, presentation_snapshot),
+    ):
+        if view.snapshot_id != snapshot.id:
+            raise _fail()
+        prior_count = expected_item_counts.setdefault(snapshot.id, len(view.positions))
+        if prior_count != len(view.positions):
+            raise _fail()
+        snapshots_by_id.setdefault(snapshot.id, snapshot)
+
+    snapshot_ids = tuple(sorted(snapshots_by_id))
+    items = await repository.load_snapshot_items_with_assets(snapshot_ids)
+    if len(items) != sum(expected_item_counts.values()):
+        raise _fail()
+    observed_item_counts = {snapshot_id: 0 for snapshot_id in snapshot_ids}
+    for item, asset in items:
+        if (
+            item.snapshot_id not in observed_item_counts
+            or item.asset_id != asset.id
+            or not isinstance(asset.asset_type, AssetType)
+            or not isinstance(item.price_source, PriceSource)
+        ):
+            raise _fail()
+        try:
+            expected_source = source_policy.price_source_for(asset.asset_type)
+        except ValueError as exc:
+            raise _fail() from exc
+        if item.price_source is not expected_source:
+            raise _fail()
+        observed_item_counts[item.snapshot_id] += 1
+    if observed_item_counts != expected_item_counts:
+        raise _fail()
+
+    rate_ids = tuple(
+        sorted(
+            {
+                rate_id
+                for snapshot in snapshots_by_id.values()
+                for rate_id in _baseline_snapshot_rate_ids(
+                    snapshot,
+                    source_policy=source_policy,
+                )
+            }
+        )
+    )
+    rates = await repository.load_exchange_rates_by_ids(rate_ids)
+    if {rate.id for rate in rates} != set(rate_ids):
+        raise _fail()
+    if any(rate.source is not source_policy.fx_source for rate in rates):
         raise _fail()
 
 
@@ -315,11 +515,14 @@ async def _prepare_account(
     baseline: DailySnapshotBaseline,
     lineage: DailyBaselineAccount,
     changes: tuple[DailyBaselineChange, ...],
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> _PreparedAccount:
+    portfolio_granularity = PortfolioGranularity(baseline.granularity.value)
     primary = await repository.load_baseline_view(
         account_id=lineage.account_id,
         snapshot_id=lineage.primary_snapshot_id,
         timestamp=baseline.timestamp,
+        granularity=portfolio_granularity,
         currency=baseline.currency,
         calculation_version=baseline.calculation_version,
     )
@@ -327,15 +530,24 @@ async def _prepare_account(
         account_id=lineage.account_id,
         snapshot_id=lineage.presentation_snapshot_id,
         timestamp=baseline.timestamp,
+        granularity=portfolio_granularity,
         currency=lineage.account_currency,
         calculation_version=baseline.calculation_version,
     )
-    _account_view(lineage, primary)
-    _account_view(lineage, presentation)
+    _account_view(lineage, primary, granularity=baseline.granularity)
+    _account_view(lineage, presentation, granularity=baseline.granularity)
     primary_snapshot = await repository.load_snapshot(lineage.primary_snapshot_id)
     presentation_snapshot = await repository.load_snapshot(lineage.presentation_snapshot_id)
     if primary_snapshot is None or presentation_snapshot is None:
         raise _fail()
+    await _validate_baseline_market_evidence(
+        repository,
+        primary=primary,
+        presentation=presentation,
+        primary_snapshot=primary_snapshot,
+        presentation_snapshot=presentation_snapshot,
+        source_policy=source_policy,
+    )
     if lineage.account_type in _CASH_TYPES:
         if (
             primary.positions
@@ -360,12 +572,23 @@ async def _prepare_account(
         )
         holdings: tuple[ExpectedPersistedHoldingPlan, ...] = ()
         metrics: tuple[HistoricalMetricEvidence, ...] = ()
+        forward_asset_transfer = False
         liability = None
     elif lineage.account_type in _INVESTMENT_TYPES:
-        if any(change.kind != "investment_event" for change in changes):
+        if any(change.kind not in {"investment_event", "transaction"} for change in changes):
             raise _fail()
         events: list[CurrentInvestmentEvent] = []
+        investment_transactions: list[CurrentTransaction] = []
         for change in changes:
+            if change.kind == "transaction":
+                investment_transactions.append(
+                    _current_transaction(
+                        lineage.account_id,
+                        change,
+                        await repository.load_transaction(change.entity_id),
+                    )
+                )
+                continue
             event = await repository.load_investment_event(
                 event_id=change.entity_id,
                 account_id=lineage.account_id,
@@ -383,9 +606,20 @@ async def _prepare_account(
             baseline_cash=primary.summary.cash_by_currency,
             events=tuple(events),
         )
+        transaction_delta = apply_investment_cash_transactions(
+            account_id=lineage.account_id,
+            baseline=delta.cash_by_currency,
+            transactions=tuple(investment_transactions),
+        )
         holdings = delta.holdings.holdings
-        cash = delta.cash_by_currency
-        metrics = delta.historical_metrics
+        cash = transaction_delta.cash_by_currency
+        metrics = tuple(
+            sorted(
+                (*delta.historical_metrics, *transaction_delta.historical_metrics),
+                key=lambda item: (item.timestamp, item.evidence_id),
+            )
+        )
+        forward_asset_transfer = delta.has_asset_transfer
         liability = None
     elif lineage.account_type in _LIABILITY_TYPES:
         if (
@@ -421,6 +655,7 @@ async def _prepare_account(
         cash = ()
         holdings = ()
         metrics = ()
+        forward_asset_transfer = False
     else:
         raise _fail()
     return _PreparedAccount(
@@ -433,6 +668,7 @@ async def _prepare_account(
         holdings=holdings,
         cash_by_currency=cash,
         forward_metrics=metrics,
+        forward_asset_transfer=forward_asset_transfer,
         liability=liability,
     )
 
@@ -440,6 +676,8 @@ async def _prepare_account(
 async def _prepare_state(
     repository: CurrentValueRepository,
     baseline: DailySnapshotBaseline,
+    *,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> _PreparedState:
     by_account: dict[str, list[DailyBaselineChange]] = {
         account.account_id: [] for account in baseline.accounts
@@ -456,6 +694,7 @@ async def _prepare_state(
                 baseline=baseline,
                 lineage=lineage,
                 changes=tuple(by_account[lineage.account_id]),
+                source_policy=source_policy,
             )
         )
     accounts = tuple(account_list)
@@ -466,9 +705,10 @@ def _fx_keys(
     source: str,
     target: str,
     through: datetime,
+    provider: ExchangeRateSource,
 ) -> set[tuple[str, str, datetime, ExchangeRateSource]]:
     return {
-        (base, quote, through, ExchangeRateSource.cnb)
+        (base, quote, through, provider)
         for base, quote in required_conversion_pairs(source, target)
     }
 
@@ -478,6 +718,7 @@ async def _build_market_plan(
     state: _PreparedState,
     *,
     as_of: datetime,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> MarketEvidenceRefreshPlan:
     holding_accounts: dict[str, str] = {}
     for account in state.accounts:
@@ -496,8 +737,9 @@ async def _build_market_plan(
                     listing=listing,
                     asset=asset,
                     aliases=aliases,
-                    supported_sources=_PRICE_SOURCES,
+                    supported_sources=source_policy.price_sources,
                     through=as_of,
+                    source_policy=source_policy,
                 )
                 for listing, asset, aliases in identities
             ),
@@ -524,10 +766,17 @@ async def _build_market_plan(
             current_currencies.update((requirement.listing_currency, holding.currency))
         for source in current_currencies:
             for target in targets:
-                required_fx.update(_fx_keys(source, target, as_of))
+                required_fx.update(_fx_keys(source, target, as_of, source_policy.fx_source))
         for metric in account.forward_metrics:
             for target in targets:
-                required_fx.update(_fx_keys(metric.currency, target, metric.timestamp))
+                required_fx.update(
+                    _fx_keys(
+                        metric.currency,
+                        target,
+                        metric.timestamp,
+                        source_policy.fx_source,
+                    )
+                )
     fx = tuple(
         ExchangeRateRequirement(
             from_currency=base,
@@ -582,6 +831,14 @@ def _snapshot_holdings(account: _PreparedAccount) -> tuple[SnapshotHoldingEviden
             quantity=item.quantity,
             average_buy_price=item.avg_buy_price,
             cost_currency=item.currency,
+            cost_basis_by_currency=(
+                None
+                if item.cost_basis_by_currency is None
+                else tuple(
+                    CurrencyAmount(currency=currency, amount=amount)
+                    for currency, amount in item.cost_basis_by_currency
+                )
+            ),
         )
         for item in account.holdings
     )
@@ -625,6 +882,7 @@ def _historical_rates(
     output_currency: str,
     candidates: tuple[ExchangeRateModel, ...],
     policy: MarketEvidencePolicy,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> tuple[SelectedHistoricalRate, ...]:
     result: list[SelectedHistoricalRate] = []
     for metric in metrics:
@@ -633,6 +891,7 @@ def _historical_rates(
                 candidates,
                 base_currency=base,
                 quote_currency=quote,
+                source=source_policy.fx_source,
                 through=metric.timestamp,
                 policy=policy,
             )
@@ -664,6 +923,7 @@ async def _project_account(
     output_currency: str,
     as_of: datetime,
     policy: MarketEvidencePolicy,
+    source_policy: MarketEvidenceSourcePolicy,
 ) -> PortfolioSnapshotView:
     holdings = _snapshot_holdings(account)
     price_candidates = await repository.load_price_candidates(
@@ -674,6 +934,7 @@ async def _project_account(
         select_latest_price_evidence(
             price_candidates,
             holding=holding,
+            source=source_policy.price_source_for(holding.asset_type),
             through=as_of,
             policy=policy,
         )
@@ -703,19 +964,22 @@ async def _project_account(
     }
     candidates = await repository.load_exchange_rate_candidates(
         tuple(sorted(required_bases)),
-        _FX_PIVOT,
+        output_currency,
+        source=source_policy.fx_source,
         through=as_of,
     )
     validated = validate_exchange_rate_candidates(
         candidates,
         base_currencies=tuple(sorted(required_bases)),
-        quote_currency=_FX_PIVOT,
+        quote_currency=output_currency,
+        source=source_policy.fx_source,
         through=as_of,
     )
     snapshot_rates = select_snapshot_exchange_rates(
         validated,
         source_currencies=source_currencies,
         output_currency=output_currency,
+        source=source_policy.fx_source,
         through=as_of,
         policy=policy,
     )
@@ -744,6 +1008,7 @@ async def _project_account(
             output_currency=output_currency,
             candidates=validated,
             policy=policy,
+            source_policy=source_policy,
         ),
     )
     baseline = (
@@ -756,22 +1021,34 @@ async def _project_account(
         if output_currency == account.primary_snapshot.currency
         else account.presentation_snapshot
     )
-    net_deposits = _add_money(
-        baseline.summary.net_deposits_value,
-        forward_metrics.net_deposits_value,
+    net_deposits = (
+        None
+        if account.forward_asset_transfer
+        else _add_optional_money(
+            baseline.summary.net_deposits_value,
+            forward_metrics.net_deposits_value,
+        )
     )
-    realized = _add_money(
-        baseline.summary.realized_pnl_value,
-        forward_metrics.realized_pnl_value,
+    realized = (
+        None
+        if account.forward_asset_transfer or valuation.investment_cost_basis is None
+        else _add_optional_money(
+            baseline.summary.realized_pnl_value,
+            forward_metrics.realized_pnl_value,
+        )
     )
     fees = _add_money(baseline.summary.fees_value, forward_metrics.fees_value)
     taxes = _add_money(baseline.summary.taxes_value, forward_metrics.taxes_value)
-    net_deposits_breakdown = add_currency_breakdowns(
-        baseline.summary.net_deposits_by_currency,
-        tuple(
-            PortfolioCurrencyAmount(currency=item.currency, amount=item.amount)
-            for item in forward_metrics.net_deposits_by_currency
-        ),
+    net_deposits_breakdown = (
+        None
+        if baseline.summary.net_deposits_by_currency is None or net_deposits is None
+        else add_currency_breakdowns(
+            baseline.summary.net_deposits_by_currency,
+            tuple(
+                PortfolioCurrencyAmount(currency=item.currency, amount=item.amount)
+                for item in forward_metrics.net_deposits_by_currency
+            ),
+        )
     )
     # Validate hidden cumulative native breakdowns before carrying their
     # scalar authorities forward. They remain server-only in the 0.1 API.
@@ -780,7 +1057,8 @@ async def _project_account(
         ("fees_by_currency", baseline.summary.fees_value),
         ("taxes_by_currency", baseline.summary.taxes_value),
     ):
-        _baseline_breakdown(baseline_snapshot, field=field, scalar=scalar)
+        if scalar is not None:
+            _baseline_breakdown(baseline_snapshot, field=field, scalar=scalar)
 
     metadata_rows = await repository.load_listing_metadata(
         tuple(item.listing_id for item in valuation.items)
@@ -813,13 +1091,27 @@ async def _project_account(
                 value=item.value,
                 value_currency=output_currency,
                 cost_basis=item.cost_basis,
-                cost_currency=output_currency,
-                unrealized_pnl=_subtract_quantity(item.value, item.cost_basis),
+                cost_currency=item.cost_currency,
+                unrealized_pnl=(
+                    None
+                    if item.cost_basis is None
+                    else _subtract_quantity(item.value, item.cost_basis)
+                ),
                 allocation_pct=item.allocation_pct,
                 native_value=item.native_value,
                 native_value_currency=item.value_currency,
                 native_cost_basis=item.native_cost_basis,
                 native_cost_currency=item.native_cost_currency,
+                native_cost_basis_by_currency=(
+                    None
+                    if item.native_cost_basis_by_currency is None
+                    else tuple(
+                        PortfolioCurrencyAmount(currency=value.currency, amount=value.amount)
+                        for value in item.native_cost_basis_by_currency
+                    )
+                ),
+                average_buy_price=item.average_buy_price,
+                average_buy_price_currency=item.average_buy_price_currency,
             )
         )
     summary = PortfolioSummaryView(
@@ -873,31 +1165,96 @@ class CurrentValueService:
         self.settings = settings
         self.clock = clock
         self.market_service_factory = market_service_factory
+        self.source_policy = market_evidence_source_policy_from_settings(settings)
 
     async def read_portfolio(
         self,
         command: ReadCurrentPortfolioCommand,
     ) -> CurrentPortfolioResult:
+        return await self._read(command, account_types=None)
+
+    async def read_investment_portfolio(
+        self,
+        command: ReadCurrentPortfolioCommand,
+    ) -> CurrentPortfolioResult:
+        """Return only broker, exchange and crypto-wallet accounts for Portfolio."""
+
+        return await self._read(command, account_types=frozenset(_INVESTMENT_TYPES))
+
+    async def _read(
+        self,
+        command: ReadCurrentPortfolioCommand,
+        *,
+        account_types: frozenset[AccountType] | None,
+    ) -> CurrentPortfolioResult:
         user_id = _principal(command)
         as_of = canonical_current_value_as_of(self.clock())
         baseline_service = DailySnapshotBaselineService(self.session)
         try:
-            baseline = await baseline_service.select_latest_valid(user_id=user_id, through=as_of)
-            plan = await self._build_plan(baseline, as_of=as_of)
-            market_service = self.market_service_factory(
-                self.session,
-                self.settings,
-                _StaticPlanner(plan.market_plan),
-            )
-            market_result = await market_service.refresh(
-                RefreshMarketEvidenceCommand(
-                    user_id=user_id,
-                    snapshot_timestamp=as_of,
-                    created_at=as_of,
-                )
-            )
-            _validate_market_result(market_result, plan.market_plan)
-            return await self._project(plan)
+            # A status transition while we build/project a current value must
+            # not publish a mixed canonical/import view. One retry handles a
+            # normal race; sustained churn returns the standard unavailable
+            # response instead of guessing which publication is authoritative.
+            for attempt in range(2):
+                try:
+                    frozen_account_ids = await self._load_active_import_account_ids(user_id)
+                    baseline = await baseline_service.select_latest_valid(
+                        user_id=user_id,
+                        through=as_of,
+                        frozen_account_ids=frozen_account_ids,
+                    )
+                    if account_types is not None and not any(
+                        account.account_type in account_types for account in baseline.accounts
+                    ):
+                        await self._require_idle()
+                        return CurrentPortfolioResult(
+                            as_of=as_of,
+                            baseline_id=baseline.baseline_id,
+                            baseline_timestamp=baseline.timestamp,
+                            baseline_net_worth_snapshot_id=baseline.net_worth_snapshot_id,
+                            portfolio=_empty_portfolio(as_of=as_of, baseline=baseline),
+                            account_presentations=(),
+                        )
+                    plan = await self._build_plan(
+                        baseline,
+                        as_of=as_of,
+                        frozen_account_ids=frozen_account_ids,
+                        account_types=account_types,
+                    )
+                    if plan.market_plan.price_requirements or plan.market_plan.fx_requirements:
+                        market_service = self.market_service_factory(
+                            self.session,
+                            self.settings,
+                            _StaticPlanner(plan.market_plan),
+                        )
+                        try:
+                            market_result = await market_service.refresh(
+                                RefreshMarketEvidenceCommand(
+                                    user_id=user_id,
+                                    snapshot_timestamp=as_of,
+                                    created_at=as_of,
+                                )
+                            )
+                            _validate_market_result(market_result, plan.market_plan)
+                        except MarketEvidenceConflictError:
+                            # Provider revisions must not overwrite immutable
+                            # evidence. Continue only with the existing
+                            # evidence; _project still verifies that it is
+                            # complete and within the freshness policy.
+                            await self._require_idle()
+                    return await self._project(plan, account_types=account_types)
+                except _PublicationStateChangedError:
+                    if attempt == 0:
+                        continue
+                    raise _fail() from None
+                except DailyBaselineUnavailableError:
+                    # A backdated canonical post can arrive after the initial
+                    # fence read. Re-read the fence once before declaring the
+                    # published baseline unavailable.
+                    if attempt == 0:
+                        continue
+                    raise
+            raise _fail()
         except CurrentValueUnavailableError:
             await self._close_transaction()
             raise
@@ -919,51 +1276,91 @@ class CurrentValueService:
         baseline: DailySnapshotBaseline,
         *,
         as_of: datetime,
+        frozen_account_ids: tuple[str, ...],
+        account_types: frozenset[AccountType] | None,
     ) -> CurrentValuePlan:
         if self.session.in_transaction():
             raise _fail()
         async with self.session.begin():
             repository = CurrentValueRepository(self.session)
             await repository.set_repeatable_read_only()
+            active_account_ids = await repository.load_active_import_account_ids(
+                reader_user_id=baseline.user_id,
+                account_ids=tuple(account.account_id for account in baseline.accounts),
+            )
+            if active_account_ids != frozen_account_ids:
+                raise _PublicationStateChangedError()
             exact = await DailySnapshotBaselineService(self.session).validate_exact_in_transaction(
                 baseline_id=baseline.baseline_id,
                 user_id=baseline.user_id,
                 through=as_of,
+                frozen_account_ids=frozen_account_ids,
             )
             if exact != baseline:
                 raise _fail()
-            state = await _prepare_state(repository, exact)
+            state = _select_account_types(
+                await _prepare_state(
+                    repository,
+                    exact,
+                    source_policy=self.source_policy,
+                ),
+                account_types,
+            )
             market_plan = await _build_market_plan(
                 repository,
                 state,
                 as_of=as_of,
+                source_policy=self.source_policy,
             )
         await self._require_idle()
-        return CurrentValuePlan(as_of=as_of, baseline=baseline, market_plan=market_plan)
+        return CurrentValuePlan(
+            as_of=as_of,
+            baseline=baseline,
+            market_plan=market_plan,
+            frozen_account_ids=frozen_account_ids,
+        )
 
-    async def _project(self, plan: CurrentValuePlan) -> CurrentPortfolioResult:
+    async def _project(
+        self,
+        plan: CurrentValuePlan,
+        *,
+        account_types: frozenset[AccountType] | None,
+    ) -> CurrentPortfolioResult:
         if self.session.in_transaction():
             raise _fail()
-        from app.modules.market_data.policy import DEFAULT_MARKET_EVIDENCE_POLICY
-
         async with self.session.begin():
             repository = CurrentValueRepository(self.session)
             await repository.set_repeatable_read_only()
+            active_account_ids = await repository.load_active_import_account_ids(
+                reader_user_id=plan.baseline.user_id,
+                account_ids=tuple(account.account_id for account in plan.baseline.accounts),
+            )
+            if active_account_ids != plan.frozen_account_ids:
+                raise _PublicationStateChangedError()
             baseline = await DailySnapshotBaselineService(
                 self.session
             ).validate_exact_in_transaction(
                 baseline_id=plan.baseline.baseline_id,
                 user_id=plan.baseline.user_id,
                 through=plan.as_of,
+                frozen_account_ids=plan.frozen_account_ids,
             )
             if baseline != plan.baseline:
                 raise _fail()
-            state = await _prepare_state(repository, baseline)
+            state = _select_account_types(
+                await _prepare_state(
+                    repository,
+                    baseline,
+                    source_policy=self.source_policy,
+                ),
+                account_types,
+            )
             if (
                 await _build_market_plan(
                     repository,
                     state,
                     as_of=plan.as_of,
+                    source_policy=self.source_policy,
                 )
                 != plan.market_plan
             ):
@@ -977,6 +1374,7 @@ class CurrentValueService:
                     output_currency=baseline.currency,
                     as_of=plan.as_of,
                     policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+                    source_policy=self.source_policy,
                 )
                 presentation = primary
                 if account.lineage.account_currency != baseline.currency:
@@ -986,6 +1384,7 @@ class CurrentValueService:
                         output_currency=account.lineage.account_currency,
                         as_of=plan.as_of,
                         policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+                        source_policy=self.source_policy,
                     )
                 primary_views.append(primary)
                 presentations.append(
@@ -999,7 +1398,11 @@ class CurrentValueService:
                         positions=presentation.positions,
                     )
                 )
-            portfolio = build_multi_account_portfolio_view(tuple(primary_views))
+            portfolio = (
+                _empty_portfolio(as_of=plan.as_of, baseline=baseline)
+                if not primary_views
+                else build_multi_account_portfolio_view(tuple(primary_views))
+            )
         await self._require_idle()
         return CurrentPortfolioResult(
             as_of=plan.as_of,
@@ -1018,3 +1421,13 @@ class CurrentValueService:
     async def _close_transaction(self) -> None:
         if self.session.in_transaction():
             await self.session.rollback()
+
+    async def _load_active_import_account_ids(self, user_id: str) -> tuple[str, ...]:
+        if self.session.in_transaction():
+            raise _fail()
+        async with self.session.begin():
+            account_ids = await CurrentValueRepository(self.session).load_active_import_account_ids(
+                reader_user_id=user_id
+            )
+        await self._require_idle()
+        return account_ids

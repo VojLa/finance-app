@@ -6,9 +6,15 @@ from pathlib import Path
 import pytest
 
 from scripts.migration_policy import (
+    BACKGROUND_JOB_REVISION,
     BASELINE_REVISION,
     CUTOVER_REVISION,
+    EMPTY_INVESTMENT_HOLDING_REVISION,
     HEAD_REVISION,
+    IMPORT_PUBLICATION_ANCHOR_REVISION,
+    MULTI_CURRENCY_COST_BASIS_REVISION,
+    RB_SCHEMA_FOUNDATION_REVISION,
+    UNKNOWN_INVESTMENT_COST_BASIS_REVISION,
     archive_state,
     render_archive_manifest,
     verify_archive_manifest,
@@ -106,7 +112,7 @@ def test_repository_migration_policy_is_completed() -> None:
     assert ARCHIVE_MANIFEST.is_file()
 
 
-def test_package_scripts_use_alembic_and_restrict_prisma_archive(tmp_path: Path) -> None:
+def test_package_scripts_use_only_alembic_and_python_seed(tmp_path: Path) -> None:
     package = tmp_path / "package.json"
     upgrade = "cd backend/python && uv run python scripts/database_migrate.py upgrade"
     check = "cd backend/python && uv run python scripts/database_migrate.py check"
@@ -122,8 +128,13 @@ def test_package_scripts_use_alembic_and_restrict_prisma_archive(tmp_path: Path)
                     "db:alembic:check": check,
                     "db:alembic:upgrade": upgrade,
                     "db:alembic:bootstrap": bootstrap,
-                    "db:prisma:archive:verify": "node scripts/prisma-archive-verify.mjs",
-                }
+                    "db:archive:verify": (
+                        "cd backend/python && uv run python scripts/migration_policy.py --check"
+                    ),
+                    "seed": "cd backend/python && uv run python scripts/seed_defaults.py",
+                },
+                "dependencies": {},
+                "devDependencies": {},
             }
         ),
         encoding="utf-8",
@@ -153,7 +164,7 @@ def test_runtime_ddl_policy_rejects_automatic_migrations(
         verify_runtime_ddl(app)
 
 
-def test_workflow_policy_requires_restricted_archive_wrapper(
+def test_workflow_policy_rejects_removed_prisma_tooling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,9 +173,8 @@ def test_workflow_policy_requires_restricted_archive_wrapper(
     workflows.mkdir()
     workflow = workflows / "database-schema.yml"
     workflow.write_text(
-        "run: npm run db:prisma:archive:verify\n"
-        "run: python scripts/database_schema.py --check --revision 3i0001d1base\n"
-        "run: python scripts/database_schema.py --check --revision 3i0001d1base\n",
+        "run: python scripts/database_schema.py --check --revision 410001serieslinks\n"
+        "run: python scripts/database_schema.py --check --revision 410001serieslinks\n",
         encoding="utf-8",
     )
     verify_workflow_policy(workflows)
@@ -178,10 +188,18 @@ def test_database_workflow_verifies_current_head_artifact() -> None:
     workflow = BACKEND_ROOT.parents[1] / ".github" / "workflows" / "database-schema.yml"
     source = workflow.read_text(encoding="utf-8")
 
-    assert source.count("python scripts/database_schema.py --check --revision 3i0001d1base") == 2
+    assert (
+        source.count("python scripts/database_schema.py --check --revision 410001serieslinks") >= 2
+    )
 
 
 def test_policy_revision_boundary_is_stable() -> None:
     assert BASELINE_REVISION == "3d0001base"
     assert CUTOVER_REVISION == "3e0001cutover"
-    assert HEAD_REVISION == "3i0001d1base"
+    assert HEAD_REVISION == "410001serieslinks"
+    assert MULTI_CURRENCY_COST_BASIS_REVISION == "3k0001mcost"
+    assert BACKGROUND_JOB_REVISION == "3l0001bgjob"
+    assert IMPORT_PUBLICATION_ANCHOR_REVISION == "3m0001importanchor"
+    assert EMPTY_INVESTMENT_HOLDING_REVISION == "3n0001emptyhold"
+    assert UNKNOWN_INVESTMENT_COST_BASIS_REVISION == "3o0001unkbasis"
+    assert RB_SCHEMA_FOUNDATION_REVISION == "3p0001rbfoundation"

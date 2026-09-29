@@ -12,7 +12,7 @@ from decimal import Decimal
 from threading import Event
 from typing import Any, cast
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -80,6 +80,11 @@ posting_service_module = cast(
 
 BUCKET = datetime(2036, 7, 29, 14, 35)
 COMPLETED_AT = datetime(2036, 7, 29, 14, 35, 10)
+RUN_ID = uuid4().hex[:10]
+
+
+def _prefix(value: str) -> str:
+    return f"{value}-{RUN_ID}"
 
 
 def _settings() -> Settings:
@@ -227,16 +232,14 @@ async def _canonical_counts(prefix: str) -> tuple[int, int, int, int, int]:
 
 
 async def _cleanup_import_case(prefix: str, symbol: str) -> None:
-    await post_processing_support._cleanup_holdings(prefix)
-    await posting_support._cleanup(prefix)
-    await post_processing_support._remove_market_evidence(prefix)
-    await posting_support._remove_asset_identities({symbol})
+    del symbol
+    await manual_support._cleanup(prefix)
 
 
-def test_manual_and_import_refresh_same_bucket_preserve_immutable_identity() -> None:
+def test_manual_after_import_same_bucket_preserves_old_generation_and_publishes_new() -> None:
     async def scenario() -> None:
-        prefix = "k5-final-cross-source"
-        symbol = "K5FINALCROSS"
+        prefix = _prefix("k5-final-cross-source")
+        symbol = f"K5CROSS{RUN_ID.upper()}"
         await posting_support._seed(
             prefix,
             source=ImportSource.trading212,
@@ -299,16 +302,29 @@ def test_manual_and_import_refresh_same_bucket_preserve_immutable_identity() -> 
             assert original[1][0][2] == BUCKET
 
             manual = await asyncio.to_thread(_manual_refresh_call, prefix, symbol)
-            assert manual.status_code == 409
-            error = manual.json()["error"]
-            assert error == {
-                "code": "snapshot_refresh_conflict",
-                "message": "Snapshot refresh conflicts with existing data.",
-                "request_id": error["request_id"],
+            assert manual.status_code == 200, manual.text
+            assert manual.json() == {
+                "netWorthSnapshotId": manual.json()["netWorthSnapshotId"],
+                "netWorthStatus": "created",
+                "timestamp": "2036-07-29T14:35:00.000",
+                "granularity": "minute",
+                "currency": "EUR",
+                "calculationVersion": (
+                    snapshot_version_module.current_coordinated_snapshot_calculation_version()
+                ),
+                "accounts": manual.json()["accounts"],
+                "refreshAccountCount": 1,
+                "reuseOnlyAccountCount": 0,
+                "createdAccountSnapshotCount": 1,
+                "replayedAccountSnapshotCount": 0,
+                "reusedAccountSnapshotCount": 0,
+                "selectedAccountSnapshotCount": 1,
             }
-            UUID(error["request_id"])
-            assert await _snapshot_state(prefix) == original
-            assert await _canonical_counts(prefix) == (1, 2, 1, 1, 1)
+            refreshed = await _snapshot_state(prefix)
+            assert all(row in refreshed[0] for row in original[0])
+            assert all(row in refreshed[1] for row in original[1])
+            assert tuple(map(len, refreshed)) == (2, 2)
+            assert await _canonical_counts(prefix) == (1, 2, 1, 2, 2)
 
             engine = posting_support._engine()
             try:
@@ -333,9 +349,9 @@ def test_manual_and_import_refresh_same_bucket_preserve_immutable_identity() -> 
 
 
 def test_coordinated_version_mismatch_fails_before_snapshot_writes() -> None:
-    manual_prefix = "k5-final-version-manual"
-    import_prefix = "k5-final-version-import"
-    symbol = "K5FINALVERSION"
+    manual_prefix = _prefix("k5-final-version-manual")
+    import_prefix = _prefix("k5-final-version-import")
+    symbol = f"K5VERSION{RUN_ID.upper()}"
     asyncio.run(manual_support._seed(manual_prefix, ()))
     asyncio.run(
         posting_support._seed(
@@ -413,7 +429,7 @@ def test_coordinated_version_mismatch_fails_before_snapshot_writes() -> None:
 
 
 def test_viewer_only_user_reuses_exact_snapshot_without_writer_creation() -> None:
-    prefix = "k5-final-viewer-only"
+    prefix = _prefix("k5-final-viewer-only")
     asyncio.run(
         manual_support._seed(
             prefix,
@@ -437,7 +453,9 @@ def test_viewer_only_user_reuses_exact_snapshot_without_writer_creation() -> Non
             "timestamp": "2036-07-29T14:35:00.000",
             "granularity": "minute",
             "currency": "EUR",
-            "calculationVersion": 1,
+            "calculationVersion": (
+                snapshot_version_module.current_coordinated_snapshot_calculation_version()
+            ),
             "accounts": [
                 {
                     "accountId": manual_support._account_id(prefix, "viewer"),
@@ -478,7 +496,7 @@ def test_viewer_only_user_reuses_exact_snapshot_without_writer_creation() -> Non
 
 
 def test_role_revocation_between_auth_and_coverage_is_detected() -> None:
-    prefix = "k5-final-role-revocation"
+    prefix = _prefix("k5-final-role-revocation")
     ready = Event()
     release = Event()
     asyncio.run(
@@ -591,7 +609,7 @@ async def test_physical_postgresql_snapshot_contract_matches_final_5k_audit() ->
                     )
                 )
             ).one()
-            assert physical_counts == (32, 28)
+            assert physical_counts == (62, 31)
 
             columns = {
                 (row.table_name, row.column_name): row
@@ -745,11 +763,11 @@ async def test_physical_postgresql_snapshot_contract_matches_final_5k_audit() ->
             index_text = "\n".join(index_definitions)
             for required in (
                 '"accountId", granularity, "timestamp"',
-                'CREATE UNIQUE INDEX "AccountSnapshot_accountId_timestamp_currency_granularity_key"',
-                '"accountId", "timestamp", currency, granularity',
+                'CREATE UNIQUE INDEX "AccountSnapshot_coordinate_generation_key"',
+                '"accountId", "timestamp", currency, granularity, "generationId"',
                 '"userId", granularity, "timestamp"',
-                'CREATE UNIQUE INDEX "NetWorthSnapshot_userId_timestamp_currency_granularity_key"',
-                '"userId", "timestamp", currency, granularity',
+                'CREATE UNIQUE INDEX "NetWorthSnapshot_coordinate_generation_key"',
+                '"userId", "timestamp", currency, granularity, "generationId"',
                 'CREATE UNIQUE INDEX "AccountSnapshotItem_snapshotId_listingId_key"',
                 '"snapshotId", "listingId"',
                 '"importBatchId", "createdAt"',
@@ -759,11 +777,11 @@ async def test_physical_postgresql_snapshot_contract_matches_final_5k_audit() ->
             for table_name, identity in (
                 (
                     "AccountSnapshot",
-                    '"accountId", "timestamp", currency, granularity',
+                    '"accountId", "timestamp", currency, granularity, "generationId"',
                 ),
                 (
                     "NetWorthSnapshot",
-                    '"userId", "timestamp", currency, granularity',
+                    '"userId", "timestamp", currency, granularity, "generationId"',
                 ),
                 (
                     "AccountSnapshotItem",

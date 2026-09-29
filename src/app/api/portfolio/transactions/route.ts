@@ -1,130 +1,118 @@
+import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
-import { getServerSession } from "next-auth"
+
+import type { components } from "@/generated/python-api"
 import { authOptions } from "@/lib/auth"
-import { prisma, serializePrisma, toNum } from "@/lib/prisma"
-import { assertAccountAccess, getAccessibleAccountIds } from "@/lib/accountAccess"
-import { createInvestmentEvent } from "@/modules/portfolio/ledger/service"
-import { recalculateHoldings } from "@/modules/portfolio/positions/calculations"
-import { createPortfolioSnapshot } from "@/modules/snapshots"
-import type { ParsedInvestmentAction } from "@/types"
+import { createPythonInvestmentApi } from "@/modules/investments/server/investment-api"
+import { normalizeAdapterError } from "@/modules/python-api/server/errors"
 
-type InvestmentEventWithMovements = Awaited<ReturnType<typeof loadSymbolEvents>>[number]
+type ManualInvestmentCreate = components["schemas"]["ManualInvestmentCreateRequest"]
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
 
-async function loadSymbolEvents(accountIds: string[], symbol: string) {
-  return prisma.investmentEvent.findMany({
-    where: {
-      accountId: { in: accountIds },
-      deletedAt: null,
-      archivedAt: null,
-      movements: { some: { sourceSymbol: symbol } },
-    },
-    include: { movements: true },
-    orderBy: { date: "desc" },
-  })
+function unauthorized() {
+  return NextResponse.json(
+    { error: "Přihlášení je vyžadováno" },
+    { status: 401, headers: NO_STORE_HEADERS }
+  )
 }
 
-function actionFromEvent(event: InvestmentEventWithMovements): ParsedInvestmentAction {
-  const asset = event.movements.find((movement) => movement.kind === "asset")
-
-  if (event.type === "trade") return asset?.direction === "out" ? "sell" : "buy"
-  if (event.type === "asset_transfer") return asset?.direction === "out" ? "withdrawal" : "deposit"
-  if (event.type === "cash_deposit") return "deposit"
-  if (event.type === "cash_withdrawal") return "withdrawal"
-  if (event.type === "adjustment") return "transfer"
-  return event.type
+function identity(session: { user: { id: string; email?: string | null } }) {
+  return { userId: session.user.id, email: session.user.email || undefined }
 }
 
-function serializeInvestmentEvent(event: InvestmentEventWithMovements) {
-  const asset = event.movements.find((movement) => movement.kind === "asset")
-  const cash = event.movements.find((movement) => movement.kind === "cash")
-  const fee = event.movements.find((movement) => movement.kind === "fee")
-
-  return {
-    id: event.id,
-    date: event.date,
-    type: actionFromEvent(event),
-    quantity: asset ? toNum(asset.quantity) : null,
-    pricePerUnit: asset?.pricePerUnit != null ? toNum(asset.pricePerUnit) : null,
-    priceCurrency: asset?.valueCurrency ?? cash?.currency ?? null,
-    totalAmount: cash
-      ? toNum(cash.quantity)
-      : asset?.valueAmount != null
-        ? toNum(asset.valueAmount)
-        : null,
-    totalCurrency: cash?.currency ?? asset?.valueCurrency ?? null,
-    fee: fee ? toNum(fee.quantity) : null,
-    feeCurrency: fee?.currency ?? null,
-    realizedPnl: event.realizedPnl != null ? toNum(event.realizedPnl) : null,
-    realizedPnlCurrency: event.realizedPnlCurrency,
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new SyntaxError("Invalid JSON object")
   }
+  return value as Record<string, unknown>
+}
+
+function manualPayload(value: unknown): ManualInvestmentCreate {
+  const input = record(value)
+  return {
+    accountId: typeof input.accountId === "string" ? input.accountId : "",
+    idempotencyKey: typeof input.idempotencyKey === "string" ? input.idempotencyKey : "",
+    date: typeof input.date === "string" ? input.date : "",
+    type: input.type as ManualInvestmentCreate["type"],
+    symbol: typeof input.symbol === "string" ? input.symbol : null,
+    name: typeof input.name === "string" ? input.name : null,
+    assetType: (input.assetType as ManualInvestmentCreate["assetType"]) ?? null,
+    quantity:
+      typeof input.quantity === "string" || typeof input.quantity === "number"
+        ? input.quantity
+        : null,
+    pricePerUnit:
+      typeof input.pricePerUnit === "string" || typeof input.pricePerUnit === "number"
+        ? input.pricePerUnit
+        : null,
+    priceCurrency: typeof input.priceCurrency === "string" ? input.priceCurrency : null,
+    totalAmount:
+      typeof input.totalAmount === "string" || typeof input.totalAmount === "number"
+        ? input.totalAmount
+        : null,
+    totalCurrency: typeof input.totalCurrency === "string" ? input.totalCurrency : null,
+    fee: typeof input.fee === "string" || typeof input.fee === "number" ? input.fee : null,
+    feeCurrency: typeof input.feeCurrency === "string" ? input.feeCurrency : null,
+    conversionFromAmount:
+      typeof input.conversionFromAmount === "string" ||
+      typeof input.conversionFromAmount === "number"
+        ? input.conversionFromAmount
+        : null,
+    conversionFromCurrency:
+      typeof input.conversionFromCurrency === "string" ? input.conversionFromCurrency : null,
+    conversionToAmount:
+      typeof input.conversionToAmount === "string" || typeof input.conversionToAmount === "number"
+        ? input.conversionToAmount
+        : null,
+    conversionToCurrency:
+      typeof input.conversionToCurrency === "string" ? input.conversionToCurrency : null,
+  }
+}
+
+function errorResponse(error: unknown) {
+  if (error instanceof SyntaxError) {
+    return NextResponse.json(
+      { error: "Neplatná investiční operace" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    )
+  }
+  const mapped = normalizeAdapterError(error)
+  const message =
+    mapped.code === "manual_investment_conflict"
+      ? "Tento požadavek už byl použit s jinými údaji"
+      : mapped.status === 403 || mapped.status === 404
+        ? "Investiční účet není dostupný"
+        : mapped.status === 422
+          ? "Zkontrolujte údaje investiční operace"
+          : "Investiční operace je dočasně nedostupná"
+  return NextResponse.json({ error: message }, { status: mapped.status, headers: NO_STORE_HEADERS })
 }
 
 export async function GET(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
+  if (!session?.user?.id) return unauthorized()
   const symbol = req.nextUrl.searchParams.get("symbol")
-  if (!symbol) return NextResponse.json({ error: "Chybi symbol" }, { status: 400 })
-
-  const accountIds = await getAccessibleAccountIds(session.user.id, "viewer")
-  const events = await loadSymbolEvents(accountIds, symbol.toUpperCase())
-
-  return NextResponse.json(serializePrisma(events.map(serializeInvestmentEvent)))
+  if (!symbol) {
+    return NextResponse.json({ error: "Chybí symbol" }, { status: 400, headers: NO_STORE_HEADERS })
+  }
+  try {
+    const result = await createPythonInvestmentApi(identity(session)).detail(symbol)
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const body = await req.json()
-  const {
-    accountId,
-    date,
-    type,
-    symbol,
-    name,
-    assetType,
-    quantity,
-    pricePerUnit,
-    priceCurrency,
-    totalAmount,
-    totalCurrency,
-    fee,
-    feeCurrency,
-  } = body
-
-  if (!accountId || !date || !type) {
-    return NextResponse.json({ error: "Chybi povinna pole" }, { status: 400 })
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const result = await createPythonInvestmentApi(identity(session)).create(
+      manualPayload(await req.json())
+    )
+    return NextResponse.json(result, { status: 201, headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
   }
-
-  const hasAccess = await assertAccountAccess(accountId, session.user.id, "editor")
-  if (!hasAccess) return NextResponse.json({ error: "Ucet nenalezen" }, { status: 404 })
-
-  const event = await createInvestmentEvent({
-    date: new Date(date),
-    type: type as ParsedInvestmentAction,
-    symbol: symbol || null,
-    name: name || null,
-    assetType: assetType || null,
-    quantity: quantity != null ? quantity : null,
-    pricePerUnit: pricePerUnit != null ? pricePerUnit : null,
-    priceCurrency: priceCurrency || null,
-    totalAmount: totalAmount != null ? totalAmount : null,
-    totalCurrency: totalCurrency || null,
-    fee: fee != null ? fee : null,
-    feeCurrency: feeCurrency || null,
-    accountId,
-  })
-
-  if (["buy", "sell", "deposit", "withdrawal"].includes(type)) {
-    await recalculateHoldings(accountId)
-    await createPortfolioSnapshot({
-      userId: session.user.id,
-      source: "holdings_recalculation",
-      granularity: "minute",
-    })
-  }
-
-  return NextResponse.json({ ok: true, id: event.id })
 }

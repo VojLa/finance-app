@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,7 @@ from app.modules.market_data.policy import (
     validate_market_evidence_policy,
 )
 from app.modules.market_data.providers import (
+    BatchExchangeRateProvider,
     ExchangeRateProviderRegistry,
     PriceProviderRegistry,
 )
@@ -36,6 +39,10 @@ from app.modules.market_data.requirements import (
 )
 from app.modules.market_data.requirements_repository import (
     MarketEvidenceRequirementsRepository,
+)
+from app.modules.market_data.source_policy import (
+    MarketEvidenceSourcePolicy,
+    validate_market_evidence_source_policy,
 )
 from app.modules.market_data.writer import (
     MarketEvidenceWriter,
@@ -54,6 +61,7 @@ class RefreshMarketEvidenceCommand:
     user_id: str
     snapshot_timestamp: datetime
     created_at: datetime
+    reuse_persisted_fx_on_conflict: bool = False
 
 
 class _Planner(Protocol):
@@ -72,6 +80,51 @@ class _Writer(Protocol):
 
 class _ReadBoundary(Protocol):
     async def set_transaction_repeatable_read_only(self) -> None: ...
+
+
+_MAX_CONCURRENT_ACQUISITIONS = 4
+_UNSET = object()
+
+
+async def _acquire_bounded[T](
+    operations: tuple[Callable[[], Awaitable[T]], ...],
+) -> tuple[T, ...]:
+    """Run independent provider acquisitions with deterministic result slots.
+
+    A TaskGroup cancels every unfinished acquisition when one provider fails.
+    Callers receive results only after all work completed successfully, so a
+    persistence boundary can never observe a partial acquisition batch.
+    """
+
+    if not operations:
+        return ()
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_ACQUISITIONS)
+    results: list[T | object] = [_UNSET] * len(operations)
+
+    async def _run(index: int, operation: Callable[[], Awaitable[T]]) -> None:
+        async with semaphore:
+            results[index] = await operation()
+
+    async with asyncio.TaskGroup() as task_group:
+        for index, operation in enumerate(operations):
+            task_group.create_task(_run(index, operation))
+    if any(result is _UNSET for result in results):
+        raise _fail()
+    return tuple(cast(T, result) for result in results)
+
+
+@dataclass(frozen=True, slots=True)
+class _AcquiredPrice:
+    index: int
+    observation: PriceObservation
+
+
+@dataclass(frozen=True, slots=True)
+class _AcquiredExchangeRates:
+    observations: tuple[tuple[int, ExchangeRateObservation], ...]
+
+
+type _Acquisition = _AcquiredPrice | _AcquiredExchangeRates
 
 
 def _fail() -> MarketEvidenceStateError:
@@ -117,7 +170,7 @@ def _validate_plan(
         or not isinstance(value.fx_requirements, tuple)
     ):
         raise _fail()
-    output_currency = _currency(value.output_currency)
+    _currency(value.output_currency)
     price_keys: set[tuple[str, object, datetime]] = set()
     for price_requirement in value.price_requirements:
         if (
@@ -169,12 +222,7 @@ def _validate_plan(
             through,
             fx_requirement.provider,
         )
-        if (
-            from_currency == to_currency
-            or to_currency not in {output_currency, "CZK"}
-            or through > snapshot_timestamp
-            or fx_key in fx_keys
-        ):
+        if from_currency == to_currency or through > snapshot_timestamp or fx_key in fx_keys:
             raise _fail()
         fx_keys.add(fx_key)
     if value.fx_requirements != tuple(
@@ -293,6 +341,7 @@ class MarketEvidenceRefreshService:
         price_registry: PriceProviderRegistry | None = None,
         fx_registry: ExchangeRateProviderRegistry | None = None,
         fx_source: ExchangeRateSource | None = None,
+        source_policy: MarketEvidenceSourcePolicy | None = None,
         policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
         read_boundary: _ReadBoundary | None = None,
         planner: _Planner | None = None,
@@ -306,12 +355,23 @@ class MarketEvidenceRefreshService:
             raise _fail()
         if fx_source is None and len(self.fx_registry.sources) == 1:
             fx_source = next(iter(self.fx_registry.sources))
+        if source_policy is not None:
+            validated_source_policy = validate_market_evidence_source_policy(source_policy)
+            if (
+                validated_source_policy.price_sources != self.price_registry.sources
+                or validated_source_policy.fx_source is not fx_source
+            ):
+                raise _fail()
+        else:
+            validated_source_policy = None
         self.fx_source = fx_source
+        self.source_policy = validated_source_policy
         self.read_boundary = read_boundary or MarketEvidenceRequirementsRepository(session)
         self.planner = planner or MarketEvidenceRequirementsPlanner(
             session,
             price_sources=self.price_registry.sources,
             fx_source=self.fx_source,
+            source_policy=self.source_policy,
         )
         self.writer = writer or MarketEvidenceWriter(session)
 
@@ -342,29 +402,97 @@ class MarketEvidenceRefreshService:
         if self.session.in_transaction():
             raise _fail()
 
-        price_observations: list[PriceObservation] = []
-        exchange_rate_observations: list[ExchangeRateObservation] = []
         try:
-            for price_requirement in plan.price_requirements:
-                price_provider = self.price_registry.get(price_requirement.provider)
-                observation = await price_provider.fetch(price_requirement)
-                price_observations.append(
-                    validate_price_observation(
-                        observation,
-                        requirement=price_requirement,
-                        policy=self.policy,
+            operations: list[Callable[[], Awaitable[_Acquisition]]] = []
+            for price_index, price_requirement in enumerate(plan.price_requirements):
+
+                async def _acquire_price(
+                    *,
+                    index: int = price_index,
+                    requirement: PriceRequirement = price_requirement,
+                ) -> _AcquiredPrice:
+                    price_provider = self.price_registry.get(requirement.provider)
+                    observation = await price_provider.fetch(requirement)
+                    return _AcquiredPrice(
+                        index=index,
+                        observation=validate_price_observation(
+                            observation,
+                            requirement=requirement,
+                            policy=self.policy,
+                        ),
                     )
+
+                operations.append(_acquire_price)
+
+            requirements_by_source: dict[
+                ExchangeRateSource,
+                list[tuple[int, ExchangeRateRequirement]],
+            ] = {}
+            for fx_index, fx_requirement in enumerate(plan.fx_requirements):
+                requirements_by_source.setdefault(fx_requirement.provider, []).append(
+                    (fx_index, fx_requirement)
                 )
-            for fx_requirement in plan.fx_requirements:
-                fx_provider = self.fx_registry.get(fx_requirement.provider)
-                rate_observation = await fx_provider.fetch(fx_requirement)
-                exchange_rate_observations.append(
-                    validate_exchange_rate_observation(
-                        rate_observation,
-                        requirement=fx_requirement,
-                        policy=self.policy,
+            for source, indexed_requirements in requirements_by_source.items():
+
+                async def _acquire_fx_source(
+                    *,
+                    source: ExchangeRateSource = source,
+                    indexed: tuple[tuple[int, ExchangeRateRequirement], ...] = tuple(
+                        indexed_requirements
+                    ),
+                ) -> _AcquiredExchangeRates:
+                    fx_provider = self.fx_registry.get(source)
+                    ordered_requirements = tuple(requirement for _, requirement in indexed)
+                    if isinstance(fx_provider, BatchExchangeRateProvider):
+                        observations = await fx_provider.fetch_many(ordered_requirements)
+                        if not isinstance(observations, tuple) or len(observations) != len(
+                            ordered_requirements
+                        ):
+                            raise _fail()
+                    else:
+                        observations_list: list[ExchangeRateObservation] = []
+                        for requirement in ordered_requirements:
+                            observations_list.append(await fx_provider.fetch(requirement))
+                        observations = tuple(observations_list)
+                    return _AcquiredExchangeRates(
+                        observations=tuple(
+                            (
+                                index,
+                                validate_exchange_rate_observation(
+                                    observation,
+                                    requirement=requirement,
+                                    policy=self.policy,
+                                ),
+                            )
+                            for (index, requirement), observation in zip(
+                                indexed,
+                                observations,
+                                strict=True,
+                            )
+                        )
                     )
-                )
+
+                operations.append(_acquire_fx_source)
+
+            acquired = await _acquire_bounded(tuple(operations))
+            price_slots: list[PriceObservation | object] = [_UNSET] * len(plan.price_requirements)
+            fx_slots: list[ExchangeRateObservation | object] = [_UNSET] * len(plan.fx_requirements)
+            for acquisition in acquired:
+                if isinstance(acquisition, _AcquiredPrice):
+                    price_slots[acquisition.index] = acquisition.observation
+                else:
+                    for index, observation in acquisition.observations:
+                        fx_slots[index] = observation
+            if any(observation is _UNSET for observation in price_slots) or any(
+                observation is _UNSET for observation in fx_slots
+            ):
+                raise _fail()
+            price_observations = [
+                cast(PriceObservation, observation) for observation in price_slots
+            ]
+            exchange_rate_observations = [
+                cast(ExchangeRateObservation, observation) for observation in fx_slots
+            ]
             coalesced_prices = _coalesce_price_observations(tuple(price_observations))
             coalesced_rates = _coalesce_exchange_rate_observations(
                 tuple(exchange_rate_observations)
@@ -383,6 +511,7 @@ class MarketEvidenceRefreshService:
                 price_observations=coalesced_prices,
                 exchange_rate_observations=coalesced_rates,
                 created_at=created_at,
+                reuse_persisted_fx_on_conflict=command.reuse_persisted_fx_on_conflict,
             )
         )
         return MarketEvidenceRefreshResult(

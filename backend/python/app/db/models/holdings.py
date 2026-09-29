@@ -1,11 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.db.models.common import QUANTITY, TIMESTAMP
+from app.db.models.common import JSONB, QUANTITY, TIMESTAMP
 from app.db.models.enums import ASSET_TYPE_DB, AssetType
 
 
@@ -13,6 +13,16 @@ class HoldingModel(Base):
     __tablename__ = "Holding"
     __table_args__ = (
         UniqueConstraint("accountId", "listingId"),
+        CheckConstraint(
+            '"costBasisByCurrency" IS NULL OR '
+            "(jsonb_typeof(\"costBasisByCurrency\") = 'object' "
+            "AND \"costBasisByCurrency\" <> '{}'::jsonb)",
+            name="Holding_costBasisByCurrency_nonempty_object",
+        ),
+        CheckConstraint(
+            '("avgBuyPrice" IS NULL) = ("costBasisByCurrency" IS NULL)',
+            name="Holding_cost_basis_completeness_pair",
+        ),
         Index(None, "accountId"),
         Index(None, "assetId"),
         Index(None, "listingId"),
@@ -24,7 +34,7 @@ class HoldingModel(Base):
     name: Mapped[str | None] = mapped_column(Text)
     asset_type: Mapped[AssetType] = mapped_column("assetType", ASSET_TYPE_DB, nullable=False)
     quantity: Mapped[Decimal] = mapped_column(QUANTITY, nullable=False)
-    avg_buy_price: Mapped[Decimal] = mapped_column("avgBuyPrice", QUANTITY, nullable=False)
+    avg_buy_price: Mapped[Decimal | None] = mapped_column("avgBuyPrice", QUANTITY)
     currency: Mapped[str] = mapped_column(Text, nullable=False)
     current_price: Mapped[Decimal | None] = mapped_column("currentPrice", QUANTITY)
     current_value: Mapped[Decimal | None] = mapped_column("currentValue", QUANTITY)
@@ -51,3 +61,7 @@ class HoldingModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
+    cost_basis_by_currency: Mapped[dict[str, object] | None] = mapped_column(
+        "costBasisByCurrency",
+        JSONB(none_as_null=True),
+    )

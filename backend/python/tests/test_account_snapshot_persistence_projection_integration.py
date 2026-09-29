@@ -33,6 +33,7 @@ from app.modules.snapshots.evidence_service import (
     CompleteAccountSnapshotEvidence,
     ExactSnapshotMetric,
 )
+from app.modules.snapshots.financial_metrics import CurrencyAmount
 from app.modules.snapshots.persistence_projection import (
     AccountSnapshotPersistenceMetadata,
     ExpectedAccountSnapshotPersistence,
@@ -97,7 +98,8 @@ def _investment_projection(
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("10"),
-                    cost_currency="USD",
+                    cost_currency="GBP",
+                    cost_basis_by_currency=(CurrencyAmount("USD", Decimal("20")),),
                 ),
             ),
             prices=(

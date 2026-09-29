@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from datetime import datetime
@@ -27,22 +26,13 @@ from app.db.models import (
 from app.db.url import normalize_database_url
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-PRISMA_SCHEMA = REPOSITORY_ROOT / "prisma" / "schema.prisma"
 PREVIOUS_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "3g0001liabbal" / "schema.sql"
 ASSET_ID = "twelve-data-identity-asset"
 LISTING_ID = "twelve-data-identity-listing"
 ALIAS_ID = "twelve-data-identity-alias"
 PRICE_ID = "twelve-data-identity-price"
 NOW = datetime(2026, 8, 5, 12, 0, 0)
-
-
-def _prisma_enum_values(name: str) -> tuple[str, ...]:
-    source = PRISMA_SCHEMA.read_text(encoding="utf-8")
-    match = re.search(rf"enum {re.escape(name)} \{{(?P<body>.*?)\n\}}", source, re.DOTALL)
-    assert match is not None
-    return tuple(line.strip() for line in match.group("body").splitlines() if line.strip())
 
 
 async def _postgres_enum_values(connection: AsyncConnection, name: str) -> tuple[str, ...]:
@@ -60,9 +50,19 @@ async def _postgres_enum_values(connection: AsyncConnection, name: str) -> tuple
     return tuple(result.scalars())
 
 
+async def _drop_database(admin: asyncpg.Connection, database_name: str) -> None:
+    await admin.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname = $1 AND pid <> pg_backend_pid()",
+        database_name,
+    )
+    await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+    await admin.close()
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
-async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> None:
+async def test_clean_previous_head_database_upgrades_to_current_head() -> None:
     assert DATABASE_URL is not None
     source_url = make_url(normalize_database_url(DATABASE_URL))
     admin_url = source_url.set(database="postgres")
@@ -142,7 +142,7 @@ async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> No
                     "ORDER BY enum_value.enumsortorder"
                 )
             )
-            assert version == "3i0001d1base"
+            assert version == "410001serieslinks"
             assert tuple(row["enumlabel"] for row in alias_values) == tuple(
                 item.value for item in AssetAliasProvider
             )
@@ -165,7 +165,57 @@ async def test_clean_previous_head_database_upgrades_to_twelve_data_head() -> No
 @pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required for integration tests")
 async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
     assert DATABASE_URL is not None
-    engine = create_async_engine(normalize_database_url(DATABASE_URL))
+    source_url = make_url(normalize_database_url(DATABASE_URL))
+    admin_url = source_url.set(drivername="postgresql", database="postgres")
+    database_name = f"finance_app_td_round_{uuid4().hex[:12]}"
+    target_url = source_url.set(database=database_name)
+    admin_dsn = admin_url.render_as_string(hide_password=False)
+    target_dsn = target_url.set(drivername="postgresql").render_as_string(hide_password=False)
+    target_database_url = target_url.render_as_string(hide_password=False)
+    admin = await asyncpg.connect(admin_dsn)
+    try:
+        await admin.execute(f'CREATE DATABASE "{database_name}"')
+        target = await asyncpg.connect(target_dsn)
+        try:
+            previous_schema = PREVIOUS_SCHEMA.read_text(encoding="utf-8").replace(
+                'CREATE SCHEMA "public";\n', "", 1
+            )
+            await target.execute(previous_schema)
+            await target.execute(
+                "CREATE TABLE public.alembic_version ("
+                "version_num varchar(32) NOT NULL, "
+                "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+            )
+            await target.execute(
+                "INSERT INTO public.alembic_version (version_num) VALUES ('3g0001liabbal')"
+            )
+        finally:
+            await target.close()
+
+        environment = os.environ.copy()
+        environment["DATABASE_URL"] = target_database_url
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(BACKEND_ROOT / "alembic.ini"),
+                "upgrade",
+                "head",
+            ],
+            cwd=BACKEND_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    except BaseException:
+        await _drop_database(admin, database_name)
+        raise
+
+    engine = create_async_engine(normalize_database_url(target_database_url))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     try:
@@ -175,16 +225,13 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
             migration = await connection.scalar(
                 text('SELECT "version_num" FROM public.alembic_version')
             )
-            assert migration == "3i0001d1base"
+            assert migration == "410001serieslinks"
 
             postgres_alias_values = await _postgres_enum_values(connection, "AssetAliasProvider")
             postgres_price_values = await _postgres_enum_values(connection, "PriceSource")
 
         assert postgres_alias_values == tuple(item.value for item in AssetAliasProvider)
         assert postgres_price_values == tuple(item.value for item in PriceSource)
-        assert postgres_alias_values == _prisma_enum_values("AssetAliasProvider")
-        assert postgres_price_values == _prisma_enum_values("PriceSource")
-
         async with sessions.begin() as session:
             await session.execute(delete(AssetModel).where(AssetModel.id == ASSET_ID))
             asset = AssetModel(
@@ -260,3 +307,4 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
             await session.execute(delete(AssetModel).where(AssetModel.id == ASSET_ID))
     finally:
         await engine.dispose()
+        await _drop_database(admin, database_name)

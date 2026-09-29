@@ -8,13 +8,13 @@ SQLAlchemy representation of the PostgreSQL application schema.
 - `connection.py` creates one async SQLAlchemy engine and `async_sessionmaker`.
 - FastAPI requests receive a request-scoped `AsyncSession`.
 - `health.py` checks PostgreSQL connectivity through the SQLAlchemy engine.
-- `url.py` converts Prisma-style PostgreSQL URLs to the `postgresql+asyncpg` dialect.
+- `url.py` normalizes PostgreSQL URLs to the `postgresql+asyncpg` dialect.
 
 FastAPI startup never runs Alembic commands, stamps revisions, or changes the physical schema.
 
 ## Schema metadata
 
-The metadata contains all 31 application tables and all 28 PostgreSQL enum types. Models are split
+The metadata contains all 38 application tables and all 30 PostgreSQL enum types. Models are split
 by domain under `models/` and preserve:
 
 - physical table and column names,
@@ -47,8 +47,8 @@ because they belong to migration systems rather than the application schema.
 Alembic is the sole migration owner after revision `3e0001cutover`. SQLAlchemy metadata is the
 primary Python schema representation used for Alembic comparison and runtime persistence.
 
-Prisma Client remains enabled for the Next.js runtime, but `schema.prisma` is a compatibility mirror
-rather than the migration source of truth.
+Prisma runtime and schema tooling are absent. The historical SQL migration
+archive is not a runtime schema representation or executable migration path.
 
 Do not call:
 
@@ -71,3 +71,14 @@ component checks, account foreign key, uniqueness, and lookup index.
 Revision `3h0001twdata` adds the explicit `twelve_data` identity to the
 `AssetAliasProvider` and `PriceSource` enums. It mirrors provider ownership
 without registering an HTTP adapter.
+
+Revisions `3i0001d1base` and `3j0001twfx` add daily lineage tables and the
+direct Twelve Data FX source identity. Revision `3j0001twfx` is historical;
+the current head is `3o0001unkbasis`, after the multi-currency holding
+cost-basis (`3k0001mcost`), durable background-job (`3l0001bgjob`), and import
+publication-anchor (`3m0001importanchor`) revisions. The head initializes an
+exact revision-zero Holding watermark for newly created investment accounts and
+safely backfills only provably empty existing accounts. Revision `3o0001unkbasis`
+allows an investment position and snapshot to retain exact quantity and market
+value when acquisition cost evidence is unavailable; its cost-basis and dependent
+profit metrics remain `NULL` rather than being coerced to zero.

@@ -21,98 +21,72 @@ async function filesBelow(relativePath: string): Promise<string[]> {
   return nested.flat()
 }
 
-describe("R4 import call-graph boundaries", () => {
-  it("globally inventories every production import route and keeps used routes thin", async () => {
+describe("R12 durable import call-graph boundaries", () => {
+  it("registers only the create/upload/job status/retry browser routes", async () => {
     const routes = (await filesBelow("src/app/api/import"))
       .filter((file) => file.endsWith("/route.ts") || file.endsWith("import/route.ts"))
       .sort()
     expect(routes).toEqual([
-      "src/app/api/import/anycoin/route.ts",
-      "src/app/api/import/finalize/route.ts",
-      "src/app/api/import/raiffeisenbank/preview/route.ts",
-      "src/app/api/import/raiffeisenbank/route.ts",
+      "src/app/api/import/jobs/[jobId]/retry/route.ts",
+      "src/app/api/import/jobs/[jobId]/route.ts",
       "src/app/api/import/route.ts",
-      "src/app/api/import/status/route.ts",
-      "src/app/api/import/trading212/route.ts",
     ])
 
-    const usedRoutes = routes.filter((route) => !route.includes("/preview/"))
-    for (const route of usedRoutes) {
+    for (const route of routes) {
       const content = await source(route)
       expect(content).not.toMatch(
-        /importCsvFilesAsync|DuplicateImportError|@\/modules\/imports["']|@\/imports\/utils\/api|@\/lib\/prisma|file\.text\(|prisma\.|userId/
+        /importCsvFilesAsync|DuplicateImportError|@\/imports\/utils\/api|@\/lib\/prisma|file\.text\(|prisma\./
       )
-      expect(content).toMatch(/handleImportPost|handleImportFinalize|handleImportStatus/)
+      expect(content).not.toMatch(
+        /parseImportBatch|normalizeImportBatch|deduplicateImportBatch|classifyImportBatch|canonicalPostImportBatch|finalizeImportBatches/
+      )
     }
   })
 
-  it("proves the legacy preview route is not reachable from any production page", async () => {
-    const pages = (await filesBelow("src/app")).filter(
-      (file) => /\/page\.tsx$/.test(file) && !file.includes("/api/")
-    )
-    const consumers = await Promise.all(pages.map(source))
-    expect(consumers.join("\n")).not.toContain("/api/import/raiffeisenbank/preview")
-    expect(await source("src/app/import/page.tsx")).not.toMatch(
-      /preview|\/api\/import\/raiffeisenbank/
-    )
-  })
-
-  it("keeps binary hashing, canonical staging, and finalization in the server-only client", async () => {
+  it("keeps Next.js limited to durable registration, upload, start, status, and retry transport", async () => {
     const api = await source("src/modules/imports/python/import-api.ts")
+    const route = await source("src/modules/imports/python/import-route.ts")
+    const client = await source("src/modules/imports/python/import-client.ts")
     const contract = await source("src/modules/imports/python/import-contract.ts")
-    const transport = await source("src/modules/python-api/server/transport.ts")
+    const active = `${api}\n${route}\n${client}\n${contract}`
 
     expect(api).toContain('import "server-only"')
     expect(api).toContain('from "@/generated/python-api"')
-    expect(contract).toContain('from "@/generated/python-api"')
-    expect(api).toContain('createHash("sha256").update(input.bytes).digest("hex")')
     expect(api).toContain('"application/octet-stream"')
-    expect(transport).toContain('requestedContentType === "application/octet-stream"')
-    for (const suffix of [
-      "/imports",
-      "/file",
-      "/parse",
-      "/normalize",
-      "/deduplicate",
-      "/classify",
-      "/canonical-post",
-      "/finalize",
+    for (const operation of [
+      "createImportBatch",
+      "uploadImportFile",
+      "startImportJob",
+      "getImportJob",
+      "retryImportJob",
     ]) {
-      expect(api).toContain(suffix)
+      expect(api).toContain(operation)
     }
-    expect(api).toContain("getImportBatch")
-  })
-
-  it("stages every file canonically and invokes one Python-owned finalization", async () => {
-    const route = await source("src/modules/imports/python/import-route.ts")
-    const api = await source("src/modules/imports/python/import-api.ts")
-
-    expect(route).toContain("runImportCanonicalWorkflow")
-    expect(route).toContain("finalizeImportBatches")
-    expect(route).not.toContain("runImportWorkflow")
-    expect(api).toContain("canonicalPostImportBatch")
-    expect(api).toContain("finalizeImportBatches")
-  })
-
-  it("keeps failed finalization explicitly recoverable through persisted batch IDs", async () => {
-    const page = await source("src/app/import/page.tsx")
-    const client = await source("src/modules/imports/python/import-client.ts")
-    const route = await source("src/modules/imports/python/import-route.ts")
-    const boundary = await source("src/app/api/import/finalize/route.ts")
-
-    expect(page).toContain("requestImportFinalization")
-    expect(page).toContain("recoverableBatchIds")
-    expect(page).toContain("Zkusit dokončit aktualizaci")
-    expect(client).toContain('export const IMPORT_FINALIZE_PATH = "/api/import/finalize"')
-    expect(route).toContain("handleImportFinalize")
-    expect(route).toContain("finalizeImportBatches")
-    expect(boundary).toContain("handleImportFinalize")
-    expect(`${page}\n${client}\n${route}\n${boundary}`).not.toMatch(
-      /sourceOverride|snapshotTimestamp|calculationVersion|holdingSelector|marketRequirements/
+    expect(route).toContain("createImportBatch")
+    expect(route).toContain("uploadImportFile")
+    expect(route).toContain("startImportJob")
+    expect(client).toContain("requestImport")
+    expect(client).toContain("requestImportJob")
+    expect(client).toContain("retryImportJob")
+    expect(active).not.toMatch(
+      /runImportCanonicalWorkflow|async parseImportBatch|async normalizeImportBatch|async deduplicateImportBatch|async classifyImportBatch|async canonicalPostImportBatch|async postImportBatch|async finalizeImportBatches|requestImportFinalization|ImportFinalization|\/finalize/
     )
   })
 
-  it("keeps token issuance, identity and raw Python bodies server-side", async () => {
+  it("keeps failed jobs retryable while Python owns processing and publication", async () => {
+    const page = await source("src/app/import/page.tsx")
+    const route = await source("src/modules/imports/python/import-route.ts")
+    const api = await source("src/modules/imports/python/import-api.ts")
+
+    expect(page).toContain("retryImportJob")
+    expect(page).toContain("loadLatestPersistedImportJob")
+    expect(route).toContain("startImportJob")
+    expect(`${page}\n${route}\n${api}`).not.toMatch(
+      /sourceOverride|snapshotTimestamp|calculationVersion|holdingSelector|marketRequirements|rebuildHoldings|snapshotRefresh/
+    )
+  })
+
+  it("keeps token issuance, identity, and raw Python bodies server-side", async () => {
     const browser = await source("src/modules/imports/python/import-client.ts")
     const route = await source("src/modules/imports/python/import-route.ts")
     const api = await source("src/modules/imports/python/import-api.ts")
@@ -122,7 +96,8 @@ describe("R4 import call-graph boundaries", () => {
     )
     expect(route).not.toMatch(/request\.headers|get\(["']userId/)
     expect(api).not.toMatch(/console\.|raw_import_row/)
-    expect(route).toContain("summarizeImportFiles")
+    expect(route).toContain("getServerSession")
+    expect(api).toContain("createAuthenticatedPythonTransport")
   })
 
   it("proves the used browser flow has no TypeScript import-domain owner", async () => {
@@ -136,5 +111,25 @@ describe("R4 import call-graph boundaries", () => {
     )
     expect(client).toContain('export const IMPORT_PATH = "/api/import"')
     expect(page).toContain("requestImport")
+  })
+
+  it("contains no legacy registry, parser, compatibility barrel, provider route, or finalization route", async () => {
+    const productionFiles = (await filesBelow("src")).filter(
+      (file) => !file.endsWith(".test.ts") && !file.endsWith(".test.tsx")
+    )
+    const forbidden = productionFiles.filter((file) =>
+      /src\/(?:imports|parsers)\/|src\/modules\/imports\/(?:parsers|import-registry|import-service|run-import|index)\b/.test(
+        file
+      )
+    )
+    expect(forbidden).toEqual([])
+    expect(productionFiles).not.toContain("src/app/api/import/finalize/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/status/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/anycoin/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/trading212/route.ts")
+    expect(productionFiles).not.toContain("src/app/api/import/raiffeisenbank/route.ts")
+
+    const packageJson = await source("package.json")
+    expect(packageJson).not.toContain("papaparse")
   })
 })

@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, event, func, select
+from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -17,13 +18,21 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    AccountSnapshotCanonicalBoundaryModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
+    LiabilityBalanceSource,
     SnapshotGranularity,
     SnapshotSource,
 )
+from app.db.models.liabilities import LiabilityBalanceModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
@@ -44,6 +53,24 @@ from app.modules.net_worth.repository import NetWorthEvidenceRepository
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 SNAPSHOT_AT = datetime(2032, 8, 2)
+RUN_ID = uuid4().hex[:12]
+_active_prefixes: set[str] = set()
+
+
+def _prefix(value: str) -> str:
+    prefix = f"{value}-{RUN_ID}"
+    _active_prefixes.add(prefix)
+    return prefix
+
+
+@pytest.fixture(autouse=True)
+async def _cleanup_after_test() -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        for prefix in tuple(_active_prefixes):
+            await _cleanup(prefix)
+        _active_prefixes.clear()
 
 
 def _engine() -> AsyncEngine:
@@ -82,10 +109,16 @@ async def _cleanup(prefix: str) -> None:
                 )
             )
         )
+        generation_id = f"{prefix}-generation"
         if snapshot_ids:
             await session.execute(
                 delete(AccountSnapshotItemModel).where(
                     AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
+                )
+            )
+            await session.execute(
+                delete(AccountSnapshotCanonicalBoundaryModel).where(
+                    AccountSnapshotCanonicalBoundaryModel.snapshot_id.in_(snapshot_ids)
                 )
             )
         if user_ids:
@@ -97,11 +130,30 @@ async def _cleanup(prefix: str) -> None:
                 delete(AccountSnapshotModel).where(AccountSnapshotModel.account_id.in_(account_ids))
             )
             await session.execute(
+                delete(LiabilityBalanceModel).where(
+                    LiabilityBalanceModel.account_id.in_(account_ids)
+                )
+            )
+            await session.execute(
+                delete(AccountCanonicalStateModel).where(
+                    AccountCanonicalStateModel.account_id.in_(account_ids)
+                )
+            )
+            await session.execute(
                 delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
             )
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
         if user_ids:
+            await session.execute(
+                delete(SnapshotGenerationTargetModel).where(
+                    SnapshotGenerationTargetModel.generation_id == generation_id,
+                    SnapshotGenerationTargetModel.user_id.in_(user_ids),
+                )
+            )
             await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+        await session.execute(
+            delete(SnapshotGenerationModel).where(SnapshotGenerationModel.id == generation_id)
+        )
         await session.commit()
     await engine.dispose()
 
@@ -165,16 +217,15 @@ def _snapshot(
     investment: str | None = None,
     liability: str | None = None,
 ) -> AccountSnapshotModel:
-    is_liability = account.type in {
-        AccountType.credit_card,
-        AccountType.loan,
-        AccountType.mortgage,
-    }
-    cash_value = Decimal(cash if cash is not None else ("0" if is_liability else "100"))
-    investment_value = Decimal(
-        investment if investment is not None else ("0" if is_liability else "400")
+    is_liability = account.type in {AccountType.loan, AccountType.mortgage}
+    is_credit_card = account.type is AccountType.credit_card
+    cash_value = Decimal(
+        cash if cash is not None else ("-250" if is_credit_card else "0" if is_liability else "100")
     )
-    cost_basis = Decimal(0) if is_liability else Decimal("300")
+    investment_value = Decimal(
+        investment if investment is not None else ("0" if is_liability or is_credit_card else "400")
+    )
+    cost_basis = Decimal(0) if is_liability or is_credit_card else Decimal("300")
     liability_value = Decimal(
         liability if liability is not None else ("250" if is_liability else "0")
     )
@@ -214,6 +265,10 @@ def _snapshot(
         fees_by_currency={},
         taxes_by_currency={},
         exchange_rates={"version": 1, "snapshotRates": [], "historicalRateIds": []},
+        generation_id=f"{prefix}-generation",
+        liabilities_value_by_currency=(
+            {"CZK": f"{liability_value:.6f}"} if liability_value else {}
+        ),
     )
 
 
@@ -242,8 +297,75 @@ async def _seed(
         session.add(_user(prefix))
         session.add_all(accounts)
         await session.flush()
+        liability_account_ids = {
+            account.id
+            for account in accounts
+            if account.type in {AccountType.loan, AccountType.mortgage}
+        }
         session.add_all(_membership(prefix, account) for account in accounts)
+        if accounts:
+            await session.execute(
+                update(AccountCanonicalStateModel)
+                .where(
+                    AccountCanonicalStateModel.account_id.in_(account.id for account in accounts)
+                )
+                .values(last_revision=1, updated_at=SNAPSHOT_AT)
+            )
+        if snapshots:
+            session.add(
+                SnapshotGenerationModel(
+                    id=f"{prefix}-generation",
+                    state="staged",
+                    created_at=SNAPSHOT_AT,
+                    published_at=None,
+                )
+            )
+            session.add(
+                SnapshotGenerationTargetModel(
+                    generation_id=f"{prefix}-generation",
+                    user_id=f"{prefix}-user",
+                    created_at=SNAPSHOT_AT,
+                    staged_by_job_id=None,
+                    staged_lease_version=None,
+                    staged_lease_owner=None,
+                )
+            )
+        balances = tuple(
+            LiabilityBalanceModel(
+                id=f"{snapshot.id}-balance",
+                account_id=snapshot.account_id,
+                effective_at=snapshot.timestamp,
+                currency=snapshot.currency,
+                outstanding_principal=snapshot.liabilities_value,
+                accrued_interest=Decimal(0),
+                fees_outstanding=Decimal(0),
+                total_outstanding=snapshot.liabilities_value,
+                source=LiabilityBalanceSource.manual,
+                external_id=None,
+                created_at=SNAPSHOT_AT,
+            )
+            for snapshot in snapshots
+            if snapshot.account_id in liability_account_ids
+        )
+        session.add_all(balances)
         session.add_all(snapshots)
+        await session.flush()
+        session.add_all(
+            AccountSnapshotCanonicalBoundaryModel(
+                snapshot_id=snapshot.id,
+                account_id=snapshot.account_id,
+                canonical_revision=1,
+                investment_revision=None,
+                holding_revision=None,
+                selected_liability_balance_id=(
+                    f"{snapshot.id}-balance"
+                    if snapshot.account_id in liability_account_ids
+                    else None
+                ),
+                created_at=SNAPSHOT_AT,
+            )
+            for snapshot in snapshots
+        )
         await session.commit()
     await engine.dispose()
 
@@ -315,12 +437,15 @@ async def _state(prefix: str) -> tuple[object, ...]:
                 row.timestamp,
                 row.granularity,
                 row.currency,
+                row.generation_id,
+                row.calculation_version,
                 row.cash_value,
                 row.investment_value,
                 row.liabilities_value,
                 row.total_value,
                 row.cash_value_by_currency,
                 row.investment_value_by_currency,
+                row.liabilities_value_by_currency,
             )
             for row in await session.scalars(
                 select(AccountSnapshotModel)
@@ -345,6 +470,24 @@ async def _state(prefix: str) -> tuple[object, ...]:
                 .where(NetWorthSnapshotModel.user_id == f"{prefix}-user")
             )
             or 0,
+            await session.scalar(
+                select(func.count())
+                .select_from(AccountSnapshotCanonicalBoundaryModel)
+                .where(AccountSnapshotCanonicalBoundaryModel.snapshot_id.startswith(f"{prefix}-"))
+            )
+            or 0,
+            await session.scalar(
+                select(func.count())
+                .select_from(LiabilityBalanceModel)
+                .where(LiabilityBalanceModel.account_id.startswith(f"{prefix}-"))
+            )
+            or 0,
+            await session.scalar(
+                select(func.count())
+                .select_from(SnapshotGenerationTargetModel)
+                .where(SnapshotGenerationTargetModel.generation_id == f"{prefix}-generation")
+            )
+            or 0,
         )
     await engine.dispose()
     return user_rows, account_rows, membership_rows, snapshot_rows, counts
@@ -352,7 +495,7 @@ async def _state(prefix: str) -> tuple[object, ...]:
 
 @pytest.mark.asyncio
 async def test_empty_existing_user_builds_zero_without_writes() -> None:
-    prefix = "j5b-empty"
+    prefix = _prefix("j5b-empty")
     await _cleanup(prefix)
     await _seed(prefix, (), ())
     before = await _state(prefix)
@@ -371,7 +514,7 @@ async def test_empty_existing_user_builds_zero_without_writes() -> None:
 
 @pytest.mark.asyncio
 async def test_explicit_empty_guard_builds_exact_zero_for_empty_user() -> None:
-    prefix = "k5d1-evidence-empty"
+    prefix = _prefix("k5d1-evidence-empty")
     await _cleanup(prefix)
     await _seed(prefix, (), ())
     before = await _state(prefix)
@@ -388,7 +531,7 @@ async def test_explicit_empty_guard_builds_exact_zero_for_empty_user() -> None:
 
 @pytest.mark.asyncio
 async def test_exact_guard_accepts_owner_and_viewer_snapshot_identities() -> None:
-    prefix = "k5d1-evidence-exact"
+    prefix = _prefix("k5d1-evidence-exact")
     await _cleanup(prefix)
     account_a = _account(prefix, "account-a", AccountType.broker)
     account_b = _account(prefix, "account-b", AccountType.mortgage)
@@ -421,7 +564,7 @@ async def test_exact_guard_accepts_owner_and_viewer_snapshot_identities() -> Non
 
 @pytest.mark.asyncio
 async def test_explicit_guard_rejects_empty_missing_extra_and_substituted_accounts() -> None:
-    prefix = "k5d1-evidence-account-guard"
+    prefix = _prefix("k5d1-evidence-account-guard")
     await _cleanup(prefix)
     account_a = _account(prefix, "account-a", AccountType.broker)
     account_b = _account(prefix, "account-b", AccountType.loan)
@@ -461,7 +604,7 @@ async def test_explicit_guard_rejects_empty_missing_extra_and_substituted_accoun
 
 @pytest.mark.asyncio
 async def test_explicit_guard_rejects_different_snapshot_for_correct_account() -> None:
-    prefix = "k5d1-evidence-snapshot-guard"
+    prefix = _prefix("k5d1-evidence-snapshot-guard")
     await _cleanup(prefix)
     account = _account(prefix, "account", AccountType.broker)
     snapshot = _snapshot(prefix, account)
@@ -480,7 +623,7 @@ async def test_explicit_guard_rejects_different_snapshot_for_correct_account() -
 
 @pytest.mark.asyncio
 async def test_one_broker_maps_exact_persisted_values() -> None:
-    prefix = "j5b-broker"
+    prefix = _prefix("j5b-broker")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _snapshot(prefix, account)
@@ -503,7 +646,7 @@ async def test_one_broker_maps_exact_persisted_values() -> None:
 
 @pytest.mark.asyncio
 async def test_scale_ten_portfolio_breakdown_survives_persisted_composition() -> None:
-    prefix = "j5b-quantity-scale"
+    prefix = _prefix("j5b-quantity-scale")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _snapshot(
@@ -534,7 +677,7 @@ async def test_scale_ten_portfolio_breakdown_survives_persisted_composition() ->
 
 @pytest.mark.asyncio
 async def test_one_liability_maps_positive_debt_and_negative_net_worth() -> None:
-    prefix = "j5b-liability"
+    prefix = _prefix("j5b-liability")
     await _cleanup(prefix)
     account = _account(prefix, "mortgage", AccountType.mortgage)
     snapshot = _snapshot(prefix, account)
@@ -553,8 +696,30 @@ async def test_one_liability_maps_positive_debt_and_negative_net_worth() -> None
 
 
 @pytest.mark.asyncio
+async def test_credit_card_debt_is_signed_cash_not_liability_balance() -> None:
+    prefix = _prefix("j5b-card")
+    await _cleanup(prefix)
+    account = _account(prefix, "card", AccountType.credit_card)
+    snapshot = _snapshot(prefix, account)
+    await _seed(prefix, (account,), (snapshot,))
+    before = await _state(prefix)
+    engine = _engine()
+    try:
+        result = await _build(engine, prefix)
+    finally:
+        await engine.dispose()
+
+    assert result.projection.cash_value == Decimal("-250.000000")
+    assert result.projection.liabilities_value == 0
+    assert result.projection.net_worth_value == Decimal("-250.000000")
+    assert cast(tuple[int, ...], before[-1])[3] == 0
+    assert await _state(prefix) == before
+    await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
 async def test_mixed_portfolio_is_complete_and_uses_one_snapshot_query() -> None:
-    prefix = "j5b-mixed"
+    prefix = _prefix("j5b-mixed")
     await _cleanup(prefix)
     accounts = (
         _account(prefix, "broker", AccountType.broker),
@@ -585,8 +750,8 @@ async def test_mixed_portfolio_is_complete_and_uses_one_snapshot_query() -> None
         event.remove(engine.sync_engine, "before_cursor_execute", capture_statement)
         await engine.dispose()
 
-    assert result.projection.assets_value == Decimal("1000.000000")
-    assert result.projection.liabilities_value == Decimal("500.000000")
+    assert result.projection.assets_value == Decimal("750.000000")
+    assert result.projection.liabilities_value == Decimal("250.000000")
     assert result.projection.net_worth_value == Decimal("500.000000")
     assert result.selected_account_ids == tuple(sorted(account.id for account in accounts))
     assert len(snapshot_selects) == 1
@@ -595,7 +760,7 @@ async def test_mixed_portfolio_is_complete_and_uses_one_snapshot_query() -> None
 
 @pytest.mark.asyncio
 async def test_missing_exact_snapshot_fails_closed() -> None:
-    prefix = "j5b-missing"
+    prefix = _prefix("j5b-missing")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), ())
@@ -622,7 +787,7 @@ async def test_mismatched_snapshot_identity_or_version_fails_closed(
     suffix: str,
     changes: dict[str, object],
 ) -> None:
-    prefix = f"j5b-{suffix}"
+    prefix = _prefix(f"j5b-{suffix}")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _snapshot(prefix, account, **cast(Any, changes))
@@ -637,8 +802,8 @@ async def test_mismatched_snapshot_identity_or_version_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_unsupported_active_account_prevents_partial_net_worth() -> None:
-    prefix = "j5b-unsupported"
+async def test_active_account_without_snapshot_prevents_partial_net_worth() -> None:
+    prefix = _prefix("j5b-unsupported")
     await _cleanup(prefix)
     broker = _account(prefix, "broker", AccountType.broker)
     bank = _account(prefix, "bank", AccountType.bank)
@@ -656,7 +821,7 @@ async def test_unsupported_active_account_prevents_partial_net_worth() -> None:
 
 @pytest.mark.asyncio
 async def test_archived_account_is_excluded_under_current_state_contract() -> None:
-    prefix = "j5b-archived"
+    prefix = _prefix("j5b-archived")
     await _cleanup(prefix)
     archived = _account(prefix, "bank", AccountType.bank, archived=True)
     await _seed(prefix, (archived,), ())
@@ -671,7 +836,7 @@ async def test_archived_account_is_excluded_under_current_state_contract() -> No
 
 @pytest.mark.asyncio
 async def test_corrupt_jsonb_fails_closed_without_repair() -> None:
-    prefix = "j5b-json"
+    prefix = _prefix("j5b-json")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _snapshot(prefix, account)
@@ -690,7 +855,7 @@ async def test_corrupt_jsonb_fails_closed_without_repair() -> None:
 
 @pytest.mark.asyncio
 async def test_corrupt_financial_row_is_rejected_by_projection_without_repair() -> None:
-    prefix = "j5b-financial"
+    prefix = _prefix("j5b-financial")
     await _cleanup(prefix)
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _snapshot(prefix, account)
@@ -709,7 +874,7 @@ async def test_corrupt_financial_row_is_rejected_by_projection_without_repair() 
 
 @pytest.mark.asyncio
 async def test_service_does_not_implicitly_flush_caller_pending_state() -> None:
-    prefix = "j5b-no-flush"
+    prefix = _prefix("j5b-no-flush")
     await _cleanup(prefix)
     await _seed(prefix, (), ())
     before = await _state(prefix)
@@ -768,7 +933,7 @@ class PausingNetWorthEvidenceRepository(NetWorthEvidenceRepository):
 
 @pytest.mark.asyncio
 async def test_repeatable_read_excludes_concurrent_new_account_as_one_coherent_view() -> None:
-    prefix = "j5b-coherent"
+    prefix = _prefix("j5b-coherent")
     await _cleanup(prefix)
     original = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (original,), (_snapshot(prefix, original),))
@@ -795,7 +960,24 @@ async def test_repeatable_read_excludes_concurrent_new_account_as_one_coherent_v
                     writer.add(concurrent)
                     await writer.flush()
                     writer.add(_membership(prefix, concurrent))
+                    await writer.execute(
+                        update(AccountCanonicalStateModel)
+                        .where(AccountCanonicalStateModel.account_id == concurrent.id)
+                        .values(last_revision=1, updated_at=SNAPSHOT_AT)
+                    )
                     writer.add(_snapshot(prefix, concurrent))
+                    await writer.flush()
+                    writer.add(
+                        AccountSnapshotCanonicalBoundaryModel(
+                            snapshot_id=f"{prefix}-snapshot-{concurrent.id}",
+                            account_id=concurrent.id,
+                            canonical_revision=1,
+                            investment_revision=None,
+                            holding_revision=None,
+                            selected_liability_balance_id=None,
+                            created_at=SNAPSHOT_AT,
+                        )
+                    )
                     await writer.commit()
 
                 resume.set()

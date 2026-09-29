@@ -1,80 +1,116 @@
+import { getServerSession } from "next-auth"
 import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
-import { getServerSession } from "next-auth"
+
 import { authOptions } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import { createPythonCategoryApi } from "@/modules/categories/server/category-api"
+import { normalizeAdapterError } from "@/modules/python-api/server/errors"
+
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" }
+
+function identity(session: { user: { id: string; email?: string | null } }) {
+  return { userId: session.user.id, email: session.user.email || undefined }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new SyntaxError("Invalid JSON object")
+  }
+  return value as Record<string, unknown>
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : ""
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function unauthorized() {
+  return NextResponse.json(
+    { error: "Přihlášení je vyžadováno" },
+    { status: 401, headers: NO_STORE_HEADERS }
+  )
+}
+
+function errorResponse(error: unknown) {
+  if (error instanceof SyntaxError) {
+    return NextResponse.json(
+      { error: "Neplatná data kategorie" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    )
+  }
+  const mapped = normalizeAdapterError(error)
+  const message =
+    mapped.code === "category_not_found"
+      ? "Kategorie nebyla nalezena nebo ji nelze upravit"
+      : mapped.status === 409
+        ? "Kategorie by vytvořila neplatnou hierarchii"
+        : mapped.status === 422
+          ? "Zkontrolujte údaje kategorie"
+          : "Kategorie jsou dočasně nedostupné"
+  return NextResponse.json({ error: message }, { status: mapped.status, headers: NO_STORE_HEADERS })
+}
 
 export async function GET() {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const categories = await prisma.category.findMany({
-    where: { OR: [{ isDefault: true }, { userId: session.user.id }] },
-    include: { children: true },
-    orderBy: { name: "asc" },
-  })
-
-  return NextResponse.json(categories)
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const result = await createPythonCategoryApi(identity(session)).list()
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { name, icon, color, type, parentId } = await req.json()
-  if (!name || !type) return NextResponse.json({ error: "Chybí name nebo type" }, { status: 400 })
-
-  const category = await prisma.category.create({
-    data: { name, icon, color, type, parentId: parentId || null, userId: session.user.id },
-  })
-
-  return NextResponse.json(category, { status: 201 })
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const input = record(await req.json())
+    const result = await createPythonCategoryApi(identity(session)).create({
+      name: text(input.name),
+      icon: optionalText(input.icon),
+      color: optionalText(input.color),
+      type: text(input.type) as "income" | "expense" | "both",
+      parentId: optionalText(input.parentId),
+      idempotencyKey: text(input.idempotencyKey),
+    })
+    return NextResponse.json(result, { status: 201, headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }
 
 export async function PATCH(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const { id, name, icon, color, type, parentId } = await req.json()
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const cat = await prisma.category.findFirst({ where: { id, userId: session.user.id } })
-  if (!cat) return NextResponse.json({ error: "Nenalezeno nebo nelze upravit" }, { status: 404 })
-
-  const updated = await prisma.category.update({
-    where: { id },
-    data: {
-      ...(name && { name }),
-      ...(icon !== undefined && { icon: icon || null }),
-      ...(color !== undefined && { color: color || null }),
-      ...(type && { type }),
-      ...(parentId !== undefined && { parentId: parentId || null }),
-    },
-  })
-
-  return NextResponse.json(updated)
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const input = record(await req.json())
+    const categoryId = text(input.id)
+    const payload: Record<string, unknown> = {}
+    for (const field of ["name", "icon", "color", "type", "parentId"]) {
+      if (field in input) payload[field] = input[field]
+    }
+    const result = await createPythonCategoryApi(identity(session)).update(
+      categoryId,
+      payload as Parameters<ReturnType<typeof createPythonCategoryApi>["update"]>[1]
+    )
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }
 
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-
-  const id = req.nextUrl.searchParams.get("id")
-  if (!id) return NextResponse.json({ error: "Chybí id" }, { status: 400 })
-
-  const cat = await prisma.category.findFirst({ where: { id, userId: session.user.id } })
-  if (!cat)
-    return NextResponse.json(
-      { error: "Nenalezeno nebo nelze smazat (výchozí kategorie)" },
-      { status: 404 }
-    )
-
-  await prisma.$transaction([
-    prisma.category.updateMany({ where: { parentId: id }, data: { parentId: null } }),
-    prisma.transaction.updateMany({ where: { categoryId: id }, data: { categoryId: null } }),
-    prisma.budgetItemCategory.deleteMany({ where: { categoryId: id } }),
-    prisma.category.delete({ where: { id } }),
-  ])
-
-  return NextResponse.json({ ok: true })
+  if (!session?.user?.id) return unauthorized()
+  try {
+    const categoryId = req.nextUrl.searchParams.get("id") ?? ""
+    const result = await createPythonCategoryApi(identity(session)).delete(categoryId)
+    return NextResponse.json(result, { headers: NO_STORE_HEADERS })
+  } catch (error) {
+    return errorResponse(error)
+  }
 }

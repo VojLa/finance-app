@@ -15,6 +15,7 @@ from app.auth.models import AuthenticatedPrincipal
 from app.config.settings import Settings
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.canonical_lineage import AccountSnapshotCanonicalBoundaryModel
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -38,6 +39,7 @@ from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotMod
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
+from app.modules.canonical_state import CanonicalChangeKind, CanonicalStateService
 from app.modules.liabilities.evidence_service import LiabilityBalanceEvidenceService
 from app.modules.liabilities.repository import LiabilityBalanceEvidenceRepository
 from app.modules.liabilities.writer import (
@@ -91,6 +93,11 @@ async def _cleanup(prefix: str) -> None:
             )
         )
         if snapshot_ids:
+            await session.execute(
+                delete(AccountSnapshotCanonicalBoundaryModel).where(
+                    AccountSnapshotCanonicalBoundaryModel.snapshot_id.in_(snapshot_ids)
+                )
+            )
             await session.execute(
                 delete(AccountSnapshotItemModel).where(
                     AccountSnapshotItemModel.snapshot_id.in_(snapshot_ids)
@@ -234,6 +241,7 @@ async def _seed_account(
                     asset_type=AssetType.stock,
                     quantity=Decimal("1"),
                     avg_buy_price=Decimal("10"),
+                    cost_basis_by_currency={"CZK": "10.0000000000"},
                     currency="CZK",
                     current_price=None,
                     current_value=None,
@@ -276,6 +284,7 @@ async def _seed_account(
                 assert holding is not None and listing is not None and asset is not None
                 holding.quantity = Decimal("2")
                 holding.avg_buy_price = Decimal("10")
+                holding.cost_basis_by_currency = {"EUR": "20.0000000000"}
                 holding.currency = "EUR"
                 listing.currency = "EUR"
                 asset.currency = "EUR"
@@ -287,7 +296,7 @@ async def _seed_account(
                             listing_id=listing_id,
                             price=Decimal("15"),
                             currency="EUR",
-                            source=PriceSource.broker,
+                            source=PriceSource.twelve_data,
                             timestamp=NOW,
                             created_at=NOW,
                         ),
@@ -297,7 +306,7 @@ async def _seed_account(
                             to_currency="CZK",
                             rate=Decimal("20"),
                             date=event_at,
-                            source=ExchangeRateSource.ecb,
+                            source=ExchangeRateSource.twelve_data,
                             created_at=event_at,
                         ),
                         ExchangeRateModel(
@@ -306,7 +315,7 @@ async def _seed_account(
                             to_currency="CZK",
                             rate=Decimal("25"),
                             date=NOW,
-                            source=ExchangeRateSource.ecb,
+                            source=ExchangeRateSource.twelve_data,
                             created_at=NOW,
                         ),
                         InvestmentEventModel(
@@ -440,6 +449,14 @@ async def _seed_liability_balance(
                 created_at=effective_at,
             )
         )
+        await CanonicalStateService(session).record(
+            account_id=account_id,
+            kind=CanonicalChangeKind.liability_balance,
+            entity_id=balance_id,
+            financial_timestamp=effective_at,
+            created_at=effective_at,
+            replay=False,
+        )
         await session.commit()
     await engine.dispose()
     return balance_id
@@ -482,7 +499,7 @@ async def _seed_exchange_rate(
                 to_currency=to_currency,
                 rate=rate,
                 date=NOW,
-                source=ExchangeRateSource.ecb,
+                source=ExchangeRateSource.twelve_data,
                 created_at=NOW,
             )
         )
@@ -708,8 +725,11 @@ def test_hidden_account_matrix_creates_nothing(
         asyncio.run(_cleanup(prefix))
 
 
-@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.cash, AccountType.savings])
-def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
+@pytest.mark.parametrize(
+    "account_type",
+    [AccountType.bank, AccountType.cash, AccountType.savings, AccountType.credit_card],
+)
+def test_cash_like_accounts_create_zero_value_snapshots(
     account_type: AccountType,
 ) -> None:
     prefix = f"i5e-unsupported-{account_type.value}"
@@ -717,13 +737,10 @@ def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
     account_id, user_id = asyncio.run(_seed_account(prefix, account_type=account_type))
     try:
         response = _call(account_id, user_id)
-        assert response.status_code == 409
-        assert response.json()["error"] == {
-            "code": "account_snapshot_unavailable",
-            "message": "Account snapshot cannot be created from the current account data.",
-            "request_id": response.headers["x-request-id"],
-        }
-        assert asyncio.run(_counts(account_id)) == (0, 0)
+        assert response.status_code == 200
+        assert response.json()["status"] == "created"
+        assert response.json()["itemCount"] == 0
+        assert asyncio.run(_counts(account_id)) == (1, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 
@@ -731,13 +748,6 @@ def test_unsupported_accounts_map_to_generic_conflict_and_write_nothing(
 @pytest.mark.parametrize(
     ("account_type", "role", "principal", "interest", "fees"),
     [
-        (
-            AccountType.credit_card,
-            AccountMemberRole.owner,
-            Decimal("100.000000"),
-            Decimal("10.000000"),
-            Decimal("5.000000"),
-        ),
         (
             AccountType.loan,
             AccountMemberRole.editor,
@@ -826,11 +836,11 @@ def test_manual_mixed_currency_liability_creates_and_replays_zero_item_snapshot(
         assert replay.json()["status"] == "replayed"
         assert replay.json()["snapshotId"] == first.json()["snapshotId"]
         rows = asyncio.run(_snapshots(account_id))
-        assert len(rows) == 1
-        assert rows[0].currency == "EUR"
-        assert rows[0].liabilities_value == Decimal("4.600000")
-        assert rows[0].total_value == Decimal("-4.600000")
-        assert rows[0].exchange_rates == {
+        assert {row.currency for row in rows} == {"CZK", "EUR"}
+        output_row = next(row for row in rows if row.currency == "EUR")
+        assert output_row.liabilities_value == Decimal("4.600000")
+        assert output_row.total_value == Decimal("-4.600000")
+        assert output_row.exchange_rates == {
             "version": 1,
             "snapshotRates": [
                 {
@@ -839,12 +849,12 @@ def test_manual_mixed_currency_liability_creates_and_replays_zero_item_snapshot(
                     "to": "EUR",
                     "rate": "0.04000000",
                     "timestamp": NOW.isoformat(timespec="milliseconds"),
-                    "source": "ecb",
+                    "source": "twelve_data",
                 }
             ],
             "historicalRateIds": [],
         }
-        assert asyncio.run(_counts(account_id)) == (1, 0)
+        assert asyncio.run(_counts(account_id)) == (2, 0)
     finally:
         asyncio.run(_cleanup(prefix))
 
@@ -873,7 +883,7 @@ def test_manual_distinct_output_currency_missing_fx_is_generic_and_writes_nothin
 def test_explicit_zero_liability_is_persisted_but_missing_or_future_is_unavailable() -> None:
     prefix = "i5l2b-zero-missing-future"
     asyncio.run(_cleanup(prefix))
-    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.credit_card))
+    account_id, user_id = asyncio.run(_seed_account(prefix, account_type=AccountType.loan))
     try:
         missing = _call(account_id, user_id)
         assert missing.status_code == 409

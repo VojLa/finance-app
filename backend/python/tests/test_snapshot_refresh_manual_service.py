@@ -458,7 +458,10 @@ async def test_unexpected_error_with_transaction_leak_rolls_back_as_runtime_erro
         lambda value: replace(value, snapshot_timestamp=BUCKET + timedelta(minutes=1)),
         lambda value: replace(value, granularity=SnapshotGranularity.hour),
         lambda value: replace(value, source=SnapshotSource.scheduled),
-        lambda value: replace(value, calculation_version=2),
+        lambda value: replace(
+            value,
+            calculation_version=CURRENT_USER_SNAPSHOT_REFRESH_CALCULATION_VERSION + 1,
+        ),
         lambda value: replace(value, calculation_version=0),
         lambda value: replace(value, calculation_version=cast(Any, True)),
         lambda value: replace(value, calculation_version=2_147_483_648),

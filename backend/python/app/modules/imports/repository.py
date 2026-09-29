@@ -3,6 +3,7 @@ from hashlib import sha256
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.accounts import AccountModel
 from app.db.models.enums import ImportRowStatus, ImportSource, ImportStatus
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 
@@ -34,20 +35,27 @@ class ImportBatchRepository:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return await self.session.scalar(statement)
 
+    async def get_account_currency_for_update(self, account_id: str) -> str | None:
+        return await self.session.scalar(
+            select(AccountModel.currency).where(AccountModel.id == account_id).with_for_update()
+        )
+
     async def get_by_checksum(
         self,
         *,
         user_id: str,
         account_id: str,
         checksum: str,
+        for_update: bool = False,
     ) -> ImportBatchModel | None:
-        return await self.session.scalar(
-            select(ImportBatchModel).where(
-                ImportBatchModel.user_id == user_id,
-                ImportBatchModel.account_id == account_id,
-                ImportBatchModel.checksum == checksum,
-            )
+        statement = select(ImportBatchModel).where(
+            ImportBatchModel.user_id == user_id,
+            ImportBatchModel.account_id == account_id,
+            ImportBatchModel.checksum == checksum,
         )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        return await self.session.scalar(statement)
 
     async def count_rows(self, batch_id: str) -> int:
         return int(

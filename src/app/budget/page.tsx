@@ -1,36 +1,11 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { fmtCzk } from "@/lib/format"
-
-type Category = { id: string; name: string; icon: string | null; color: string | null }
-type BudgetItem = {
-  id: string
-  amount: number
-  rolloverAmount: number
-  effectiveAmount: number
-  spent: number
-  remaining: number
-  progressPct: number
-  isApproaching: boolean
-  isOver: boolean
-  currency: string
-  categoryId: string
-  category: Category
-}
-type Budget = {
-  id: string
-  month: number
-  year: number
-  rollover: boolean
-  totalLimit: number
-  totalSpent: number
-  totalRemaining: number
-  progressPct: number
-  isOver: boolean
-  alerts: { id: string; type: string; categoryName: string }[]
-  items: BudgetItem[]
-}
+import { requestBudget, saveBudget } from "@/modules/budgets/budget-client"
+import type { Budget } from "@/modules/budgets/budget-contract"
+import { requestCategories } from "@/modules/categories/category-client"
+import type { Category } from "@/modules/categories/category-contract"
 
 const MONTHS = [
   "Leden",
@@ -47,11 +22,6 @@ const MONTHS = [
   "Prosinec",
 ]
 
-function pct(spent: number, limit: number) {
-  if (limit === 0) return 0
-  return Math.min(100, (spent / limit) * 100)
-}
-
 export default function BudgetPage() {
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
@@ -65,37 +35,47 @@ export default function BudgetPage() {
   const [rollover, setRollover] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const budgetRequestId = useRef(0)
+  const [lastLoadedPeriod, setLastLoadedPeriod] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch("/api/categories")
-      .then((r) => r.json())
+    requestCategories()
       .then((cats) => {
         setCategories(
-          cats.filter((c: { type: string }) => c.type === "expense" || c.type === "both")
+          cats.filter((category) => category.type === "expense" || category.type === "both")
         )
       })
+      .catch(() => setError("Kategorie se nepodařilo načíst."))
   }, [])
 
   async function loadBudget() {
+    const requestId = ++budgetRequestId.current
     setLoading(true)
-    const res = await fetch(`/api/budget?month=${month}&year=${year}`)
-    const data = res.ok ? await res.json() : null
-    setBudget(data)
-    setRollover(Boolean(data?.rollover))
-    setLoading(false)
+    setError(null)
+    try {
+      const data = await requestBudget(month, year)
+      if (requestId !== budgetRequestId.current) return
+      setBudget(data)
+      setLastLoadedPeriod(`${year}-${month}`)
+      setRollover(Boolean(data?.rollover))
+    } catch {
+      if (requestId !== budgetRequestId.current) return
+      setError("Rozpočet se nepodařilo načíst.")
+    } finally {
+      if (requestId === budgetRequestId.current) setLoading(false)
+    }
   }
 
   useEffect(() => {
     loadBudget()
   }, [month, year]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function saveItems(items: { categoryId: string; amount: number }[]) {
-    const res = await fetch("/api/budget", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ month, year, rollover, items }),
-    })
-    setBudget(res.ok ? await res.json() : null)
+  async function saveItems(
+    items: { categoryId: string; amount: string | number; currency: string }[]
+  ) {
+    setError(null)
+    setBudget(await saveBudget({ month, year, rollover, items }))
   }
 
   async function addItem(e: React.FormEvent) {
@@ -104,17 +84,26 @@ export default function BudgetPage() {
     setSaving(true)
 
     const existing =
-      budget?.items.map((i) => ({ categoryId: i.categoryId, amount: i.amount })) ?? []
+      budget?.items.map((i) => ({
+        categoryId: i.categoryId,
+        amount: i.amount,
+        currency: i.currency,
+      })) ?? []
     const items = [
       ...existing.filter((i) => i.categoryId !== newCatId),
-      { categoryId: newCatId, amount: parseFloat(newAmount) },
+      { categoryId: newCatId, amount: newAmount, currency: "CZK" },
     ]
 
-    await saveItems(items)
-    setNewCatId("")
-    setNewAmount("")
-    setShowForm(false)
-    setSaving(false)
+    try {
+      await saveItems(items)
+      setNewCatId("")
+      setNewAmount("")
+      setShowForm(false)
+    } catch {
+      setError("Rozpočet se nepodařilo uložit.")
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function deleteItem(categoryId: string) {
@@ -122,13 +111,19 @@ export default function BudgetPage() {
     const remaining =
       budget?.items
         .filter((i) => i.categoryId !== categoryId)
-        .map((i) => ({ categoryId: i.categoryId, amount: i.amount })) ?? []
-    await saveItems(remaining)
-    setDeletingId(null)
+        .map((i) => ({ categoryId: i.categoryId, amount: i.amount, currency: i.currency })) ?? []
+    try {
+      await saveItems(remaining)
+    } catch {
+      setError("Položku rozpočtu se nepodařilo odebrat.")
+    } finally {
+      setDeletingId(null)
+    }
   }
 
-  const totalLimit = budget?.totalLimit ?? 0
-  const totalSpent = budget?.totalSpent ?? 0
+  const totalLimit = Number(budget?.totalLimit ?? 0)
+  const totalSpent = Number(budget?.totalSpent ?? 0)
+  const periodCurrent = !loading && lastLoadedPeriod === `${year}-${month}`
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -160,6 +155,16 @@ export default function BudgetPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {lastLoadedPeriod !== null && lastLoadedPeriod !== `${year}-${month}` && (
+        <p role="status" className="text-sm text-amber-700">Zobrazený rozpočet je z posledního načteného měsíce ({lastLoadedPeriod}).</p>
+      )}
+
       {budget && budget.items.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="flex justify-between text-sm mb-2">
@@ -173,11 +178,11 @@ export default function BudgetPage() {
           <div className="w-full bg-gray-100 rounded-full h-2.5">
             <div
               className={`h-2.5 rounded-full transition-all ${budget.isOver ? "bg-red-500" : "bg-blue-500"}`}
-              style={{ width: `${pct(totalSpent, totalLimit)}%` }}
+              style={{ width: `${Number(budget.progressPct)}%` }}
             />
           </div>
           <p className="text-xs text-gray-400 mt-1.5">
-            Zbyva {fmtCzk(Math.max(0, budget.totalRemaining))}
+            Zbyva {fmtCzk(Math.max(0, Number(budget.totalRemaining)))}
           </p>
           {budget.alerts.length > 0 && (
             <div className="mt-4 space-y-2">
@@ -200,7 +205,7 @@ export default function BudgetPage() {
         </div>
       )}
 
-      {loading ? (
+      {loading && budget === null ? (
         <div className="text-gray-400 py-8 text-center">Nacitam...</div>
       ) : (
         <div className="space-y-3">
@@ -218,11 +223,11 @@ export default function BudgetPage() {
                     <span
                       className={`text-sm font-mono ${over ? "text-red-600 font-semibold" : "text-gray-700"}`}
                     >
-                      {fmtCzk(item.spent)} / {fmtCzk(item.effectiveAmount)}
+                      {fmtCzk(Number(item.spent))} / {fmtCzk(Number(item.effectiveAmount))}
                     </span>
                     <button
                       onClick={() => deleteItem(item.categoryId)}
-                      disabled={isDeleting}
+                      disabled={isDeleting || !periodCurrent}
                       title="Odebrat z rozpoctu"
                       className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none disabled:opacity-40"
                     >
@@ -235,18 +240,18 @@ export default function BudgetPage() {
                     className={`h-2 rounded-full transition-all ${
                       over ? "bg-red-500" : item.isApproaching ? "bg-amber-400" : "bg-green-500"
                     }`}
-                    style={{ width: `${item.progressPct}%` }}
+                    style={{ width: `${Number(item.progressPct)}%` }}
                   />
                 </div>
-                {item.rolloverAmount !== 0 && (
+                {Number(item.rolloverAmount) !== 0 && (
                   <p className="text-xs text-gray-400 mt-1">
-                    Rollover {item.rolloverAmount > 0 ? "+" : ""}
-                    {fmtCzk(item.rolloverAmount)}
+                    Rollover {Number(item.rolloverAmount) > 0 ? "+" : ""}
+                    {fmtCzk(Number(item.rolloverAmount))}
                   </p>
                 )}
                 {over && (
                   <p className="text-xs text-red-500 mt-1">
-                    Prekroceno o {fmtCzk(item.spent - item.effectiveAmount)}
+                    Prekroceno o {fmtCzk(Math.abs(Number(item.remaining)))}
                   </p>
                 )}
               </div>
@@ -303,7 +308,7 @@ export default function BudgetPage() {
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || !periodCurrent}
               className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
               {saving ? "Ukladam..." : "Pridat"}
@@ -320,6 +325,7 @@ export default function BudgetPage() {
       ) : (
         <button
           onClick={() => setShowForm(true)}
+          disabled={!periodCurrent}
           className="w-full border border-dashed border-gray-300 rounded-xl py-3 text-sm text-gray-400 hover:border-blue-400 hover:text-blue-500 transition-colors"
         >
           + Pridat kategorii do rozpoctu

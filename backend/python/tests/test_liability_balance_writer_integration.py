@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, func, select, text
@@ -35,6 +36,24 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 EFFECTIVE_AT = datetime(2026, 7, 28, 10, 20, 30, 123000)
 CREATED_AT = datetime(2026, 7, 28, 10, 21, 0, 456000)
+RUN_ID = uuid4().hex[:12]
+_active_prefixes: set[str] = set()
+
+
+def _prefix(value: str) -> str:
+    prefix = f"{value}-{RUN_ID}"
+    _active_prefixes.add(prefix)
+    return prefix
+
+
+@pytest.fixture(autouse=True)
+async def _cleanup_after_test():
+    try:
+        yield
+    finally:
+        for prefix in tuple(_active_prefixes):
+            await _cleanup(prefix)
+        _active_prefixes.clear()
 
 
 def _engine():
@@ -45,7 +64,7 @@ def _engine():
 def _account(
     prefix: str,
     *,
-    account_type: AccountType = AccountType.credit_card,
+    account_type: AccountType = AccountType.loan,
     currency: str = "CZK",
 ) -> AccountModel:
     return AccountModel(
@@ -115,10 +134,9 @@ async def _cleanup(*prefixes: str) -> None:
 async def _seed(
     prefix: str,
     *,
-    account_type: AccountType = AccountType.credit_card,
+    account_type: AccountType = AccountType.loan,
     currency: str = "CZK",
 ) -> None:
-    await _cleanup(prefix)
     engine = _engine()
     async with AsyncSession(engine) as session:
         session.add(_account(prefix, account_type=account_type, currency=currency))
@@ -173,8 +191,8 @@ async def _out_of_scope_counts(prefix: str) -> tuple[int, int, int]:
 
 
 @pytest.mark.asyncio
-async def test_credit_card_create_exact_replay_and_read_selector_compatibility() -> None:
-    prefix = "l2a-credit"
+async def test_loan_create_exact_replay_and_read_selector_compatibility() -> None:
+    prefix = _prefix("l2a-loan-replay")
     await _seed(prefix)
     engine = _engine()
     command = _command(prefix)
@@ -242,7 +260,7 @@ async def test_credit_card_create_exact_replay_and_read_selector_compatibility()
         ),
         (
             "l2a-zero",
-            AccountType.credit_card,
+            AccountType.loan,
             {
                 "outstanding_principal": Decimal(0),
                 "accrued_interest": Decimal(0),
@@ -257,6 +275,7 @@ async def test_exact_component_boundaries_persist(
     account_type: AccountType,
     command: dict[str, Decimal],
 ) -> None:
+    prefix = _prefix(prefix)
     await _seed(prefix, account_type=account_type)
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -269,10 +288,12 @@ async def test_exact_component_boundaries_persist(
     await _cleanup(prefix)
 
 
-@pytest.mark.parametrize("account_type", [AccountType.bank, AccountType.broker])
+@pytest.mark.parametrize(
+    "account_type", [AccountType.bank, AccountType.broker, AccountType.credit_card]
+)
 @pytest.mark.asyncio
 async def test_unsupported_account_fails_without_write(account_type: AccountType) -> None:
-    prefix = f"l2a-unsupported-{account_type.value}"
+    prefix = _prefix(f"l2a-unsupported-{account_type.value}")
     await _seed(prefix, account_type=account_type)
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -286,7 +307,7 @@ async def test_unsupported_account_fails_without_write(account_type: AccountType
 
 @pytest.mark.asyncio
 async def test_account_currency_mismatch_fails_without_write() -> None:
-    prefix = "l2a-currency"
+    prefix = _prefix("l2a-currency")
     await _seed(prefix, currency="EUR")
     engine = _engine()
     async with AsyncSession(engine) as session:
@@ -299,7 +320,7 @@ async def test_account_currency_mismatch_fails_without_write() -> None:
 
 @pytest.mark.asyncio
 async def test_timestamp_identity_conflict_preserves_original() -> None:
-    prefix = "l2a-time-conflict"
+    prefix = _prefix("l2a-time-conflict")
     await _seed(prefix)
     engine = _engine()
     original = _command(prefix)
@@ -318,7 +339,7 @@ async def test_timestamp_identity_conflict_preserves_original() -> None:
 
 @pytest.mark.asyncio
 async def test_external_identity_conflict_preserves_original() -> None:
-    prefix = "l2a-external-conflict"
+    prefix = _prefix("l2a-external-conflict")
     await _seed(prefix)
     engine = _engine()
     original = _command(prefix)
@@ -355,7 +376,7 @@ class _ConstraintFailureRepository(LiabilityBalanceWriterRepository):
 async def test_failure_after_add_or_flush_rolls_back_and_clean_retry_succeeds(
     repository_type: type[LiabilityBalanceWriterRepository],
 ) -> None:
-    prefix = f"l2a-rollback-{repository_type.__name__.lower()}"
+    prefix = _prefix(f"l2a-rollback-{repository_type.__name__.lower()}")
     await _seed(prefix)
     engine = _engine()
     command = _command(prefix)
@@ -389,7 +410,7 @@ class _HoldingReloadRepository(LiabilityBalanceWriterRepository):
     async def reload(self, balance_id: str) -> LiabilityBalanceModel | None:
         row = await super().reload(balance_id)
         self.holding.set()
-        await self.release.wait()
+        await asyncio.wait_for(self.release.wait(), timeout=10)
         return row
 
 
@@ -407,38 +428,44 @@ class _PidRepository(LiabilityBalanceWriterRepository):
 
 
 async def _wait_for_advisory_lock(engine: Any, pid: int) -> None:
-    for _ in range(100):
-        async with AsyncSession(engine) as inspector:
-            waiting = await inspector.scalar(
-                text(
-                    "SELECT EXISTS ("
-                    "SELECT 1 FROM pg_locks "
-                    "WHERE pid = :pid AND locktype = 'advisory' AND NOT granted)"
-                ),
-                {"pid": pid},
-            )
-        if waiting:
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError("PostgreSQL backend did not wait on a liability advisory lock")
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                async with AsyncSession(engine) as inspector:
+                    waiting = await inspector.scalar(
+                        text(
+                            "SELECT EXISTS ("
+                            "SELECT 1 FROM pg_locks "
+                            "WHERE pid = :pid AND locktype = 'advisory' AND NOT granted)"
+                        ),
+                        {"pid": pid},
+                    )
+                if waiting:
+                    return
+    except TimeoutError as exc:
+        raise AssertionError(
+            "PostgreSQL backend did not wait on a liability advisory lock"
+        ) from exc
 
 
 async def _wait_for_blocker(engine: Any, pid: int) -> None:
-    for _ in range(100):
-        async with AsyncSession(engine) as inspector:
-            blocked = await inspector.scalar(
-                text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
-                {"pid": pid},
-            )
-        if blocked:
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError("PostgreSQL backend did not wait on the locked Account row")
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                async with AsyncSession(engine) as inspector:
+                    blocked = await inspector.scalar(
+                        text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                        {"pid": pid},
+                    )
+                if blocked:
+                    return
+    except TimeoutError as exc:
+        raise AssertionError("PostgreSQL backend did not wait on the locked Account row") from exc
 
 
 @pytest.mark.asyncio
 async def test_same_command_concurrency_creates_once_then_replays_with_proven_wait() -> None:
-    prefix = "l2a-concurrent-same"
+    prefix = _prefix("l2a-concurrent-same")
     await _seed(prefix)
     engine = _engine()
     holding, release = asyncio.Event(), asyncio.Event()
@@ -456,16 +483,18 @@ async def test_same_command_concurrency_creates_once_then_replays_with_proven_wa
                 ),
             ).write(command)
         )
-        await holding.wait()
+        await asyncio.wait_for(holding.wait(), timeout=10)
         second = asyncio.create_task(
             LiabilityBalanceWriter(
                 second_session,
                 repository=_PidRepository(second_session, pid_ready=pid_ready),
             ).write(command)
         )
-        await _wait_for_advisory_lock(engine, await pid_ready)
+        await _wait_for_advisory_lock(engine, await asyncio.wait_for(pid_ready, timeout=10))
         release.set()
-        first_result, second_result = await asyncio.gather(first, second)
+        first_result, second_result = await asyncio.wait_for(
+            asyncio.gather(first, second), timeout=10
+        )
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
     assert second_result.disposition is LiabilityBalanceWriteDisposition.replayed
@@ -479,7 +508,7 @@ async def test_same_command_concurrency_creates_once_then_replays_with_proven_wa
 async def test_same_timestamp_different_values_concurrency_creates_once_and_conflicts_once() -> (
     None
 ):
-    prefix = "l2a-concurrent-timestamp"
+    prefix = _prefix("l2a-concurrent-timestamp")
     await _seed(prefix)
     engine = _engine()
     holding, release = asyncio.Event(), asyncio.Event()
@@ -498,18 +527,18 @@ async def test_same_timestamp_different_values_concurrency_creates_once_and_conf
                 ),
             ).write(first_command)
         )
-        await holding.wait()
+        await asyncio.wait_for(holding.wait(), timeout=10)
         second = asyncio.create_task(
             LiabilityBalanceWriter(
                 second_session,
                 repository=_PidRepository(second_session, pid_ready=pid_ready),
             ).write(second_command)
         )
-        await _wait_for_advisory_lock(engine, await pid_ready)
+        await _wait_for_advisory_lock(engine, await asyncio.wait_for(pid_ready, timeout=10))
         release.set()
-        first_result = await first
+        first_result = await asyncio.wait_for(first, timeout=10)
         with pytest.raises(LiabilityBalanceWriteConflictError):
-            await second
+            await asyncio.wait_for(second, timeout=10)
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
     rows = await _rows(prefix)
@@ -521,7 +550,7 @@ async def test_same_timestamp_different_values_concurrency_creates_once_and_conf
 
 @pytest.mark.asyncio
 async def test_same_external_identity_concurrency_creates_once_and_conflicts_once() -> None:
-    prefix = "l2a-concurrent-external"
+    prefix = _prefix("l2a-concurrent-external")
     await _seed(prefix)
     engine = _engine()
     holding, release = asyncio.Event(), asyncio.Event()
@@ -540,18 +569,18 @@ async def test_same_external_identity_concurrency_creates_once_and_conflicts_onc
                 ),
             ).write(first_command)
         )
-        await holding.wait()
+        await asyncio.wait_for(holding.wait(), timeout=10)
         second = asyncio.create_task(
             LiabilityBalanceWriter(
                 second_session,
                 repository=_PidRepository(second_session, pid_ready=pid_ready),
             ).write(second_command)
         )
-        await _wait_for_advisory_lock(engine, await pid_ready)
+        await _wait_for_advisory_lock(engine, await asyncio.wait_for(pid_ready, timeout=10))
         release.set()
-        first_result = await first
+        first_result = await asyncio.wait_for(first, timeout=10)
         with pytest.raises(LiabilityBalanceWriteConflictError):
-            await second
+            await asyncio.wait_for(second, timeout=10)
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
     assert len(await _rows(prefix)) == 1
@@ -560,11 +589,12 @@ async def test_same_external_identity_concurrency_creates_once_and_conflicts_onc
 
 
 @pytest.mark.asyncio
-async def test_same_account_different_manual_timestamps_do_not_share_identity_lock() -> None:
-    prefix = "l2a-parallel-timestamps"
+async def test_same_account_different_manual_timestamps_serialize_canonical_revisions() -> None:
+    prefix = _prefix("l2a-parallel-timestamps")
     await _seed(prefix)
     engine = _engine()
     holding, release = asyncio.Event(), asyncio.Event()
+    pid_ready = asyncio.get_running_loop().create_future()
     first_command = _command(
         prefix,
         source=LiabilityBalanceSource.manual,
@@ -588,16 +618,20 @@ async def test_same_account_different_manual_timestamps_do_not_share_identity_lo
                 ),
             ).write(first_command)
         )
-        await holding.wait()
-        second = await asyncio.wait_for(
-            LiabilityBalanceWriter(second_session).write(second_command),
-            timeout=2,
+        await asyncio.wait_for(holding.wait(), timeout=10)
+        second = asyncio.create_task(
+            LiabilityBalanceWriter(
+                second_session,
+                repository=_PidRepository(second_session, pid_ready=pid_ready),
+            ).write(second_command)
         )
-        assert second.disposition is LiabilityBalanceWriteDisposition.created
+        await _wait_for_blocker(engine, await asyncio.wait_for(pid_ready, timeout=10))
         release.set()
-        first_result = await first
+        first_result = await asyncio.wait_for(first, timeout=10)
+        second_result = await asyncio.wait_for(second, timeout=10)
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
+    assert second_result.disposition is LiabilityBalanceWriteDisposition.created
     assert len(await _rows(prefix)) == 2
     await engine.dispose()
     await _cleanup(prefix)
@@ -605,7 +639,7 @@ async def test_same_account_different_manual_timestamps_do_not_share_identity_lo
 
 @pytest.mark.asyncio
 async def test_concurrent_archive_committed_before_account_lock_causes_zero_write() -> None:
-    prefix = "l2a-concurrent-archive"
+    prefix = _prefix("l2a-concurrent-archive")
     await _seed(prefix)
     engine = _engine()
     pid_ready = asyncio.get_running_loop().create_future()
@@ -624,10 +658,10 @@ async def test_concurrent_archive_committed_before_account_lock_causes_zero_writ
                 repository=_PidRepository(writer_session, pid_ready=pid_ready),
             ).write(_command(prefix))
         )
-        await _wait_for_blocker(engine, await pid_ready)
+        await _wait_for_blocker(engine, await asyncio.wait_for(pid_ready, timeout=10))
         await archiver.commit()
         with pytest.raises(LiabilityBalanceWriteStateError):
-            await writer
+            await asyncio.wait_for(writer, timeout=10)
 
     assert await _rows(prefix) == ()
     await engine.dispose()
@@ -636,8 +670,8 @@ async def test_concurrent_archive_committed_before_account_lock_causes_zero_writ
 
 @pytest.mark.asyncio
 async def test_different_accounts_do_not_share_a_global_liability_lock() -> None:
-    first_prefix = "l2a-parallel-a"
-    second_prefix = "l2a-parallel-b"
+    first_prefix = _prefix("l2a-parallel-a")
+    second_prefix = _prefix("l2a-parallel-b")
     await _seed(first_prefix)
     await _seed(second_prefix)
     engine = _engine()
@@ -654,14 +688,14 @@ async def test_different_accounts_do_not_share_a_global_liability_lock() -> None
                 ),
             ).write(_command(first_prefix))
         )
-        await holding.wait()
+        await asyncio.wait_for(holding.wait(), timeout=10)
         second = await asyncio.wait_for(
             LiabilityBalanceWriter(second_session).write(_command(second_prefix)),
             timeout=2,
         )
         assert second.disposition is LiabilityBalanceWriteDisposition.created
         release.set()
-        first_result = await first
+        first_result = await asyncio.wait_for(first, timeout=10)
 
     assert first_result.disposition is LiabilityBalanceWriteDisposition.created
     assert len(await _rows(first_prefix)) == len(await _rows(second_prefix)) == 1

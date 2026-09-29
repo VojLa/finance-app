@@ -87,6 +87,37 @@ _CARD_DESCRIPTION_FIELDS: Final = (
 )
 
 
+def raiffeisenbank_account_currency_matches(
+    *,
+    raw_data: dict[str, Any],
+    account_currency: str,
+) -> bool:
+    """Return whether one parsed RB row belongs to the locked account currency.
+
+    This deliberately uses only parser-attested statement shape and the source
+    settlement currency.  It is a batch preflight rather than normalization, so
+    a mixed-currency file cannot partially mutate import rows.
+    """
+    statement_kind = raw_data.get(STATEMENT_KIND_FIELD)
+    fields = (
+        _ACCOUNT_FIELDS
+        if statement_kind == "account_statement"
+        else _CARD_FIELDS
+        if statement_kind == "card_statement"
+        else None
+    )
+    if fields is None:
+        return False
+    source_currency = _text(raw_data, fields["currency"])
+    target_currency = account_currency.strip().upper()
+    return (
+        source_currency is not None
+        and _CURRENCY_PATTERN.fullmatch(source_currency.upper()) is not None
+        and _CURRENCY_PATTERN.fullmatch(target_currency) is not None
+        and source_currency.upper() == target_currency
+    )
+
+
 def _detect_statement_kind(content: bytes, encoding: str | None) -> StatementKind:
     text = _decode(content, encoding)
     if not text.strip():

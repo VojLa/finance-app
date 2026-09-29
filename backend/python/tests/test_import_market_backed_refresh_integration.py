@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import os
@@ -16,14 +17,13 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from support import investment_fixture_e2e as investment_support
-from support.cnb_fx import cnb_xml
 
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.enums import (
     AssetAliasProvider,
+    AssetType,
     ExchangeRateSource,
     ImportLogEvent,
     ImportSource,
@@ -46,6 +46,7 @@ from app.modules.snapshot_refresh.executor import (
 from app.modules.snapshot_refresh.market_backed_service import (
     MarketBackedSnapshotRefreshService,
 )
+from tests.support import investment_fixture_e2e as investment_support
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -85,14 +86,14 @@ class _ProviderHarness:
         observed_at: datetime,
         twelve_status: int = 200,
         coingecko_stale: bool = False,
-        cnb_status: int = 200,
+        fx_status: int = 200,
         fail_on_any_call: bool = False,
         coin_price: Decimal = Decimal("414.5888"),
     ) -> None:
         self.observed_at = observed_at
         self.twelve_status = twelve_status
         self.coingecko_stale = coingecko_stale
-        self.cnb_status = cnb_status
+        self.fx_status = fx_status
         self.fail_on_any_call = fail_on_any_call
         self.coin_price = coin_price
         self.calls: list[tuple[str, str]] = []
@@ -151,32 +152,32 @@ class _ProviderHarness:
                 },
             )
 
-        def cnb_handler(request: httpx.Request) -> httpx.Response:
-            requested = request.url.params["date"]
-            before_call("cnb", requested)
-            if self.cnb_status != 200:
+        def fx_handler(request: httpx.Request) -> httpx.Response:
+            symbol = request.url.params["symbol"]
+            requested = request.url.params["end_date"]
+            publication = datetime.fromisoformat(requested).date() - timedelta(days=1)
+            before_call("twelve_data_fx", f"{symbol}@{publication.isoformat()}")
+            if self.fx_status != 200:
                 return httpx.Response(
-                    self.cnb_status,
-                    headers={"content-type": "text/xml"},
-                    content=b"unavailable",
+                    self.fx_status,
+                    headers={"content-type": "application/json"},
+                    content=b'{"status":"error"}',
                 )
-            publication = datetime.strptime(requested, "%d.%m.%Y").date()
+            rate = {"EUR/CZK": "25.00000000", "USD/CZK": "23.00000000"}.get(symbol, "1.10000000")
             return httpx.Response(
                 200,
-                headers={"content-type": "text/xml"},
-                content=cnb_xml(
-                    publication,
-                    (
-                        ("EUR", "1", "25,000"),
-                        ("USD", "1", "23,000"),
-                    ),
-                ),
+                headers={"content-type": "application/json"},
+                content=(
+                    f'{{"meta":{{"symbol":"{symbol}"}},"values":['
+                    f'{{"datetime":"{publication.isoformat()}","close":"{rate}"}}],'
+                    '"status":"ok"}'
+                ).encode(),
             )
 
         return (
             httpx.MockTransport(twelve_handler),
             httpx.MockTransport(coingecko_handler),
-            httpx.MockTransport(cnb_handler),
+            httpx.MockTransport(fx_handler),
         )
 
 
@@ -189,13 +190,13 @@ def _install_market_override(
     def override(
         session: AsyncSession = Depends(get_db_session),
     ) -> MarketBackedSnapshotRefreshService:
-        twelve, coingecko, cnb = harness.transports(session)
+        twelve, coingecko, fx = harness.transports(session)
 
         def factory(active_session: AsyncSession, settings: Settings):
             return create_production_market_evidence_service(
                 active_session,
                 settings,
-                http_transport=cnb,
+                twelve_data_fx_http_transport=fx,
                 coingecko_http_transport=coingecko,
                 twelve_data_http_transport=twelve,
             )
@@ -239,6 +240,108 @@ async def _add_alias(
         )
         await session.commit()
     await engine.dispose()
+
+
+def _scoped_alias(
+    prefix: str,
+    *,
+    provider: AssetAliasProvider,
+    external_id: str,
+) -> tuple[str, tuple[str, str]]:
+    if provider is AssetAliasProvider.coingecko:
+        coin_id = f"{external_id}-{prefix}"
+        return coin_id, ("coingecko", coin_id)
+    identity = json.loads(external_id)
+    identity["symbol"] += prefix.rsplit("-", 1)[-1].upper()
+    return json.dumps(identity, separators=(",", ":")), (
+        "twelve_data",
+        f"{identity['symbol']}:{identity['mic_code']}",
+    )
+
+
+def _fixture_content(prefix: str, *, source: ImportSource, filename: str) -> bytes:
+    content = investment_support.fixture(source, filename)
+    suffix = prefix.rsplit("-", 1)[-1].upper()
+    if source is ImportSource.trading212:
+        return content.replace(b"TSTETF", f"TST{suffix}".encode()).replace(
+            b"TEST00000001", f"TEST{suffix}".encode()
+        )
+    return content.replace(b"BTC", f"B{suffix}".encode())
+
+
+async def _seed_market_asset_listing(prefix: str, *, source: ImportSource) -> None:
+    """Keep the import symbol while giving globally unique listings a test identity."""
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    trading = source is ImportSource.trading212
+    suffix = prefix.rsplit("-", 1)[-1].upper()
+    symbol = f"TST{suffix}" if trading else f"B{suffix}"
+    asset_id = f"{prefix}-asset"
+    engine = investment_support.engine()
+    async with AsyncSession(engine) as session:
+        session.add(
+            AssetModel(
+                id=asset_id,
+                symbol=symbol,
+                isin=f"TEST{suffix}" if trading else None,
+                name="Fictitious Test ETF" if trading else "Bitcoin",
+                asset_type=AssetType.etf if trading else AssetType.crypto,
+                currency="EUR" if trading else symbol,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.flush()
+        session.add(
+            AssetListingModel(
+                id=f"{prefix}-listing",
+                asset_id=asset_id,
+                symbol=symbol,
+                exchange=source.value,
+                mic=None,
+                currency="EUR",
+                country=None,
+                provider=PriceSource.broker if trading else PriceSource.exchange,
+                provider_symbol=symbol,
+                is_primary=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+def _prepare_rb_import(
+    client: TestClient,
+    *,
+    user_id: str,
+    account_id: str,
+    content: bytes,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    base = f"/api/v1/accounts/{account_id}/imports"
+    created = client.post(
+        base,
+        headers=rb_support._headers(user_id),
+        json={
+            "source": ImportSource.raiffeisenbank.value,
+            "filename": "r5b3c-rb.csv",
+            "file_size": len(content),
+            "file_encoding": None,
+            "checksum": hashlib.sha256(content).hexdigest(),
+        },
+    )
+    assert created.status_code == 201, created.text
+    batch_id = created.json()["batch"]["id"]
+    uploaded = client.put(
+        f"{base}/{batch_id}/file",
+        headers=rb_support._headers(user_id, binary=True),
+        content=content,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    parsed = client.post(f"{base}/{batch_id}/parse", headers=rb_support._headers(user_id))
+    normalized = client.post(f"{base}/{batch_id}/normalize", headers=rb_support._headers(user_id))
+    assert parsed.status_code == normalized.status_code == 200
+    return batch_id, parsed.json(), normalized.json()
 
 
 async def _configure_trading_czk(prefix: str) -> None:
@@ -311,7 +414,7 @@ async def _database_state(prefix: str) -> dict[str, Any]:
             (
                 await session.scalars(
                     select(ExchangeRateModel)
-                    .where(ExchangeRateModel.source == ExchangeRateSource.cnb)
+                    .where(ExchangeRateModel.source == ExchangeRateSource.twelve_data)
                     .order_by(ExchangeRateModel.id)
                 )
             ).all()
@@ -334,11 +437,33 @@ async def _database_state(prefix: str) -> dict[str, Any]:
     }
 
 
-async def _delete_cnb_rates() -> None:
+async def _twelve_data_fx_rate_ids() -> set[str]:
+    engine = investment_support.engine()
+    async with AsyncSession(engine) as session:
+        rate_ids = set(
+            (
+                await session.scalars(
+                    select(ExchangeRateModel.id).where(
+                        ExchangeRateModel.source == ExchangeRateSource.twelve_data
+                    )
+                )
+            ).all()
+        )
+    await engine.dispose()
+    return rate_ids
+
+
+async def _delete_new_twelve_data_fx_rates(before_ids: set[str]) -> None:
+    new_ids = (await _twelve_data_fx_rate_ids()) - before_ids
+    if not new_ids:
+        return
     engine = investment_support.engine()
     async with AsyncSession(engine) as session:
         await session.execute(
-            delete(ExchangeRateModel).where(ExchangeRateModel.source == ExchangeRateSource.cnb)
+            delete(ExchangeRateModel).where(
+                ExchangeRateModel.id.in_(new_ids),
+                ExchangeRateModel.source == ExchangeRateSource.twelve_data,
+            )
         )
         await session.commit()
     await engine.dispose()
@@ -346,25 +471,6 @@ async def _delete_cnb_rates() -> None:
 
 async def _cleanup(prefix: str) -> None:
     await investment_support.cleanup(prefix)
-    engine = investment_support.engine()
-    async with AsyncSession(engine) as session:
-        asset_ids = tuple(
-            (
-                await session.scalars(
-                    select(AssetModel.id).where(AssetModel.id.startswith(f"{prefix}-"))
-                )
-            ).all()
-        )
-        if asset_ids:
-            await session.execute(
-                delete(AssetAliasModel).where(AssetAliasModel.asset_id.in_(asset_ids))
-            )
-            await session.execute(
-                delete(AssetListingModel).where(AssetListingModel.asset_id.in_(asset_ids))
-            )
-            await session.execute(delete(AssetModel).where(AssetModel.id.in_(asset_ids)))
-        await session.commit()
-    await engine.dispose()
 
 
 def _assert_read_parity(
@@ -374,7 +480,10 @@ def _assert_read_parity(
     account_id: str,
     state: dict[str, Any],
 ) -> None:
-    snapshot = state["snapshots"][0]
+    net_worth = state["net_worth"][0]
+    snapshot = next(
+        snapshot for snapshot in state["snapshots"] if snapshot.currency == net_worth.currency
+    )
     manifest = {
         "timestamp": snapshot.timestamp.isoformat(),
         "granularity": snapshot.granularity.value,
@@ -397,7 +506,7 @@ def _assert_read_parity(
     expected_total = str(snapshot.total_value.quantize(Decimal("0.000001")))
     assert portfolio.json()["summary"]["totalValue"] == expected_total
     assert dashboard.json()["summary"]["totalValue"] == expected_total
-    assert state["net_worth"][0].total_net_worth == snapshot.total_value
+    assert net_worth.total_net_worth == snapshot.total_value
 
 
 def test_raiffeisenbank_import_uses_empty_market_plan_and_replays(
@@ -415,12 +524,11 @@ def test_raiffeisenbank_import_uses_empty_market_plan_and_replays(
     content = (rb_support.FIXTURES / "account_statement.csv").read_bytes()
     try:
         with TestClient(app) as client:
-            batch_id, parsed, normalized = rb_support._create_and_prepare(
+            batch_id, parsed, normalized = _prepare_rb_import(
                 client,
                 user_id=owner,
                 account_id=account,
                 content=content,
-                filename="r5b3c-rb.csv",
             )
             completed = rb_support._finish(
                 client,
@@ -453,25 +561,23 @@ def test_raiffeisenbank_import_uses_empty_market_plan_and_replays(
             state=state,
         )
     finally:
-        asyncio.run(rb_support._cleanup(prefix))
+        asyncio.run(investment_support.cleanup(prefix))
 
 
 @pytest.mark.parametrize(
-    ("source", "filename", "provider", "alias", "expected_call"),
+    ("source", "filename", "provider", "alias"),
     [
         (
             ImportSource.trading212,
             "activity.csv",
             AssetAliasProvider.twelve_data,
             '{"symbol":"AAPL","mic_code":"XNAS"}',
-            ("twelve_data", "AAPL:XNAS"),
         ),
         (
             ImportSource.anycoin,
             "history.csv",
             AssetAliasProvider.coingecko,
             "bitcoin",
-            ("coingecko", "bitcoin"),
         ),
     ],
 )
@@ -480,7 +586,6 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
     filename: str,
     provider: AssetAliasProvider,
     alias: str,
-    expected_call: tuple[str, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -491,6 +596,7 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
     harness = _ProviderHarness(observed_at=observed_at)
     app = create_app(_settings())
     _install_market_override(app, harness)
+    existing_rate_ids = asyncio.run(_twelve_data_fx_rate_ids())
     try:
         with TestClient(app) as client:
             staged = investment_support.run_stages(
@@ -498,12 +604,15 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
                 source=source,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(source, filename),
+                content=_fixture_content(prefix, source=source, filename=filename),
                 filename=filename,
                 post=False,
             )
-            asyncio.run(investment_support.seed_asset_listing(prefix, source=source))
-            asyncio.run(_add_alias(prefix, provider=provider, external_id=alias))
+            asyncio.run(_seed_market_asset_listing(prefix, source=source))
+            scoped_alias, expected_call = _scoped_alias(
+                prefix, provider=provider, external_id=alias
+            )
+            asyncio.run(_add_alias(prefix, provider=provider, external_id=scoped_alias))
             if source is ImportSource.trading212:
                 asyncio.run(_configure_trading_czk(prefix))
             first = investment_support.post_batch(
@@ -524,7 +633,13 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         assert first["snapshot_refresh_status"] == "created"
         assert second["snapshot_refresh_status"] == "replayed"
         assert len(state["holdings"]) == len(state["prices"]) == 1
-        assert len(state["snapshots"]) == len(state["net_worth"]) == 1
+        expected_snapshot_currencies = (
+            {"EUR", "CZK"} if source is ImportSource.trading212 else {"EUR"}
+        )
+        assert {
+            snapshot.currency for snapshot in state["snapshots"]
+        } == expected_snapshot_currencies
+        assert len(state["net_worth"]) == 1
         assert state["prices"][0].timestamp == observed_at
         assert state["prices"][0].price == (
             Decimal("225.3200000000")
@@ -537,15 +652,15 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         assert harness.calls.count(expected_call) == 2
         if source is ImportSource.trading212:
             assert not any(call[0] == "coingecko" for call in harness.calls)
-            requested_dates = [value for name, value in harness.calls if name == "cnb"]
-            assert set(requested_dates) == {
-                "20.07.2026",
-                "21.07.2026",
-                state["batch"].completed_at.strftime("%d.%m.%Y"),
+            requested_dates = [value for name, value in harness.calls if name == "twelve_data_fx"]
+            assert {value.rsplit("@", 1)[1] for value in requested_dates} == {
+                "2026-07-20",
+                "2026-07-21",
+                state["batch"].completed_at.date().isoformat(),
             }
             assert state["rates"]
         else:
-            assert not any(call[0] in {"twelve_data", "cnb"} for call in harness.calls)
+            assert not any(call[0] in {"twelve_data", "twelve_data_fx"} for call in harness.calls)
         serialized_logs = json.dumps(
             [
                 {
@@ -568,7 +683,7 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
         )
     finally:
         asyncio.run(_cleanup(prefix))
-        asyncio.run(_delete_cnb_rates())
+        asyncio.run(_delete_new_twelve_data_fx_rates(existing_rate_ids))
 
 
 @pytest.mark.parametrize(
@@ -590,7 +705,7 @@ def test_investment_import_uses_exact_provider_alias_and_replays(
             ImportSource.trading212,
             AssetAliasProvider.twelve_data,
             '{"symbol":"AAPL","mic_code":"XNAS"}',
-            "cnb-failure",
+            "fx-failure",
         ),
     ],
 )
@@ -609,10 +724,11 @@ def test_provider_failure_preserves_posting_and_holdings_without_partial_graph(
         observed_at=_observed_at(),
         twelve_status=429 if failure == "twelve-429" else 200,
         coingecko_stale=failure == "coingecko-stale",
-        cnb_status=503 if failure == "cnb-failure" else 200,
+        fx_status=503 if failure == "fx-failure" else 200,
     )
     app = create_app(_settings())
     _install_market_override(app, harness)
+    existing_rate_ids = asyncio.run(_twelve_data_fx_rate_ids())
     try:
         with TestClient(app) as client:
             staged = investment_support.run_stages(
@@ -620,16 +736,18 @@ def test_provider_failure_preserves_posting_and_holdings_without_partial_graph(
                 source=source,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(
-                    source,
-                    "activity.csv" if source is ImportSource.trading212 else "history.csv",
+                content=_fixture_content(
+                    prefix,
+                    source=source,
+                    filename="activity.csv" if source is ImportSource.trading212 else "history.csv",
                 ),
                 filename=f"{failure}.csv",
                 post=False,
             )
-            asyncio.run(investment_support.seed_asset_listing(prefix, source=source))
-            asyncio.run(_add_alias(prefix, provider=provider, external_id=alias))
-            if failure == "cnb-failure":
+            asyncio.run(_seed_market_asset_listing(prefix, source=source))
+            scoped_alias, _ = _scoped_alias(prefix, provider=provider, external_id=alias)
+            asyncio.run(_add_alias(prefix, provider=provider, external_id=scoped_alias))
+            if failure == "fx-failure":
                 asyncio.run(_configure_trading_czk(prefix))
             response = investment_support.post_batch(
                 client,
@@ -648,6 +766,7 @@ def test_provider_failure_preserves_posting_and_holdings_without_partial_graph(
         assert ImportLogEvent.snapshot_validation_failed in events
     finally:
         asyncio.run(_cleanup(prefix))
+        asyncio.run(_delete_new_twelve_data_fx_rates(existing_rate_ids))
 
 
 @pytest.mark.parametrize("alias_count", [0, 2])
@@ -671,12 +790,14 @@ def test_missing_or_ambiguous_alias_fails_before_http(
                 source=ImportSource.trading212,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(ImportSource.trading212, "activity.csv"),
+                content=_fixture_content(
+                    prefix, source=ImportSource.trading212, filename="activity.csv"
+                ),
                 filename="alias.csv",
                 post=False,
             )
             asyncio.run(
-                investment_support.seed_asset_listing(
+                _seed_market_asset_listing(
                     prefix,
                     source=ImportSource.trading212,
                 )
@@ -687,7 +808,10 @@ def test_missing_or_ambiguous_alias_fails_before_http(
                         prefix,
                         provider=AssetAliasProvider.twelve_data,
                         external_id=json.dumps(
-                            {"symbol": f"AAP{index}", "mic_code": "XNAS"},
+                            {
+                                "symbol": f"AAP{index}{prefix.rsplit('-', 1)[-1]}",
+                                "mic_code": "XNAS",
+                            },
                             separators=(",", ":"),
                         ),
                         suffix=str(index),
@@ -734,16 +858,20 @@ def test_snapshot_conflict_preserves_market_and_replay_market_conflict_skips_sna
                 source=ImportSource.anycoin,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(ImportSource.anycoin, "history.csv"),
+                content=_fixture_content(
+                    prefix, source=ImportSource.anycoin, filename="history.csv"
+                ),
                 filename="conflicts.csv",
                 post=False,
             )
-            asyncio.run(investment_support.seed_asset_listing(prefix, source=ImportSource.anycoin))
+            asyncio.run(_seed_market_asset_listing(prefix, source=ImportSource.anycoin))
             asyncio.run(
                 _add_alias(
                     prefix,
                     provider=AssetAliasProvider.coingecko,
-                    external_id="bitcoin",
+                    external_id=_scoped_alias(
+                        prefix, provider=AssetAliasProvider.coingecko, external_id="bitcoin"
+                    )[0],
                 )
             )
             snapshot_conflict = investment_support.post_batch(
@@ -795,16 +923,20 @@ def test_delayed_replay_rejects_future_provider_observation_without_moving_bucke
                 source=ImportSource.anycoin,
                 user_id=user_id,
                 account_id=account_id,
-                content=investment_support.fixture(ImportSource.anycoin, "history.csv"),
+                content=_fixture_content(
+                    prefix, source=ImportSource.anycoin, filename="history.csv"
+                ),
                 filename="delayed.csv",
                 post=False,
             )
-            asyncio.run(investment_support.seed_asset_listing(prefix, source=ImportSource.anycoin))
+            asyncio.run(_seed_market_asset_listing(prefix, source=ImportSource.anycoin))
             asyncio.run(
                 _add_alias(
                     prefix,
                     provider=AssetAliasProvider.coingecko,
-                    external_id="bitcoin",
+                    external_id=_scoped_alias(
+                        prefix, provider=AssetAliasProvider.coingecko, external_id="bitcoin"
+                    )[0],
                 )
             )
             first = investment_support.post_batch(

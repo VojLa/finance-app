@@ -39,6 +39,14 @@ def serialize_money(value: Decimal) -> str:
     return serialize_numeric(value, MONEY)
 
 
+def serialize_native_money(value: Decimal) -> str:
+    """Preserve every stored native-currency digit from a JSON breakdown."""
+
+    if type(value) is not Decimal or not value.is_finite():
+        raise ValueError("Native money serialization requires a finite Decimal.")
+    return format(value.copy_abs() if value.is_zero() else value, "f")
+
+
 def serialize_quantity(value: Decimal) -> str:
     return serialize_numeric(value, QUANTITY)
 

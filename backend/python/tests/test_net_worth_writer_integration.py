@@ -6,14 +6,20 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, event, func, select, text
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.auth.models import AuthenticatedPrincipal
 from app.db.models.accounts import AccountMemberModel, AccountModel
+from app.db.models.canonical_lineage import (
+    AccountCanonicalStateModel,
+    SnapshotGenerationModel,
+    SnapshotGenerationTargetModel,
+)
 from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
@@ -58,6 +64,16 @@ from app.modules.net_worth.writer_repository import NetWorthSnapshotWriterReposi
 DATABASE_URL = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL is required")
 BASE_AT = datetime(2032, 1, 3)
+RUN_ID = uuid4().hex
+LEGACY_GENERATION_ID = "legacy-snapshot-generation:3u0001"
+
+
+def _run_prefix(name: str) -> str:
+    return f"{name}-{RUN_ID}"
+
+
+def _generation_id(prefix: str) -> str:
+    return LEGACY_GENERATION_ID if prefix.startswith("j5e-") else f"{prefix}-generation"
 
 
 def _engine() -> AsyncEngine:
@@ -161,6 +177,7 @@ def _source_snapshot(
         is_recalculated=True,
         calculated_at=snapshot_at,
         calculation_version=calculation_version,
+        generation_id=_generation_id(prefix),
         created_at=snapshot_at,
         net_deposits_value=Decimal(0),
         realized_pnl_value=Decimal(0),
@@ -209,6 +226,7 @@ def _command(prefix: str, **changes: object) -> WriteNetWorthSnapshotCommand:
         "calculated_at": timestamp + timedelta(minutes=1),
         "created_at": timestamp + timedelta(minutes=2),
         "is_recalculated": True,
+        "generation_id": _generation_id(prefix),
     }
     values.update(changes)
     return WriteNetWorthSnapshotCommand(**cast(Any, values))
@@ -263,9 +281,24 @@ async def _cleanup(prefix: str) -> None:
             await session.execute(
                 delete(AccountMemberModel).where(AccountMemberModel.account_id.in_(account_ids))
             )
+            await session.execute(
+                delete(AccountCanonicalStateModel).where(
+                    AccountCanonicalStateModel.account_id.in_(account_ids)
+                )
+            )
             await session.execute(delete(AccountModel).where(AccountModel.id.in_(account_ids)))
         if user_ids:
+            await session.execute(
+                delete(SnapshotGenerationTargetModel).where(
+                    SnapshotGenerationTargetModel.user_id.in_(user_ids)
+                )
+            )
             await session.execute(delete(UserModel).where(UserModel.id.in_(user_ids)))
+        await session.execute(
+            delete(SnapshotGenerationModel).where(
+                SnapshotGenerationModel.id == f"{prefix}-generation"
+            )
+        )
         await session.commit()
     await engine.dispose()
 
@@ -281,10 +314,40 @@ async def _seed(
         session.add(_user(prefix))
         session.add_all(accounts)
         await session.flush()
+        await _activate_accounts(session, accounts)
+        generation_id = _generation_id(prefix)
+        if await session.get(SnapshotGenerationModel, generation_id) is None:
+            session.add(
+                SnapshotGenerationModel(
+                    id=generation_id,
+                    state="staged",
+                    created_at=_snapshot_at(prefix),
+                    published_at=None,
+                )
+            )
+        session.add(
+            SnapshotGenerationTargetModel(
+                generation_id=generation_id,
+                user_id=_user_id(prefix),
+                created_at=_snapshot_at(prefix),
+            )
+        )
         session.add_all(_membership(prefix, account) for account in accounts)
         session.add_all(snapshots)
         await session.commit()
     await engine.dispose()
+
+
+async def _activate_accounts(
+    session: AsyncSession,
+    accounts: tuple[AccountModel, ...],
+) -> None:
+    if accounts:
+        await session.execute(
+            update(AccountCanonicalStateModel)
+            .where(AccountCanonicalStateModel.account_id.in_(account.id for account in accounts))
+            .values(last_revision=1)
+        )
 
 
 async def _rows(prefix: str) -> tuple[NetWorthSnapshotModel, ...]:
@@ -349,6 +412,7 @@ async def _state(prefix: str) -> tuple[object, ...]:
             (
                 row.id,
                 row.account_id,
+                row.generation_id,
                 row.timestamp,
                 row.total_value,
                 row.cash_value,
@@ -380,6 +444,7 @@ async def _state(prefix: str) -> tuple[object, ...]:
             (
                 row.id,
                 row.user_id,
+                row.generation_id,
                 row.timestamp,
                 row.cash_value,
                 row.portfolio_value,
@@ -428,6 +493,7 @@ async def _expected_id(
                     calculated_at=command.calculated_at,
                     created_at=command.created_at,
                     is_recalculated=command.is_recalculated,
+                    generation_id=command.generation_id,
                 ),
             )
             await transaction.rollback()
@@ -436,7 +502,7 @@ async def _expected_id(
 
 @pytest.mark.asyncio
 async def test_mixed_snapshot_create_and_exact_read_only_replay() -> None:
-    prefix = "j5d-basic"
+    prefix = _run_prefix("j5d-basic")
     broker = _account(prefix, "broker", AccountType.broker)
     crypto = _account(prefix, "crypto", AccountType.crypto_wallet)
     mortgage = _account(prefix, "mortgage", AccountType.mortgage)
@@ -468,6 +534,7 @@ async def test_mixed_snapshot_create_and_exact_read_only_replay() -> None:
         row = rows[0]
         assert row.id == first.snapshot_id == expected_id
         assert row.user_id == command.user_id
+        assert row.generation_id == command.generation_id
         assert row.timestamp == command.snapshot_timestamp
         assert row.granularity is command.granularity
         assert row.source is command.source
@@ -505,7 +572,7 @@ async def test_mixed_snapshot_create_and_exact_read_only_replay() -> None:
 
 @pytest.mark.asyncio
 async def test_exact_dependency_guard_creates_replays_and_returns_lineage() -> None:
-    prefix = "k5d1-writer-guard"
+    prefix = _run_prefix("k5d1-writer-guard")
     broker = _account(prefix, "broker", AccountType.broker)
     mortgage = _account(prefix, "mortgage", AccountType.mortgage)
     broker_snapshot = _source_snapshot(prefix, broker)
@@ -540,7 +607,7 @@ async def test_exact_dependency_guard_creates_replays_and_returns_lineage() -> N
 
 @pytest.mark.asyncio
 async def test_guard_mismatch_fails_before_physical_replay_and_does_not_repair() -> None:
-    prefix = "k5d1-writer-mismatch"
+    prefix = _run_prefix("k5d1-writer-mismatch")
     account = _account(prefix, "broker", AccountType.broker)
     snapshot = _source_snapshot(prefix, account)
     required = _required(snapshot)
@@ -580,7 +647,7 @@ async def test_guard_mismatch_fails_before_physical_replay_and_does_not_repair()
 
 @pytest.mark.asyncio
 async def test_explicit_empty_guard_creates_and_replays_zero_account_snapshot() -> None:
-    prefix = "k5d1-writer-empty"
+    prefix = _run_prefix("k5d1-writer-empty")
     await _seed(prefix)
     command = _command(
         prefix,
@@ -605,7 +672,7 @@ async def test_explicit_empty_guard_creates_and_replays_zero_account_snapshot() 
 
 @pytest.mark.asyncio
 async def test_membership_drift_invalidates_precomputed_dependency_guard() -> None:
-    prefix = "k5d1-writer-membership-drift"
+    prefix = _run_prefix("k5d1-writer-membership-drift")
     account_a = _account(prefix, "account-a", AccountType.broker)
     snapshot_a = _source_snapshot(prefix, account_a)
     required = _required(snapshot_a)
@@ -617,6 +684,7 @@ async def test_membership_drift_invalidates_precomputed_dependency_guard() -> No
         async with AsyncSession(engine) as session:
             session.add(account_b)
             await session.flush()
+            await _activate_accounts(session, (account_b,))
             session.add(_membership(prefix, account_b))
             session.add(snapshot_b)
             await session.commit()
@@ -638,7 +706,7 @@ async def test_membership_drift_invalidates_precomputed_dependency_guard() -> No
 
 @pytest.mark.asyncio
 async def test_same_count_account_substitution_fails_closed() -> None:
-    prefix = "k5d1-writer-substitution"
+    prefix = _run_prefix("k5d1-writer-substitution")
     account_a = _account(prefix, "account-a", AccountType.broker)
     account_b = _account(prefix, "account-b", AccountType.loan)
     snapshot_a = _source_snapshot(prefix, account_a)
@@ -674,7 +742,7 @@ async def test_same_count_account_substitution_fails_closed() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_user_creates_exact_zero_snapshot_and_replays() -> None:
-    prefix = "j5d-empty"
+    prefix = _run_prefix("j5d-empty")
     await _seed(prefix)
     engine = _engine()
     try:
@@ -699,7 +767,7 @@ async def test_empty_user_creates_exact_zero_snapshot_and_replays() -> None:
 
 @pytest.mark.asyncio
 async def test_scale_ten_portfolio_and_total_breakdowns_survive_exactly() -> None:
-    prefix = "j5d-scale-ten"
+    prefix = _run_prefix("j5d-scale-ten")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(
         prefix,
@@ -743,7 +811,7 @@ async def test_scale_ten_portfolio_and_total_breakdowns_survive_exactly() -> Non
 async def test_same_physical_identity_with_changed_metadata_conflicts(
     changes: dict[str, object],
 ) -> None:
-    prefix = f"j5d-meta-{len(str(changes))}"
+    prefix = _run_prefix(f"j5d-meta-{len(str(changes))}")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -763,7 +831,7 @@ async def test_same_physical_identity_with_changed_metadata_conflicts(
 
 @pytest.mark.asyncio
 async def test_changed_calculation_version_conflicts_after_evidence_version_changes() -> None:
-    prefix = "j5d-meta-version"
+    prefix = _run_prefix("j5d-meta-version")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -804,7 +872,7 @@ async def test_corrupt_persisted_snapshot_conflicts_without_repair(
     field: str,
     value: object,
 ) -> None:
-    prefix = f"j5d-corrupt-{field.replace('_', '-')}"
+    prefix = _run_prefix(f"j5d-corrupt-{field.replace('_', '-')}")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -834,7 +902,7 @@ async def test_corrupt_persisted_snapshot_conflicts_without_repair(
 async def test_missing_or_unsupported_source_evidence_writes_nothing(
     account_type: AccountType,
 ) -> None:
-    prefix = f"j5d-unavailable-{account_type.value.replace('_', '-')}"
+    prefix = _run_prefix(f"j5d-unavailable-{account_type.value.replace('_', '-')}")
     account = _account(prefix, "account", account_type)
     snapshots = (_source_snapshot(prefix, account),) if account_type is AccountType.bank else ()
     await _seed(prefix, (account,), snapshots)
@@ -873,7 +941,7 @@ class _MismatchingReloadRepository(NetWorthSnapshotWriterRepository):
 async def test_late_failure_rolls_back_and_clean_retry_succeeds_once(
     repository_type: type[NetWorthSnapshotWriterRepository],
 ) -> None:
-    prefix = f"j5d-rollback-{repository_type.__name__.lower()}"
+    prefix = _run_prefix(f"j5d-rollback-{repository_type.__name__.lower()}")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -898,7 +966,7 @@ async def test_late_failure_rolls_back_and_clean_retry_succeeds_once(
 
 @pytest.mark.asyncio
 async def test_deterministic_id_collision_is_conflict_and_preserves_both_keys() -> None:
-    prefix = "j5d-id-collision"
+    prefix = _run_prefix("j5d-id-collision")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -925,6 +993,7 @@ async def test_deterministic_id_collision_is_conflict_and_preserves_both_keys() 
             "liabilities_value_by_currency": {},
             "total_net_worth_by_currency": {},
             "exchange_rates": None,
+            "generation_id": command.generation_id,
         }
         async with AsyncSession(engine) as session:
             session.add(NetWorthSnapshotModel(**values))
@@ -1003,7 +1072,7 @@ async def _wait_for_advisory_lock(engine: AsyncEngine, pid: int) -> None:
 
 @pytest.mark.asyncio
 async def test_same_key_concurrency_waits_then_creates_once_and_replays() -> None:
-    prefix = "j5d-concurrent-same"
+    prefix = _run_prefix("j5d-concurrent-same")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -1049,7 +1118,7 @@ async def test_same_key_concurrency_waits_then_creates_once_and_replays() -> Non
 
 @pytest.mark.asyncio
 async def test_same_key_concurrent_metadata_difference_creates_then_conflicts() -> None:
-    prefix = "j5d-concurrent-conflict"
+    prefix = _run_prefix("j5d-concurrent-conflict")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -1097,8 +1166,8 @@ async def test_same_key_concurrent_metadata_difference_creates_then_conflicts() 
 
 @pytest.mark.asyncio
 async def test_different_users_do_not_share_the_snapshot_lock() -> None:
-    first_prefix = "j5d-parallel-a"
-    second_prefix = "j5d-parallel-b"
+    first_prefix = _run_prefix("j5d-parallel-a")
+    second_prefix = _run_prefix("j5d-parallel-b")
     first_account = _account(first_prefix, "broker", AccountType.broker)
     second_account = _account(second_prefix, "broker", AccountType.broker)
     await _seed(
@@ -1147,7 +1216,7 @@ async def test_different_users_do_not_share_the_snapshot_lock() -> None:
 
 @pytest.mark.asyncio
 async def test_same_user_different_timestamps_do_not_share_the_snapshot_lock() -> None:
-    prefix = "j5d-parallel-time"
+    prefix = _run_prefix("j5d-parallel-time")
     account = _account(prefix, "broker", AccountType.broker)
     first_at = _snapshot_at(prefix)
     second_at = first_at + timedelta(days=1)
@@ -1207,7 +1276,7 @@ async def test_same_user_different_timestamps_do_not_share_the_snapshot_lock() -
 
 @pytest.mark.asyncio
 async def test_source_snapshot_commit_after_serializable_snapshot_is_coherent() -> None:
-    prefix = "j5d-source-race"
+    prefix = _run_prefix("j5d-source-race")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), ())
     engine = _engine()
@@ -1250,7 +1319,7 @@ async def test_source_snapshot_commit_after_serializable_snapshot_is_coherent() 
 
 @pytest.mark.asyncio
 async def test_concurrent_membership_addition_yields_one_coherent_old_view() -> None:
-    prefix = "j5d-membership-race"
+    prefix = _run_prefix("j5d-membership-race")
     original = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (original,), (_source_snapshot(prefix, original),))
     engine = _engine()
@@ -1274,6 +1343,7 @@ async def test_concurrent_membership_addition_yields_one_coherent_old_view() -> 
         async with AsyncSession(engine) as session:
             session.add(concurrent)
             await session.flush()
+            await _activate_accounts(session, (concurrent,))
             session.add(_membership(prefix, concurrent))
             session.add(_source_snapshot(prefix, concurrent))
             await session.commit()
@@ -1296,7 +1366,7 @@ async def test_concurrent_membership_addition_yields_one_coherent_old_view() -> 
 
 @pytest.mark.asyncio
 async def test_first_statement_sets_serializable_isolation() -> None:
-    prefix = "j5d-isolation"
+    prefix = _run_prefix("j5d-isolation")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_source_snapshot(prefix, account),))
     engine = _engine()
@@ -1341,6 +1411,7 @@ def _manual_source_snapshot(
         prefix,
         account,
         granularity=SnapshotGranularity.minute,
+        calculation_version=3,
     )
 
 
@@ -1369,7 +1440,7 @@ async def _manual_recalculate(
 
 @pytest.mark.asyncio
 async def test_manual_service_creates_then_replays_exact_snapshot() -> None:
-    prefix = "j5e-manual-replay"
+    prefix = _run_prefix("j5e-manual-replay")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
     before = await _state(prefix)
@@ -1395,8 +1466,8 @@ async def test_manual_service_creates_then_replays_exact_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_manual_service_uses_only_authenticated_principal_memberships() -> None:
-    first_prefix = "j5e-principal-a"
-    second_prefix = "j5e-principal-b"
+    first_prefix = _run_prefix("j5e-principal-a")
+    second_prefix = _run_prefix("j5e-principal-b")
     first_account = _account(first_prefix, "broker", AccountType.broker)
     second_account = _account(second_prefix, "broker", AccountType.broker)
     await _seed(
@@ -1423,7 +1494,7 @@ async def test_manual_service_uses_only_authenticated_principal_memberships() ->
 
 @pytest.mark.asyncio
 async def test_manual_service_missing_source_fails_without_creating_source_or_target() -> None:
-    prefix = "j5e-missing-source"
+    prefix = _run_prefix("j5e-missing-source")
     account = _account(prefix, "broker", AccountType.broker)
     account_id = account.id
     await _seed(prefix, (account,), ())
@@ -1453,7 +1524,7 @@ async def test_manual_service_missing_source_fails_without_creating_source_or_ta
 async def test_manual_service_unsupported_active_account_fails_complete_user(
     account_type: AccountType,
 ) -> None:
-    prefix = f"j5e-unsupported-{account_type.value}"
+    prefix = _run_prefix(f"j5e-unsupported-{account_type.value}")
     account = _account(prefix, account_type.value, account_type)
     await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
     try:
@@ -1466,7 +1537,7 @@ async def test_manual_service_unsupported_active_account_fails_complete_user(
 
 @pytest.mark.asyncio
 async def test_manual_service_base_currency_race_fails_on_serializable_revalidation() -> None:
-    prefix = "j5e-currency-race"
+    prefix = _run_prefix("j5e-currency-race")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
     engine = _engine()
@@ -1499,7 +1570,7 @@ async def test_manual_service_base_currency_race_fails_on_serializable_revalidat
 async def test_manual_service_maps_existing_physical_corruption_to_conflict_without_repair() -> (
     None
 ):
-    prefix = "j5e-conflict"
+    prefix = _run_prefix("j5e-conflict")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
     try:
@@ -1524,7 +1595,7 @@ async def test_manual_service_maps_existing_physical_corruption_to_conflict_with
 
 @pytest.mark.asyncio
 async def test_manual_service_writer_transaction_starts_with_serializable_after_handoff() -> None:
-    prefix = "j5e-handoff-isolation"
+    prefix = _run_prefix("j5e-handoff-isolation")
     account = _account(prefix, "broker", AccountType.broker)
     await _seed(prefix, (account,), (_manual_source_snapshot(prefix, account),))
     engine = _engine()

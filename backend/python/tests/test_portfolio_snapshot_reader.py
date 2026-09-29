@@ -343,6 +343,13 @@ def _item(
         value_currency=native_currency,
         native_cost_basis=cost_basis,
         native_cost_currency=native_cost_currency,
+        native_cost_basis_by_currency=(
+            None
+            if cost_basis is None or native_cost_currency is None
+            else {native_cost_currency: format(cost_basis, ".10f")}
+        ),
+        average_buy_price=(None if cost_basis is None else cost_basis / quantity),
+        average_buy_price_currency=native_currency,
     )
 
 
@@ -478,6 +485,7 @@ async def test_exact_investment_snapshot_builds_portfolio_view() -> None:
         "timestamp": SNAPSHOT_AT,
         "granularity": DbSnapshotGranularity.day,
         "currency": "EUR",
+        "required_snapshot_id": None,
     }
 
 
@@ -561,6 +569,34 @@ async def test_reader_maps_physical_currencies_and_derives_unrealized_pnl_exactl
 
 
 @pytest.mark.asyncio
+async def test_reader_preserves_provider_quote_separately_from_listing_cost_currency() -> None:
+    persisted = _items()[0]
+    assert persisted.listing is not None
+    persisted.listing.currency = "EUR"
+    persisted.item.average_buy_price_currency = "EUR"
+    persisted.item.native_cost_currency = "EUR"
+    persisted.item.native_cost_basis_by_currency = {"EUR": "30.0000000000"}
+    persisted.item.allocation_pct = Decimal("100")
+    snapshot = _snapshot(
+        investment_value=Decimal("40"),
+        investment_cost_basis=Decimal("30"),
+        total_value=Decimal("50"),
+        unrealized_pnl_value=Decimal("10"),
+    )
+    reader, _ = _reader(FakeRepository(snapshots=(snapshot,), items=(persisted,)))
+
+    result = await reader.read(_command())
+
+    position = result.view.positions[0]
+    assert (position.price_currency, position.native_value_currency) == ("GBP", "GBP")
+    assert (
+        position.average_buy_price_currency,
+        position.native_cost_currency,
+        position.native_cost_basis_by_currency,
+    ) == ("EUR", "EUR", (PortfolioCurrencyAmount("EUR", Decimal("30")),))
+
+
+@pytest.mark.asyncio
 async def test_required_snapshot_id_must_match() -> None:
     reader, _ = _reader(FakeRepository())
 
@@ -585,6 +621,7 @@ async def test_reader_never_selects_latest_or_fallback_snapshot() -> None:
         "timestamp": datetime(2032, 8, 3),
         "granularity": DbSnapshotGranularity.day,
         "currency": "EUR",
+        "required_snapshot_id": None,
     }
 
 
@@ -783,7 +820,7 @@ def _invalid_repository(case: str) -> FakeRepository:
         items[0].item.value_currency = "JPY"
     elif case == "listing currency":
         assert items[0].listing is not None
-        items[0].listing.currency = "JPY"
+        items[0].listing.currency = "jpy"
     elif case == "cost currency":
         items[0].item.cost_currency = "CZK"
     elif case == "native value":

@@ -32,3 +32,39 @@ class AuthenticationTransactionStateError(ApplicationError):
             message="Authentication is temporarily unavailable.",
             status_code=503,
         )
+
+
+class InvalidCredentialsError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="invalid_credentials",
+            message="The email or password is invalid.",
+            status_code=401,
+        )
+
+
+class EmailAlreadyRegisteredError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="email_already_registered",
+            message="The email address is already registered.",
+            status_code=409,
+        )
+
+
+class CurrentPasswordInvalidError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="current_password_invalid",
+            message="The current password is invalid.",
+            status_code=409,
+        )
+
+
+class BaseCurrencyChangeUnavailableError(ApplicationError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="base_currency_change_unavailable",
+            message="The base currency cannot be changed safely right now.",
+            status_code=409,
+        )

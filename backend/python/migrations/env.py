@@ -19,6 +19,23 @@ from scripts.sqlalchemy_schema import normalize_default
 
 config = context.config
 EXCLUDED_TABLES = {"_prisma_migrations", "alembic_version"}
+ALEMBIC_UNIQUE_CONSTRAINTS = {
+    "AccountSnapshot_id_generation_account_key",
+    "AccountSnapshot_id_generation_key",
+    "DailySnapshotBaseline_id_generation_key",
+    "DailySnapshotBaseline_id_generation_user_key",
+    "InvestmentAccountSnapshot_accountSnapshot_key",
+    "InvestmentAccountSnapshot_id_generation_account_key",
+    "InvestmentAccountSnapshot_input_coordinate_key",
+    "InvestmentAccountSnapshotItem_snapshot_listing_key",
+    "NetWorthSnapshot_id_generation_user_key",
+    "PortfolioSnapshot_coordinate_generation_key",
+    "PortfolioSnapshot_id_generation_user_key",
+    "PortfolioSnapshotInput_coordinate_key",
+    "PortfolioSnapshotItem_identity_key",
+    "PortfolioSnapshotItem_snapshot_listing_key",
+    "SnapshotGeneration_id_state_key",
+}
 
 
 def blank_referred_schema(
@@ -41,6 +58,8 @@ def normalize_unique_indexes(table: Table) -> None:
         name = str(
             constraint.name or f"{table.name}_{'_'.join(column.name for column in columns)}_key"
         )
+        if name in ALEMBIC_UNIQUE_CONSTRAINTS:
+            continue
         table.constraints.remove(constraint)
         if not any(index.name == name for index in table.indexes):
             Index(name, *columns, unique=True)

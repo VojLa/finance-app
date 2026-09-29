@@ -57,6 +57,7 @@ class BuildSnapshotRefreshCoverageCommand:
     calculated_at: datetime
     created_at: datetime
     is_recalculated: bool
+    publication_account_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +175,15 @@ def _validate_command(
         value.source is SnapshotSource.manual_recalculation
     ):
         raise _fail()
+    if not isinstance(value.publication_account_ids, tuple):
+        raise _fail()
+    publication_account_ids = tuple(
+        _nonblank(account_id) for account_id in value.publication_account_ids
+    )
+    if publication_account_ids != tuple(sorted(publication_account_ids)) or len(
+        set(publication_account_ids)
+    ) != len(publication_account_ids):
+        raise _fail()
     return BuildSnapshotRefreshCoverageCommand(
         user_id=user_id,
         snapshot_timestamp=snapshot_timestamp,
@@ -183,6 +193,7 @@ def _validate_command(
         calculated_at=calculated_at,
         created_at=created_at,
         is_recalculated=value.is_recalculated,
+        publication_account_ids=publication_account_ids,
     )
 
 
@@ -222,6 +233,7 @@ def _account_evidence(
             or membership.user_id != user_id
             or not isinstance(account.type, AccountType)
             or not isinstance(account.is_archived, bool)
+            or not isinstance(value.has_canonical_history, bool)
             or not isinstance(membership.role, AccountMemberRole)
             or not isinstance(membership.relation_type, AccountRelationType)
             or membership.accepted_at is None
@@ -243,6 +255,7 @@ def _account_evidence(
                 accepted_at=accepted_at,
                 is_archived=account.is_archived,
                 archived_at=archived_at,
+                has_canonical_history=value.has_canonical_history,
             )
         )
     return tuple(mapped)
@@ -370,6 +383,7 @@ class SnapshotRefreshEvidenceService:
             calculated_at=canonical.calculated_at,
             created_at=canonical.created_at,
             is_recalculated=canonical.is_recalculated,
+            publication_account_ids=canonical.publication_account_ids,
             accounts=account_evidence,
         )
         try:
@@ -382,6 +396,7 @@ class SnapshotRefreshEvidenceService:
         reuse_ids = tuple(target.account_id for target in reuse_only_targets)
         snapshots = (
             await self.repository.load_exact_reuse_snapshots(
+                user_id=canonical.user_id,
                 account_ids=reuse_ids,
                 timestamp=plan.net_worth_target.snapshot_timestamp,
                 granularity=plan.net_worth_target.granularity,

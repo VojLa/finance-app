@@ -18,6 +18,7 @@ from app.db.models.enums import (
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
+    CurrencyAmount,
     ExchangeRateConsumptionRole,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
@@ -50,13 +51,14 @@ def _rate(
     value: str,
     *,
     timestamp: datetime = SNAPSHOT_AT,
+    quote: str = "EUR",
 ) -> SelectedExchangeRateEvidence:
     return SelectedExchangeRateEvidence(
         rate_id=rate_id,
         base_currency=base,
-        quote_currency="CZK",
+        quote_currency=quote,
         rate=Decimal(value),
-        source=ExchangeRateSource.cnb,
+        source=ExchangeRateSource.twelve_data,
         timestamp=timestamp,
     )
 
@@ -83,7 +85,8 @@ def _mixed_valuation():
                     asset_type=AssetType.stock,
                     quantity=Decimal("2"),
                     average_buy_price=Decimal("80"),
-                    cost_currency="EUR",
+                    cost_currency="USD",
+                    cost_basis_by_currency=(CurrencyAmount("EUR", Decimal("160")),),
                 ),
             ),
             prices=(
@@ -98,17 +101,14 @@ def _mixed_valuation():
                     timestamp=SNAPSHOT_AT,
                 ),
             ),
-            exchange_rates=(
-                _rate("eur-czk", "EUR", "25.00000000"),
-                _rate("usd-czk", "USD", "23.00000000"),
-            ),
+            exchange_rates=(_rate("usd-eur", "USD", "0.92000000"),),
             cash_balances=(),
             liabilities=(),
         )
     )
 
 
-def test_mixed_native_account_uses_one_exact_czk_pivot_boundary() -> None:
+def test_mixed_native_account_uses_one_exact_direct_pair_boundary() -> None:
     valuation = _mixed_valuation()
 
     assert valuation.currency == "EUR"
@@ -119,12 +119,11 @@ def test_mixed_native_account_uses_one_exact_czk_pivot_boundary() -> None:
     assert valuation.items[0].cost_basis == Decimal("160.000000")
     assert valuation.items[0].cost_currency == "EUR"
     assert {rate.rate_id: rate.roles for rate in valuation.exchange_rates} == {
-        "eur-czk": (ExchangeRateConsumptionRole.pivot_target,),
-        "usd-czk": (ExchangeRateConsumptionRole.pivot_source,),
+        "usd-eur": (ExchangeRateConsumptionRole.direct,),
     }
 
 
-def test_pivot_lineage_is_canonical_without_a_derived_provider_identity() -> None:
+def test_direct_lineage_is_canonical_without_a_derived_provider_identity() -> None:
     valuation = _mixed_valuation()
     zero = ExactSnapshotMetric(Decimal(0), ())
     persistence = build_account_snapshot_persistence_projection(
@@ -136,7 +135,7 @@ def test_pivot_lineage_is_canonical_without_a_derived_provider_identity() -> Non
             fees=zero,
             taxes=zero,
             selected_price_ids=("price-1",),
-            selected_snapshot_exchange_rate_ids=("eur-czk", "usd-czk"),
+            selected_snapshot_exchange_rate_ids=("usd-eur",),
             selected_historical_exchange_rate_ids=(),
         ),
         AccountSnapshotPersistenceMetadata(
@@ -147,16 +146,15 @@ def test_pivot_lineage_is_canonical_without_a_derived_provider_identity() -> Non
     )
 
     audit = persistence.snapshot.exchange_rates.to_json()
-    assert audit["version"] == 2
+    assert audit["version"] == 1
     snapshot_rates = cast(list[dict[str, object]], audit["snapshotRates"])
-    assert [(row["rateId"], row["from"], row["to"], row["roles"]) for row in snapshot_rates] == [
-        ("eur-czk", "EUR", "CZK", ["pivot_target"]),
-        ("usd-czk", "USD", "CZK", ["pivot_source"]),
+    assert [(row["rateId"], row["from"], row["to"]) for row in snapshot_rates] == [
+        ("usd-eur", "USD", "EUR"),
     ]
-    assert all(row["to"] == "CZK" for row in snapshot_rates)
+    assert all(row["to"] == "EUR" for row in snapshot_rates)
 
 
-def test_historical_metric_uses_event_date_source_and_target_pivot_legs() -> None:
+def test_historical_metric_uses_one_direct_event_date_rate() -> None:
     valuation = build_account_snapshot_projection(
         AccountSnapshotProjectionInput(
             account_id="account-eur",
@@ -211,19 +209,11 @@ def test_historical_metric_uses_event_date_source_and_target_pivot_legs() -> Non
             for evidence_id in ("deposit-1", "realized-1", "fee-1", "tax-1")
             for rate in (
                 SelectedHistoricalRate(
-                    rate_id="event-eur-czk",
-                    evidence_id=evidence_id,
-                    base_currency="EUR",
-                    quote_currency="CZK",
-                    rate=Decimal("20.00000000"),
-                    timestamp=EVENT_AT,
-                ),
-                SelectedHistoricalRate(
-                    rate_id="event-usd-czk",
+                    rate_id="event-usd-eur",
                     evidence_id=evidence_id,
                     base_currency="USD",
-                    quote_currency="CZK",
-                    rate=Decimal("18.00000000"),
+                    quote_currency="EUR",
+                    rate=Decimal("0.90000000"),
                     timestamp=EVENT_AT,
                 ),
             )
@@ -234,17 +224,16 @@ def test_historical_metric_uses_event_date_source_and_target_pivot_legs() -> Non
     assert metrics.realized_pnl_value == Decimal("-3.600000")
     assert metrics.fees_value == Decimal("1.800000")
     assert metrics.taxes_value == Decimal("0.900000")
-    assert len(metrics.consumed_historical_exchange_rates) == 8
+    assert len(metrics.consumed_historical_exchange_rates) == 4
     assert {
         (rate.rate_id, rate.timestamp, rate.role)
         for rate in metrics.consumed_historical_exchange_rates
     } == {
-        ("event-eur-czk", EVENT_AT, ExchangeRateConsumptionRole.pivot_target),
-        ("event-usd-czk", EVENT_AT, ExchangeRateConsumptionRole.pivot_source),
+        ("event-usd-eur", EVENT_AT, ExchangeRateConsumptionRole.direct),
     }
 
 
-def test_nonrepresentable_pivot_result_fails_closed_without_rounding() -> None:
+def test_reverse_only_rate_fails_closed_without_inversion() -> None:
     with pytest.raises(AccountSnapshotProjectionStateError):
         convert_currency_amount(
             Decimal("1.000000"),
