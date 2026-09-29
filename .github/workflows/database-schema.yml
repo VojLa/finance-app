@@ -122,7 +122,9 @@ jobs:
 
       - name: Upgrade inherited schema to Alembic head
         working-directory: backend/python
-        run: uv run python scripts/database_migrate.py upgrade
+        run: |
+          uv run alembic -c alembic.ini stamp 3d0001base
+          uv run python scripts/database_migrate.py upgrade
 
       - name: Verify head persistence and live metadata parity
         working-directory: backend/python
