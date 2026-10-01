@@ -322,7 +322,7 @@ def apply_investment_cash_transactions(
     baseline: tuple[PortfolioCurrencyAmount, ...],
     transactions: tuple[CurrentTransaction, ...],
 ) -> CurrentInvestmentTransactionDelta:
-    """Apply explicit external investment cash flows without changing investment P/L metrics."""
+    """Apply exact mixed-account cash flows without changing investment P/L metrics."""
     values = _breakdown_map(baseline)
     transaction_ids: set[str] = set()
     metrics: list[HistoricalMetricEvidence] = []
@@ -331,13 +331,29 @@ def apply_investment_cash_transactions(
             not isinstance(transaction, CurrentTransaction)
             or _text(transaction.account_id) != account_id
             or _text(transaction.transaction_id) in transaction_ids
-            or transaction.transaction_type is not TransactionType.transfer
-            or transaction.classification is not TransactionClassification.investment_transfer
         ):
             raise _fail()
         transaction_ids.add(transaction.transaction_id)
         timestamp = _timestamp(transaction.timestamp)
         amount = _exact(transaction.amount)
+        supported_cash_flow = (
+            (
+                transaction.transaction_type is TransactionType.transfer
+                and transaction.classification is TransactionClassification.investment_transfer
+            )
+            or (
+                transaction.transaction_type is TransactionType.income
+                and transaction.classification is TransactionClassification.real_income
+                and amount > 0
+            )
+            or (
+                transaction.transaction_type is TransactionType.expense
+                and transaction.classification is TransactionClassification.real_expense
+                and amount < 0
+            )
+        )
+        if not supported_cash_flow:
+            raise _fail()
         currency = _currency(transaction.currency)
         if amount == 0:
             raise _fail()

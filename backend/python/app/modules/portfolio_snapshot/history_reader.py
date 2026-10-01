@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from typing import cast
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -30,7 +29,6 @@ from app.db.models.snapshot_series_publication import (
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
-    NetWorthSnapshotModel,
 )
 from app.db.models.users import UserModel
 from app.modules.portfolio_snapshot.history_api_models import (
@@ -68,9 +66,10 @@ _SNAPSHOT_RESOLUTION_MINUTES: dict[object, int] = {
     SnapshotGranularity.day: 1_440,
     SnapshotGranularity.week: 10_080,
 }
+_PERCENTAGE_QUANTUM = Decimal("0.0001")
 
 _SnapshotModel = PortfolioSnapshotModel | AccountSnapshotModel
-_AggregateModel = NetWorthSnapshotModel | AccountSnapshotModel | None
+_AggregateModel = AccountSnapshotModel | None
 _HistoryRow = tuple[_SnapshotModel, _AggregateModel, datetime]
 _HistoryRows = tuple[_HistoryRow, ...]
 
@@ -105,6 +104,15 @@ def _snapshot_resolution_minutes(snapshot: object) -> int:
         # this integer-minute API contract. Published baselines permit only
         # minute and day rows today; fail closed if that contract changes.
         raise GenerationPortfolioHistoryUnavailableError() from None
+
+
+def _unrealized_pnl_percentage(*, value: Decimal, cost_basis: Decimal | None) -> Decimal | None:
+    if cost_basis is None or cost_basis <= 0:
+        return None
+    return (((value - cost_basis) / cost_basis) * Decimal(100)).quantize(
+        _PERCENTAGE_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
 
 
 def _point_resolution_minutes(rows: _HistoryRows, index: int) -> int:
@@ -191,24 +199,11 @@ class PublishedPortfolioSnapshotHistoryReader:
             snapshot, aggregate, _published_at = row
             resolution_minutes = _point_resolution_minutes(ordered, index)
             if account_id is None:
-                portfolio_aggregate = cast(NetWorthSnapshotModel | None, aggregate)
-                liabilities_value = (
-                    portfolio_aggregate.liabilities_value
-                    if portfolio_aggregate is not None
-                    else Decimal(0)
-                )
-                net_worth_value = (
-                    portfolio_aggregate.total_net_worth
-                    if portfolio_aggregate is not None
-                    else snapshot.cash_value + snapshot.investment_value
-                )
-                liabilities_breakdown = (
-                    portfolio_aggregate.liabilities_value_by_currency
-                    if portfolio_aggregate is not None
-                    else None
-                )
+                liabilities_value = Decimal(0)
+                net_worth_value = snapshot.cash_value + snapshot.investment_value
+                liabilities_breakdown = None
             else:
-                account_aggregate = cast(AccountSnapshotModel | None, aggregate)
+                account_aggregate = aggregate
                 liabilities_value = (
                     account_aggregate.liabilities_value
                     if account_aggregate is not None
@@ -230,6 +225,7 @@ class PublishedPortfolioSnapshotHistoryReader:
                     resolution_minutes=resolution_minutes,
                     cash_value=snapshot.cash_value,
                     investment_value=snapshot.investment_value,
+                    investment_cost_basis=snapshot.investment_cost_basis,
                     liabilities_value=liabilities_value,
                     net_worth_value=net_worth_value,
                     net_invested_value=snapshot.net_deposits_value,
@@ -311,7 +307,7 @@ class PublishedPortfolioSnapshotHistoryReader:
         user_id: str,
         cutoff: datetime | None,
     ) -> tuple[
-        tuple[tuple[PortfolioSnapshotModel, NetWorthSnapshotModel | None, datetime], ...],
+        tuple[tuple[PortfolioSnapshotModel, None, datetime], ...],
         UserReadModelPublicationModel | None,
         int,
     ]:
@@ -330,7 +326,6 @@ class PublishedPortfolioSnapshotHistoryReader:
                 UserReadModelPublicationModel,
                 SnapshotSeriesHeadModel.version,
                 PortfolioSnapshotModel,
-                NetWorthSnapshotModel,
                 PortfolioSnapshotModel.valuation_timestamp,
             )
             .join(
@@ -341,10 +336,6 @@ class PublishedPortfolioSnapshotHistoryReader:
             .outerjoin(
                 PortfolioSnapshotModel,
                 PortfolioSnapshotModel.id == SnapshotSeriesPointLinkModel.portfolio_snapshot_id,
-            )
-            .outerjoin(
-                NetWorthSnapshotModel,
-                NetWorthSnapshotModel.id == SnapshotSeriesPointLinkModel.net_worth_snapshot_id,
             )
             .where(UserReadModelPublicationModel.user_id == user_id)
             .order_by(
@@ -358,8 +349,8 @@ class PublishedPortfolioSnapshotHistoryReader:
         publication, version = records[0][:2]
         return (
             tuple(
-                (snapshot, net_worth, valuation)
-                for _, _, snapshot, net_worth, valuation in records
+                (snapshot, None, valuation)
+                for _, _, snapshot, valuation in records
                 if snapshot is not None
             ),
             publication,
@@ -398,6 +389,10 @@ class PublishedPortfolioSnapshotHistoryReader:
                         value=item.value,
                         cost_basis=item.cost_basis,
                         allocation_pct=item.allocation_pct,
+                        unrealized_pnl_pct=_unrealized_pnl_percentage(
+                            value=item.value,
+                            cost_basis=item.cost_basis,
+                        ),
                         accounts=(
                             PortfolioHistoryPositionAccountResponse(
                                 account_id=account_id,
@@ -458,6 +453,10 @@ class PublishedPortfolioSnapshotHistoryReader:
                     value=portfolio_item.value,
                     cost_basis=portfolio_item.cost_basis,
                     allocation_pct=portfolio_item.allocation_pct,
+                    unrealized_pnl_pct=_unrealized_pnl_percentage(
+                        value=portfolio_item.value,
+                        cost_basis=portfolio_item.cost_basis,
+                    ),
                     accounts=tuple(by_item.get(portfolio_item.id, ())),
                 )
             )

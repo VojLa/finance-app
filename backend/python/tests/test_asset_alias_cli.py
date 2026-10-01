@@ -57,6 +57,8 @@ def test_cli_maps_expected_conflict_without_sensitive_output(
     exit_code = asset_alias.main(
         [
             "onboard",
+            "--actor",
+            "operator-test",
             "--asset-id",
             "asset-a",
             "--expected-symbol",

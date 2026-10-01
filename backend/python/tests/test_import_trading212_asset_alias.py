@@ -113,6 +113,7 @@ def _row(
         asset_type=AssetType.other,
         asset_currency=currency,
         asset_isin=isin,
+        listing_id=f"listing-{asset_id}",
         listing_asset_id=asset_id,
         listing_symbol=symbol,
         listing_provider=PriceSource.broker,
@@ -148,7 +149,9 @@ async def test_local_free_vuaa_uses_accepted_milan_yahoo_identity_once() -> None
     assert repository.read_only_calls == repository.list_calls == 1
     assert writer.commands == [
         OnboardAssetAliasCommand(
+            actor="system:trading212-import",
             asset_id="asset-vuaa",
+            listing_id="listing-asset-vuaa",
             provider=AssetAliasProvider.yahoo_finance,
             external_id="VUAA.MI",
             expected_symbol="VUAA",

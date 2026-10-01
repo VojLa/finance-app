@@ -11,6 +11,7 @@ const POINT = {
   resolutionMinutes: 1440,
   cashValue: "10.000000",
   investmentValue: "20.000000",
+  investmentCostBasis: "15.000000",
   liabilitiesValue: "5.000000",
   netWorthValue: "25.000000",
 }
@@ -79,14 +80,55 @@ describe("snapshot portfolio history browser client", () => {
     const payload = history({ points: [point] })
 
     await expect(
-      requestPortfolioHistory("1Y", "EUR", vi.fn(async () => jsonResponse(payload)))
+      requestPortfolioHistory(
+        "1Y",
+        "EUR",
+        vi.fn(async () => jsonResponse(payload))
+      )
     ).resolves.toEqual({ status: "ready", data: payload })
+  })
+
+  it("accepts an exact signed unrealized percentage on a historical position", async () => {
+    const position = {
+      listingId: "listing-btc",
+      symbol: "BTC",
+      quantity: "0.0012345678",
+      value: "150.000000",
+      costBasis: "100.000000",
+      allocationPct: "56.6500",
+      unrealizedPnlPct: "50.0000",
+      accounts: [],
+    }
+    const payload = history({ points: [{ ...POINT, positions: [position] }] })
+
+    await expect(
+      requestPortfolioHistory(
+        "1Y",
+        "EUR",
+        vi.fn(async () => jsonResponse(payload))
+      )
+    ).resolves.toEqual({ status: "ready", data: payload })
+
+    const invalid = history({
+      points: [{ ...POINT, positions: [{ ...position, unrealizedPnlPct: "NaN" }] }],
+    })
+    await expect(
+      requestPortfolioHistory(
+        "1Y",
+        "EUR",
+        vi.fn(async () => jsonResponse(invalid))
+      )
+    ).resolves.toMatchObject({ status: "error" })
   })
 
   it("accepts exact native precision and mixed minute, hour, and arbitrary coverage", async () => {
     const points = [
-      { ...POINT, timestamp: "2036-01-01T00:00:00.000", resolutionMinutes: 1,
-        cashByCurrency: [{ currency: "EUR", value: "0.123456789123" }] },
+      {
+        ...POINT,
+        timestamp: "2036-01-01T00:00:00.000",
+        resolutionMinutes: 1,
+        cashByCurrency: [{ currency: "EUR", value: "0.123456789123" }],
+      },
       { ...POINT, timestamp: "2036-01-01T01:00:00.000", resolutionMinutes: 60 },
       { ...POINT, timestamp: "2036-01-01T01:30:00.000", resolutionMinutes: 30 },
     ]
@@ -102,8 +144,13 @@ describe("snapshot portfolio history browser client", () => {
       points,
     })
 
-    await expect(requestPortfolioHistory("1Y", "EUR", vi.fn(async () => jsonResponse(payload))))
-      .resolves.toEqual({ status: "ready", data: payload })
+    await expect(
+      requestPortfolioHistory(
+        "1Y",
+        "EUR",
+        vi.fn(async () => jsonResponse(payload))
+      )
+    ).resolves.toEqual({ status: "ready", data: payload })
   })
 
   it("includes the selected account while leaving aggregate requests unchanged", async () => {

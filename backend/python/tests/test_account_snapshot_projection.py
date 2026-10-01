@@ -178,6 +178,7 @@ def test_one_holding_projects_exact_physical_item_and_totals() -> None:
     assert result.investment_value == Decimal("5000")
     assert result.investment_cost_basis == Decimal("4000")
     assert result.total_value == Decimal("5000")
+
     assert result.investment_value_by_currency == (
         CurrencyAmount(currency="EUR", amount=Decimal("200")),
     )
@@ -211,6 +212,19 @@ def test_one_holding_projects_exact_physical_item_and_totals() -> None:
         "CZK",
         Decimal("100"),
     )
+
+
+def test_fallback_price_maps_to_requested_holding_without_changing_price_identity() -> None:
+    price = replace(_price(listing_id="listing-mi"), requested_listing_id="listing")
+    result = _one_holding(price=price)
+    assert result.items[0].listing_id == "listing"
+    assert result.items[0].native_value == Decimal("200")
+    assert result.items[0].value == Decimal("5000")
+    assert price.listing_id == "listing-mi"
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        _one_holding(price=replace(price, asset_id="other-asset"))
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        _one_holding(price=replace(price, requested_listing_id="other-listing"))
 
 
 def test_mixed_known_and_unknown_basis_preserves_values_and_nulls_cost_aggregate() -> None:

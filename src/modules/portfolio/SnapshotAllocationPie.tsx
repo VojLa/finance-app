@@ -1,76 +1,125 @@
 "use client"
 
-import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts"
+import {
+  buildSnapshotAllocationSlices,
+  type SnapshotAllocationExactSlice,
+  type SnapshotAllocationItem,
+} from "./snapshot-allocation-pie"
+import { formatSnapshotPercentage } from "./snapshot-page-format"
 
-import type { PortfolioPagePosition } from "./snapshot-page-model"
+const COLORS = ["#2563eb", "#059669", "#d97706", "#dc2626", "#7c3aed", "#475569"]
 
-const COLORS = [
-  "#3b82f6",
-  "#10b981",
-  "#f59e0b",
-  "#ef4444",
-  "#8b5cf6",
-  "#ec4899",
-  "#06b6d4",
-  "#84cc16",
-]
+type SnapshotAllocationSegment = SnapshotAllocationExactSlice &
+  Readonly<{
+    color: string
+    offset: number
+    value: number
+  }>
 
-type Props = {
-  positions: readonly PortfolioPagePosition[]
-  showAccount: boolean
-}
-
-type AllocationSlice = {
-  name: string
-  value: number
-  exactAllocation: string
-}
-
-/**
- * Presentation-only conversion at the Recharts leaf boundary.
- * The returned number is never written back to view state or used for finance.
- */
-function toChartNumber(value: string): number {
-  const converted = Number(value)
-  if (!Number.isFinite(converted)) {
+/** Presentation-only conversion at the SVG coordinate leaf boundary. */
+function toChartNumber(slice: SnapshotAllocationExactSlice): number {
+  const converted = Number(slice.exactAllocation)
+  const roundingAllowance = slice.members.length * 0.00005 + 0.0001
+  if (!Number.isFinite(converted) || converted < 0 || converted > 100 + roundingAllowance) {
     throw new TypeError("Snapshot allocation is not chart-compatible.")
   }
-  return converted
+  return converted > 100 ? 100 : converted
 }
 
-export function SnapshotAllocationPie({ positions, showAccount }: Props) {
-  const data: AllocationSlice[] = positions.map(({ accountName, position }) => ({
-    name: showAccount ? `${position.symbol} · ${accountName}` : position.symbol,
-    value: toChartNumber(position.allocationPct),
-    exactAllocation: position.allocationPct,
-  }))
+function buildSegments(
+  slices: readonly SnapshotAllocationExactSlice[]
+): SnapshotAllocationSegment[] {
+  let offset = 0
+  return slices.map((slice, index) => {
+    const value = toChartNumber(slice)
+    const segment = {
+      ...slice,
+      color: COLORS[index % COLORS.length] as string,
+      offset,
+      value,
+    }
+    offset += value
+    return segment
+  })
+}
 
-  if (data.length === 0) return null
+function sectorPoint(percentage: number): readonly [number, number] {
+  const angle = (percentage / 100) * Math.PI * 2 - Math.PI / 2
+  return [120 + 100 * Math.cos(angle), 120 + 100 * Math.sin(angle)]
+}
+
+function sectorPath(segment: SnapshotAllocationSegment): string {
+  if (segment.value <= 0) return ""
+  if (segment.value >= 100) {
+    return "M 120 20 A 100 100 0 1 1 120 220 A 100 100 0 1 1 120 20 Z"
+  }
+  const start = sectorPoint(segment.offset)
+  const end = sectorPoint(Math.min(100, segment.offset + segment.value))
+  const largeArc = segment.value > 50 ? 1 : 0
+  return `M 120 120 L ${start[0]} ${start[1]} A 100 100 0 ${largeArc} 1 ${end[0]} ${end[1]} Z`
+}
+
+function tooltipText(slice: SnapshotAllocationExactSlice): string {
+  const summary = `${slice.name}: ${formatSnapshotPercentage(slice.exactAllocation)} %`
+  if (slice.name !== "Ostatní") return summary
+  return `${summary}\n${slice.members
+    .map((member) => `${member.name}: ${formatSnapshotPercentage(member.allocationPct)} %`)
+    .join("\n")}`
+}
+
+export function SnapshotAllocationPie({ items }: { items: readonly SnapshotAllocationItem[] }) {
+  const data = buildSegments(buildSnapshotAllocationSlices(items))
+  if (data.length === 0 || !data.some((slice) => slice.value > 0)) {
+    return (
+      <div className="flex h-[344px] items-center justify-center text-center text-sm text-gray-500">
+        Pro tento stav není alokace dostupná.
+      </div>
+    )
+  }
 
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <PieChart>
-        <Pie
-          data={data}
-          cx="50%"
-          cy="50%"
-          innerRadius={70}
-          outerRadius={110}
-          paddingAngle={2}
-          dataKey="value"
-        >
-          {data.map((slice, index) => (
-            <Cell key={`${slice.name}:${index}`} fill={COLORS[index % COLORS.length]} />
+    <div className="flex h-[344px] flex-col items-center justify-between">
+      <svg
+        className="min-h-0 w-full flex-1"
+        viewBox="0 0 240 240"
+        role="img"
+        aria-label="Koláčový graf alokace portfolia"
+      >
+        <circle cx="120" cy="120" r="100" fill="#e5e7eb" />
+        {data
+          .filter((slice) => slice.value > 0)
+          .map((slice) => (
+            <path
+              key={slice.key}
+              d={sectorPath(slice)}
+              fill={slice.color}
+              stroke="white"
+              strokeWidth="2"
+            >
+              <title>{tooltipText(slice)}</title>
+            </path>
           ))}
-        </Pie>
-        <Tooltip
-          formatter={(_value, _name, item) => [
-            `${(item.payload as AllocationSlice).exactAllocation} %`,
-            "Alokace",
-          ]}
-        />
-        <Legend />
-      </PieChart>
-    </ResponsiveContainer>
+      </svg>
+
+      <ul className="grid w-full grid-cols-2 gap-x-3 gap-y-1 text-xs text-gray-700">
+        {data.map((slice) => (
+          <li
+            key={slice.key}
+            className="flex min-w-0 items-center gap-2"
+            title={tooltipText(slice)}
+          >
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-sm"
+              style={{ backgroundColor: slice.color }}
+              aria-hidden="true"
+            />
+            <span className="truncate">{slice.name}</span>
+            <span className="ml-auto shrink-0 font-mono">
+              {formatSnapshotPercentage(slice.exactAllocation)} %
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }

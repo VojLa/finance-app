@@ -1345,10 +1345,12 @@ def test_r12f_duplicate_only_durable_job_publishes_exact_replay_anchor(
             assert account.status_code == 201, account.text
             account_id = str(account.json()["id"])
             _, listing_id = asyncio.run(_seed_market_identity(prefix))
-            harness = _ProviderHarness(
-                datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0)
-                - timedelta(minutes=1)
-            )
+            worker_now = datetime.now(UTC).replace(
+                tzinfo=None, second=0, microsecond=0
+            ) + timedelta(minutes=5)
+            harness = _ProviderHarness(worker_now - timedelta(minutes=1))
+            monkeypatch.setattr(background_worker_module, "_now", lambda: worker_now)
+            monkeypatch.setattr(durable_import_executor_module, "_now", lambda: worker_now)
 
             initial_batch_ids: list[str] = []
             for filename, content in (("initial-eur.csv", eur_file), ("initial-usd.csv", usd_file)):

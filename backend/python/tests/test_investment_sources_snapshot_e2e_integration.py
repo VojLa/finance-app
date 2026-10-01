@@ -162,7 +162,27 @@ async def _snapshot_evidence(
             await session.scalar(
                 select(func.count())
                 .select_from(PriceSnapshotModel)
-                .where(PriceSnapshotModel.listing_id.in_(tuple(item.listing_id for item in items)))
+                .where(
+                    PriceSnapshotModel.asset_id.in_(
+                        tuple(item.asset_id for item in items if item.asset_id is not None)
+                    ),
+                    PriceSnapshotModel.source.in_(
+                        tuple(item.price_source for item in items if item.price_source is not None)
+                    ),
+                    PriceSnapshotModel.timestamp.in_(
+                        tuple(
+                            item.price_timestamp
+                            for item in items
+                            if item.price_timestamp is not None
+                        )
+                    ),
+                    PriceSnapshotModel.price.in_(tuple(item.price_per_unit for item in items)),
+                    PriceSnapshotModel.currency.in_(
+                        tuple(
+                            item.price_currency for item in items if item.price_currency is not None
+                        )
+                    ),
+                )
             )
             or 0
         )
@@ -249,7 +269,11 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
                 post=False,
             )
             asyncio.run(
-                support.seed_asset_listing(prefix, source=source, symbol_override=symbol_override)
+                support.seed_asset_listing(
+                    prefix,
+                    source=source,
+                    symbol_override=symbol_override,
+                )
             )
             posted = support.post_batch(
                 client,
@@ -260,16 +284,18 @@ def test_fixture_reaches_seeded_price_snapshot_and_both_exact_reads_without_fx(
             assert posted["snapshot_refresh_status"] == "unavailable"
             assert asyncio.run(_snapshot_counts(user_id, account_id)) == (0, 0)
 
+            market_source = (
+                PriceSource.twelve_data
+                if source is ImportSource.trading212
+                else PriceSource.coingecko
+            )
+            asyncio.run(support.seed_market_listing(prefix, source=market_source))
             asyncio.run(
                 support.seed_price(
                     prefix,
                     price=price,
                     snapshot_timestamp=bucket,
-                    source=(
-                        PriceSource.twelve_data
-                        if source is ImportSource.trading212
-                        else PriceSource.coingecko
-                    ),
+                    source=market_source,
                 )
             )
             refresh = asyncio.run(_execute_seeded_refresh(user_id, bucket))

@@ -10,7 +10,9 @@ from app.auth.dependencies import CurrentPrincipal, get_request_settings
 from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.modules.current_value.api_models import (
+    CurrentDashboardAccountResponse,
     CurrentDashboardResponse,
+    CurrentPortfolioAccountResponse,
     CurrentPortfolioResponse,
 )
 from app.modules.current_value.models import CurrentPortfolioResult
@@ -20,7 +22,22 @@ from app.modules.current_value.service import (
     ReadCurrentPortfolioCommand,
     current_value_timestamp,
 )
+from app.modules.dashboard_snapshot.api_models import (
+    DashboardAssetTypeAllocationResponse,
+    DashboardSnapshotSummaryResponse,
+    DashboardTopPositionResponse,
+)
 from app.modules.dashboard_snapshot.projection import build_dashboard_snapshot_view
+from app.modules.portfolio_snapshot.aggregation import portfolio_allocation_percentage
+from app.modules.portfolio_snapshot.api_models import (
+    PortfolioSnapshotAccountResponse,
+    PortfolioSnapshotPositionResponse,
+    PortfolioSnapshotSummaryResponse,
+)
+from app.modules.portfolio_snapshot.multi_account_api_models import (
+    MultiAccountPortfolioAggregatePositionResponse,
+    MultiAccountPortfolioSummaryResponse,
+)
 
 router = APIRouter(tags=["current-value"])
 _STALE_AFTER = timedelta(minutes=30)
@@ -50,29 +67,40 @@ def build_current_portfolio_response(
         calculation_version=result.portfolio.calculation_version,
         valuation_timestamp=result.as_of,
         is_stale=datetime.now(UTC).replace(tzinfo=None) - result.as_of > _STALE_AFTER,
-        summary=result.portfolio.summary,
+        summary=MultiAccountPortfolioSummaryResponse.model_validate(result.portfolio.summary),
         accounts=tuple(
-            {
-                "baseline_snapshot_id": presentations[
+            CurrentPortfolioAccountResponse(
+                baseline_snapshot_id=presentations[
                     account.account.account_id
                 ].presentation_snapshot_id,
-                "primary_baseline_snapshot_id": presentations[
+                primary_baseline_snapshot_id=presentations[
                     account.account.account_id
                 ].primary_snapshot_id,
-                "currency": presentations[account.account.account_id].currency,
-                "account": presentations[account.account.account_id].account,
-                "summary": presentations[account.account.account_id].summary,
-                "positions": presentations[account.account.account_id].positions,
-            }
+                currency=presentations[account.account.account_id].currency,
+                account=PortfolioSnapshotAccountResponse.model_validate(
+                    presentations[account.account.account_id].account
+                ),
+                summary=PortfolioSnapshotSummaryResponse.model_validate(
+                    presentations[account.account.account_id].summary
+                ),
+                positions=tuple(
+                    PortfolioSnapshotPositionResponse.model_validate(position)
+                    for position in presentations[account.account.account_id].positions
+                ),
+            )
             for account in result.portfolio.accounts
         ),
         aggregate_positions=tuple(
-            {
-                "account_id": account.account.account_id,
-                "account_name": account.account.name,
-                "account_currency": account.account.currency,
-                "position": position,
-            }
+            MultiAccountPortfolioAggregatePositionResponse(
+                account_id=account.account.account_id,
+                account_name=account.account.name,
+                account_currency=account.account.currency,
+                portfolio_allocation_pct=portfolio_allocation_percentage(
+                    position.value,
+                    result.portfolio.summary.investment_value,
+                ),
+                position=PortfolioSnapshotPositionResponse.model_validate(position),
+            )
             for account in result.portfolio.accounts
             for position in account.positions
         ),
@@ -94,28 +122,33 @@ def build_current_dashboard_response(
         calculation_version=dashboard.calculation_version,
         valuation_timestamp=result.as_of,
         is_stale=datetime.now(UTC).replace(tzinfo=None) - result.as_of > _STALE_AFTER,
-        summary=dashboard.summary,
+        summary=DashboardSnapshotSummaryResponse.model_validate(dashboard.summary),
         accounts=tuple(
-            {
-                "account_id": account.account_id,
-                "baseline_snapshot_id": account.snapshot_id,
-                "primary_baseline_snapshot_id": account.primary_snapshot_id,
-                "name": account.name,
-                "account_type": account.account_type,
-                "account_currency": account.account_currency,
-                "output_currency": account.output_currency,
-                "total_value": account.total_value,
-                "cash_value": account.cash_value,
-                "investment_value": account.investment_value,
-                "liabilities_value": account.liabilities_value,
-                "net_deposits_value": account.net_deposits_value,
-                "unrealized_pnl_value": account.unrealized_pnl_value,
-                "position_count": account.position_count,
-            }
+            CurrentDashboardAccountResponse(
+                account_id=account.account_id,
+                baseline_snapshot_id=account.snapshot_id,
+                primary_baseline_snapshot_id=account.primary_snapshot_id,
+                name=account.name,
+                account_type=account.account_type,
+                account_currency=account.account_currency,
+                output_currency=account.output_currency,
+                total_value=account.total_value,
+                cash_value=account.cash_value,
+                investment_value=account.investment_value,
+                liabilities_value=account.liabilities_value,
+                net_deposits_value=account.net_deposits_value,
+                unrealized_pnl_value=account.unrealized_pnl_value,
+                position_count=account.position_count,
+            )
             for account in dashboard.accounts
         ),
-        asset_type_allocations=dashboard.asset_type_allocations,
-        top_positions=dashboard.top_positions,
+        asset_type_allocations=tuple(
+            DashboardAssetTypeAllocationResponse.model_validate(item)
+            for item in dashboard.asset_type_allocations
+        ),
+        top_positions=tuple(
+            DashboardTopPositionResponse.model_validate(item) for item in dashboard.top_positions
+        ),
     )
 
 

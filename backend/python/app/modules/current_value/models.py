@@ -19,6 +19,7 @@ class CurrentValuePlan:
     baseline: DailySnapshotBaseline
     market_plan: MarketEvidenceRefreshPlan
     frozen_account_ids: tuple[str, ...]
+    listing_selections: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -256,6 +256,61 @@ def test_multi_component_costs_and_historical_metrics_use_money_boundaries() -> 
     assert metrics.net_deposits_value == Decimal("24.176924")
 
 
+def test_same_currency_unrealized_breakdown_uses_scalar_rounding_boundary() -> None:
+    holding = SnapshotHoldingEvidence(
+        holding_id="holding-czk-rounding",
+        account_id="account-czk-rounding",
+        asset_id="asset-czk-rounding",
+        listing_id="listing-czk-rounding",
+        listing_asset_id="asset-czk-rounding",
+        symbol="ROUND",
+        asset_type=AssetType.stock,
+        quantity=Decimal("1.0000000000"),
+        average_buy_price=Decimal("1.0000006000"),
+        cost_currency="CZK",
+        cost_basis_by_currency=(CurrencyAmount("CZK", Decimal("1.0000006000")),),
+    )
+    valuation = build_account_snapshot_projection(
+        AccountSnapshotProjectionInput(
+            account_id="account-czk-rounding",
+            account_type=AccountType.broker,
+            account_currency="CZK",
+            output_currency="CZK",
+            snapshot_timestamp=SNAPSHOT_AT,
+            granularity=SnapshotGranularity.minute,
+            source=SnapshotSource.manual_recalculation,
+            calculation_version=2,
+            holdings=(holding,),
+            prices=(
+                SelectedPriceEvidence(
+                    price_id="price-czk-rounding",
+                    asset_id="asset-czk-rounding",
+                    listing_id="listing-czk-rounding",
+                    symbol="ROUND",
+                    price=Decimal("10.0000004000"),
+                    currency="CZK",
+                    source=PriceSource.yahoo_finance,
+                    timestamp=SNAPSHOT_AT,
+                ),
+            ),
+            exchange_rates=(),
+            cash_balances=(),
+            liabilities=(),
+        )
+    )
+
+    metrics = build_financial_metrics(
+        valuation=valuation,
+        historical_evidence=(),
+        historical_rates=(),
+    )
+
+    assert valuation.investment_value == Decimal("10.000000")
+    assert valuation.investment_cost_basis == Decimal("1.000001")
+    assert metrics.unrealized_pnl_value == Decimal("8.999999")
+    assert metrics.unrealized_pnl_by_currency == (CurrencyAmount("CZK", Decimal("8.999999")),)
+
+
 def test_persistence_preserves_native_quantity_breakdown_beside_money_scalars() -> None:
     valuation = _valuation()
     unrealized = valuation.investment_value - valuation.investment_cost_basis

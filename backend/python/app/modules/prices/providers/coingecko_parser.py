@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
+from app.db.models.enums import MarketDataFailureReason
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.prices.providers.coingecko_models import CoinGeckoSimplePrice
 
 _MAX_DEPTH = 6
@@ -73,11 +75,19 @@ def parse_coingecko_simple_price(
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
         raise _fail() from exc
     _validate_shape(document)
+    if isinstance(document, dict) and not document:
+        raise ProviderFailure(MarketDataFailureReason.unknown_symbol)
+    if isinstance(document, dict) and len(document) == 1 and provider_symbol not in document:
+        raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict)
     if not isinstance(document, dict) or tuple(document) != (provider_symbol,):
         raise _fail()
     coin = document.get(provider_symbol)
     if not isinstance(coin, dict):
         raise _fail()
+    if quote_currency not in coin and any(
+        isinstance(key, str) and key != "last_updated_at" for key in coin
+    ):
+        raise ProviderFailure(MarketDataFailureReason.currency_conflict)
     price = coin.get(quote_currency)
     timestamp = coin.get("last_updated_at")
     if (
@@ -90,7 +100,7 @@ def parse_coingecko_simple_price(
         or timestamp.as_tuple().exponent != 0
         or timestamp < 0
     ):
-        raise _fail()
+        raise ProviderFailure(MarketDataFailureReason.invalid_price)
     try:
         timestamp_integer = int(timestamp)
     except (OverflowError, ValueError) as exc:

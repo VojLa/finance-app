@@ -26,6 +26,10 @@ An `InvestmentEvent` and its complete movements are canonical history. Account c
 - preserve unavailable cost basis when evidence is insufficient.
 
 Holdings never replace investment history and browser code never reconstructs them.
+An Asset owns economic identity such as ISIN and type. One Asset can own multiple
+AssetListings; the listing owns venue, MIC when meaningful, native quote currency,
+static base priority and exact market-provider identity. Imports resolve Asset and
+Listing separately and never merge instruments from a ticker string alone.
 The Anycoin transfer valuation overlay is consumed in bulk by Holding rebuild,
 account snapshots and portfolio-history replay. Provider access belongs only to the
 explicit repair/background path; normal reads and import requests use persisted
@@ -37,6 +41,10 @@ settlement value/currency and existing average cost. When the disposed cost basi
 unknown, the quantity projection continues and realized P/L remains unavailable; an
 already persisted realized P/L without verifiable basis, or a conflicting proven
 value, fails closed instead of being silently accepted.
+
+The authorized symbol-detail read exposes the stored Asset → Listing → provider
+symbol → latest exact price-evidence trace. It is diagnostic only: it neither calls
+Yahoo nor changes cost basis or Holding values.
 
 ## Navigation
 

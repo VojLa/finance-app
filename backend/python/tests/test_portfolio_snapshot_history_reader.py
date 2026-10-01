@@ -15,19 +15,21 @@ from app.auth.models import AuthenticatedPrincipal
 from app.db.models.canonical_lineage import UserReadModelPublicationModel
 from app.db.models.enums import SnapshotGranularity, SnapshotSource
 from app.db.models.investment_snapshots import PortfolioSnapshotModel
-from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
+from app.db.models.snapshots import AccountSnapshotModel
 from app.db.models.users import UserModel
 from app.modules.portfolio_history.lattice import HistoryPublicRange
+from app.modules.portfolio_snapshot.history_api_models import PortfolioHistoryPositionResponse
 from app.modules.portfolio_snapshot.history_reader import (
     PublishedPortfolioSnapshotHistoryReader,
     _point_resolution_minutes,
     _snapshot_resolution_minutes,
+    _unrealized_pnl_percentage,
 )
 
 _HistoryRows = tuple[
     tuple[
         PortfolioSnapshotModel | AccountSnapshotModel,
-        NetWorthSnapshotModel | AccountSnapshotModel | None,
+        AccountSnapshotModel | None,
         datetime,
     ],
     ...,
@@ -99,12 +101,18 @@ class _Session:
         )
         if '"PortfolioSnapshot"' in statement_sql:
             assert '"SnapshotSeriesPointLink"."validFromVersion"' in statement_sql
+            assert '"NetWorthSnapshot"' not in statement_sql
             assert (
                 '"PortfolioSnapshot".id = public."SnapshotSeriesPointLink"."portfolioSnapshotId"'
                 in statement_sql
             )
             publication = await self.get(UserReadModelPublicationModel, "user-a")
-            return _Rows(tuple((publication, 2, *row) for row in self.portfolio_rows))
+            return _Rows(
+                tuple(
+                    (publication, 2, snapshot, valuation)
+                    for snapshot, _linked_net_worth, valuation in self.portfolio_rows
+                )
+            )
         if (
             '"DailySnapshotBaselineAccount"' in statement_sql
             and '"AccountSnapshot"' not in statement_sql
@@ -159,6 +167,7 @@ def _snapshot(
         currency=currency,
         cash_value=Decimal("100"),
         investment_value=Decimal("250"),
+        investment_cost_basis=Decimal("210"),
         net_deposits_value=Decimal("200"),
         realized_pnl_value=Decimal("10"),
         unrealized_pnl_value=Decimal("40"),
@@ -202,6 +211,38 @@ async def test_portfolio_read_uses_head_links_across_physical_generations() -> N
         "portfolio-b",
     ]
     assert response.publication_version == 2
+
+
+@pytest.mark.asyncio
+async def test_portfolio_read_never_mixes_complete_net_worth_into_investment_scope() -> None:
+    portfolio = _snapshot(
+        snapshot_id="portfolio-a",
+        generation_id="generation-a",
+        granularity=SnapshotGranularity.day,
+    )
+    complete_net_worth = SimpleNamespace(
+        total_net_worth=Decimal("999"),
+        liabilities_value=Decimal("25"),
+        liabilities_value_by_currency={"EUR": "25"},
+    )
+    session = _Session(
+        publication_generation_id="generation-a",
+        portfolio_rows=((portfolio, complete_net_worth, datetime(2026, 9, 1)),),
+    )
+
+    response = await PublishedPortfolioSnapshotHistoryReader(cast(AsyncSession, session)).read(
+        principal=_principal(),
+        history_range=HistoryPublicRange.all,
+        account_id=None,
+    )
+
+    point = response.points[0]
+    assert point.cash_value == Decimal("100")
+    assert point.investment_value == Decimal("250")
+    assert point.investment_cost_basis == Decimal("210")
+    assert point.net_worth_value == Decimal("350")
+    assert point.liabilities_value == Decimal("0")
+    assert point.liabilities_by_currency == ()
 
 
 @pytest.mark.asyncio
@@ -359,6 +400,38 @@ def test_resolution_metadata_comes_from_snapshot_granularity(
     assert (
         _snapshot_resolution_minutes(SimpleNamespace(granularity=granularity)) == expected_minutes
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "cost_basis", "expected"),
+    (
+        (Decimal("150"), Decimal("100"), Decimal("50.0000")),
+        (Decimal("75"), Decimal("100"), Decimal("-25.0000")),
+        (Decimal("100"), Decimal("100"), Decimal("0.0000")),
+        (Decimal("10"), Decimal("0"), None),
+        (Decimal("10"), None, None),
+    ),
+)
+def test_position_unrealized_percentage_uses_exact_snapshot_money(
+    value: Decimal,
+    cost_basis: Decimal | None,
+    expected: Decimal | None,
+) -> None:
+    assert _unrealized_pnl_percentage(value=value, cost_basis=cost_basis) == expected
+
+
+def test_position_unrealized_percentage_serializes_as_exact_signed_decimal() -> None:
+    payload = PortfolioHistoryPositionResponse(
+        listing_id="listing-a",
+        symbol="ASSET",
+        quantity=Decimal("1.2500000000"),
+        value=Decimal("75"),
+        cost_basis=Decimal("100"),
+        allocation_pct=Decimal("56.6500"),
+        unrealized_pnl_pct=Decimal("-25.0000"),
+    ).model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    assert payload["unrealizedPnlPct"] == "-25.0000"
 
 
 def test_all_range_sampling_keeps_oldest_and_newest_snapshot() -> None:

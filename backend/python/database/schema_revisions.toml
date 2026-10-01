@@ -128,3 +128,18 @@ schema_change = true
 schema_source = "database/revisions/410001serieslinks/schema.sql"
 checksum_source = "database/revisions/410001serieslinks/schema.sha256"
 schema_change = true
+
+[revisions."420001yahooidentity"]
+schema_source = "database/revisions/420001yahooidentity/schema.sql"
+checksum_source = "database/revisions/420001yahooidentity/schema.sha256"
+schema_change = true
+
+[revisions."430001markethealth"]
+schema_source = "database/revisions/430001markethealth/schema.sql"
+checksum_source = "database/revisions/430001markethealth/schema.sha256"
+schema_change = true
+
+[revisions."440001assetaudit"]
+schema_source = "database/revisions/440001assetaudit/schema.sql"
+checksum_source = "database/revisions/440001assetaudit/schema.sha256"
+schema_change = true

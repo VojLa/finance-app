@@ -3,7 +3,12 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.db.models.enums import ExchangeRateSource, PriceSource
+from app.db.models.enums import (
+    AssetType,
+    ExchangeRateSource,
+    MarketDataFailureReason,
+    PriceSource,
+)
 
 
 class MarketEvidenceStateError(RuntimeError):
@@ -25,6 +30,13 @@ class PriceRequirement:
     provider: PriceSource
     provider_symbol: str
     through: datetime
+    listing_mic: str | None = None
+    asset_type: AssetType | None = None
+    requested_listing_id: str | None = None
+    selection_reason: str | None = None
+    fallback_reason: str | None = None
+    selected_base_priority: int | None = None
+    selected_health: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,12 +48,21 @@ class ExchangeRateRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class PriceIdentityFailure:
+    listing_id: str
+    provider: PriceSource
+    reason: MarketDataFailureReason
+    configured_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class MarketEvidenceRefreshPlan:
     user_id: str
     output_currency: str
     snapshot_timestamp: datetime
     price_requirements: tuple[PriceRequirement, ...]
     fx_requirements: tuple[ExchangeRateRequirement, ...]
+    identity_failures: tuple[PriceIdentityFailure, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

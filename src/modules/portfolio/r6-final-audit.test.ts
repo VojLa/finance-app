@@ -204,8 +204,7 @@ describe("R6 production inventory", () => {
     ).join("\n")
 
     const page = await readFile(path.join(ROOT, "src/app/portfolio/page.tsx"), "utf8")
-    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
-    expect(page).toContain("Number(position.allocationPct)")
+    expect(page).not.toMatch(/\bNumber\s*\(/)
     expect(content.replace(page, "")).not.toMatch(/\b(?:Number|parseFloat|parseInt)\s*\(/)
     expect(content.replace(page, "")).not.toMatch(/\bMath\./)
     for (const forbidden of [
@@ -237,9 +236,11 @@ describe("R6 production inventory", () => {
     expect(page).toContain("<PortfolioLineChart")
     expect(page).not.toContain("latestHistoryPoint")
     expect(page).not.toContain("activeHistoryPoint")
-    expect(page).not.toMatch(/historyState(?:\.data)?\.(?:summary|cashByCurrency|netDepositsByCurrency)/i)
-    expect(page).toContain("selectedHistoryPoint.netInvestedValue")
-    expect(page).toContain("selectedHistoryPoint.cashByCurrency === undefined")
+    expect(page).not.toMatch(
+      /historyState(?:\.data)?\.(?:summary|cashByCurrency|netDepositsByCurrency)/i
+    )
+    expect(page).toContain("displayHistoryPoint.netInvestedValue")
+    expect(page).toContain("displayHistoryPoint.cashByCurrency?.map")
     expect(page).toContain("Historická hodnota není dostupná.")
     expect(dashboard).not.toContain("cashByCurrency")
     expect(dashboard).not.toContain("netDepositsByCurrency")

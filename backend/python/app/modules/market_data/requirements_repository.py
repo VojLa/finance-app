@@ -5,14 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel, AccountModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.enums import MarketDataFailureReason, PriceSource
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.market_health import MarketDataListingHealthModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 
@@ -23,6 +26,12 @@ class PersistedMarketHolding:
     listing: AssetListingModel | None
     asset: AssetModel | None
     aliases: tuple[AssetAliasModel, ...]
+    asset_listing_count: int | None = None
+    candidate_listings: tuple[AssetListingModel, ...] = ()
+    candidate_aliases: tuple[AssetAliasModel, ...] = ()
+    candidate_health: tuple[MarketDataListingHealthModel, ...] = ()
+    candidate_prices: tuple[PriceSnapshotModel, ...] = ()
+    provider_retry_after: tuple[tuple[PriceSource, datetime], ...] = ()
 
 
 class MarketEvidenceRequirementsRepository:
@@ -58,6 +67,8 @@ class MarketEvidenceRequirementsRepository:
     async def load_holdings(
         self,
         account_ids: tuple[str, ...],
+        *,
+        through: datetime,
     ) -> tuple[PersistedMarketHolding, ...]:
         if not account_ids:
             return ()
@@ -75,12 +86,30 @@ class MarketEvidenceRequirementsRepository:
         ).all()
         asset_ids = tuple(sorted({row[2].id for row in rows if isinstance(row[2], AssetModel)}))
         aliases_by_asset: dict[str, list[AssetAliasModel]] = {}
+        listings_by_asset: dict[str, list[AssetListingModel]] = {}
+        listing_asset_ids: dict[str, str] = {}
+        health_by_asset: dict[str, list[MarketDataListingHealthModel]] = {}
+        prices_by_asset: dict[str, list[PriceSnapshotModel]] = {}
+        retry_by_provider: tuple[tuple[PriceSource, datetime], ...] = ()
         if asset_ids:
+            listings = await self.session.scalars(
+                select(AssetListingModel)
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(
+                    AssetListingModel.asset_id,
+                    AssetListingModel.base_priority.desc(),
+                    AssetListingModel.id,
+                )
+            )
+            for listing in listings.all():
+                listings_by_asset.setdefault(listing.asset_id, []).append(listing)
+                listing_asset_ids[listing.id] = listing.asset_id
             aliases = await self.session.scalars(
                 select(AssetAliasModel)
                 .where(AssetAliasModel.asset_id.in_(asset_ids))
                 .order_by(
                     AssetAliasModel.asset_id,
+                    AssetAliasModel.listing_id,
                     AssetAliasModel.provider,
                     AssetAliasModel.external_id,
                     AssetAliasModel.id,
@@ -88,12 +117,75 @@ class MarketEvidenceRequirementsRepository:
             )
             for alias in aliases.all():
                 aliases_by_asset.setdefault(alias.asset_id, []).append(alias)
+            health_rows = await self.session.scalars(
+                select(MarketDataListingHealthModel)
+                .join(
+                    AssetListingModel,
+                    AssetListingModel.id == MarketDataListingHealthModel.listing_id,
+                )
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(
+                    AssetListingModel.asset_id,
+                    MarketDataListingHealthModel.listing_id,
+                    MarketDataListingHealthModel.provider,
+                )
+            )
+            for row in health_rows.all():
+                asset_id = listing_asset_ids.get(row.listing_id)
+                if asset_id is not None:
+                    health_by_asset.setdefault(asset_id, []).append(row)
+            price_rows = await self.session.scalars(
+                select(PriceSnapshotModel)
+                .where(
+                    PriceSnapshotModel.listing_id.in_(tuple(sorted(listing_asset_ids))),
+                    PriceSnapshotModel.timestamp <= through,
+                )
+                .order_by(
+                    PriceSnapshotModel.listing_id,
+                    PriceSnapshotModel.timestamp.desc(),
+                    PriceSnapshotModel.source,
+                    PriceSnapshotModel.id,
+                )
+            )
+            for price in price_rows.all():
+                asset_id = listing_asset_ids.get(price.listing_id or "")
+                if asset_id is not None:
+                    prices_by_asset.setdefault(asset_id, []).append(price)
+            retry_rows = await self.session.execute(
+                select(
+                    MarketDataListingHealthModel.provider,
+                    func.max(MarketDataListingHealthModel.retry_after),
+                )
+                .where(
+                    MarketDataListingHealthModel.last_failure_reason
+                    == MarketDataFailureReason.rate_limit,
+                    MarketDataListingHealthModel.retry_after.is_not(None),
+                )
+                .group_by(MarketDataListingHealthModel.provider)
+                .order_by(MarketDataListingHealthModel.provider)
+            )
+            retry_by_provider = tuple(
+                (provider, retry_after)
+                for provider, retry_after in retry_rows.all()
+                if retry_after is not None
+            )
         return tuple(
             PersistedMarketHolding(
                 holding=row[0],
                 listing=row[1],
                 asset=row[2],
-                aliases=tuple(aliases_by_asset.get(row[0].asset_id or "", ())),
+                aliases=tuple(
+                    alias
+                    for alias in aliases_by_asset.get(row[0].asset_id or "", ())
+                    if alias.listing_id is None
+                    or (row[1] is not None and alias.listing_id == row[1].id)
+                ),
+                asset_listing_count=len(listings_by_asset.get(row[0].asset_id or "", ())),
+                candidate_listings=tuple(listings_by_asset.get(row[0].asset_id or "", ())),
+                candidate_aliases=tuple(aliases_by_asset.get(row[0].asset_id or "", ())),
+                candidate_health=tuple(health_by_asset.get(row[0].asset_id or "", ())),
+                candidate_prices=tuple(prices_by_asset.get(row[0].asset_id or "", ())),
+                provider_retry_after=retry_by_provider,
             )
             for row in rows
         )

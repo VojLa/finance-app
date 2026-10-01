@@ -11,7 +11,10 @@ describe("ReadModelVersionPoller", () => {
   let documentStub: Document
 
   class TestCustomEvent<T> extends Event {
-    constructor(type: string, readonly detail: T) {
+    constructor(
+      type: string,
+      readonly detail: T
+    ) {
       super(type)
     }
   }
@@ -34,7 +37,11 @@ describe("ReadModelVersionPoller", () => {
   it("records a 204 response without dispatching an update", async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     const dispatchUpdate = vi.fn()
-    const poller = new ReadModelVersionPoller({ fetchImplementation, dispatchUpdate, document: documentStub })
+    const poller = new ReadModelVersionPoller({
+      fetchImplementation,
+      dispatchUpdate,
+      document: documentStub,
+    })
 
     poller.start()
     await vi.runAllTicks()
@@ -42,6 +49,71 @@ describe("ReadModelVersionPoller", () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(1)
     expect(dispatchUpdate).not.toHaveBeenCalled()
     poller.stop()
+  })
+
+  it("keeps browser timer functions bound to the global receiver", async () => {
+    const scheduleTimeout = vi.fn(function (this: unknown, handler: () => void, timeout: number) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation")
+      return globalThis.setTimeout(handler, timeout)
+    })
+    const cancelTimeout = vi.fn(function (
+      this: unknown,
+      handle: ReturnType<typeof globalThis.setTimeout>
+    ) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation")
+      globalThis.clearTimeout(handle)
+    })
+    const poller = new ReadModelVersionPoller({
+      fetchImplementation: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      document: documentStub,
+      setTimeout: scheduleTimeout,
+      clearTimeout: cancelTimeout,
+    })
+
+    poller.start()
+    await vi.runAllTicks()
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
+    expect(scheduleTimeout).toHaveBeenCalledOnce()
+
+    poller.stop()
+    expect(cancelTimeout).toHaveBeenCalledOnce()
+  })
+
+  it("invokes the default browser timers through their global host", async () => {
+    const originalSetTimeout = globalThis.setTimeout
+    const originalClearTimeout = globalThis.clearTimeout
+    const scheduleTimeout = vi.fn(function (this: unknown, handler: () => void, timeout: number) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation")
+      return Reflect.apply(originalSetTimeout, globalThis, [handler, timeout])
+    })
+    const cancelTimeout = vi.fn(function (
+      this: unknown,
+      handle: ReturnType<typeof globalThis.setTimeout>
+    ) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation")
+      Reflect.apply(originalClearTimeout, globalThis, [handle])
+    })
+    Object.assign(globalThis, { setTimeout: scheduleTimeout, clearTimeout: cancelTimeout })
+
+    try {
+      const poller = new ReadModelVersionPoller({
+        fetchImplementation: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+        document: documentStub,
+      })
+
+      poller.start()
+      await vi.runAllTicks()
+      for (let index = 0; index < 10; index += 1) await Promise.resolve()
+      expect(scheduleTimeout).toHaveBeenCalledOnce()
+
+      poller.stop()
+      expect(cancelTimeout).toHaveBeenCalledOnce()
+    } finally {
+      Object.assign(globalThis, {
+        setTimeout: originalSetTimeout,
+        clearTimeout: originalClearTimeout,
+      })
+    }
   })
 
   it("dispatches only a changed version and carries its scopes", async () => {
@@ -54,7 +126,11 @@ describe("ReadModelVersionPoller", () => {
         new Response(JSON.stringify({ version: "second", scopes: ["dashboard"] }), { status: 200 })
       )
     const dispatchUpdate = vi.fn()
-    const poller = new ReadModelVersionPoller({ fetchImplementation, dispatchUpdate, document: documentStub })
+    const poller = new ReadModelVersionPoller({
+      fetchImplementation,
+      dispatchUpdate,
+      document: documentStub,
+    })
 
     poller.start()
     await vi.runAllTicks()
@@ -64,7 +140,8 @@ describe("ReadModelVersionPoller", () => {
     expect(
       isReadModelUpdateForScope(
         new TestCustomEvent("finance:read-model-updated", {
-          version: "second", scopes: ["dashboard"],
+          version: "second",
+          scopes: ["dashboard"],
         }),
         "dashboard"
       )
@@ -72,7 +149,8 @@ describe("ReadModelVersionPoller", () => {
     expect(
       isReadModelUpdateForScope(
         new TestCustomEvent("finance:read-model-updated", {
-          version: "second", scopes: ["dashboard"],
+          version: "second",
+          scopes: ["dashboard"],
         }),
         "portfolio"
       )
@@ -83,7 +161,9 @@ describe("ReadModelVersionPoller", () => {
   it("does not poll while hidden and preserves the ten-minute request limit on return", async () => {
     const fetchImplementation = vi
       .fn()
-      .mockResolvedValue(new Response(JSON.stringify({ version: "first", scopes: [] }), { status: 200 }))
+      .mockResolvedValue(
+        new Response(JSON.stringify({ version: "first", scopes: [] }), { status: 200 })
+      )
     const poller = new ReadModelVersionPoller({ fetchImplementation, document: documentStub })
 
     visibilityState = "hidden"

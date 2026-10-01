@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 
 from app.db.models.enums import AssetAliasProvider, AssetType
 from app.modules.asset_aliases.models import (
     AssetAliasInvalidError,
+    CreateAssetListingCommand,
     OnboardAssetAliasCommand,
+    RejectAssetAliasCommand,
 )
 from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.prices.providers.coingecko_identity import (
@@ -44,6 +47,10 @@ YAHOO_FINANCE_ASSET_TYPES = TWELVE_DATA_ASSET_TYPES | frozenset({AssetType.crypt
 
 _SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,63}\Z")
 _CURRENCY = re.compile(r"[A-Z]{3}\Z")
+_ACTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@:-]{1,127}\Z")
+REJECTION_REASONS = frozenset(
+    {"wrong_instrument", "wrong_listing", "invalid_provider_identity", "insufficient_evidence"}
+)
 
 
 def _fail() -> AssetAliasInvalidError:
@@ -87,6 +94,8 @@ def validate_onboard_asset_alias_command(
 ) -> OnboardAssetAliasCommand:
     if (
         not isinstance(value, OnboardAssetAliasCommand)
+        or not isinstance(value.actor, str)
+        or not _ACTOR.fullmatch(value.actor)
         or not isinstance(value.asset_id, str)
         or not value.asset_id
         or value.asset_id != value.asset_id.strip()
@@ -113,6 +122,15 @@ def validate_onboard_asset_alias_command(
         or value.created_at.tzinfo is not None
         or value.created_at.microsecond % 1_000 != 0
         or value.expected_asset_type not in provider_asset_types(value.provider)
+        or (
+            value.listing_id is not None
+            and (
+                not isinstance(value.listing_id, str)
+                or not value.listing_id
+                or value.listing_id != value.listing_id.strip()
+            )
+        )
+        or (value.provider is AssetAliasProvider.yahoo_finance and value.listing_id is None)
     ):
         raise _fail()
     if canonical_external_id(value.provider, value.external_id) != value.external_id:
@@ -126,12 +144,100 @@ def validate_onboard_asset_alias_command(
     return value
 
 
+def validate_reject_asset_alias_command(value: object) -> RejectAssetAliasCommand:
+    if (
+        not isinstance(value, RejectAssetAliasCommand)
+        or not isinstance(value.actor, str)
+        or not _ACTOR.fullmatch(value.actor)
+        or not isinstance(value.asset_id, str)
+        or not value.asset_id
+        or value.asset_id != value.asset_id.strip()
+        or not isinstance(value.listing_id, str)
+        or not value.listing_id
+        or value.listing_id != value.listing_id.strip()
+        or not isinstance(value.provider, AssetAliasProvider)
+        or value.provider not in SUPPORTED_ASSET_ALIAS_PROVIDERS
+        or not isinstance(value.external_id, str)
+        or not isinstance(value.reason, str)
+        or value.reason not in REJECTION_REASONS
+    ):
+        raise _fail()
+    if canonical_external_id(value.provider, value.external_id) != value.external_id:
+        raise _fail()
+    return value
+
+
+def validate_create_asset_listing_command(value: object) -> CreateAssetListingCommand:
+    if (
+        not isinstance(value, CreateAssetListingCommand)
+        or not isinstance(value.actor, str)
+        or not _ACTOR.fullmatch(value.actor)
+        or not isinstance(value.asset_id, str)
+        or not value.asset_id
+        or value.asset_id != value.asset_id.strip()
+        or not isinstance(value.expected_symbol, str)
+        or not _SYMBOL.fullmatch(value.expected_symbol)
+        or not isinstance(value.expected_asset_type, AssetType)
+        or not isinstance(value.expected_currency, str)
+        or not _CURRENCY.fullmatch(value.expected_currency)
+        or (
+            value.expected_isin is not None
+            and (
+                not isinstance(value.expected_isin, str)
+                or not value.expected_isin.isascii()
+                or not value.expected_isin.isupper()
+                or len(value.expected_isin) > 32
+                or not value.expected_isin
+            )
+        )
+        or not isinstance(value.symbol, str)
+        or not _SYMBOL.fullmatch(value.symbol)
+        or not isinstance(value.exchange, str)
+        or not value.exchange
+        or value.exchange != value.exchange.strip()
+        or len(value.exchange) > 128
+        or (
+            value.mic is not None
+            and (not isinstance(value.mic, str) or not re.fullmatch(r"[A-Z0-9]{4}", value.mic))
+        )
+        or not isinstance(value.currency, str)
+        or not _CURRENCY.fullmatch(value.currency)
+        or not isinstance(value.provider, AssetAliasProvider)
+        or value.provider not in SUPPORTED_ASSET_ALIAS_PROVIDERS
+        or not isinstance(value.provider_symbol, str)
+        or type(value.base_priority) is not int
+        or value.base_priority < 0
+        or value.base_priority > 1_000_000
+        or not isinstance(value.created_at, datetime)
+        or value.created_at.tzinfo is not None
+        or value.created_at.microsecond % 1_000 != 0
+        or value.expected_asset_type not in provider_asset_types(value.provider)
+    ):
+        raise _fail()
+    if canonical_external_id(value.provider, value.provider_symbol) != value.provider_symbol:
+        raise _fail()
+    if value.provider is AssetAliasProvider.twelve_data:
+        identity = json.loads(value.provider_symbol)
+        if identity.get("symbol") != value.symbol or identity.get("mic_code") != value.mic:
+            raise _fail()
+    if (
+        value.provider is AssetAliasProvider.yahoo_finance
+        and value.expected_asset_type is AssetType.crypto
+    ):
+        if value.provider_symbol != f"{value.symbol}-{value.currency}":
+            raise _fail()
+    return value
+
+
 __all__ = [
     "COINGECKO_ASSET_TYPES",
+    "REJECTION_REASONS",
     "SUPPORTED_ASSET_ALIAS_PROVIDERS",
     "TWELVE_DATA_ASSET_TYPES",
     "YAHOO_FINANCE_ASSET_TYPES",
     "canonical_external_id",
     "provider_asset_types",
+    "validate_create_asset_listing_command",
     "validate_onboard_asset_alias_command",
+    "validate_reject_asset_alias_command",
 ]

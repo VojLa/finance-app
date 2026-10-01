@@ -396,6 +396,7 @@ async def _seed_investment(
                         if provider is AssetAliasProvider.coingecko
                         else PriceSource.twelve_data
                     ),
+                    provider_symbol=external_id,
                     timestamp=BASELINE_AT,
                     created_at=BASELINE_AT,
                 ),
@@ -410,6 +411,7 @@ async def _seed_investment(
                         if provider is AssetAliasProvider.coingecko
                         else PriceSource.twelve_data
                     ),
+                    provider_symbol=external_id,
                     timestamp=CURRENT_AT,
                     created_at=CURRENT_AT,
                 ),

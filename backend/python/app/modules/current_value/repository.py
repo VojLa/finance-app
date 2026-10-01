@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select, text, union_all
+from sqlalchemy import func, select, text, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountMemberModel
@@ -14,9 +15,12 @@ from app.db.models.enums import (
     BackgroundJobKind,
     BackgroundJobStatus,
     ExchangeRateSource,
+    MarketDataFailureReason,
+    PriceSource,
 )
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
 from app.db.models.transactions import TransactionModel
@@ -34,6 +38,16 @@ from app.modules.portfolio_snapshot.reader import (
     ReadExactPortfolioSnapshotCommand,
 )
 from app.modules.snapshots.evidence_repository import AccountSnapshotEvidenceRepository
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentListingSelectionContext:
+    requested_listing: AssetListingModel
+    asset: AssetModel
+    candidate_listings: tuple[AssetListingModel, ...]
+    aliases: tuple[AssetAliasModel, ...]
+    health: tuple[MarketDataListingHealthModel, ...]
+    provider_retry_after: tuple[tuple[PriceSource, datetime], ...]
 
 
 class CurrentValueRepository:
@@ -265,11 +279,18 @@ class CurrentValueRepository:
     async def load_listing_identities(
         self,
         listing_ids: tuple[str, ...],
-    ) -> tuple[tuple[AssetListingModel, AssetModel, tuple[AssetAliasModel, ...]], ...]:
+    ) -> tuple[tuple[AssetListingModel, AssetModel, tuple[AssetAliasModel, ...], int], ...]:
         metadata = await self.load_listing_metadata(listing_ids)
         if not metadata:
             return ()
         asset_ids = tuple(sorted({asset.id for _, asset in metadata}))
+        count_rows = await self.session.execute(
+            select(AssetListingModel.asset_id, func.count(AssetListingModel.id))
+            .where(AssetListingModel.asset_id.in_(asset_ids))
+            .group_by(AssetListingModel.asset_id)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        listing_counts = {asset_id: int(count) for asset_id, count in count_rows.all()}
         alias_rows = await self.session.scalars(
             select(AssetAliasModel)
             .where(AssetAliasModel.asset_id.in_(asset_ids))
@@ -284,7 +305,96 @@ class CurrentValueRepository:
         by_asset: dict[str, list[AssetAliasModel]] = {asset_id: [] for asset_id in asset_ids}
         for alias in alias_rows.all():
             by_asset[alias.asset_id].append(alias)
-        return tuple((listing, asset, tuple(by_asset[asset.id])) for listing, asset in metadata)
+        return tuple(
+            (
+                listing,
+                asset,
+                tuple(
+                    alias
+                    for alias in by_asset[asset.id]
+                    if alias.listing_id is None or alias.listing_id == listing.id
+                ),
+                listing_counts[asset.id],
+            )
+            for listing, asset in metadata
+        )
+
+    async def load_listing_selection_contexts(
+        self,
+        listing_ids: tuple[str, ...],
+    ) -> tuple[CurrentListingSelectionContext, ...]:
+        metadata = await self.load_listing_metadata(listing_ids)
+        if not metadata:
+            return ()
+        asset_ids = tuple(sorted({asset.id for _, asset in metadata}))
+        listings = (
+            await self.session.scalars(
+                select(AssetListingModel)
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(AssetListingModel.asset_id, AssetListingModel.id)
+                .execution_options(populate_existing=True, autoflush=False)
+            )
+        ).all()
+        aliases = (
+            await self.session.scalars(
+                select(AssetAliasModel)
+                .where(AssetAliasModel.asset_id.in_(asset_ids))
+                .order_by(AssetAliasModel.asset_id, AssetAliasModel.id)
+                .execution_options(populate_existing=True, autoflush=False)
+            )
+        ).all()
+        health = (
+            await self.session.scalars(
+                select(MarketDataListingHealthModel)
+                .join(
+                    AssetListingModel,
+                    AssetListingModel.id == MarketDataListingHealthModel.listing_id,
+                )
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(
+                    MarketDataListingHealthModel.listing_id, MarketDataListingHealthModel.provider
+                )
+                .execution_options(populate_existing=True, autoflush=False)
+            )
+        ).all()
+        retry_rows = await self.session.execute(
+            select(
+                MarketDataListingHealthModel.provider,
+                func.max(MarketDataListingHealthModel.retry_after),
+            )
+            .where(
+                MarketDataListingHealthModel.last_failure_reason
+                == MarketDataFailureReason.rate_limit,
+                MarketDataListingHealthModel.retry_after.is_not(None),
+            )
+            .group_by(MarketDataListingHealthModel.provider)
+            .order_by(MarketDataListingHealthModel.provider)
+            .execution_options(populate_existing=True, autoflush=False)
+        )
+        retry_by_provider = tuple(
+            (provider, retry_after)
+            for provider, retry_after in retry_rows.all()
+            if retry_after is not None
+        )
+        return tuple(
+            CurrentListingSelectionContext(
+                requested_listing=listing,
+                asset=asset,
+                candidate_listings=tuple(item for item in listings if item.asset_id == asset.id),
+                aliases=tuple(item for item in aliases if item.asset_id == asset.id),
+                health=tuple(
+                    item
+                    for item in health
+                    if any(
+                        candidate.id == item.listing_id
+                        for candidate in listings
+                        if candidate.asset_id == asset.id
+                    )
+                ),
+                provider_retry_after=retry_by_provider,
+            )
+            for listing, asset in metadata
+        )
 
     async def load_price_candidates(
         self,

@@ -5,7 +5,7 @@
 
 # Code Inventory — backend/python/app
 
-**Files:** 329
+**Files:** 340
 
 - `backend/python/app/__init__.py`
 - `backend/python/app/api/__init__.py`
@@ -30,6 +30,7 @@
 - `backend/python/app/db/health.py`
 - `backend/python/app/db/models/__init__.py`
 - `backend/python/app/db/models/accounts.py`
+- `backend/python/app/db/models/asset_alias_audit.py`
 - `backend/python/app/db/models/assets.py`
 - `backend/python/app/db/models/background_jobs.py`
 - `backend/python/app/db/models/budgets.py`
@@ -43,6 +44,7 @@
 - `backend/python/app/db/models/investment_snapshots.py`
 - `backend/python/app/db/models/ledger.py`
 - `backend/python/app/db/models/liabilities.py`
+- `backend/python/app/db/models/market_health.py`
 - `backend/python/app/db/models/prices.py`
 - `backend/python/app/db/models/publication_targets.py`
 - `backend/python/app/db/models/snapshot_series_jobs.py`
@@ -175,7 +177,12 @@
 - `backend/python/app/modules/liabilities/writer_repository.py`
 - `backend/python/app/modules/market_data/__init__.py`
 - `backend/python/app/modules/market_data/acquisition_cache.py`
+- `backend/python/app/modules/market_data/exchange_calendar.py`
+- `backend/python/app/modules/market_data/exchange_registry.py`
 - `backend/python/app/modules/market_data/factory.py`
+- `backend/python/app/modules/market_data/health.py`
+- `backend/python/app/modules/market_data/health_repository.py`
+- `backend/python/app/modules/market_data/health_service.py`
 - `backend/python/app/modules/market_data/history/__init__.py`
 - `backend/python/app/modules/market_data/history/coingecko.py`
 - `backend/python/app/modules/market_data/history/factory.py`
@@ -185,15 +192,19 @@
 - `backend/python/app/modules/market_data/history/ranges.py`
 - `backend/python/app/modules/market_data/history/selection.py`
 - `backend/python/app/modules/market_data/history/twelve_data.py`
+- `backend/python/app/modules/market_data/listing_selection.py`
 - `backend/python/app/modules/market_data/models.py`
 - `backend/python/app/modules/market_data/policy.py`
+- `backend/python/app/modules/market_data/provider_failure.py`
 - `backend/python/app/modules/market_data/providers.py`
 - `backend/python/app/modules/market_data/requirements.py`
 - `backend/python/app/modules/market_data/requirements_repository.py`
+- `backend/python/app/modules/market_data/retry.py`
 - `backend/python/app/modules/market_data/service.py`
 - `backend/python/app/modules/market_data/source_policy.py`
 - `backend/python/app/modules/market_data/writer.py`
 - `backend/python/app/modules/market_data/writer_repository.py`
+- `backend/python/app/modules/market_data/yahoo_exchange_mapping.py`
 - `backend/python/app/modules/net_worth/__init__.py`
 - `backend/python/app/modules/net_worth/api.py`
 - `backend/python/app/modules/net_worth/evidence_service.py`

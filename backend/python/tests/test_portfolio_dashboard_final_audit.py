@@ -943,6 +943,7 @@ def test_public_nested_response_shapes_are_exact() -> None:
         "account_id",
         "account_name",
         "account_currency",
+        "portfolio_allocation_pct",
         "position",
     }
     assert set(MultiAccountPortfolioSummaryResponse.model_fields) == {

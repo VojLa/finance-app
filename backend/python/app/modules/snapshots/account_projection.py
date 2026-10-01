@@ -81,6 +81,7 @@ class SelectedPriceEvidence:
     currency: str
     source: PriceSource
     timestamp: datetime
+    requested_listing_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,28 +502,37 @@ def _validate_prices(
     holdings: dict[str, SnapshotHoldingEvidence],
 ) -> dict[str, SelectedPriceEvidence]:
     prices: dict[str, SelectedPriceEvidence] = {}
-    price_ids: set[str] = set()
+    price_ids: dict[str, SelectedPriceEvidence] = {}
     for price in evidence.prices:
         price_id = _nonblank(price.price_id)
         listing_id = _nonblank(price.listing_id)
+        requested_listing_id = (
+            listing_id
+            if price.requested_listing_id is None
+            else _nonblank(price.requested_listing_id)
+        )
         timestamp = _timestamp(price.timestamp)
-        holding = holdings.get(listing_id)
+        holding = holdings.get(requested_listing_id)
         if (
-            price_id in price_ids
-            or listing_id in prices
+            requested_listing_id in prices
             or holding is None
             or timestamp > evidence.snapshot_timestamp
             or _nonblank(price.asset_id) != holding.asset_id
             or _currency(price.symbol) != holding.symbol
         ):
             raise _fail()
+        previous = price_ids.get(price_id)
+        if previous is not None and replace(
+            previous, requested_listing_id=None, symbol=""
+        ) != replace(price, requested_listing_id=None, symbol=""):
+            raise _fail()
         # Provider quote currency is price lineage; Holding.cost_currency is
         # acquisition lineage. Each is converted independently below.
-        price_ids.add(price_id)
+        price_ids[price_id] = price
         _exact(price.price, QUANTITY, positive=True)
         _currency(price.currency)
         _enum(price.source, PriceSource)
-        prices[listing_id] = price
+        prices[requested_listing_id] = price
     if prices.keys() != holdings.keys():
         raise _fail()
     return prices

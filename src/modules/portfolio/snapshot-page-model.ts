@@ -7,7 +7,14 @@ export type PortfolioPagePosition = Readonly<{
   accountId: string
   accountName: string
   accountCurrency: string
+  allocationPct: string
   position: PortfolioSnapshotPosition
+}>
+
+export type PortfolioPageAllocation = Readonly<{
+  key: string
+  name: string
+  allocationPct: string
 }>
 
 export type PortfolioPageSummary =
@@ -21,7 +28,7 @@ export type PortfolioPageView = Readonly<{
   currency: string
   summary: PortfolioPageSummary
   positions: readonly PortfolioPagePosition[]
-  hasServerAllocation: boolean
+  allocations: readonly PortfolioPageAllocation[]
 }>
 
 export type PortfolioPageAccountView = PortfolioPageView &
@@ -45,6 +52,7 @@ function positionRows(account: PortfolioAccountSnapshot): PortfolioPagePosition[
     accountId: account.account.accountId,
     accountName: account.account.name,
     accountCurrency: account.account.currency,
+    allocationPct: position.allocationPct,
     position,
   }))
 }
@@ -58,7 +66,11 @@ function accountView(account: PortfolioAccountSnapshot): PortfolioPageAccountVie
     currency: account.currency,
     summary: account.summary,
     positions: positionRows(account),
-    hasServerAllocation: true,
+    allocations: account.positions.map((position) => ({
+      key: position.listingId,
+      name: position.symbol,
+      allocationPct: position.allocationPct,
+    })),
   }
 }
 
@@ -79,9 +91,14 @@ export function buildPortfolioPageModel(data: PortfolioSnapshotData): PortfolioP
         accountId: item.accountId,
         accountName: item.accountName,
         accountCurrency: item.accountCurrency,
+        allocationPct: item.portfolioAllocationPct,
         position: item.position,
       })),
-      hasServerAllocation: data.accounts.length === 1,
+      allocations: data.aggregatePositions.map((item) => ({
+        key: `${item.accountId}:${item.position.listingId}`,
+        name: `${item.position.symbol} · ${item.accountName}`,
+        allocationPct: item.portfolioAllocationPct,
+      })),
     },
     accounts,
   }

@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.prices.providers.yahoo_finance_models import YahooFinanceHttpResponse
 from app.modules.prices.providers.yahoo_finance_transport import HttpxYahooFinanceChartTransport
 
 BASE_URL = "https://query1.finance.yahoo.test/v8/finance/chart"
@@ -49,21 +50,22 @@ async def test_transport_requests_one_encoded_chart_without_redirect_or_credenti
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "response",
-    [
-        httpx.Response(302, headers={"location": "https://elsewhere.test"}),
-        httpx.Response(429, headers={"content-type": "application/json"}),
-        httpx.Response(200, headers={"content-type": "text/html"}, content=b"bad"),
-    ],
-)
-async def test_transport_rejects_redirect_quota_and_wrong_content_type(
-    response: httpx.Response,
-) -> None:
+async def test_transport_returns_non_200_status_and_sanitized_retry_after() -> None:
+    response = httpx.Response(429, headers={"rEtRy-AfTeR": " 120 "})
+
+    result = await _transport(lambda _: response).fetch_chart(
+        "VUAA.MI", start=START, end=END, interval="1m"
+    )
+
+    assert result == YahooFinanceHttpResponse(429, "", b"", "120")
+
+
+@pytest.mark.asyncio
+async def test_transport_rejects_wrong_content_type() -> None:
     with pytest.raises(MarketEvidenceStateError):
-        await _transport(lambda _: response).fetch_chart(
-            "VUAA.MI", start=START, end=END, interval="1m"
-        )
+        await _transport(
+            lambda _: httpx.Response(200, headers={"content-type": "text/html"}, content=b"bad")
+        ).fetch_chart("VUAA.MI", start=START, end=END, interval="1m")
 
 
 @pytest.mark.asyncio

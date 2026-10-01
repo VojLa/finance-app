@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.models.enums import ExchangeRateSource, PriceSource
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.modules.fx.models import ExchangeRateObservation
+from app.modules.market_data import writer as market_data_writer_module
 from app.modules.market_data.models import (
     MarketEvidenceConflictError,
     MarketEvidenceStateError,
@@ -207,6 +208,7 @@ def _price_row(observation: PriceObservation) -> PriceSnapshotModel:
         price=observation.price,
         currency=observation.currency,
         source=observation.provider,
+        provider_symbol=observation.provider_symbol,
         timestamp=observation.observed_at,
         created_at=CREATED_AT,
     )
@@ -305,6 +307,22 @@ async def test_writer_creates_complete_price_and_fx_batch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transactional_finalize_failure_rolls_back_writer_transaction() -> None:
+    writer, session, _ = _writer()
+
+    async def reject_lost_lease() -> None:
+        assert session.active
+        raise MarketEvidenceStateError()
+
+    with pytest.raises(MarketEvidenceStateError):
+        await writer.write(_command(), transactional_finalize=reject_lost_lease)
+
+    assert session.begin_count == 1
+    assert session.commit_count == 0
+    assert session.rollback_count == 1
+
+
+@pytest.mark.asyncio
 async def test_writer_exact_replay_is_read_only() -> None:
     writer, _, repository = _writer()
     price = _price()
@@ -329,7 +347,28 @@ async def test_writer_exact_replay_is_read_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_writer_can_reuse_an_immutable_fx_rate_after_provider_revision() -> None:
+async def test_writer_rejects_replay_with_different_provider_symbol() -> None:
+    writer, _, repository = _writer()
+    price = _price()
+    stored = _price_row(price)
+    stored.provider_symbol = "OTHER.MI"
+    repository.prices[(price.listing_id, price.observed_at, price.provider)] = stored
+    repository.price_ids[stored.id] = stored
+
+    with pytest.raises(MarketEvidenceConflictError):
+        await writer.write(_command(prices=(price,), rates=()))
+
+
+@pytest.mark.asyncio
+async def test_writer_can_reuse_an_immutable_fx_rate_after_provider_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        market_data_writer_module.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(message % args),
+    )
     writer, _, repository = _writer()
     stored = _rate(rate="25.12345678")
     revised = _rate(rate="25.99999999")
@@ -352,6 +391,49 @@ async def test_writer_can_reuse_an_immutable_fx_rate_after_provider_revision() -
     assert result.rates_replayed == 1
     assert repository.rate_ids[stored_row.id].rate == Decimal("25.12345678")
     assert not any(isinstance(call, tuple) and call[0] == "add-rate" for call in repository.calls)
+    assert any("market_evidence_rate_revision_retained" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_fx_revision_without_explicit_policy() -> None:
+    writer, session, repository = _writer()
+    stored = _rate(rate="25.12345678")
+    stored_row = _rate_row(stored)
+    repository.rates[
+        (stored.from_currency, stored.to_currency, stored.effective_at, stored.provider)
+    ] = stored_row
+    repository.rate_ids[stored_row.id] = stored_row
+
+    with pytest.raises(MarketEvidenceConflictError):
+        await writer.write(_command(prices=(), rates=(_rate(rate="25.99999999"),)))
+
+    assert session.rollback_count == 1
+    assert repository.rate_ids[stored_row.id].rate == stored.rate
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_fx_revision_with_mismatched_physical_id() -> None:
+    writer, session, repository = _writer()
+    stored = _rate(rate="25.12345678")
+    stored_row = _rate_row(stored)
+    stored_row.id = "other-rate-id"
+    repository.rates[
+        (stored.from_currency, stored.to_currency, stored.effective_at, stored.provider)
+    ] = stored_row
+    repository.rate_ids[stored_row.id] = stored_row
+
+    with pytest.raises(MarketEvidenceConflictError):
+        await writer.write(
+            PersistMarketEvidenceCommand(
+                price_observations=(),
+                exchange_rate_observations=(_rate(rate="25.99999999"),),
+                created_at=CREATED_AT,
+                reuse_persisted_fx_on_conflict=True,
+            )
+        )
+
+    assert session.rollback_count == 1
+    assert repository.rate_ids[stored_row.id].rate == stored.rate
 
 
 @pytest.mark.asyncio

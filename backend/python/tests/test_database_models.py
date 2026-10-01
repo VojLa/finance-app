@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "AccountSnapshotCanonicalBoundary",
     "Asset",
     "AssetAlias",
+    "AssetAliasAudit",
     "AssetListing",
     "BackgroundJob",
     "Budget",
@@ -44,6 +45,7 @@ EXPECTED_TABLES = {
     "InvestmentAccountSnapshot",
     "InvestmentAccountSnapshotItem",
     "LiabilityBalance",
+    "MarketDataListingHealth",
     "NetWorthSnapshot",
     "SnapshotGeneration",
     "SnapshotGenerationTarget",
@@ -172,6 +174,20 @@ EXPECTED_ENUMS = {
     "InvestmentMovementKind": ["asset", "cash", "fee", "tax"],
     "LiabilityBalanceSource": ["manual", "statement", "provider", "import", "migration"],
     "MovementDirection": ["in", "out"],
+    "MarketDataHealthState": ["healthy", "suspect", "degraded", "unavailable", "unknown"],
+    "MarketDataFailureReason": [
+        "timeout",
+        "rate_limit",
+        "server_error",
+        "unknown_symbol",
+        "currency_conflict",
+        "provider_identity_conflict",
+        "incomplete_response",
+        "invalid_price",
+        "stale_timestamp",
+        "market_closed",
+        "missing_provider_symbol",
+    ],
     "PriceSource": [
         "coingecko",
         "yahoo_finance",
@@ -229,7 +245,7 @@ def test_complete_schema_mirror_maps_all_tables() -> None:
     tables = {table.name: table for table in Base.metadata.tables.values()}
 
     assert set(tables) == EXPECTED_TABLES
-    assert len(tables) == 61
+    assert len(tables) == 63
     assert all(table.schema == "public" for table in tables.values())
     expected_nonstandard_primary_keys = {
         "AccountCanonicalState": ["accountId"],
@@ -275,7 +291,7 @@ def test_all_foreign_keys_target_mapped_tables() -> None:
 def test_complete_schema_mirror_reuses_all_postgresql_enums() -> None:
     enums = mapped_enums()
 
-    assert len(enums) == 31
+    assert len(enums) == 33
     assert {name: enum.enums for name, enum in enums.items()} == EXPECTED_ENUMS
     assert all(enum.create_type is False for enum in enums.values())
 

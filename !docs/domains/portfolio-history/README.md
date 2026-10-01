@@ -32,7 +32,8 @@ one atomic publication switch.
 The public history endpoint serves at most 480 timestamp-unique snapshot points
 for the selected range. Portfolio points come directly from `PortfolioSnapshot`;
 an account-filtered range uses its published `AccountSnapshot`. Tooltip positions,
-allocation, P/L, invested value and invested cash flow belong to that same snapshot.
+allocation, P/L, invested value, investment cost basis and invested cash flow
+belong to that same snapshot.
 Native `*ByCurrency` values are retained and the scalar output currency is only a
 derived presentation aggregate.
 

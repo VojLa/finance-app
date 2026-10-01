@@ -6,8 +6,8 @@ from scripts.sqlalchemy_schema import compare_snapshots, local_snapshot, normali
 def test_local_snapshot_contains_complete_schema() -> None:
     snapshot = local_snapshot()
 
-    assert len(snapshot["tables"]) == 61
-    assert len(snapshot["enums"]) == 31
+    assert len(snapshot["tables"]) == 63
+    assert len(snapshot["enums"]) == 33
     generation = snapshot["tables"]["SnapshotGeneration"]
     assert [column["name"] for column in generation["columns"]] == [
         "id",

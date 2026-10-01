@@ -241,6 +241,7 @@ def test_thin_adapter_maps_exact_command_and_serializes_public_view(
                 "costBasis": "80.0000000000",
                 "costCurrency": "EUR",
                 "unrealizedPnl": "20.0000000000",
+                "unrealizedPnlPct": "25.0000",
                 "allocationPct": "100.0000",
                 "nativeValue": "100.0000000000",
                 "nativeValueCurrency": "USD",
@@ -304,6 +305,7 @@ def test_public_response_preserves_unknown_cost_metrics_as_json_null(
     assert body["positions"][0]["costBasis"] is None
     assert body["positions"][0]["costCurrency"] is None
     assert body["positions"][0]["unrealizedPnl"] is None
+    assert body["positions"][0]["unrealizedPnlPct"] is None
     assert body["positions"][0]["nativeCostBasis"] is None
     assert body["positions"][0]["nativeCostCurrency"] is None
     assert body["positions"][0]["nativeCostBasisByCurrency"] is None

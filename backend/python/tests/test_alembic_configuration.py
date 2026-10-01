@@ -31,6 +31,9 @@ SNAPSHOT_SERIES_JOBS_REVISION = "3y0001snapshotjobs"
 HISTORY_DROP_REVISION = "3z0001historydrop"
 ANYCOIN_TRANSFER_VALUATION_REVISION = "400001anycoinvaluation"
 TEMPORAL_SERIES_REVISION = "410001serieslinks"
+LISTING_MARKET_IDENTITY_REVISION = "420001yahooidentity"
+LISTING_PROVIDER_HEALTH_REVISION = "430001markethealth"
+ASSET_ALIAS_AUDIT_REVISION = "440001assetaudit"
 
 
 def test_alembic_configuration_uses_local_migration_directory() -> None:
@@ -48,9 +51,9 @@ def test_alembic_revision_graph_contains_current_snapshot_generation_head() -> N
     revisions = list(directory.walk_revisions())
     by_revision = {revision.revision: revision for revision in revisions}
 
-    assert directory.get_heads() == [TEMPORAL_SERIES_REVISION]
+    assert directory.get_heads() == [ASSET_ALIAS_AUDIT_REVISION]
     assert directory.get_bases() == [BASELINE_REVISION]
-    assert len(revisions) == 26
+    assert len(revisions) == 29
     assert by_revision[BASELINE_REVISION].down_revision is None
     assert by_revision[BASELINE_REVISION].branch_labels == {"prisma_baseline"}
     assert by_revision[CUTOVER_REVISION].down_revision == BASELINE_REVISION
@@ -94,3 +97,9 @@ def test_alembic_revision_graph_contains_current_snapshot_generation_head() -> N
     assert (
         by_revision[TEMPORAL_SERIES_REVISION].down_revision == ANYCOIN_TRANSFER_VALUATION_REVISION
     )
+    assert by_revision[LISTING_MARKET_IDENTITY_REVISION].down_revision == TEMPORAL_SERIES_REVISION
+    assert (
+        by_revision[LISTING_PROVIDER_HEALTH_REVISION].down_revision
+        == LISTING_MARKET_IDENTITY_REVISION
+    )
+    assert by_revision[ASSET_ALIAS_AUDIT_REVISION].down_revision == LISTING_PROVIDER_HEALTH_REVISION

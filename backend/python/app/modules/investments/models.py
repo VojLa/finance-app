@@ -299,15 +299,47 @@ class SymbolPositionResponse(BaseModel):
     name: str | None
     asset_type: AssetType = Field(serialization_alias="assetType")
     quantity: Decimal
-    avg_buy_price: Decimal = Field(serialization_alias="avgBuyPrice")
+    avg_buy_price: Decimal | None = Field(serialization_alias="avgBuyPrice")
     currency: str
     current_price: Decimal | None = Field(serialization_alias="currentPrice")
     current_value: Decimal | None = Field(serialization_alias="currentValue")
     unrealized_pnl: Decimal | None = Field(serialization_alias="unrealizedPnl")
     realized_pnl: Decimal | None = Field(serialization_alias="realizedPnl")
     calculated_at: datetime = Field(serialization_alias="calculatedAt")
+    asset_name: str | None = Field(serialization_alias="assetName")
+    asset_isin: str | None = Field(serialization_alias="assetIsin")
+    listing_symbol: str | None = Field(serialization_alias="listingSymbol")
+    listing_exchange: str | None = Field(serialization_alias="listingExchange")
+    listing_mic: str | None = Field(serialization_alias="listingMic")
+    listing_currency: str | None = Field(serialization_alias="listingCurrency")
+    listing_base_priority: int | None = Field(serialization_alias="listingBasePriority")
+    requested_listing_id: str = Field(serialization_alias="requestedListingId")
+    selected_listing_id: str | None = Field(serialization_alias="selectedListingId")
+    selection_reason: str | None = Field(serialization_alias="selectionReason")
+    fallback_reason: str | None = Field(serialization_alias="fallbackReason")
+    selected_base_priority: int | None = Field(serialization_alias="selectedBasePriority")
+    selected_health: str | None = Field(serialization_alias="selectedHealth")
+    selected_provider: str | None = Field(serialization_alias="selectedProvider")
+    selected_provider_symbol: str | None = Field(serialization_alias="selectedProviderSymbol")
+    market_provider: str | None = Field(serialization_alias="marketProvider")
+    market_provider_symbol: str | None = Field(serialization_alias="marketProviderSymbol")
+    price_amount: Decimal | None = Field(serialization_alias="priceAmount")
+    price_currency: str | None = Field(serialization_alias="priceCurrency")
+    price_timestamp: datetime | None = Field(serialization_alias="priceTimestamp")
+    price_source: str | None = Field(serialization_alias="priceSource")
+    price_provider_symbol: str | None = Field(serialization_alias="priceProviderSymbol")
+    price_snapshot_id: str | None = Field(serialization_alias="priceSnapshotId")
+    price_freshness: Literal["fresh", "stale", "unavailable"] = Field(
+        serialization_alias="priceFreshness"
+    )
+    fx_evidence_id: str | None = Field(serialization_alias="fxEvidenceId")
+    fx_rate: Decimal | None = Field(serialization_alias="fxRate")
+    converted_value: Decimal | None = Field(serialization_alias="convertedValue")
+    trace_status: Literal["ok", "unresolved", "conflict", "stale", "unavailable"] = Field(
+        serialization_alias="traceStatus"
+    )
 
-    @field_serializer("quantity", "avg_buy_price")
+    @field_serializer("quantity")
     def serialize_required_numeric(self, value: Decimal) -> str:
         return serialize_quantity(value)
 
@@ -316,6 +348,10 @@ class SymbolPositionResponse(BaseModel):
         "current_value",
         "unrealized_pnl",
         "realized_pnl",
+        "price_amount",
+        "avg_buy_price",
+        "fx_rate",
+        "converted_value",
     )
     def serialize_optional_numeric(self, value: Decimal | None) -> str | None:
         return None if value is None else serialize_quantity(value)
@@ -323,6 +359,10 @@ class SymbolPositionResponse(BaseModel):
     @field_serializer("calculated_at")
     def serialize_calculated_at(self, value: datetime) -> str:
         return value.isoformat(timespec="milliseconds")
+
+    @field_serializer("price_timestamp")
+    def serialize_price_timestamp(self, value: datetime | None) -> str | None:
+        return None if value is None else value.isoformat(timespec="milliseconds")
 
 
 class SymbolEventResponse(BaseModel):

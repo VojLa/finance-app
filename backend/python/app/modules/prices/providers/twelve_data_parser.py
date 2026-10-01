@@ -7,7 +7,9 @@ import re
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
+from app.db.models.enums import MarketDataFailureReason
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.prices.providers.twelve_data_identity import TwelveDataQuoteIdentity
 from app.modules.prices.providers.twelve_data_models import TwelveDataQuote
 
@@ -73,11 +75,11 @@ def _integer(value: object) -> int:
 
 def _price(value: object) -> Decimal:
     if not isinstance(value, str) or not _DECIMAL.fullmatch(value):
-        raise _fail()
+        raise ProviderFailure(MarketDataFailureReason.invalid_price)
     try:
         result = Decimal(value)
     except InvalidOperation as exc:
-        raise _fail() from exc
+        raise ProviderFailure(MarketDataFailureReason.invalid_price) from exc
     exponent = result.as_tuple().exponent
     if (
         not result.is_finite()
@@ -86,7 +88,7 @@ def _price(value: object) -> Decimal:
         or exponent < -10
         or max(result.adjusted() + 1, 0) > 18
     ):
-        raise _fail()
+        raise ProviderFailure(MarketDataFailureReason.invalid_price)
     return result
 
 
@@ -118,6 +120,12 @@ def parse_twelve_data_quote(
     symbol = document.get("symbol")
     mic_code = document.get("mic_code")
     currency = document.get("currency")
+    if isinstance(symbol, str) and symbol != identity.symbol:
+        raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict)
+    if isinstance(mic_code, str) and mic_code != identity.mic_code:
+        raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict)
+    if isinstance(currency, str) and currency != listing_currency:
+        raise ProviderFailure(MarketDataFailureReason.currency_conflict)
     datetime_text = document.get("datetime")
     if (
         symbol != identity.symbol

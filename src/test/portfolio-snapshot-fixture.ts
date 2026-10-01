@@ -84,6 +84,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             quantity: "1.0000000000",
             symbol: "AAA",
             unrealizedPnl: "23.4567880000",
+            unrealizedPnlPct: "23.4568",
             value: "123.456789",
             valueCurrency: "CZK",
           },
@@ -137,6 +138,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
             quantity: "1.0000000000",
             symbol: "BBB",
             unrealizedPnl: "10.0000000000",
+            unrealizedPnlPct: "33.3333",
             value: "40.000000",
             valueCurrency: "USD",
           },
@@ -148,6 +150,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
         accountId: "account-a",
         accountName: "Broker A",
         accountCurrency: "CZK",
+        portfolioAllocationPct: "75.5287",
         position: {
           allocationPct: "60.0000",
           assetId: "asset-a",
@@ -167,6 +170,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           quantity: "1.0000000000",
           symbol: "AAA",
           unrealizedPnl: "23.4567880000",
+          unrealizedPnlPct: "23.4568",
           value: "123.456789",
           valueCurrency: "EUR",
         },
@@ -175,6 +179,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
         accountId: "account-b",
         accountName: "Wallet B",
         accountCurrency: "USD",
+        portfolioAllocationPct: "24.4713",
         position: {
           allocationPct: "100.0000",
           assetId: "asset-b",
@@ -194,6 +199,7 @@ export function portfolioSnapshotFixture(): PortfolioSnapshotData {
           quantity: "1.0000000000",
           symbol: "BBB",
           unrealizedPnl: "10.0000000000",
+          unrealizedPnlPct: "33.3333",
           value: "40.000000",
           valueCurrency: "EUR",
         },
@@ -229,6 +235,7 @@ export function anycoinIncompletePortfolioSnapshotFixture(): PortfolioSnapshotDa
     position.costBasis = null
     position.costCurrency = null
     position.unrealizedPnl = null
+    Object.assign(position, { unrealizedPnlPct: null })
     position.nativeCostBasis = null
     position.nativeCostCurrency = null
     position.nativeCostBasisByCurrency = null

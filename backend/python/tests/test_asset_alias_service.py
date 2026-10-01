@@ -6,20 +6,27 @@ from typing import Any, cast
 
 import pytest
 
-from app.db.models.assets import AssetAliasModel, AssetModel
-from app.db.models.enums import AssetAliasProvider, AssetType
+from app.db.models.asset_alias_audit import AssetAliasAuditModel
+from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
+from app.db.models.enums import AssetAliasProvider, AssetType, PriceSource
 from app.modules.asset_aliases.models import (
     AssetAliasConflictError,
     AssetAliasInvalidError,
     AssetAliasNotFoundError,
     AssetAliasOnboardingDisposition,
     AssetAliasStateError,
+    CreateAssetListingCommand,
     OnboardAssetAliasCommand,
     OnboardAssetAliasResult,
+    RejectAssetAliasCommand,
+    UnresolvedAssetAlias,
 )
 from app.modules.asset_aliases.service import (
+    AssetAliasDecisionService,
+    AssetAliasInventoryService,
     AssetAliasOnboardingService,
     AssetAliasWriter,
+    AssetListingCreationService,
     asset_alias_id,
 )
 
@@ -28,6 +35,7 @@ CREATED_AT = datetime(2026, 8, 5, 12, 30, 0, 123000)
 
 def _command(**overrides: object) -> OnboardAssetAliasCommand:
     values: dict[str, object] = {
+        "actor": "operator-test",
         "asset_id": "asset-a",
         "provider": AssetAliasProvider.coingecko,
         "external_id": "bitcoin",
@@ -68,6 +76,25 @@ def _alias(**overrides: object) -> AssetAliasModel:
     return AssetAliasModel(**values)
 
 
+def _listing(**overrides: object) -> AssetListingModel:
+    values: dict[str, object] = {
+        "id": "listing-a",
+        "asset_id": "asset-a",
+        "symbol": "BTC",
+        "exchange": "NASDAQ",
+        "mic": "XNAS",
+        "currency": "USD",
+        "country": "US",
+        "provider": PriceSource.yahoo_finance,
+        "provider_symbol": "BTC-USD",
+        "is_primary": True,
+        "created_at": CREATED_AT,
+        "updated_at": CREATED_AT,
+    }
+    values.update(overrides)
+    return AssetListingModel(**values)
+
+
 class _Transaction(AbstractAsyncContextManager[None]):
     def __init__(self, session: _Session) -> None:
         self.session = session
@@ -105,17 +132,22 @@ class _Repository:
         self,
         *,
         asset: AssetModel | object | None = ...,
+        listing: AssetListingModel | None = None,
         aliases: tuple[AssetAliasModel, ...] = (),
         external_alias: AssetAliasModel | None = None,
         id_alias: AssetAliasModel | None = None,
         reload_override: AssetAliasModel | object | None = ...,
     ) -> None:
         self.asset = _asset() if asset is ... else cast(AssetModel | None, asset)
+        self.listing = listing
         self.aliases = aliases
         self.external_alias = external_alias
         self.id_alias = id_alias
         self.reload_override = reload_override
         self.pending: AssetAliasModel | None = None
+        self.audits: list[AssetAliasAuditModel] = []
+        self.pending_listing: AssetListingModel | None = None
+        self.provider_listings: tuple[AssetListingModel, ...] = ()
         self.read_only_count = 0
         self.serializable_count = 0
         self.lock_scopes: tuple[str, ...] = ()
@@ -127,11 +159,24 @@ class _Repository:
     async def set_transaction_serializable(self) -> None:
         self.serializable_count += 1
 
+    async def health_summary(
+        self, provider: AssetAliasProvider, *, as_of: datetime
+    ) -> dict[str, object]:
+        return {"provider": provider.value, "asOf": as_of.isoformat()}
+
+    async def list_unresolved(
+        self, provider: AssetAliasProvider
+    ) -> tuple[UnresolvedAssetAlias, ...]:
+        return ()
+
     async def acquire_identity_locks(self, scopes: tuple[str, ...]) -> None:
         self.lock_scopes = scopes
 
     async def load_asset(self, asset_id: str) -> AssetModel | None:
         return self.asset
+
+    async def load_listing(self, listing_id: str) -> AssetListingModel | None:
+        return self.listing or self.pending_listing
 
     async def load_asset_provider_aliases(
         self,
@@ -152,6 +197,17 @@ class _Repository:
 
     def add_alias(self, row: AssetAliasModel) -> None:
         self.pending = row
+
+    def add_audit(self, row: AssetAliasAuditModel) -> None:
+        self.audits.append(row)
+
+    async def load_provider_listings(
+        self, provider: PriceSource, provider_symbol: str
+    ) -> tuple[AssetListingModel, ...]:
+        return self.provider_listings
+
+    def add_listing(self, row: AssetListingModel) -> None:
+        self.pending_listing = row
 
     async def flush(self) -> None:
         self.flush_count += 1
@@ -212,6 +268,9 @@ async def test_writer_creates_exact_immutable_alias() -> None:
     assert repository.lock_scopes == tuple(sorted(repository.lock_scopes))
     assert len(repository.lock_scopes) == 2
     assert repository.flush_count == 1
+    assert len(repository.audits) == 1
+    assert repository.audits[0].action == "alias_created"
+    assert repository.audits[0].actor == "operator-test"
     assert not session.in_transaction()
 
 
@@ -231,6 +290,8 @@ async def test_writer_replays_historical_exact_alias_without_mutation() -> None:
     assert existing.created_at == datetime(2025, 1, 1)
     assert repository.pending is None
     assert repository.flush_count == 0
+    assert len(repository.audits) == 1
+    assert repository.audits[0].action == "alias_replayed"
 
 
 @pytest.mark.asyncio
@@ -494,3 +555,199 @@ async def test_service_requires_boolean_dry_run_and_idle_session() -> None:
         await service.onboard(_command(), dry_run=cast(Any, 1))
     with pytest.raises(AssetAliasStateError):
         await service.onboard(_command())
+
+
+@pytest.mark.asyncio
+async def test_yahoo_listing_alias_create_and_replay_with_other_listing_alias() -> None:
+    first = _alias(
+        id="first-listing-alias",
+        provider=AssetAliasProvider.yahoo_finance,
+        external_id="BTC.L",
+        listing_id="listing-other",
+    )
+    command = _command(
+        provider=AssetAliasProvider.yahoo_finance,
+        external_id="BTC-USD",
+        expected_currency="EUR",
+        listing_id="listing-a",
+    )
+    repository = _Repository(listing=_listing(), aliases=(first,))
+    writer, _ = _writer(repository)
+    created = await writer.write(command)
+
+    assert created.disposition is AssetAliasOnboardingDisposition.created
+    assert repository.pending is not None
+    assert repository.pending.listing_id == "listing-a"
+    assert repository.pending.id == asset_alias_id(
+        "asset-a", AssetAliasProvider.yahoo_finance, "listing-a"
+    )
+
+    existing = repository.pending
+    replay_repository = _Repository(
+        listing=_listing(), aliases=(first, existing), external_alias=existing, id_alias=existing
+    )
+    replay_writer, _ = _writer(replay_repository)
+    replayed = await replay_writer.write(command)
+    assert replayed.alias_id == created.alias_id
+    assert replayed.disposition is AssetAliasOnboardingDisposition.replayed
+
+
+@pytest.mark.asyncio
+async def test_yahoo_listing_alias_rejects_legacy_and_mismatched_listing() -> None:
+    command = _command(
+        provider=AssetAliasProvider.yahoo_finance,
+        external_id="BTC-USD",
+        listing_id="listing-a",
+    )
+    for repository, error in (
+        (_Repository(listing=None), AssetAliasNotFoundError),
+        (_Repository(listing=_listing(asset_id="asset-b")), AssetAliasConflictError),
+        (
+            _Repository(
+                listing=_listing(),
+                aliases=(_alias(provider=AssetAliasProvider.yahoo_finance),),
+            ),
+            AssetAliasConflictError,
+        ),
+        (
+            _Repository(listing=_listing(provider_symbol="ETH-USD")),
+            AssetAliasConflictError,
+        ),
+    ):
+        writer, _ = _writer(repository)
+        with pytest.raises(error):
+            await writer.write(command)
+        assert repository.pending is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_rejection_audits_without_mapping_change() -> None:
+    repository = _Repository(listing=_listing(provider=PriceSource.broker))
+    session = _Session()
+    result = await AssetAliasDecisionService(cast(Any, session), repository=repository).reject(
+        RejectAssetAliasCommand(
+            actor="operator-test",
+            asset_id="asset-a",
+            listing_id="listing-a",
+            provider=AssetAliasProvider.yahoo_finance,
+            external_id="BTC-USD",
+            reason="insufficient_evidence",
+        )
+    )
+    assert result.disposition == "rejected"
+    assert repository.pending is None
+    assert len(repository.audits) == 1
+    assert repository.audits[0].action == "rejected"
+    assert repository.audits[0].reason == "insufficient_evidence"
+    assert not session.in_transaction()
+
+
+@pytest.mark.asyncio
+async def test_rejection_of_existing_mapping_fails_closed() -> None:
+    repository = _Repository(
+        listing=_listing(),
+        external_alias=_alias(provider=AssetAliasProvider.yahoo_finance, external_id="BTC-USD"),
+    )
+    session = _Session()
+    with pytest.raises(AssetAliasConflictError):
+        await AssetAliasDecisionService(cast(Any, session), repository=repository).reject(
+            RejectAssetAliasCommand(
+                actor="operator-test",
+                asset_id="asset-a",
+                listing_id="listing-a",
+                provider=AssetAliasProvider.yahoo_finance,
+                external_id="BTC-USD",
+                reason="wrong_listing",
+            )
+        )
+    assert repository.audits == []
+
+
+@pytest.mark.asyncio
+async def test_create_listing_is_explicit_and_audited() -> None:
+    repository = _Repository()
+    session = _Session()
+    command = CreateAssetListingCommand(
+        actor="operator-test",
+        asset_id="asset-a",
+        expected_symbol="BTC",
+        expected_asset_type=AssetType.crypto,
+        expected_currency="EUR",
+        expected_isin=None,
+        symbol="BTC",
+        exchange="CRYPTO",
+        mic=None,
+        currency="USD",
+        provider=AssetAliasProvider.yahoo_finance,
+        provider_symbol="BTC-USD",
+        base_priority=10,
+        created_at=CREATED_AT,
+    )
+    result = await AssetListingCreationService(cast(Any, session), repository=repository).create(
+        command
+    )
+    assert result.disposition == "created"
+    assert repository.pending_listing is not None
+    assert repository.pending_listing.provider_symbol == "BTC-USD"
+    assert len(repository.audits) == 1
+    assert repository.audits[0].action == "listing_created"
+    assert not session.in_transaction()
+
+
+@pytest.mark.asyncio
+async def test_create_listing_rejects_ambiguous_provider_identity() -> None:
+    repository = _Repository()
+    repository.provider_listings = (_listing(provider_symbol="BTC-USD"),)
+    session = _Session()
+    command = CreateAssetListingCommand(
+        actor="operator-test",
+        asset_id="asset-a",
+        expected_symbol="BTC",
+        expected_asset_type=AssetType.crypto,
+        expected_currency="EUR",
+        expected_isin=None,
+        symbol="BTC",
+        exchange="CRYPTO",
+        mic=None,
+        currency="USD",
+        provider=AssetAliasProvider.yahoo_finance,
+        provider_symbol="BTC-USD",
+        base_priority=10,
+        created_at=CREATED_AT,
+    )
+    with pytest.raises(AssetAliasConflictError):
+        await AssetListingCreationService(cast(Any, session), repository=repository).create(command)
+    assert repository.pending_listing is None
+    assert repository.audits == []
+
+
+@pytest.mark.asyncio
+async def test_onboard_rejects_direct_identity_owned_by_other_asset() -> None:
+    repository = _Repository()
+    repository.provider_listings = (
+        _listing(
+            id="foreign-listing",
+            asset_id="foreign-asset",
+            provider=PriceSource.coingecko,
+            provider_symbol="bitcoin",
+        ),
+    )
+    writer, _ = _writer(repository)
+    with pytest.raises(AssetAliasConflictError):
+        await writer.write(_command())
+    assert repository.pending is None
+    assert repository.audits == []
+
+
+@pytest.mark.asyncio
+async def test_health_summary_is_read_only() -> None:
+    repository = _Repository()
+    session = _Session()
+    result = await AssetAliasInventoryService(
+        cast(Any, session), repository=repository
+    ).health_summary(AssetAliasProvider.coingecko)
+    assert result["provider"] == "coingecko"
+    assert repository.read_only_count == 1
+    assert repository.serializable_count == 0
+    assert repository.audits == []
+    assert not session.in_transaction()

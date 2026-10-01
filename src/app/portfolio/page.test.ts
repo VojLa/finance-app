@@ -231,13 +231,22 @@ describe("portfolio page snapshot workflow", () => {
 
   it("never uses current monetary breakdowns for a pinned historical point", async () => {
     const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
-    expect(page).not.toMatch(/selectedHistoryPoint\?\.cashByCurrency\?\.map[\s\S]*?\?\? view\.summary\.cashByCurrency/)
-    expect(page).not.toMatch(/selectedHistoryPoint\?\.netInvestedByCurrency\?\.map[\s\S]*?\?\? view\.summary\.netDepositsByCurrency/)
+    expect(page).not.toMatch(
+      /selectedHistoryPoint\?\.cashByCurrency\?\.map[\s\S]*?\?\? view\.summary\.cashByCurrency/
+    )
+    expect(page).not.toMatch(
+      /selectedHistoryPoint\?\.netInvestedByCurrency\?\.map[\s\S]*?\?\? view\.summary\.netDepositsByCurrency/
+    )
     expect(page).toContain("Historická hodnota není dostupná")
   })
 
   it("guards the mount request and does not render a manifest or raw error fields", async () => {
     const page = await readFile(path.join(process.cwd(), "src/app/portfolio/page.tsx"), "utf8")
+    const holdings = await readFile(
+      path.join(process.cwd(), "src/modules/portfolio/SnapshotHoldingsTable.tsx"),
+      "utf8"
+    )
+    const portfolioSource = `${page}\n${holdings}`
 
     expect(page).toContain("initialLoadStarted.current")
     expect(page).toContain("void loadPortfolio()")
@@ -268,7 +277,17 @@ describe("portfolio page snapshot workflow", () => {
     expect(page).toContain("SnapshotCurrencyBreakdown")
     expect(page).toContain("Hotovost podle měny")
     expect(page).toContain("Čisté vklady podle měny")
+    expect(portfolioSource).toContain("Zisk / ztráta")
+    expect(portfolioSource).toContain("formatSnapshotQuantity(row.quantity)")
+    expect(portfolioSource).toContain("formatSnapshotPercentage(row.allocationPct)")
+    expect(portfolioSource).toContain("row.unrealizedPnlPct")
+    expect(portfolioSource).toContain("snapshotPercentageTone(row.unrealizedPnlPct)")
     expect(page).toContain("<SnapshotHoldingsTable")
+    expect(page.match(/<SnapshotHoldingsTable/g)).toHaveLength(1)
+    expect(page).toContain("const displayHistoryPoint = selectedHistoryPoint")
+    expect(page).toContain("min-h-[50px]")
+    expect(page).toContain("min-h-[92px]")
+    expect(page).toContain("<SnapshotAllocationPie items={allocationItems}")
     expect(page).toContain('state.status === "error"')
     expect(page).toContain("{state.message}")
     expect(page).not.toMatch(/\b(?:snapshotId|manifest|request_id|traceback|raw body)\b/i)

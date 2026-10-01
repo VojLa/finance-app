@@ -27,13 +27,13 @@ def test_source_policy_defaults_to_canonical_provider_selection() -> None:
     assert policy.fx_source is ExchangeRateSource.twelve_data
 
 
-def test_local_free_policy_routes_all_supported_assets_and_fx_to_yahoo() -> None:
+def test_local_free_policy_routes_crypto_to_coingecko_and_securities_fx_to_yahoo() -> None:
     policy = market_evidence_source_policy_from_settings(
         Settings(market_evidence_source_mode="local_free", _env_file=None)
     )
     assert policy is LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
-    assert policy.price_sources == frozenset({PriceSource.yahoo_finance})
-    assert policy.price_source_for(AssetType.crypto) is PriceSource.yahoo_finance
+    assert policy.price_sources == frozenset({PriceSource.coingecko, PriceSource.yahoo_finance})
+    assert policy.price_source_for(AssetType.crypto) is PriceSource.coingecko
     assert policy.price_source_for(AssetType.etf) is PriceSource.yahoo_finance
     assert policy.fx_source is ExchangeRateSource.yahoo_finance
 
@@ -52,12 +52,14 @@ def test_production_rejects_local_free_mode() -> None:
         )
 
 
-def test_local_free_factory_registers_only_yahoo_price_and_fx_sources() -> None:
+def test_local_free_factory_registers_coingecko_yahoo_prices_and_yahoo_fx() -> None:
     service = create_production_market_evidence_service(
         MagicMock(spec=AsyncSession),
         Settings(market_evidence_source_mode="local_free", _env_file=None),
     )
-    assert service.price_registry.sources == frozenset({PriceSource.yahoo_finance})
+    assert service.price_registry.sources == frozenset(
+        {PriceSource.coingecko, PriceSource.yahoo_finance}
+    )
     assert service.fx_source is ExchangeRateSource.yahoo_finance
 
 

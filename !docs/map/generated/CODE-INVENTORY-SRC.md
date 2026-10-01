@@ -5,7 +5,7 @@
 
 # Code Inventory — src
 
-**Files:** 222
+**Files:** 226
 
 - `src/app/(auth)/login/page.tsx`
 - `src/app/(auth)/register/page.tsx`
@@ -178,6 +178,7 @@
 - `src/modules/investments/r11g-investment-cutover.test.ts`
 - `src/modules/investments/server/investment-api.ts`
 - `src/modules/notifications/index.ts`
+- `src/modules/portfolio/SnapshotAllocationPie.test.tsx`
 - `src/modules/portfolio/SnapshotAllocationPie.tsx`
 - `src/modules/portfolio/SnapshotCurrencyBreakdown.test.tsx`
 - `src/modules/portfolio/SnapshotCurrencyBreakdown.tsx`
@@ -187,9 +188,12 @@
 - `src/modules/portfolio/r11h-compatibility-removal.test.ts`
 - `src/modules/portfolio/r6-final-audit.test.ts`
 - `src/modules/portfolio/r7-final-audit.test.ts`
+- `src/modules/portfolio/snapshot-allocation-pie.ts`
 - `src/modules/portfolio/snapshot-history-client.test.ts`
 - `src/modules/portfolio/snapshot-history-client.ts`
 - `src/modules/portfolio/snapshot-history-contract.ts`
+- `src/modules/portfolio/snapshot-holdings-table.test.ts`
+- `src/modules/portfolio/snapshot-holdings-table.ts`
 - `src/modules/portfolio/snapshot-page-client.test.ts`
 - `src/modules/portfolio/snapshot-page-client.ts`
 - `src/modules/portfolio/snapshot-page-format.test.ts`

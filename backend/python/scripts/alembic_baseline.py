@@ -49,9 +49,12 @@ SNAPSHOT_SERIES_JOBS_REVISION = "3y0001snapshotjobs"
 HISTORY_DROP_REVISION = "3z0001historydrop"
 VALUATION_EVIDENCE_REVISION = "400001anycoinvaluation"
 TEMPORAL_SERIES_REVISION = "410001serieslinks"
-HEAD_REVISION = TEMPORAL_SERIES_REVISION
-EXPECTED_TABLE_COUNT = 61
-EXPECTED_ENUM_COUNT = 31
+LISTING_MARKET_IDENTITY_REVISION = "420001yahooidentity"
+LISTING_PROVIDER_HEALTH_REVISION = "430001markethealth"
+ASSET_ALIAS_AUDIT_REVISION = "440001assetaudit"
+HEAD_REVISION = ASSET_ALIAS_AUDIT_REVISION
+EXPECTED_TABLE_COUNT = 63
+EXPECTED_ENUM_COUNT = 33
 HISTORY_GENERATION_TABLE_COUNT = 54
 HISTORY_GENERATION_ENUM_COUNT = 34
 PREVIOUS_HEAD_TABLE_COUNT = 36
@@ -79,9 +82,9 @@ def verify_revision_graph() -> None:
     heads = directory.get_heads()
     bases = directory.get_bases()
 
-    if len(revisions) != 26:
+    if len(revisions) != 29:
         raise RuntimeError(
-            f"Expected exactly twenty-six Alembic revisions, found {len(revisions)}."
+            f"Expected exactly twenty-nine Alembic revisions, found {len(revisions)}."
         )
     if heads != [HEAD_REVISION]:
         raise RuntimeError(f"Expected Alembic head {HEAD_REVISION}, found {heads}.")
@@ -115,6 +118,9 @@ def verify_revision_graph() -> None:
     history_drop = by_revision.get(HISTORY_DROP_REVISION)
     valuation_evidence = by_revision.get(VALUATION_EVIDENCE_REVISION)
     temporal_series = by_revision.get(TEMPORAL_SERIES_REVISION)
+    listing_market_identity = by_revision.get(LISTING_MARKET_IDENTITY_REVISION)
+    listing_provider_health = by_revision.get(LISTING_PROVIDER_HEALTH_REVISION)
+    asset_alias_audit = by_revision.get(ASSET_ALIAS_AUDIT_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The Alembic baseline revision graph is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
@@ -211,12 +217,29 @@ def verify_revision_graph() -> None:
         )
     if temporal_series is None or temporal_series.down_revision != VALUATION_EVIDENCE_REVISION:
         raise RuntimeError("Temporal snapshot-series links must follow valuation evidence.")
+    if (
+        listing_market_identity is None
+        or listing_market_identity.down_revision != TEMPORAL_SERIES_REVISION
+    ):
+        raise RuntimeError("Listing market identity must follow temporal series links.")
+    if (
+        listing_provider_health is None
+        or listing_provider_health.down_revision != LISTING_MARKET_IDENTITY_REVISION
+    ):
+        raise RuntimeError("Listing provider health must follow listing market identity.")
+    if (
+        asset_alias_audit is None
+        or asset_alias_audit.down_revision != LISTING_PROVIDER_HEALTH_REVISION
+    ):
+        raise RuntimeError("Asset alias audit must follow listing provider health.")
 
 
 def verify_manifest() -> None:
     manifest = tomllib.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 25:
-        raise RuntimeError("Ownership manifest schema_version must be 25 after snapshot cutover.")
+    if manifest.get("schema_version") != 27:
+        raise RuntimeError(
+            "Ownership manifest schema_version must be 27 after audit schema addition."
+        )
     if manifest.get("current_migration_owner") != "alembic":
         raise RuntimeError("Alembic must be the current migration owner after cutover.")
     if manifest.get("target_migration_owner") != "alembic":
@@ -245,7 +268,7 @@ def verify_manifest() -> None:
     expected: dict[str, Any] = {
         "state": "inherited_by_alembic_owner",
         "revision": BASELINE_REVISION,
-        "revision_count": 26,
+        "revision_count": 29,
         "head_count": 1,
         "head_revision": HEAD_REVISION,
         "upgrade_is_noop": True,
@@ -356,6 +379,12 @@ def verify_database_state(state: DatabaseState) -> None:
     elif revision == HEAD_REVISION:
         expected_tables = EXPECTED_TABLE_COUNT
         expected_enums = EXPECTED_ENUM_COUNT
+    elif revision == LISTING_PROVIDER_HEALTH_REVISION:
+        expected_tables = 62
+        expected_enums = 33
+    elif revision in {TEMPORAL_SERIES_REVISION, LISTING_MARKET_IDENTITY_REVISION}:
+        expected_tables = 61
+        expected_enums = 31
     elif revision in {
         DAILY_BASELINE_REVISION,
         DIRECT_FX_REVISION,

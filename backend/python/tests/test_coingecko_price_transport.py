@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.prices.providers.coingecko_models import CoinGeckoHttpResponse
 from app.modules.prices.providers.coingecko_transport import (
     HttpxCoinGeckoPriceTransport,
 )
@@ -89,9 +90,6 @@ async def test_transport_sends_optional_demo_key_only_in_header() -> None:
         (404, "application/json"),
         (429, "application/json"),
         (500, "application/json"),
-        (200, None),
-        (200, "text/html"),
-        (200, "application/xml"),
     ],
 )
 async def test_transport_rejects_status_or_content_type(
@@ -106,9 +104,27 @@ async def test_transport_rejects_status_or_content_type(
         headers = {"content-type": content_type} if content_type else {}
         return httpx.Response(status, headers=headers, content=b"{}")
 
-    with pytest.raises(MarketEvidenceStateError, match="unavailable"):
-        await _transport(handler).fetch_simple_price("bitcoin", "eur")
+    result = await _transport(handler).fetch_simple_price("bitcoin", "eur")
     assert calls == 1
+    assert result == CoinGeckoHttpResponse(status, "application/json", b"", None)
+
+
+@pytest.mark.asyncio
+async def test_transport_rejects_wrong_content_type() -> None:
+    with pytest.raises(MarketEvidenceStateError, match="unavailable"):
+        await _transport(
+            lambda _: httpx.Response(200, headers={"content-type": "text/html"}, content=b"{}")
+        ).fetch_simple_price("bitcoin", "eur")
+
+
+@pytest.mark.asyncio
+async def test_transport_carries_sanitized_retry_after_without_response_body() -> None:
+    result = await _transport(
+        lambda _: httpx.Response(429, headers={"rEtRy-AfTeR": " 120 "}, content=b"private")
+    ).fetch_simple_price("bitcoin", "eur")
+
+    assert result == CoinGeckoHttpResponse(429, "", b"", "120")
+    assert "private" not in repr(result)
 
 
 @pytest.mark.asyncio

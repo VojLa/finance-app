@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.modules.jobs.lifecycle import automatic_retry_at
 from app.modules.portfolio_history.jobs.models import (
     PortfolioHistoryJobCheckpoint,
+    PortfolioHistoryJobPhase,
     PortfolioHistoryJobProgress,
     PortfolioHistoryJobResult,
 )
@@ -167,7 +168,11 @@ class PortfolioHistoryJobWorker:
     async def _complete(
         self, claimed: ClaimedPortfolioHistoryJob, result: PortfolioHistoryJobResult
     ) -> None:
-        progress = PortfolioHistoryJobProgress(phase="completed", completed_units=1, total_units=1)
+        progress = PortfolioHistoryJobProgress(
+            phase=PortfolioHistoryJobPhase.completed,
+            completed_units=1,
+            total_units=1,
+        )
         async with self.session_factory() as session:
             await PortfolioHistoryJobRepository(session).complete(
                 lease=claimed.lease,

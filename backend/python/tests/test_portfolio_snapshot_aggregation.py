@@ -20,6 +20,7 @@ from app.modules.portfolio_snapshot.aggregate_models import (
 from app.modules.portfolio_snapshot.aggregation import (
     MultiAccountPortfolioProjectionError,
     build_multi_account_portfolio_view,
+    portfolio_allocation_percentage,
 )
 from app.modules.portfolio_snapshot.models import (
     AccountType,
@@ -166,6 +167,31 @@ def _source(
 
 def _view(account_id: str, **changes: Any) -> PortfolioSnapshotView:
     return build_portfolio_snapshot_view(_source(account_id, **changes))
+
+
+@pytest.mark.parametrize(
+    ("value", "total", "expected"),
+    (
+        ("1.000000", "3.000000", "33.3333"),
+        ("2.000000", "3.000000", "66.6667"),
+        ("0.000000", "0.000000", "0.0000"),
+    ),
+)
+def test_portfolio_allocation_percentage_is_exact_and_zero_safe(
+    value: str,
+    total: str,
+    expected: str,
+) -> None:
+    assert portfolio_allocation_percentage(Decimal(value), Decimal(total)) == Decimal(expected)
+
+
+@pytest.mark.parametrize(
+    ("value", "total"),
+    (("-1.000000", "10.000000"), ("11.000000", "10.000000"), ("1.000000", "0.000000")),
+)
+def test_portfolio_allocation_percentage_fails_closed(value: str, total: str) -> None:
+    with pytest.raises(MultiAccountPortfolioProjectionError):
+        portfolio_allocation_percentage(Decimal(value), Decimal(total))
 
 
 def test_one_account_view_produces_identical_aggregate_summary() -> None:

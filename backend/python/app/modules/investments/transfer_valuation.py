@@ -261,6 +261,17 @@ def validate_transfer_valuation_citations(
 ) -> None:
     """Prove that every denormalized monetary field matches its immutable citation."""
 
+    exact_price_identity = price is not None and (
+        price.listing_id == movement.listing_id
+        or (
+            movement.source_symbol == "BTC"
+            and movement.currency == "BTC"
+            and movement.source_asset_type is AssetType.crypto
+            and price.source is PriceSource.yahoo_finance
+            and price.currency == "USD"
+            and getattr(price, "provider_symbol", None) == "BTC-USD"
+        )
+    )
     if (
         price is None
         or price.id != evidence.price_snapshot_id
@@ -269,7 +280,7 @@ def validate_transfer_valuation_citations(
         or price.source is not evidence.price_source
         or price.timestamp != evidence.price_timestamp
         or price.asset_id != movement.asset_id
-        or price.listing_id != movement.listing_id
+        or not exact_price_identity
     ):
         raise _fail()
     if evidence.exchange_rate_id is None:

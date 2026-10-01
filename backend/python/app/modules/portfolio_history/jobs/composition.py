@@ -100,9 +100,12 @@ def create_historical_provider_bundle(
             fx_providers={ExchangeRateSource.twelve_data: canonical_fx},
         )
     elif source_policy.mode == "local_free":
-        local_price, local_fx = create_local_free_historical_providers(settings)
+        local_listed, local_crypto, local_fx = create_local_free_historical_providers(settings)
         bundle = HistoricalProviderBundle(
-            price_providers={PriceSource.yahoo_finance: local_price},
+            price_providers={
+                PriceSource.yahoo_finance: local_listed,
+                PriceSource.coingecko: local_crypto,
+            },
             fx_providers={ExchangeRateSource.yahoo_finance: local_fx},
         )
     else:  # pragma: no cover - validated source policy owns this branch.

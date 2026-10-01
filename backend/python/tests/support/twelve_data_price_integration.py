@@ -118,12 +118,8 @@ async def seed_listed_holding(
                     id=listing_id,
                     asset_id=asset_id,
                     symbol="AAPL",
-                    exchange=(
-                        f"trading212-{prefix}"
-                        if exact_trading212_identity
-                        else f"trading212-{prefix}-other"
-                    ),
-                    mic="XLON",
+                    exchange="NASDAQ",
+                    mic="XNAS",
                     currency="USD",
                     country="US",
                     provider=PriceSource.broker,

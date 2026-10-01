@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -17,6 +18,8 @@ from app.db.models.enums import (
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
+    MarketDataFailureReason,
+    MarketDataHealthState,
     MovementDirection,
     PriceSource,
     TransactionClassification,
@@ -25,6 +28,8 @@ from app.db.models.enums import (
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.market_health import MarketDataListingHealthModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
 from app.modules.market_data.models import MarketEvidenceStateError, PriceRequirement
@@ -32,6 +37,7 @@ from app.modules.market_data.providers import PriceProviderRegistry
 from app.modules.market_data.requirements import (
     BuildMarketEvidenceRefreshPlanCommand,
     MarketEvidenceRequirementsPlanner,
+    resolve_price_identity,
 )
 from app.modules.market_data.requirements_repository import PersistedMarketHolding
 from app.modules.market_data.source_policy import (
@@ -67,8 +73,10 @@ class _Repository:
     async def load_holdings(
         self,
         account_ids: tuple[str, ...],
+        *,
+        through: datetime,
     ) -> tuple[PersistedMarketHolding, ...]:
-        self.calls.append(("holdings", account_ids))
+        self.calls.append(("holdings", account_ids, through))
         return self.holdings
 
     async def load_transactions(
@@ -159,6 +167,7 @@ def _holding(
     aliases: tuple[AssetAliasModel, ...] = (),
     symbol: str = "SAME",
     asset_type: AssetType = AssetType.etf,
+    asset_listing_count: int = 1,
 ) -> PersistedMarketHolding:
     asset = AssetModel(
         id=f"asset-{suffix}",
@@ -203,7 +212,7 @@ def _holding(
         calculated_at=SNAPSHOT_AT,
         updated_at=SNAPSHOT_AT,
     )
-    return PersistedMarketHolding(holding, listing, asset, aliases)
+    return PersistedMarketHolding(holding, listing, asset, aliases, asset_listing_count)
 
 
 def _alias(
@@ -211,14 +220,95 @@ def _alias(
     external_id: str,
     *,
     asset_id: str = "asset-1",
+    listing_id: str | None = None,
 ) -> AssetAliasModel:
     return AssetAliasModel(
         id=f"alias-{provider.value}",
         asset_id=asset_id,
+        listing_id=listing_id,
         provider=provider,
         external_id=external_id,
         created_at=SNAPSHOT_AT,
     )
+
+
+def test_yahoo_aliases_resolve_only_for_their_listing() -> None:
+    persisted = _holding(provider=PriceSource.broker, asset_listing_count=2)
+    assert persisted.listing is not None and persisted.asset is not None
+    other = _alias(AssetAliasProvider.yahoo_finance, "VUAA.DE", listing_id="other-listing")
+    matching = _alias(AssetAliasProvider.yahoo_finance, "VUAA.MI", listing_id=persisted.listing.id)
+    identity = resolve_price_identity(
+        listing=persisted.listing,
+        asset=persisted.asset,
+        aliases=(other, matching),
+        supported_sources=frozenset({PriceSource.yahoo_finance}),
+        asset_listing_count=2,
+    )
+    assert identity.provider_symbol == "VUAA.MI"
+    assert identity.price_currency == "EUR"
+
+
+def test_yahoo_aliases_for_one_listing_must_be_unambiguous() -> None:
+    persisted = _holding(provider=PriceSource.broker)
+    assert persisted.listing is not None and persisted.asset is not None
+    with pytest.raises(MarketEvidenceStateError):
+        resolve_price_identity(
+            listing=persisted.listing,
+            asset=persisted.asset,
+            aliases=(
+                _alias(AssetAliasProvider.yahoo_finance, "VUAA.MI", listing_id="listing-1"),
+                _alias(AssetAliasProvider.yahoo_finance, "VUAA.DE", listing_id="listing-1"),
+            ),
+            supported_sources=frozenset({PriceSource.yahoo_finance}),
+            asset_listing_count=1,
+        )
+
+
+@pytest.mark.parametrize("listing_count", [None, 2])
+def test_legacy_yahoo_alias_fails_with_unproven_or_multiple_listings(
+    listing_count: int | None,
+) -> None:
+    persisted = _holding(provider=PriceSource.broker)
+    assert persisted.listing is not None and persisted.asset is not None
+    with pytest.raises(MarketEvidenceStateError):
+        resolve_price_identity(
+            listing=persisted.listing,
+            asset=persisted.asset,
+            aliases=(_alias(AssetAliasProvider.yahoo_finance, "VUAA.MI"),),
+            supported_sources=frozenset({PriceSource.yahoo_finance}),
+            asset_listing_count=listing_count,
+        )
+
+
+def test_legacy_yahoo_alias_resolves_for_proven_single_listing() -> None:
+    persisted = _holding(provider=PriceSource.broker)
+    assert persisted.listing is not None and persisted.asset is not None
+    identity = resolve_price_identity(
+        listing=persisted.listing,
+        asset=persisted.asset,
+        aliases=(_alias(AssetAliasProvider.yahoo_finance, "VUAA.MI"),),
+        supported_sources=frozenset({PriceSource.yahoo_finance}),
+        asset_listing_count=1,
+    )
+    assert identity.provider_symbol == "VUAA.MI"
+
+
+def test_asset_scoped_twelve_data_alias_fails_for_multiple_listings() -> None:
+    persisted = _holding(provider=PriceSource.broker, asset_listing_count=2)
+    assert persisted.listing is not None and persisted.asset is not None
+    with pytest.raises(MarketEvidenceStateError):
+        resolve_price_identity(
+            listing=persisted.listing,
+            asset=persisted.asset,
+            aliases=(
+                _alias(
+                    AssetAliasProvider.twelve_data,
+                    '{"symbol":"VUAA","mic_code":"XMIL"}',
+                ),
+            ),
+            supported_sources=frozenset({PriceSource.twelve_data}),
+            asset_listing_count=2,
+        )
 
 
 def _event() -> InvestmentEventModel:
@@ -345,12 +435,288 @@ async def test_plan_uses_exact_listing_identity_and_canonical_order() -> None:
     assert repository.calls == [
         ("user", "user-1"),
         ("accounts", "user-1"),
-        ("holdings", ("account-1",)),
+        ("holdings", ("account-1",), SNAPSHOT_AT),
         ("transactions", ("account-1",), SNAPSHOT_AT),
         ("events", ("account-1",), SNAPSHOT_AT),
         ("movements", ("account-1",), SNAPSHOT_AT),
         ("liabilities", ("account-1",), SNAPSHOT_AT),
     ]
+
+
+@pytest.mark.asyncio
+async def test_closed_market_reuses_exact_previous_close_without_provider_fetch() -> None:
+    repository = _Repository()
+    persisted = _holding()
+    assert persisted.listing is not None and persisted.asset is not None
+    persisted.listing.mic = "XNAS"
+    persisted.listing.base_priority = 100
+    previous_close = PriceSnapshotModel(
+        id="price-previous-close",
+        asset_id=persisted.asset.id,
+        listing_id=persisted.listing.id,
+        provider_symbol="EXACT",
+        price=Decimal("100"),
+        currency="EUR",
+        source=PriceSource.yahoo_finance,
+        timestamp=datetime(2026, 7, 31, 20),
+        created_at=datetime(2026, 7, 31, 20),
+    )
+    repository.holdings = (
+        replace(
+            persisted,
+            candidate_listings=(persisted.listing,),
+            candidate_prices=(previous_close,),
+        ),
+    )
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert plan.price_requirements == ()
+
+
+@pytest.mark.asyncio
+async def test_unknown_calendar_never_guesses_previous_close_reuse() -> None:
+    repository = _Repository()
+    persisted = _holding()
+    assert persisted.listing is not None and persisted.asset is not None
+    persisted.listing.mic = "XZZZ"
+    previous = PriceSnapshotModel(
+        id="price-unknown-calendar",
+        asset_id=persisted.asset.id,
+        listing_id=persisted.listing.id,
+        provider_symbol="EXACT",
+        price=Decimal("100"),
+        currency="EUR",
+        source=PriceSource.yahoo_finance,
+        timestamp=datetime(2026, 7, 31, 20),
+        created_at=datetime(2026, 7, 31, 20),
+    )
+    repository.holdings = (
+        replace(
+            persisted,
+            candidate_listings=(persisted.listing,),
+            candidate_prices=(previous,),
+        ),
+    )
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert len(plan.price_requirements) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_direct_provider_symbol_is_an_explicit_identity_failure() -> None:
+    repository = _Repository()
+    repository.holdings = (_holding(provider_symbol=None),)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert plan.price_requirements == ()
+    assert len(plan.identity_failures) == 1
+    failure = plan.identity_failures[0]
+    assert failure.listing_id == "listing-1"
+    assert failure.provider is PriceSource.yahoo_finance
+    assert failure.reason is MarketDataFailureReason.missing_provider_symbol
+
+
+def _alternate_listing(
+    requested: AssetListingModel,
+    *,
+    listing_id: str = "listing-alternate",
+    priority: int = 80,
+    currency: str = "EUR",
+    asset_id: str | None = None,
+    provider_symbol: str = "ALTERNATE",
+) -> AssetListingModel:
+    return AssetListingModel(
+        id=listing_id,
+        asset_id=asset_id or requested.asset_id,
+        symbol="EXACT-ALT",
+        exchange="XALT",
+        mic="XMIL",
+        currency=currency,
+        country=None,
+        provider=PriceSource.yahoo_finance,
+        provider_symbol=provider_symbol,
+        is_primary=False,
+        base_priority=priority,
+        created_at=SNAPSHOT_AT,
+        updated_at=SNAPSHOT_AT,
+    )
+
+
+def _listing_health(
+    listing: AssetListingModel,
+    state: MarketDataHealthState,
+    *,
+    retry_after: datetime | None = None,
+    lease_expires_at: datetime | None = None,
+) -> MarketDataListingHealthModel:
+    return MarketDataListingHealthModel(
+        id=f"health-{listing.id}",
+        listing_id=listing.id,
+        provider=PriceSource.yahoo_finance,
+        provider_symbol=listing.provider_symbol,
+        state=state,
+        retry_after=retry_after,
+        lease_expires_at=lease_expires_at,
+        state_changed_at=SNAPSHOT_AT,
+    )
+
+
+async def _plan_for_candidates(
+    requested: AssetListingModel,
+    alternate: AssetListingModel,
+    *,
+    health: tuple[MarketDataListingHealthModel, ...] = (),
+    provider_retry_after: tuple[tuple[PriceSource, datetime], ...] = (),
+):
+    repository = _Repository()
+    persisted = repository.holdings[0]
+    repository.holdings = (
+        replace(
+            persisted,
+            candidate_listings=(alternate, requested),
+            candidate_health=health,
+            provider_retry_after=provider_retry_after,
+            asset_listing_count=2,
+        ),
+    )
+    return await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_selects_higher_priority_exact_listing_and_persists_selected_identity() -> None:
+    requested = _holding().listing
+    assert requested is not None
+    requested.base_priority = 50
+    alternate = _alternate_listing(requested, priority=100)
+    plan = await _plan_for_candidates(requested, alternate)
+    price = plan.price_requirements[0]
+    assert (price.listing_id, price.provider_symbol, price.listing_mic) == (
+        alternate.id,
+        "ALTERNATE",
+        "XMIL",
+    )
+    assert price.requested_listing_id == requested.id
+    assert price.selection_reason == "higher_base_priority"
+    assert price.fallback_reason == "higher_base_priority"
+    assert price.selected_base_priority == 100
+    assert price.selected_health == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_plan_skips_degraded_listing_then_restores_it_after_recovery() -> None:
+    requested = _holding().listing
+    assert requested is not None
+    requested.base_priority = 100
+    alternate = _alternate_listing(requested)
+    degraded = await _plan_for_candidates(
+        requested,
+        alternate,
+        health=(_listing_health(requested, MarketDataHealthState.degraded),),
+    )
+    assert degraded.price_requirements[0].listing_id == alternate.id
+    assert degraded.price_requirements[0].fallback_reason == "requested_listing_degraded"
+    recovered = await _plan_for_candidates(
+        requested,
+        alternate,
+        health=(_listing_health(requested, MarketDataHealthState.healthy),),
+    )
+    assert recovered.price_requirements[0].listing_id == requested.id
+    assert recovered.price_requirements[0].selected_health == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_plan_keeps_suspect_preferred_listing_and_ties_are_stable() -> None:
+    requested = _holding().listing
+    assert requested is not None
+    requested.base_priority = 100
+    alternate = _alternate_listing(requested, priority=80)
+    plan = await _plan_for_candidates(
+        requested,
+        alternate,
+        health=(_listing_health(requested, MarketDataHealthState.suspect),),
+    )
+    assert plan.price_requirements[0].listing_id == requested.id
+    assert plan.price_requirements[0].selected_health == "suspect"
+
+    alternate.base_priority = 100
+    alternate.provider_symbol = "AAA"
+    tied = await _plan_for_candidates(requested, alternate)
+    assert tied.price_requirements[0].listing_id == alternate.id
+
+
+@pytest.mark.asyncio
+async def test_plan_excludes_other_asset_and_other_currency() -> None:
+    requested = _holding().listing
+    assert requested is not None
+    requested.base_priority = 10
+    foreign = _alternate_listing(requested, priority=1000, asset_id="foreign-asset")
+    plan = await _plan_for_candidates(requested, foreign)
+    assert plan.price_requirements[0].listing_id == requested.id
+
+    alternate = _alternate_listing(requested, priority=1000, currency="USD")
+    plan = await _plan_for_candidates(requested, alternate)
+    assert plan.price_requirements[0].listing_id == requested.id
+
+
+@pytest.mark.asyncio
+async def test_plan_falls_back_when_requested_provider_identity_is_missing() -> None:
+    persisted = _holding(provider=PriceSource.yahoo_finance, provider_symbol=None)
+    requested = persisted.listing
+    assert requested is not None
+    requested.base_priority = 100
+    alternate = _alternate_listing(requested, priority=80)
+    repository = _Repository()
+    repository.holdings = (
+        replace(
+            persisted,
+            candidate_listings=(requested, alternate),
+            asset_listing_count=2,
+        ),
+    )
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    selected = plan.price_requirements[0]
+    assert selected.requested_listing_id == requested.id
+    assert selected.listing_id == alternate.id
+    assert selected.fallback_reason == "requested_listing_incompatible"
+
+
+@pytest.mark.asyncio
+async def test_plan_respects_persisted_cooldown_and_active_lease() -> None:
+    requested = _holding().listing
+    assert requested is not None
+    requested.base_priority = 100
+    alternate = _alternate_listing(requested)
+    deadline = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=10)
+    with pytest.raises(MarketEvidenceStateError):
+        await _plan_for_candidates(
+            requested,
+            alternate,
+            provider_retry_after=((PriceSource.yahoo_finance, deadline),),
+        )
+
+    leased = await _plan_for_candidates(
+        requested,
+        alternate,
+        health=(
+            _listing_health(requested, MarketDataHealthState.healthy, lease_expires_at=deadline),
+        ),
+    )
+    assert leased.price_requirements[0].listing_id == alternate.id
 
 
 @pytest.mark.asyncio
@@ -386,6 +752,23 @@ async def test_two_exact_listings_of_same_asset_remain_distinct_requirements() -
 
 
 @pytest.mark.asyncio
+async def test_same_listing_in_two_accounts_has_one_price_requirement() -> None:
+    repository = _Repository()
+    repository.accounts = (_account("account-1"), _account("account-2"))
+    first = _holding(account_id="account-1")
+    second = _holding(account_id="account-2")
+    second.holding.id = "holding-second"
+    repository.holdings = (second, first)
+
+    plan = await _planner(repository).build(
+        BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT)
+    )
+
+    assert len(plan.price_requirements) == 1
+    assert plan.price_requirements[0].account_id == "account-1"
+
+
+@pytest.mark.asyncio
 async def test_plan_uses_one_exact_supported_asset_alias() -> None:
     repository = _Repository()
     repository.holdings = (
@@ -409,7 +792,7 @@ async def test_plan_uses_one_exact_supported_asset_alias() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_free_crypto_uses_explicit_usd_quote_and_direct_fx_only() -> None:
+async def test_local_free_crypto_uses_coingecko_native_listing_currency() -> None:
     repository = _Repository()
     policy = LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
     provider = policy.price_source_for(AssetType.crypto)
@@ -421,7 +804,7 @@ async def test_local_free_crypto_uses_explicit_usd_quote_and_direct_fx_only() ->
             listing_currency="EUR",
             provider=PriceSource.broker,
             provider_symbol="ANYCOIN",
-            aliases=(_alias(AssetAliasProvider(provider.value), "BTC-USD"),),
+            aliases=(_alias(AssetAliasProvider(provider.value), "bitcoin"),),
         ),
     )
 
@@ -437,21 +820,46 @@ async def test_local_free_crypto_uses_explicit_usd_quote_and_direct_fx_only() ->
         requirement.provider,
         requirement.provider_symbol,
         requirement.listing_currency,
-    ) == (provider, "BTC-USD", "USD")
+    ) == (provider, "bitcoin", "EUR")
     assert {(item.from_currency, item.to_currency) for item in plan.fx_requirements} == {
         ("EUR", "CZK"),
-        ("USD", "CZK"),
-        ("USD", "EUR"),
     }
-    assert not {
-        ("CZK", "USD"),
-        ("EUR", "USD"),
-    } & {(item.from_currency, item.to_currency) for item in plan.fx_requirements}
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_symbol", ["bitcoin", "BTC-EUR"])
-async def test_local_free_crypto_rejects_wrong_alias_or_quote_currency(
+async def test_local_free_crypto_accepts_explicit_yahoo_pair_listing() -> None:
+    repository = _Repository()
+    policy = LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY
+    repository.holdings = (
+        _holding(
+            symbol="BTC",
+            asset_type=AssetType.crypto,
+            cost_currency="USD",
+            listing_currency="USD",
+            provider=PriceSource.yahoo_finance,
+            provider_symbol="BTC-USD",
+            aliases=(),
+        ),
+    )
+
+    plan = await _planner(
+        repository,
+        price_sources=policy.price_sources,
+        fx_source=policy.fx_source,
+        source_policy=policy,
+    ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+
+    requirement = plan.price_requirements[0]
+    assert (
+        requirement.provider,
+        requirement.provider_symbol,
+        requirement.listing_currency,
+    ) == (PriceSource.yahoo_finance, "BTC-USD", "USD")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_symbol", [" BTC-USD", "ethereum "])
+async def test_local_free_crypto_rejects_malformed_coingecko_alias(
     provider_symbol: str,
 ) -> None:
     repository = _Repository()
@@ -586,11 +994,12 @@ async def test_supported_listing_with_blank_symbol_does_not_guess_from_alias() -
             aliases=(_alias(AssetAliasProvider.coingecko, "coin"),),
         ),
     )
-    with pytest.raises(MarketEvidenceStateError):
-        await _planner(
-            repository,
-            price_sources=frozenset({PriceSource.yahoo_finance, PriceSource.coingecko}),
-        ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+    plan = await _planner(
+        repository,
+        price_sources=frozenset({PriceSource.yahoo_finance, PriceSource.coingecko}),
+    ).build(BuildMarketEvidenceRefreshPlanCommand("user-1", SNAPSHOT_AT))
+    assert plan.price_requirements == ()
+    assert plan.identity_failures[0].reason is MarketDataFailureReason.missing_provider_symbol
 
 
 @pytest.mark.asyncio

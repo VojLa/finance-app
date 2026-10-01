@@ -7,7 +7,9 @@ import re
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
+from app.db.models.enums import MarketDataFailureReason
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.prices.providers.yahoo_finance_models import (
     YahooFinanceChart,
     YahooFinanceChartPoint,
@@ -98,13 +100,13 @@ def _price(value: object, *, price_hint: int) -> Decimal:
         try:
             result = Decimal(value)
         except InvalidOperation as exc:
-            raise _fail() from exc
+            raise ProviderFailure(MarketDataFailureReason.invalid_price) from exc
     else:
-        raise _fail()
+        raise ProviderFailure(MarketDataFailureReason.invalid_price)
     try:
         result = result.quantize(Decimal(1).scaleb(-price_hint), rounding=ROUND_HALF_EVEN)
     except InvalidOperation as exc:
-        raise _fail() from exc
+        raise ProviderFailure(MarketDataFailureReason.invalid_price) from exc
     exponent = result.as_tuple().exponent
     if (
         not result.is_finite()
@@ -113,7 +115,7 @@ def _price(value: object, *, price_hint: int) -> Decimal:
         or exponent < -10
         or max(result.adjusted() + 1, 0) > 18
     ):
-        raise _fail()
+        raise ProviderFailure(MarketDataFailureReason.invalid_price)
     return result
 
 
@@ -138,6 +140,7 @@ def parse_yahoo_finance_chart(
     expected_currency: str,
     maximum_price_hint: int,
     expected_data_granularity: str | None = None,
+    allow_usd_base_short_fx_alias: bool = True,
 ) -> YahooFinanceChart:
     if not isinstance(body, bytes) or not body:
         raise _fail()
@@ -158,6 +161,13 @@ def parse_yahoo_finance_chart(
         raise _fail()
     chart = document.get("chart")
     if (
+        isinstance(chart, dict)
+        and chart.get("result") is None
+        and isinstance(chart.get("error"), dict)
+        and chart["error"].get("code") == "Not Found"
+    ):
+        raise ProviderFailure(MarketDataFailureReason.unknown_symbol)
+    if (
         not isinstance(chart, dict)
         or set(chart) != {"result", "error"}
         or chart["error"] is not None
@@ -170,9 +180,22 @@ def parse_yahoo_finance_chart(
     meta = result.get("meta")
     timestamps = result.get("timestamp")
     indicators = result.get("indicators")
+    if isinstance(meta, dict):
+        if isinstance(meta.get("symbol"), str) and not (
+            _matches_expected_symbol(meta["symbol"], expected_symbol)
+            if allow_usd_base_short_fx_alias
+            else meta["symbol"] == expected_symbol
+        ):
+            raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict)
+        if isinstance(meta.get("currency"), str) and meta["currency"] != expected_currency:
+            raise ProviderFailure(MarketDataFailureReason.currency_conflict)
     if (
         not isinstance(meta, dict)
-        or not _matches_expected_symbol(meta.get("symbol"), expected_symbol)
+        or not (
+            _matches_expected_symbol(meta.get("symbol"), expected_symbol)
+            if allow_usd_base_short_fx_alias
+            else meta.get("symbol") == expected_symbol
+        )
         or meta.get("currency") != expected_currency
         or (
             expected_data_granularity is not None

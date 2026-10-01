@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -633,7 +634,9 @@ class DurableImportJobExecutor:
             rows_total=sum(int(row.rows_total or 0) for row in rows),
             rows_imported=sum(int(row.rows_imported or 0) for row in rows),
             rows_skipped=sum(int(row.rows_skipped or 0) for row in rows),
-            snapshot_refresh_status=snapshot_status.value,
+            snapshot_refresh_status=cast(
+                Literal["created", "replayed", "not_required"], snapshot_status.value
+            ),
             completed_at=completed_at or _now(),
         )
 

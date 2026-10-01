@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
 
@@ -175,6 +175,15 @@ class PortfolioPositionView:
     native_cost_basis_by_currency: tuple[PortfolioCurrencyAmount, ...] | None
     average_buy_price: Decimal | None
     average_buy_price_currency: str | None
+
+    @property
+    def unrealized_pnl_pct(self) -> Decimal | None:
+        if self.cost_basis is None or self.cost_basis <= 0:
+            return None
+        return (((self.value - self.cost_basis) / self.cost_basis) * Decimal(100)).quantize(
+            Decimal("0.0001"),
+            rounding=ROUND_HALF_UP,
+        )
 
 
 @dataclass(frozen=True, slots=True)

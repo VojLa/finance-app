@@ -109,7 +109,7 @@ def test_history_reads_published_snapshot_evidence_without_replay() -> None:
 
     assert "PortfolioSnapshotModel" in source
     assert "AccountSnapshotModel" in source
-    assert "NetWorthSnapshotModel" in source
+    assert "NetWorthSnapshotModel" not in source
     assert "UserReadModelPublicationModel" in source
     assert "SnapshotSeriesHeadModel" in source
     assert "SnapshotSeriesPointLinkModel" in source

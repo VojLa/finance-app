@@ -24,6 +24,7 @@ TWELVE_ID = '{"symbol":"AAPL","mic_code":"XNAS"}'
 
 def _command(**overrides: object) -> OnboardAssetAliasCommand:
     values: dict[str, object] = {
+        "actor": "test:asset-alias-identity",
         "asset_id": "asset-a",
         "provider": AssetAliasProvider.coingecko,
         "external_id": "bitcoin",
@@ -155,6 +156,7 @@ def test_yahoo_crypto_command_accepts_exact_asset_symbol_usd_pair() -> None:
         expected_symbol="BTC",
         expected_asset_type=AssetType.crypto,
         expected_currency="BTC",
+        listing_id="listing-btc-usd",
     )
 
     assert validate_onboard_asset_alias_command(command) is command
@@ -172,5 +174,21 @@ def test_yahoo_crypto_command_rejects_nonmatching_or_non_usd_pair(
                 expected_symbol="BTC",
                 expected_asset_type=AssetType.crypto,
                 expected_currency="BTC",
+                listing_id="listing-btc-usd",
             )
         )
+
+
+def test_yahoo_command_requires_exact_listing_identity() -> None:
+    for listing_id in (None, "", " listing-a", "listing-a "):
+        with pytest.raises(AssetAliasInvalidError):
+            validate_onboard_asset_alias_command(
+                _command(
+                    provider=AssetAliasProvider.yahoo_finance,
+                    external_id="AAPL",
+                    expected_symbol="AAPL",
+                    expected_asset_type=AssetType.stock,
+                    expected_currency="USD",
+                    listing_id=listing_id,
+                )
+            )

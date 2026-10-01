@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
 import pytest
 
-from app.db.models.enums import ExchangeRateSource, PriceSource
+from app.db.models.enums import (
+    AssetType,
+    ExchangeRateSource,
+    MarketDataFailureReason,
+    PriceSource,
+)
 from app.modules.fx.models import ExchangeRateObservation
 from app.modules.market_data.models import (
     ExchangeRateRequirement,
     MarketEvidenceRefreshPlan,
     MarketEvidenceStateError,
+    PriceIdentityFailure,
     PriceRequirement,
 )
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.market_data.providers import (
     ExchangeRateProviderRegistry,
     PriceProviderRegistry,
@@ -26,6 +35,7 @@ from app.modules.market_data.service import (
 )
 from app.modules.market_data.writer import PersistMarketEvidenceResult
 from app.modules.prices.models import PriceObservation
+from app.modules.prices.validation import PriceObservationValidationError
 
 SNAPSHOT_AT = datetime(2026, 8, 3, 12)
 CREATED_AT = datetime(2026, 8, 3, 12, 1)
@@ -157,14 +167,19 @@ class _Writer:
         self.calls = calls
         self.commands: list[object] = []
 
-    async def write(self, command: object) -> PersistMarketEvidenceResult:
+    async def write(
+        self,
+        command: object,
+        *,
+        transactional_finalize: Callable[[], Awaitable[None]] | None = None,
+    ) -> PersistMarketEvidenceResult:
         assert not self.session.active
         self.calls.append("writer")
         self.commands.append(command)
         persisted = cast(Any, command)
         price_count = len(persisted.price_observations)
         rate_count = len(persisted.exchange_rate_observations)
-        return PersistMarketEvidenceResult(
+        result = PersistMarketEvidenceResult(
             price_ids=("price-id",) if price_count else (),
             exchange_rate_ids=("rate-id",) if rate_count else (),
             prices_created=price_count,
@@ -172,6 +187,53 @@ class _Writer:
             rates_created=rate_count,
             rates_replayed=0,
         )
+        if transactional_finalize is not None:
+            async with self.session.begin():
+                await transactional_finalize()
+        return result
+
+
+class _Health:
+    def __init__(self, session: _Session, calls: list[str]) -> None:
+        self.session = session
+        self.calls = calls
+        self.denied = False
+        self.reject_record = False
+        self.claims: list[dict[str, Any]] = []
+        self.outcomes: list[dict[str, Any]] = []
+        self.active_tokens: set[str] = set()
+
+    async def claim(self, **kwargs: Any) -> bool:
+        assert self.session.active
+        self.calls.append("health-claim")
+        self.claims.append(kwargs)
+        if self.denied:
+            return False
+        self.active_tokens.add(kwargs["lease_owner"])
+        return True
+
+    async def record(self, **kwargs: Any) -> object | None:
+        assert self.session.active
+        self.calls.append("health-record")
+        self.outcomes.append(kwargs)
+        if self.reject_record:
+            return None
+        lease_owner = kwargs.get("lease_owner")
+        if lease_owner is not None:
+            assert lease_owner in self.active_tokens
+            self.active_tokens.remove(lease_owner)
+        return object()
+
+
+def _service_with_health() -> tuple[
+    MarketEvidenceRefreshService, _Session, list[str], _PriceProvider, _FxProvider, _Writer, _Health
+]:
+    service, session, calls, price, fx, writer = _service()
+    health = _Health(session, calls)
+    service.health = health
+    service.health_clock = lambda: CREATED_AT
+    service.health_token = lambda: "attempt-1"
+    return service, session, calls, price, fx, writer, health
 
 
 class _AcquisitionProbe:
@@ -254,12 +316,17 @@ def _concurrent_plan() -> MarketEvidenceRefreshPlan:
         PriceSource.twelve_data,
         PriceSource.yahoo_finance,
     )
+    asset_order = {
+        PriceSource.coingecko: "asset-3",
+        PriceSource.twelve_data: "asset-2",
+        PriceSource.yahoo_finance: "asset-1",
+    }
     prices = tuple(
         sorted(
             (
                 PriceRequirement(
                     account_id="account-1",
-                    asset_id=f"asset-{source.value}",
+                    asset_id=asset_order[source],
                     listing_id=f"listing-{source.value}",
                     listing_currency="EUR",
                     provider=source,
@@ -530,6 +597,296 @@ async def test_service_orders_boundaries_and_persists_one_validated_batch() -> N
 
 
 @pytest.mark.asyncio
+async def test_health_claim_commits_before_provider_and_success_records_after_writer() -> None:
+    service, session, calls, price, _, writer, health = _service_with_health()
+
+    result = await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "commit", "begin", "commit"]
+    assert calls == [
+        "repeatable-read-only",
+        "plan",
+        "health-claim",
+        "price-provider",
+        "fx-provider",
+        "writer",
+        "health-record",
+    ]
+    assert price.count == 1
+    assert health.active_tokens == set()
+    assert health.claims[0]["lease_owner"] == "attempt-1"
+    assert health.claims[0]["lease_for"] == timedelta(minutes=5)
+    assert health.outcomes[0]["outcome"].reason is None
+    assert health.outcomes[0]["outcome"].attempt_token == "attempt-1"
+    assert len(writer.commands) == 1
+    assert result.prices_created == 1
+
+
+@pytest.mark.asyncio
+async def test_writer_failure_never_records_false_health_success() -> None:
+    service, _, calls, _, _, writer, health = _service_with_health()
+
+    async def fail_write(
+        command: object,
+        *,
+        transactional_finalize: Callable[[], Awaitable[None]] | None = None,
+    ) -> PersistMarketEvidenceResult:
+        calls.append("writer")
+        raise MarketEvidenceStateError()
+
+    writer.write = fail_write  # type: ignore[method-assign]
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert calls[-1] == "writer"
+    assert health.outcomes == []
+    assert health.active_tokens == {"attempt-1"}
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_rolls_back_evidence_transaction() -> None:
+    service, session, calls, _, _, writer, health = _service_with_health()
+    health.reject_record = True
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "commit", "begin", "rollback"]
+    assert calls[-2:] == ["writer", "health-record"]
+    assert len(writer.commands) == 1
+    assert health.active_tokens == {"attempt-1"}
+
+
+@pytest.mark.asyncio
+async def test_health_denial_prevents_all_provider_io_and_writer() -> None:
+    service, session, calls, price, fx, writer, health = _service_with_health()
+    health.denied = True
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "rollback"]
+    assert calls == ["repeatable-read-only", "plan", "health-claim"]
+    assert price.count == 0
+    assert fx.count == 0
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_missing_provider_symbol_records_health_without_provider_io() -> None:
+    service, session, calls, price, fx, writer, health = _service_with_health()
+    configured_at = SNAPSHOT_AT - timedelta(days=1)
+    cast(Any, service.planner).plan = MarketEvidenceRefreshPlan(
+        user_id="user-1",
+        output_currency="CZK",
+        snapshot_timestamp=SNAPSHOT_AT,
+        price_requirements=(),
+        fx_requirements=(),
+        identity_failures=(
+            PriceIdentityFailure(
+                listing_id="listing-1",
+                provider=PriceSource.yahoo_finance,
+                reason=MarketDataFailureReason.missing_provider_symbol,
+                configured_at=configured_at,
+            ),
+        ),
+    )
+
+    result = await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "commit"]
+    assert calls == ["repeatable-read-only", "plan", "health-record", "writer"]
+    assert price.count == 0
+    assert fx.count == 0
+    assert health.active_tokens == set()
+    assert health.outcomes[0]["provider_symbol"] is None
+    assert health.outcomes[0]["outcome"].reason is MarketDataFailureReason.missing_provider_symbol
+    assert health.outcomes[0]["outcome"].attempt_started_at == configured_at
+    assert result.required_price_count == 0
+    assert len(writer.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_classified_price_failure_records_reason_and_releases_lease() -> None:
+    service, session, calls, price, fx, writer, health = _service_with_health()
+    retry_after = CREATED_AT + timedelta(minutes=20)
+    price.error = ProviderFailure(MarketDataFailureReason.rate_limit, retry_after=retry_after)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "commit", "begin", "commit"]
+    assert calls.index("health-record") > calls.index("price-provider")
+    assert fx.count == 1
+    assert writer.commands == []
+    assert health.active_tokens == set()
+    assert health.outcomes[0]["outcome"].reason is MarketDataFailureReason.rate_limit
+    assert health.outcomes[0]["outcome"].retry_after == retry_after
+
+
+@pytest.mark.asyncio
+async def test_unexpected_price_failure_records_safe_incomplete_response() -> None:
+    service, _, _, price, _, writer, health = _service_with_health()
+    price.error = RuntimeError("provider secret")
+
+    with pytest.raises(MarketEvidenceStateError) as error:
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert str(error.value) == "Market evidence is unavailable."
+    assert health.outcomes[0]["outcome"].reason is MarketDataFailureReason.incomplete_response
+    assert health.active_tokens == set()
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_classified_validation_failure_records_safe_reason() -> None:
+    service, _, _, price, _, writer, health = _service_with_health()
+    price.error = PriceObservationValidationError(MarketDataFailureReason.stale_timestamp)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert health.outcomes[0]["outcome"].reason is MarketDataFailureReason.stale_timestamp
+    assert health.active_tokens == set()
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_supported_closed_market_records_session_boundary_not_provider_failure() -> None:
+    service, _, _, price, _, writer, health = _service_with_health()
+    original = _plan()
+    requirement = replace(
+        original.price_requirements[0],
+        listing_mic="XNAS",
+        asset_type=AssetType.stock,
+    )
+    cast(Any, service.planner).plan = replace(
+        original,
+        price_requirements=(requirement,),
+    )
+    price.error = PriceObservationValidationError(MarketDataFailureReason.stale_timestamp)
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    outcome = health.outcomes[0]["outcome"]
+    assert outcome.reason is MarketDataFailureReason.market_closed
+    assert outcome.next_session_at == datetime(2026, 8, 3, 13, 30)
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_price_identity_records_validation_reason() -> None:
+    service, _, _, price, _, writer, health = _service_with_health()
+    price.observation = PriceObservation(
+        asset_id="wrong",
+        listing_id="listing-1",
+        provider=PriceSource.yahoo_finance,
+        provider_symbol="EXACT",
+        price=Decimal("10"),
+        currency="EUR",
+        observed_at=SNAPSHOT_AT,
+    )
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert (
+        health.outcomes[0]["outcome"].reason is MarketDataFailureReason.provider_identity_conflict
+    )
+    assert health.active_tokens == set()
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_health_uses_unique_attempt_token_for_each_price_requirement() -> None:
+    probe = _AcquisitionProbe(expected_parallel=1)
+    probe.release.set()
+    service, writer = _concurrent_service(probe)
+    health = _Health(cast(Any, service.session), writer.calls)
+    service.health = health
+    service.health_clock = lambda: CREATED_AT
+    tokens = iter(("attempt-1", "attempt-2", "attempt-3"))
+    service.health_token = lambda: next(tokens)
+
+    await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert [item["provider"].value for item in health.claims] == sorted(
+        item.provider.value for item in _concurrent_plan().price_requirements
+    )
+    assert {item["lease_owner"] for item in health.claims} == {
+        "attempt-1",
+        "attempt-2",
+        "attempt-3",
+    }
+    assert {item["outcome"].attempt_token for item in health.outcomes} == {
+        "attempt-1",
+        "attempt-2",
+        "attempt-3",
+    }
+    assert [item["provider"].value for item in health.outcomes] == sorted(
+        item.provider.value for item in _concurrent_plan().price_requirements
+    )
+    assert health.active_tokens == set()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_attempt_token_rolls_back_claim_batch_before_io() -> None:
+    probe = _AcquisitionProbe(expected_parallel=1)
+    service, writer = _concurrent_service(probe)
+    session = cast(_Session, service.session)
+    health = _Health(session, writer.calls)
+    service.health = health
+    service.health_clock = lambda: CREATED_AT
+    service.health_token = lambda: "duplicate"
+
+    with pytest.raises(MarketEvidenceStateError):
+        await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert session.calls == ["begin", "commit", "begin", "rollback"]
+    assert len(health.claims) == 1
+    assert probe.entered == []
+    assert writer.commands == []
+
+
+@pytest.mark.asyncio
+async def test_health_success_is_independent_of_writer_replay() -> None:
+    service, _, _, _, _, writer, health = _service_with_health()
+    tokens = iter(("attempt-1", "attempt-2"))
+    service.health_token = lambda: next(tokens)
+
+    first = await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    async def replay(
+        command: object,
+        *,
+        transactional_finalize: Callable[[], Awaitable[None]] | None = None,
+    ) -> PersistMarketEvidenceResult:
+        writer.commands.append(command)
+        result = PersistMarketEvidenceResult(
+            price_ids=("price-id",),
+            exchange_rate_ids=("rate-id",),
+            prices_created=0,
+            prices_replayed=1,
+            rates_created=0,
+            rates_replayed=1,
+        )
+        if transactional_finalize is not None:
+            async with writer.session.begin():
+                await transactional_finalize()
+        return result
+
+    writer.write = replay  # type: ignore[method-assign]
+    second = await service.refresh(RefreshMarketEvidenceCommand("user-1", SNAPSHOT_AT, CREATED_AT))
+
+    assert first.prices_created == 1
+    assert second.prices_replayed == 1
+    assert len(writer.commands) == 2
+    assert [item["outcome"].reason for item in health.outcomes] == [None, None]
+    assert health.active_tokens == set()
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_writes_nothing_and_is_not_retried() -> None:
     service, _, calls, price, fx, writer = _service()
     price.error = RuntimeError("provider internals")
@@ -645,7 +1002,7 @@ async def test_service_bounds_overlapping_price_and_fx_source_acquisitions() -> 
     assert result.required_fx_count == 2
     command = cast(Any, writer.commands[0])
     assert tuple(item.listing_id for item in command.price_observations) == tuple(
-        item.listing_id for item in _concurrent_plan().price_requirements
+        sorted(item.listing_id for item in _concurrent_plan().price_requirements)
     )
     assert tuple(
         (item.from_currency, item.to_currency) for item in command.exchange_rate_observations

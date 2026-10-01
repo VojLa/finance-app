@@ -1,4 +1,4 @@
-schema_version = 25
+schema_version = 27
 current_migration_owner = "alembic"
 target_migration_owner = "alembic"
 cutover_status = "completed"
@@ -19,7 +19,8 @@ transactions = ["Transaction", "TransactionPair", "TransactionSplit", "Transacti
 counterparties = ["Counterparty", "CounterpartyAlias"]
 categories = ["Category", "CategoryRule"]
 budgets = ["Budget", "BudgetItem", "BudgetItemCategory", "BudgetAccount", "BudgetAlert"]
-assets = ["Asset", "AssetListing", "AssetAlias"]
+assets = ["Asset", "AssetListing", "AssetAlias", "AssetAliasAudit"]
+market_data_health = ["MarketDataListingHealth"]
 prices_fx = ["PriceSnapshot", "ExchangeRate"]
 ledger = ["InvestmentEvent", "InvestmentMovement", "InvestmentMovementValuationEvidence"]
 holdings = ["Holding"]
@@ -37,6 +38,7 @@ counterparties = ["CounterpartyType", "AliasMatchType"]
 categories = ["CategoryType", "RuleField", "RuleOperator"]
 budgets = ["BudgetPeriodType", "BudgetAlertType"]
 assets = ["AssetAliasProvider", "AssetType"]
+market_data_health = ["MarketDataHealthState", "MarketDataFailureReason"]
 prices_fx = ["PriceSource", "ExchangeRateSource"]
 ledger = ["InvestmentEventType", "InvestmentMovementKind", "MovementDirection"]
 imports = ["ImportSource", "ImportStatus", "ImportRowStatus", "ImportLogLevel", "ImportLogEvent"]
@@ -69,6 +71,8 @@ tables = [
   "Asset",
   "AssetListing",
   "AssetAlias",
+  "AssetAliasAudit",
+  "MarketDataListingHealth",
   "PriceSnapshot",
   "ExchangeRate",
   "InvestmentEvent",
@@ -127,6 +131,8 @@ enums = [
   "BudgetAlertType",
   "AssetAliasProvider",
   "AssetType",
+  "MarketDataHealthState",
+  "MarketDataFailureReason",
   "PriceSource",
   "ExchangeRateSource",
   "InvestmentEventType",
@@ -157,9 +163,9 @@ verified_against = "alembic_head_postgresql_16"
 [alembic_baseline]
 state = "inherited_by_alembic_owner"
 revision = "3d0001base"
-revision_count = 26
+revision_count = 29
 head_count = 1
-head_revision = "410001serieslinks"
+head_revision = "440001assetaudit"
 upgrade_is_noop = true
 downgrade_supported = false
 version_table = "alembic_version"
@@ -179,14 +185,14 @@ alembic_check = true
 state = "sole_migration_owner"
 baseline_revision = "3d0001base"
 cutover_revision = "3e0001cutover"
-head_revision = "410001serieslinks"
-revision_count = 26
+head_revision = "440001assetaudit"
+revision_count = 29
 head_count = 1
 
 [current_schema]
-revision = "410001serieslinks"
-schema_source = "database/revisions/410001serieslinks/schema.sql"
-checksum_source = "database/revisions/410001serieslinks/schema.sha256"
+revision = "440001assetaudit"
+schema_source = "database/revisions/440001assetaudit/schema.sql"
+checksum_source = "database/revisions/440001assetaudit/schema.sha256"
 
 [cutover]
 phase = "completed"

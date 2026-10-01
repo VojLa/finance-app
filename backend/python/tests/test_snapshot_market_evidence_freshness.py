@@ -104,6 +104,7 @@ def _price(timestamp: datetime) -> PriceSnapshotModel:
         price=Decimal("110"),
         currency="EUR",
         source=PriceSource.twelve_data,
+        provider_symbol="EXACT",
         timestamp=timestamp,
     )
 

@@ -218,12 +218,16 @@ async def _seed_account(
                     id=listing_id,
                     asset_id=asset_id,
                     symbol="AMB",
-                    exchange="test",
-                    mic=None,
+                    exchange="NASDAQ" if not with_price_ambiguity else "test",
+                    mic="XNAS" if not with_price_ambiguity else None,
                     currency="CZK",
                     country=None,
-                    provider=PriceSource.manual,
-                    provider_symbol="AMB",
+                    provider=(
+                        PriceSource.manual if with_price_ambiguity else PriceSource.twelve_data
+                    ),
+                    provider_symbol=(
+                        "AMB" if with_price_ambiguity else '{"symbol":"AMB","mic_code":"XNAS"}'
+                    ),
                     is_primary=False,
                     created_at=NOW,
                     updated_at=NOW,
@@ -297,6 +301,7 @@ async def _seed_account(
                             price=Decimal("15"),
                             currency="EUR",
                             source=PriceSource.twelve_data,
+                            provider_symbol='{"symbol":"AMB","mic_code":"XNAS"}',
                             timestamp=NOW,
                             created_at=NOW,
                         ),

@@ -7,7 +7,9 @@ from typing import Protocol
 
 import httpx
 
+from app.db.models.enums import MarketDataFailureReason
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.prices.providers.coingecko_models import CoinGeckoHttpResponse
 
 
@@ -67,30 +69,54 @@ class HttpxCoinGeckoPriceTransport:
                         "precision": "full",
                     },
                 ) as response:
+                    retry_after = _sanitized_retry_after(response.headers.get("retry-after"))
                     raw_content_type = response.headers.get("content-type")
                     content_type = (
                         raw_content_type.partition(";")[0].strip().lower()
                         if raw_content_type
                         else None
                     )
-                    if response.status_code != 200 or content_type != "application/json":
-                        raise MarketEvidenceStateError()
+                    if response.status_code != 200:
+                        return CoinGeckoHttpResponse(
+                            status_code=response.status_code,
+                            content_type=content_type or "",
+                            body=b"",
+                            retry_after=retry_after,
+                        )
+                    if content_type != "application/json":
+                        raise ProviderFailure(MarketDataFailureReason.incomplete_response)
                     chunks: list[bytes] = []
                     size = 0
                     async for chunk in response.aiter_bytes():
                         size += len(chunk)
                         if size > self._max_response_bytes:
-                            raise MarketEvidenceStateError()
+                            raise ProviderFailure(MarketDataFailureReason.incomplete_response)
                         chunks.append(chunk)
                     body = b"".join(chunks)
                     if not body:
-                        raise MarketEvidenceStateError()
+                        raise ProviderFailure(MarketDataFailureReason.incomplete_response)
                     return CoinGeckoHttpResponse(
                         status_code=response.status_code,
                         content_type=content_type,
                         body=body,
+                        retry_after=retry_after,
                     )
         except MarketEvidenceStateError:
             raise
+        except httpx.TimeoutException as exc:
+            raise ProviderFailure(MarketDataFailureReason.timeout) from exc
         except httpx.HTTPError as exc:
-            raise MarketEvidenceStateError() from exc
+            raise ProviderFailure(MarketDataFailureReason.server_error) from exc
+
+
+def _sanitized_retry_after(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if (
+        len(value) > 128
+        or not value.isascii()
+        or any(ord(char) < 32 or ord(char) > 126 for char in value)
+    ):
+        return None
+    return value or None

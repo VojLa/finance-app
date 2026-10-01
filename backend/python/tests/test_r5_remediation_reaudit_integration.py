@@ -161,11 +161,12 @@ def test_inventory_query_is_read_only_held_compatible_and_deterministic() -> Non
     assert "REPEATABLE READ, READ ONLY" in source
     assert "HoldingModel.quantity != 0" in inventory_source
     assert "AssetModel.asset_type.in_(compatible_types)" in inventory_source
-    assert "~exists(" in inventory_source
+    assert "alias.listing_id == listing.id" in inventory_source
+    assert "len(legacy_aliases) == 1" in inventory_source
     assert ".order_by(AssetModel.symbol, AssetModel.id)" in inventory_source
     assert "AssetListingModel.provider_symbol" in inventory_source
     assert "AssetListingModel.id" in inventory_source
-    assert "external_id" not in inventory_source
+    assert "external_id=" not in inventory_source
     assert ".add(" not in inventory_source
 
 

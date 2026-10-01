@@ -269,6 +269,34 @@ async def test_market_runs_before_snapshot_and_projections_are_exact() -> None:
     assert result.snapshots is snapshots.result
 
 
+@pytest.mark.parametrize(
+    ("source", "reuse_persisted_fx_on_conflict"),
+    [
+        (SnapshotSource.scheduled, True),
+        (SnapshotSource.price_refresh, True),
+        (SnapshotSource.manual_recalculation, True),
+        (SnapshotSource.import_event, False),
+        (SnapshotSource.holdings_recalculation, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_persisted_fx_revision_policy_is_source_gated(
+    source: SnapshotSource,
+    reuse_persisted_fx_on_conflict: bool,
+) -> None:
+    service, _, market, snapshots, _ = _service(snapshot_result=_snapshot_result(source=source))
+
+    await service.execute(
+        _command(
+            source=source,
+            is_recalculated=source is SnapshotSource.manual_recalculation,
+        )
+    )
+
+    assert market.commands[0].reuse_persisted_fx_on_conflict is (reuse_persisted_fx_on_conflict)
+    assert len(snapshots.commands) == 1
+
+
 @pytest.mark.asyncio
 async def test_market_failure_never_calls_or_constructs_snapshot_executor() -> None:
     calls: list[str] = []

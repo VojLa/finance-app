@@ -20,3 +20,6 @@ Trading 212 provider aliases are created only after successful canonical
 posting. The implemented fixture identities are fail-closed: an unknown or
 conflicting ISIN/ticker/currency combination stops financial finalization and
 must be reviewed instead of being guessed from the ticker alone.
+Yahoo aliases created by Trading 212 or Anycoin finalization are scoped to the exact
+posted listing. CoinGecko and existing Twelve Data onboarding retain their current
+compatible asset-level contract in this stage.

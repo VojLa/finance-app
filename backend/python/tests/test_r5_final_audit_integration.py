@@ -134,16 +134,25 @@ def test_alias_onboarding_contains_no_identity_inference_map_or_discovery() -> N
         "create_task",
         "ensure_future",
         "fetch",
-        "get",
         "post",
         "request",
     }
+    forbidden_network_imports = {"aiohttp", "httpx", "requests", "urllib"}
     forbidden_literal_pairs = {
         ("BTC", "bitcoin"),
         ("bitcoin", "BTC"),
     }
     for path in audited_sources:
         tree = ast.parse(_source(path), filename=str(path))
+        imported_roots = {
+            alias.name.partition(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in (
+                node.names if isinstance(node, ast.Import) else [ast.alias(name=node.module or "")]
+            )
+        }
+        assert forbidden_network_imports.isdisjoint(imported_roots)
         call_names = {
             name
             for node in ast.walk(tree)

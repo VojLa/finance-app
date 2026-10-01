@@ -58,6 +58,7 @@ class PortfolioHistoryPositionResponse(BaseModel):
     value: Decimal
     cost_basis: Decimal | None = Field(default=None, serialization_alias="costBasis")
     allocation_pct: Decimal = Field(serialization_alias="allocationPct")
+    unrealized_pnl_pct: Decimal | None = Field(default=None, serialization_alias="unrealizedPnlPct")
     accounts: tuple[PortfolioHistoryPositionAccountResponse, ...] = ()
 
     @field_serializer("quantity")
@@ -68,7 +69,7 @@ class PortfolioHistoryPositionResponse(BaseModel):
     def serialize_position_money(self, value: Decimal) -> str:
         return serialize_money(value)
 
-    @field_serializer("allocation_pct")
+    @field_serializer("allocation_pct", "unrealized_pnl_pct", when_used="unless-none")
     def serialize_percentage(self, value: Decimal) -> str:
         return format(value, "f")
 
@@ -79,6 +80,9 @@ class PortfolioHistoryPointResponse(BaseModel):
     timestamp: datetime
     cash_value: Decimal = Field(serialization_alias="cashValue")
     investment_value: Decimal = Field(serialization_alias="investmentValue")
+    investment_cost_basis: Decimal | None = Field(
+        default=None, serialization_alias="investmentCostBasis"
+    )
     liabilities_value: Decimal = Field(serialization_alias="liabilitiesValue")
     net_worth_value: Decimal = Field(serialization_alias="netWorthValue")
     net_invested_value: Decimal | None = Field(default=None, serialization_alias="netInvestedValue")
@@ -113,6 +117,7 @@ class PortfolioHistoryPointResponse(BaseModel):
 
     @field_serializer(
         "net_invested_value",
+        "investment_cost_basis",
         "realized_pnl_value",
         "unrealized_pnl_value",
         when_used="unless-none",

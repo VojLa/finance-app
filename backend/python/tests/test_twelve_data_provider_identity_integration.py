@@ -142,7 +142,7 @@ async def test_clean_previous_head_database_upgrades_to_current_head() -> None:
                     "ORDER BY enum_value.enumsortorder"
                 )
             )
-            assert version == "410001serieslinks"
+            assert version == "440001assetaudit"
             assert tuple(row["enumlabel"] for row in alias_values) == tuple(
                 item.value for item in AssetAliasProvider
             )
@@ -225,7 +225,7 @@ async def test_twelve_data_enum_migration_and_sqlalchemy_round_trip() -> None:
             migration = await connection.scalar(
                 text('SELECT "version_num" FROM public.alembic_version')
             )
-            assert migration == "410001serieslinks"
+            assert migration == "440001assetaudit"
 
             postgres_alias_values = await _postgres_enum_values(connection, "AssetAliasProvider")
             postgres_price_values = await _postgres_enum_values(connection, "PriceSource")

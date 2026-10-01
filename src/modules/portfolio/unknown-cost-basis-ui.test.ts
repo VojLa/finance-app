@@ -9,7 +9,7 @@ import { anycoinIncompletePortfolioSnapshotFixture } from "@/test/portfolio-snap
 
 import {
   formatSnapshotAmount,
-  formatSnapshotDecimal,
+  formatSnapshotQuantity,
   UNAVAILABLE_COST_BASIS_LABEL,
 } from "./snapshot-page-format"
 import { buildPortfolioPageModel } from "./snapshot-page-model"
@@ -24,7 +24,7 @@ describe("unknown cost-basis presentation", () => {
     const anycoin = model.accounts[1]?.positions[0]?.position
     if (anycoin === undefined) throw new Error("Missing Anycoin fixture position.")
 
-    expect(formatSnapshotDecimal(anycoin.quantity)).toBe("1,00")
+    expect(formatSnapshotQuantity(anycoin.quantity)).toBe("1,00")
     expect(formatSnapshotAmount(anycoin.value, anycoin.valueCurrency)).toBe("40,00 USD")
     expect(formatSnapshotAmount(anycoin.costBasis, anycoin.costCurrency)).toBe(
       UNAVAILABLE_COST_BASIS_LABEL
@@ -34,10 +34,10 @@ describe("unknown cost-basis presentation", () => {
     )
 
     const table = await source("src/modules/portfolio/SnapshotHoldingsTable.tsx")
-    expect(table).toContain("formatSnapshotDecimal(position.quantity)")
-    expect(table).toContain("formatSnapshotAmount(position.value, position.valueCurrency)")
-    expect(table).toContain("formatSnapshotAmount(position.costBasis, position.costCurrency)")
-    expect(table).toContain("formatSnapshotAmount(position.unrealizedPnl, position.valueCurrency)")
+    expect(table).toContain("formatSnapshotQuantity(row.quantity)")
+    expect(table).toContain("formatSnapshotAmount(row.value, currency)")
+    expect(table).toContain("formatSnapshotAmount(row.costBasis, currency)")
+    expect(table).toContain("snapshotPercentageTone(row.unrealizedPnlPct)")
   })
 
   it("marks incomplete dashboard evidence unavailable without hiding total values", async () => {

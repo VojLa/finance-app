@@ -1,71 +1,239 @@
+"use client"
+
 import Link from "next/link"
+import { useId, useMemo, useRef, useState } from "react"
 
 import type { PortfolioPagePosition } from "./snapshot-page-model"
-import { formatSnapshotAmount, formatSnapshotDecimal } from "./snapshot-page-format"
+import type { SnapshotPortfolioHistoryPoint } from "./snapshot-history-contract"
+import {
+  formatSnapshotAmount,
+  formatSnapshotPercentage,
+  formatSnapshotQuantity,
+  snapshotPercentageTone,
+} from "./snapshot-page-format"
+import {
+  sortSnapshotHoldingRows,
+  type SnapshotHoldingRow,
+  type SnapshotHoldingSort,
+  type SnapshotHoldingSortKey,
+} from "./snapshot-holdings-table"
 
 type Props = {
   positions: readonly PortfolioPagePosition[]
-  showAccount: boolean
+  historicalPositions?: NonNullable<SnapshotPortfolioHistoryPoint["positions"]>
+  currency: string
 }
 
-export function SnapshotHoldingsTable({ positions, showAccount }: Props) {
-  if (positions.length === 0) {
-    return <div className="py-12 text-center text-gray-400">Žádné snapshot-backed pozice.</div>
-  }
+const VISIBLE_ROWS = 5
+const POSITION_ROW_CLASS = {
+  positive: "border-b bg-emerald-50 text-emerald-900 last:border-0",
+  negative: "border-b bg-red-50 text-red-900 last:border-0",
+  neutral: "border-b bg-gray-50 text-gray-700 last:border-0",
+  unavailable: "border-b text-gray-700 last:border-0",
+} as const
+const HEADERS: ReadonlyArray<
+  Readonly<{ key: SnapshotHoldingSortKey; label: string; align: "left" | "right" }>
+> = [
+  { key: "symbol", label: "Instrument", align: "left" },
+  { key: "quantity", label: "Počet", align: "right" },
+  { key: "value", label: "Hodnota", align: "right" },
+  { key: "costBasis", label: "Nákladová báze", align: "right" },
+  { key: "unrealizedPnlPct", label: "Zisk / ztráta", align: "right" },
+  { key: "allocationPct", label: "Alokace", align: "right" },
+]
+
+function HoldingRow({ row, currency }: { row: SnapshotHoldingRow; currency: string }) {
+  return (
+    <tr className={`h-12 ${POSITION_ROW_CLASS[snapshotPercentageTone(row.unrealizedPnlPct)]}`}>
+      <td className="px-2 py-2">
+        <Link
+          href={`/portfolio/${encodeURIComponent(row.symbol)}`}
+          className="font-medium text-blue-600 hover:underline"
+        >
+          {row.symbol}
+        </Link>
+      </td>
+      <td className="px-2 py-2 text-right font-mono">{formatSnapshotQuantity(row.quantity)}</td>
+      <td className="px-2 py-2 text-right font-mono font-medium">
+        {formatSnapshotAmount(row.value, currency)}
+      </td>
+      <td className="px-2 py-2 text-right font-mono text-gray-600">
+        {row.costBasis === undefined ? "—" : formatSnapshotAmount(row.costBasis, currency)}
+      </td>
+      <td className="px-2 py-2 text-right font-mono">
+        {row.unrealizedPnlPct === undefined
+          ? "—"
+          : `${formatSnapshotPercentage(row.unrealizedPnlPct)} %`}
+      </td>
+      <td className="px-2 py-2 text-right font-mono">
+        {formatSnapshotPercentage(row.allocationPct)} %
+      </td>
+    </tr>
+  )
+}
+
+function HoldingsTable({
+  rows,
+  currency,
+  sort,
+  onSort,
+  padToFive,
+}: {
+  rows: readonly SnapshotHoldingRow[]
+  currency: string
+  sort: SnapshotHoldingSort
+  onSort?: (key: SnapshotHoldingSortKey) => void
+  padToFive: boolean
+}) {
+  const occupiedRows = rows.length === 0 && padToFive ? 1 : rows.length
+  const missingRows = VISIBLE_ROWS - occupiedRows
+  const placeholders = padToFive && missingRows > 0 ? missingRows : 0
+  return (
+    <table className="w-full min-w-[760px] table-fixed text-sm">
+      <thead>
+        <tr className="h-12 border-b border-gray-100 text-gray-500">
+          {HEADERS.map((header) => (
+            <th
+              key={header.key}
+              scope="col"
+              aria-sort={sort.key === header.key ? sort.direction : "none"}
+              className={`${header.align === "right" ? "text-right" : "text-left"} px-2 font-medium`}
+            >
+              <button
+                type="button"
+                disabled={onSort === undefined}
+                onClick={() => onSort?.(header.key)}
+                className="inline-flex items-center gap-1 disabled:cursor-default"
+              >
+                {header.label}
+                {sort.key === header.key && (
+                  <span aria-hidden="true">{sort.direction === "ascending" ? "↑" : "↓"}</span>
+                )}
+              </button>
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 && padToFive ? (
+          <tr className="h-12 border-b text-gray-400">
+            <td colSpan={HEADERS.length} className="px-2 text-center">
+              Žádné snapshot-backed pozice.
+            </td>
+          </tr>
+        ) : (
+          rows.map((row) => <HoldingRow key={row.key} row={row} currency={currency} />)
+        )}
+        {Array.from({ length: placeholders }).map((_, index) => (
+          <tr
+            key={`placeholder-${index}`}
+            aria-hidden="true"
+            className="h-12 border-b last:border-0"
+          >
+            <td colSpan={HEADERS.length}>&nbsp;</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+export function SnapshotHoldingsTable({ positions, historicalPositions, currency }: Props) {
+  const dialogId = useId()
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const [sort, setSort] = useState<SnapshotHoldingSort>({
+    key: "allocationPct",
+    direction: "descending",
+  })
+  const rows: SnapshotHoldingRow[] = useMemo(
+    () =>
+      historicalPositions === undefined
+        ? positions.map(({ accountId, allocationPct, position }) => ({
+            key: `${accountId}:${position.listingId}`,
+            listingId: position.listingId,
+            symbol: position.symbol,
+            quantity: position.quantity,
+            value: position.value,
+            costBasis: position.costBasis ?? undefined,
+            unrealizedPnlPct: position.unrealizedPnlPct ?? undefined,
+            allocationPct,
+          }))
+        : historicalPositions.map((position) => ({
+            key: position.listingId,
+            listingId: position.listingId,
+            symbol: position.symbol,
+            quantity: position.quantity,
+            value: position.value,
+            costBasis: position.costBasis,
+            unrealizedPnlPct: position.unrealizedPnlPct,
+            allocationPct: position.allocationPct,
+          })),
+    [historicalPositions, positions]
+  )
+  const sortedRows = useMemo(() => sortSnapshotHoldingRows(rows, sort), [rows, sort])
+  const visibleRows = sortedRows.slice(0, VISIBLE_ROWS)
+  const changeSort = (key: SnapshotHoldingSortKey) =>
+    setSort((current) => ({
+      key,
+      direction:
+        current.key === key && current.direction === "ascending" ? "descending" : "ascending",
+    }))
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-gray-100 text-left text-gray-500">
-            <th className="pb-3 font-medium">Symbol</th>
-            {showAccount && <th className="pb-3 font-medium">Účet</th>}
-            <th className="pb-3 text-right font-medium">Množství</th>
-            <th className="pb-3 text-right font-medium">Cena</th>
-            <th className="pb-3 text-right font-medium">Hodnota</th>
-            <th className="pb-3 text-right font-medium">Nákladová báze</th>
-            <th className="pb-3 text-right font-medium">Nerealizované P/L</th>
-            <th className="pb-3 text-right font-medium">Alokace v účtu</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-50">
-          {positions.map(({ accountId, accountName, position }) => (
-            <tr
-              key={`${accountId}:${position.listingId}`}
-              className="transition-colors hover:bg-gray-50"
-            >
-              <td className="py-3">
-                <Link
-                  href={`/portfolio/${encodeURIComponent(position.symbol)}`}
-                  className="font-medium text-blue-600 hover:underline"
-                >
-                  {position.symbol}
-                </Link>
-                <p className="text-xs text-gray-400">{position.name}</p>
-              </td>
-              {showAccount && <td className="py-3 text-xs text-gray-500">{accountName}</td>}
-              <td className="py-3 text-right font-mono">
-                {formatSnapshotDecimal(position.quantity)}
-              </td>
-              <td className="py-3 text-right font-mono text-gray-600">
-                {formatSnapshotAmount(position.pricePerUnit, position.priceCurrency)}
-              </td>
-              <td className="py-3 text-right font-mono font-medium">
-                {formatSnapshotAmount(position.value, position.valueCurrency)}
-              </td>
-              <td className="py-3 text-right font-mono text-gray-600">
-                {formatSnapshotAmount(position.costBasis, position.costCurrency)}
-              </td>
-              <td className="py-3 text-right font-mono">
-                {formatSnapshotAmount(position.unrealizedPnl, position.valueCurrency)}
-              </td>
-              <td className="py-3 text-right font-mono">
-                {formatSnapshotDecimal(position.allocationPct)} %
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="flex h-[344px] flex-col">
+      <div className="h-[288px] overflow-x-auto">
+        <HoldingsTable
+          rows={visibleRows}
+          currency={currency}
+          sort={sort}
+          onSort={changeSort}
+          padToFive
+        />
+      </div>
+      <div className="flex h-14 shrink-0 items-end">
+        {sortedRows.length > VISIBLE_ROWS && (
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls={dialogId}
+            onClick={() => dialogRef.current?.showModal()}
+            className="text-sm font-medium text-blue-600 hover:underline"
+          >
+            Zobrazit vše ({sortedRows.length})
+          </button>
+        )}
+      </div>
+      <dialog
+        ref={dialogRef}
+        id={dialogId}
+        aria-labelledby={`${dialogId}-heading`}
+        className="w-[min(96vw,1100px)] rounded-xl border border-gray-200 bg-white p-0 shadow-xl backdrop:bg-black/30"
+      >
+        <div className="p-6">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <h3 id={`${dialogId}-heading`} className="text-lg font-medium text-gray-900">
+              Všechny pozice
+            </h3>
+            <form method="dialog">
+              <button
+                type="submit"
+                className="rounded-md px-2 py-1 text-gray-500 hover:bg-gray-100"
+              >
+                Zavřít
+              </button>
+            </form>
+          </div>
+          <div className="max-h-[70vh] overflow-auto">
+            <HoldingsTable
+              rows={sortedRows}
+              currency={currency}
+              sort={sort}
+              onSort={changeSort}
+              padToFive={false}
+            />
+          </div>
+        </div>
+      </dialog>
     </div>
   )
 }

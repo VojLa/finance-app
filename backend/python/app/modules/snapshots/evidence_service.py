@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from typing import Protocol
@@ -11,6 +11,7 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.assets import AssetListingModel
 from app.db.models.common import MONEY
 from app.db.models.enums import (
     AccountType,
@@ -19,8 +20,8 @@ from app.db.models.enums import (
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
+    MarketDataHealthState,
     MovementDirection,
-    PriceSource,
     SnapshotGranularity,
     SnapshotSource,
     TransactionClassification,
@@ -46,11 +47,19 @@ from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
     SelectLiabilityBalanceCommand,
 )
+from app.modules.market_data.exchange_calendar import price_is_acceptable_for_market
+from app.modules.market_data.listing_selection import (
+    ListingSelectionCandidate,
+    ListingSelectionError,
+    select_listing,
+)
+from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.market_data.policy import (
     DEFAULT_MARKET_EVIDENCE_POLICY,
     MarketEvidencePolicy,
     validate_market_evidence_policy,
 )
+from app.modules.market_data.requirements import ResolvedPriceIdentity, resolve_price_identity
 from app.modules.market_data.source_policy import (
     CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
     MarketEvidenceSourcePolicy,
@@ -247,15 +256,18 @@ def _select_latest_price(
     candidates: tuple[PriceSnapshotModel, ...],
     *,
     holding: SnapshotHoldingEvidence,
-    source: PriceSource,
+    listing: AssetListingModel,
+    identity: ResolvedPriceIdentity,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> SelectedPriceEvidence:
     matching = [
         candidate
         for candidate in candidates
-        if candidate.listing_id == holding.listing_id
-        and candidate.source is source
+        if candidate.listing_id == listing.id
+        and candidate.source is identity.provider
+        and candidate.provider_symbol == identity.provider_symbol
+        and candidate.currency == identity.price_currency
         and canonical_timestamp(candidate.timestamp) <= through
     ]
     if not matching:
@@ -268,9 +280,18 @@ def _select_latest_price(
     if (
         _nonblank(selected.id) == ""
         or selected.asset_id != holding.asset_id
-        or selected.listing_id != holding.listing_id
-        or selected.source is not source
-        or through - canonical_timestamp(selected.timestamp) > policy.maximum_price_age
+        or selected.listing_id != listing.id
+        or selected.source is not identity.provider
+        or selected.provider_symbol != identity.provider_symbol
+        or selected.currency != identity.price_currency
+    ):
+        raise _fail()
+    if not price_is_acceptable_for_market(
+        mic=listing.mic,
+        asset_type=holding.asset_type.value,
+        observed_at=canonical_timestamp(selected.timestamp),
+        through=through,
+        maximum_age=policy.maximum_price_age,
     ):
         raise _fail()
     return SelectedPriceEvidence(
@@ -282,6 +303,7 @@ def _select_latest_price(
         currency=canonical_currency(selected.currency),
         source=selected.source,
         timestamp=selected.timestamp,
+        requested_listing_id=holding.listing_id,
     )
 
 
@@ -587,6 +609,7 @@ select_snapshot_exchange_rates = _selected_snapshot_rates
 def _investment_history(
     events: tuple[InvestmentEventModel, ...],
     movements: tuple[InvestmentMovementModel, ...],
+    transactions: tuple[TransactionModel, ...],
     *,
     account_id: str,
     snapshot_timestamp: datetime,
@@ -767,6 +790,49 @@ def _investment_history(
             and assets[0].direction is MovementDirection.outgoing
         ):
             has_missing_anycoin_realized_pnl = True
+
+    transaction_ids: set[str] = set()
+    for transaction in transactions:
+        transaction_id = _nonblank(transaction.id)
+        amount = exact_money(transaction.amount)
+        supported_cash_flow = (
+            (
+                transaction.type is TransactionType.transfer
+                and transaction.classification is TransactionClassification.investment_transfer
+            )
+            or (
+                transaction.type is TransactionType.income
+                and transaction.classification is TransactionClassification.real_income
+                and amount > 0
+            )
+            or (
+                transaction.type is TransactionType.expense
+                and transaction.classification is TransactionClassification.real_expense
+                and amount < 0
+            )
+        )
+        if (
+            transaction_id in transaction_ids
+            or transaction.account_id != account_id
+            or canonical_timestamp(transaction.date) > snapshot_timestamp
+            or transaction.archived_at is not None
+            or transaction.deleted_at is not None
+            or not supported_cash_flow
+            or amount == 0
+        ):
+            raise _fail()
+        transaction_ids.add(transaction_id)
+        currency = canonical_currency(transaction.currency)
+        cash[currency] = exact_money(cash.get(currency, Decimal(0)) + amount)
+        metrics.append(
+            HistoricalMetricEvidence(
+                evidence_id=f"transaction:{transaction_id}",
+                timestamp=transaction.date,
+                kind=HistoricalMetricKind.net_deposit,
+                currency=currency,
+                amount=amount,
+            )
+        )
 
     balances = tuple(
         CashBalanceEvidence(
@@ -951,6 +1017,18 @@ class AccountSnapshotEvidenceService:
             holdings = _holding_evidence(persisted_holdings, account_id=account_id)
             if account_type in _CASH_ACCOUNT_TYPES and holdings:
                 raise _fail()
+            candidate_contexts: dict[
+                str, tuple[PersistedHoldingEvidence, tuple[AssetListingModel, ...]]
+            ] = {}
+            all_listing_ids: set[str] = set()
+            for persisted in persisted_holdings:
+                if persisted.listing is None or persisted.asset is None:
+                    continue
+                listings = persisted.candidate_listings or (persisted.listing,)
+                if persisted.listing.id not in {listing.id for listing in listings}:
+                    raise _fail()
+                candidate_contexts[persisted.listing.id] = (persisted, listings)
+                all_listing_ids.update(listing.id for listing in listings)
 
             if account_type in _CASH_ACCOUNT_TYPES:
                 transactions = await self.repository.load_active_transactions(
@@ -964,6 +1042,10 @@ class AccountSnapshotEvidenceService:
                 )
                 historical_evidence: tuple[HistoricalMetricEvidence, ...] = ()
             else:
+                transactions = await self.repository.load_active_transactions(
+                    account_id,
+                    through=snapshot_timestamp,
+                )
                 events = await self.repository.load_active_events(
                     account_id,
                     through=snapshot_timestamp,
@@ -1000,6 +1082,7 @@ class AccountSnapshotEvidenceService:
                 ) = _investment_history(
                     events,
                     movements,
+                    transactions,
                     account_id=account_id,
                     snapshot_timestamp=snapshot_timestamp,
                     transfer_valuations=transfer_valuations,
@@ -1011,19 +1094,106 @@ class AccountSnapshotEvidenceService:
                 has_missing_anycoin_realized_pnl = False
 
             price_candidates = await self.repository.load_price_candidates(
-                tuple(item.listing_id for item in holdings),
+                tuple(sorted(all_listing_ids)),
                 through=snapshot_timestamp,
             )
-            prices = tuple(
-                _select_latest_price(
-                    price_candidates,
-                    holding=holding,
-                    source=self.source_policy.price_source_for(holding.asset_type),
-                    through=snapshot_timestamp,
-                    policy=self.policy,
-                )
-                for holding in holdings
-            )
+            prices_list: list[SelectedPriceEvidence] = []
+            selection_now = max(datetime.now(UTC).replace(tzinfo=None), snapshot_timestamp)
+            for holding in holdings:
+                persisted, listings = candidate_contexts[holding.listing_id]
+                assert persisted.asset is not None and persisted.listing is not None
+                aliases = persisted.candidate_aliases or persisted.aliases
+                health_by_identity = {
+                    (row.listing_id, row.provider): row for row in persisted.candidate_health
+                }
+                retry_by_provider = dict(persisted.provider_retry_after)
+                if len(health_by_identity) != len(persisted.candidate_health) or len(
+                    retry_by_provider
+                ) != len(persisted.provider_retry_after):
+                    raise _fail()
+                selector_candidates: list[ListingSelectionCandidate] = []
+                prices_by_listing: dict[str, SelectedPriceEvidence] = {}
+                seen_listing_ids: set[str] = set()
+                for listing in listings:
+                    if not isinstance(listing, AssetListingModel):
+                        raise _fail()
+                    listing_id = _nonblank(listing.id)
+                    if listing_id in seen_listing_ids:
+                        raise _fail()
+                    seen_listing_ids.add(listing_id)
+                    if listing.asset_id != holding.asset_id:
+                        continue
+                    try:
+                        identity = resolve_price_identity(
+                            listing=listing,
+                            asset=persisted.asset,
+                            aliases=tuple(
+                                alias
+                                for alias in aliases
+                                if alias.listing_id is None or alias.listing_id == listing_id
+                            ),
+                            supported_sources=self.source_policy.price_sources,
+                            source_policy=self.source_policy,
+                            asset_listing_count=persisted.asset_listing_count,
+                        )
+                    except MarketEvidenceStateError:
+                        continue
+                    if identity.price_currency != persisted.listing.currency:
+                        continue
+                    health = health_by_identity.get((listing_id, identity.provider))
+                    if (
+                        health is not None
+                        and health.provider_symbol is not None
+                        and health.provider_symbol != identity.provider_symbol
+                    ):
+                        continue
+                    try:
+                        selected_price = _select_latest_price(
+                            price_candidates,
+                            holding=holding,
+                            listing=listing,
+                            identity=identity,
+                            through=snapshot_timestamp,
+                            policy=self.policy,
+                        )
+                    except AccountSnapshotEvidenceStateError:
+                        continue
+                    prices_by_listing[listing_id] = selected_price
+                    selector_candidates.append(
+                        ListingSelectionCandidate(
+                            listing_id=listing_id,
+                            asset_id=listing.asset_id,
+                            asset_type=holding.asset_type,
+                            currency=identity.price_currency,
+                            provider=identity.provider,
+                            provider_symbol=identity.provider_symbol,
+                            mic=listing.mic,
+                            base_priority=listing.base_priority or 0,
+                            health=(
+                                health.state
+                                if health is not None
+                                else MarketDataHealthState.unknown
+                            ),
+                            retry_after=health.retry_after if health is not None else None,
+                            provider_retry_after=retry_by_provider.get(identity.provider),
+                            price_available=True,
+                            acquisition_eligible=False,
+                        )
+                    )
+                try:
+                    selection = select_listing(
+                        requested_listing_id=holding.listing_id,
+                        asset_id=holding.asset_id,
+                        asset_type=holding.asset_type,
+                        valuation_currency=canonical_currency(persisted.listing.currency),
+                        through=snapshot_timestamp,
+                        now=selection_now,
+                        candidates=tuple(selector_candidates),
+                    )
+                except ListingSelectionError as exc:
+                    raise _fail() from exc
+                prices_list.append(prices_by_listing[selection.selected_listing_id])
+            prices = tuple(prices_list)
 
             snapshot_currencies = {
                 *(item.currency for item in prices),

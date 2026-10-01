@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+import logging
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
@@ -17,18 +18,36 @@ from app.db.models.enums import (
     AssetType,
     ExchangeRateSource,
     InvestmentMovementKind,
+    MarketDataFailureReason,
+    MarketDataHealthState,
     PriceSource,
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.db.models.users import UserModel
+from app.modules.market_data.exchange_calendar import (
+    assess_market,
+    price_is_acceptable_for_market,
+)
+from app.modules.market_data.listing_selection import (
+    ListingSelectionCandidate,
+    ListingSelectionError,
+    select_listing,
+)
 from app.modules.market_data.models import (
     ExchangeRateRequirement,
     MarketEvidenceRefreshPlan,
     MarketEvidenceStateError,
+    PriceIdentityFailure,
     PriceRequirement,
+)
+from app.modules.market_data.policy import (
+    DEFAULT_MARKET_EVIDENCE_POLICY,
+    MarketEvidencePolicy,
+    validate_market_evidence_policy,
 )
 from app.modules.market_data.requirements_repository import (
     MarketEvidenceRequirementsRepository,
@@ -38,6 +57,8 @@ from app.modules.market_data.source_policy import (
     MarketEvidenceSourcePolicy,
     validate_market_evidence_source_policy,
 )
+
+logger = logging.getLogger(__name__)
 
 _INVESTMENT_ACCOUNT_TYPES = {
     AccountType.broker,
@@ -69,6 +90,8 @@ class _Repository(Protocol):
     async def load_holdings(
         self,
         account_ids: tuple[str, ...],
+        *,
+        through: datetime,
     ) -> tuple[PersistedMarketHolding, ...]: ...
 
     async def load_transactions(
@@ -180,6 +203,7 @@ def build_price_requirement(
     supported_sources: frozenset[PriceSource],
     through: datetime,
     source_policy: MarketEvidenceSourcePolicy | None = None,
+    asset_listing_count: int | None = None,
 ) -> PriceRequirement:
     """Resolve one trusted persisted listing identity without consulting Holdings."""
 
@@ -189,6 +213,7 @@ def build_price_requirement(
         aliases=aliases,
         supported_sources=supported_sources,
         source_policy=source_policy,
+        asset_listing_count=asset_listing_count,
     )
     return PriceRequirement(
         account_id=_nonblank(account_id),
@@ -198,6 +223,8 @@ def build_price_requirement(
         provider=identity.provider,
         provider_symbol=identity.provider_symbol,
         through=_timestamp(through),
+        listing_mic=listing.mic,
+        asset_type=asset.asset_type,
     )
 
 
@@ -208,28 +235,31 @@ def resolve_price_identity(
     aliases: tuple[AssetAliasModel, ...],
     supported_sources: frozenset[PriceSource],
     source_policy: MarketEvidenceSourcePolicy | None = None,
+    asset_listing_count: int | None = None,
 ) -> ResolvedPriceIdentity:
-    """Resolve the provider alias without inventing a ticker or a timestamp."""
+    """Resolve one exact listing/provider identity without inventing a symbol."""
 
     if not isinstance(listing, AssetListingModel) or not isinstance(asset, AssetModel):
         raise _fail()
     if listing.asset_id != asset.id:
         raise _fail()
     expected_source: PriceSource | None = None
+    allowed_sources = supported_sources
     policy: MarketEvidenceSourcePolicy | None = None
     if source_policy is not None:
         policy = validate_market_evidence_source_policy(source_policy)
         if policy.price_sources != supported_sources:
             raise _fail()
         expected_source = policy.price_source_for(asset.asset_type)
-    if listing.provider in supported_sources and (
-        expected_source is None or listing.provider is expected_source
-    ):
+        allowed_sources = policy.price_sources_for(asset.asset_type)
+    if listing.provider in supported_sources and listing.provider in allowed_sources:
         if listing.provider is None:
             raise _fail()
         provider, symbol = listing.provider, _nonblank(listing.provider_symbol)
     else:
-        identities: list[tuple[PriceSource, str]] = []
+        listing_id = _nonblank(listing.id)
+        scoped: list[tuple[PriceSource, str]] = []
+        asset_wide: list[tuple[PriceSource, str]] = []
         for alias in aliases:
             if (
                 not isinstance(alias, AssetAliasModel)
@@ -238,15 +268,32 @@ def resolve_price_identity(
             ):
                 raise _fail()
             source = _alias_price_source(alias.provider)
+            alias_listing_id = alias.listing_id
+            if alias_listing_id is not None and (
+                not isinstance(alias_listing_id, str) or not alias_listing_id
+            ):
+                raise _fail()
+            if alias_listing_id is not None and alias_listing_id != listing_id:
+                continue
             if source in supported_sources and (
                 expected_source is None or source is expected_source
             ):
-                identities.append((source, _nonblank(alias.external_id)))
+                identity = (source, _nonblank(alias.external_id))
+                if alias_listing_id == listing_id:
+                    scoped.append(identity)
+                elif source is PriceSource.coingecko or asset_listing_count == 1:
+                    asset_wide.append(identity)
+        identities = scoped if scoped else asset_wide
         if len(identities) != 1:
             raise _fail()
         provider, symbol = identities[0]
     price_currency = _currency(listing.currency)
-    if policy is not None and policy.mode == "local_free" and asset.asset_type is AssetType.crypto:
+    if (
+        policy is not None
+        and policy.mode == "local_free"
+        and provider is PriceSource.yahoo_finance
+        and asset.asset_type is AssetType.crypto
+    ):
         expected_symbol = f"{_nonblank(asset.symbol)}-USD"
         if symbol != expected_symbol:
             raise _fail()
@@ -258,16 +305,58 @@ def resolve_price_identity(
     )
 
 
+def _missing_provider_symbol_failures(
+    rows: tuple[PersistedMarketHolding, ...],
+    *,
+    supported_sources: frozenset[PriceSource],
+    source_policy: MarketEvidenceSourcePolicy | None,
+) -> tuple[PriceIdentityFailure, ...]:
+    failures: dict[tuple[str, PriceSource], PriceIdentityFailure] = {}
+    for persisted in rows:
+        if _finite_decimal(persisted.holding.quantity) == 0 or persisted.asset is None:
+            continue
+        allowed = (
+            supported_sources
+            if source_policy is None
+            else source_policy.price_sources_for(persisted.asset.asset_type)
+        )
+        for listing in persisted.candidate_listings or (
+            (persisted.listing,) if persisted.listing is not None else ()
+        ):
+            if (
+                listing.asset_id != persisted.asset.id
+                or listing.provider not in allowed
+                or listing.provider_symbol not in (None, "")
+            ):
+                continue
+            provider = listing.provider
+            assert provider is not None
+            configured_at = listing.updated_at
+            if not isinstance(configured_at, datetime) or configured_at.tzinfo is not None:
+                raise _fail()
+            key = (_nonblank(listing.id), provider)
+            failures[key] = PriceIdentityFailure(
+                listing_id=key[0],
+                provider=provider,
+                reason=MarketDataFailureReason.missing_provider_symbol,
+                configured_at=configured_at,
+            )
+    return tuple(sorted(failures.values(), key=lambda item: (item.provider.value, item.listing_id)))
+
+
 def _price_requirements(
     rows: tuple[PersistedMarketHolding, ...],
     *,
     accounts: dict[str, AccountModel],
     supported_sources: frozenset[PriceSource],
     through: datetime,
+    policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
     source_policy: MarketEvidenceSourcePolicy | None = None,
 ) -> tuple[PriceRequirement, ...]:
     by_identity: dict[tuple[str, PriceSource, datetime], PriceRequirement] = {}
     holding_ids: set[str] = set()
+    selection_now = max(datetime.now(UTC).replace(tzinfo=None), through)
+    freshness_policy = validate_market_evidence_policy(policy)
     for persisted in rows:
         holding = persisted.holding
         listing = persisted.listing
@@ -292,25 +381,198 @@ def _price_requirements(
             or listing.asset_id != asset.id
         ):
             raise _fail()
-        requirement = build_price_requirement(
+        listings = persisted.candidate_listings or (listing,)
+        aliases = persisted.candidate_aliases or persisted.aliases
+        health_by_identity = {
+            (row.listing_id, row.provider): row for row in persisted.candidate_health
+        }
+        if len(health_by_identity) != len(persisted.candidate_health):
+            raise _fail()
+        provider_retry_after = dict(persisted.provider_retry_after)
+        if len(provider_retry_after) != len(persisted.provider_retry_after):
+            raise _fail()
+        candidates: list[ListingSelectionCandidate] = []
+        listing_by_id: dict[str, AssetListingModel] = {}
+        for candidate_listing in listings:
+            if not isinstance(candidate_listing, AssetListingModel):
+                raise _fail()
+            candidate_id = _nonblank(candidate_listing.id)
+            if candidate_id in listing_by_id:
+                raise _fail()
+            listing_by_id[candidate_id] = candidate_listing
+            if candidate_listing.asset_id != asset.id:
+                continue
+            try:
+                identity = resolve_price_identity(
+                    listing=candidate_listing,
+                    asset=asset,
+                    aliases=tuple(
+                        alias
+                        for alias in aliases
+                        if alias.listing_id is None or alias.listing_id == candidate_id
+                    ),
+                    supported_sources=supported_sources,
+                    source_policy=source_policy,
+                    asset_listing_count=persisted.asset_listing_count,
+                )
+                native_currency = _currency(identity.price_currency)
+            except MarketEvidenceStateError:
+                continue
+            health = health_by_identity.get((candidate_id, identity.provider))
+            if (
+                health is not None
+                and health.provider_symbol is not None
+                and health.provider_symbol != identity.provider_symbol
+            ):
+                continue
+            lease_active = (
+                health is not None
+                and health.lease_expires_at is not None
+                and health.lease_expires_at > selection_now
+            )
+            matching_prices = tuple(
+                price
+                for price in persisted.candidate_prices
+                if isinstance(price, PriceSnapshotModel)
+                and price.asset_id == asset.id
+                and price.listing_id == candidate_id
+                and price.source is identity.provider
+                and price.provider_symbol == identity.provider_symbol
+                and price.currency == native_currency
+                and price.timestamp <= through
+                and price.price > 0
+            )
+            latest_timestamp = max((price.timestamp for price in matching_prices), default=None)
+            latest_prices = tuple(
+                price for price in matching_prices if price.timestamp == latest_timestamp
+            )
+            price_available = len(latest_prices) == 1 and price_is_acceptable_for_market(
+                mic=candidate_listing.mic,
+                asset_type=asset.asset_type.value,
+                observed_at=latest_prices[0].timestamp,
+                through=through,
+                maximum_age=freshness_policy.maximum_price_age,
+            )
+            candidates.append(
+                ListingSelectionCandidate(
+                    listing_id=candidate_id,
+                    asset_id=candidate_listing.asset_id,
+                    asset_type=asset.asset_type,
+                    currency=native_currency,
+                    provider=identity.provider,
+                    provider_symbol=identity.provider_symbol,
+                    mic=candidate_listing.mic,
+                    base_priority=candidate_listing.base_priority or 0,
+                    health=health.state if health is not None else MarketDataHealthState.unknown,
+                    last_failure_reason=(
+                        health.last_failure_reason if health is not None else None
+                    ),
+                    retry_after=health.retry_after if health is not None else None,
+                    provider_retry_after=provider_retry_after.get(identity.provider),
+                    price_available=price_available,
+                    acquisition_eligible=not lease_active,
+                    acquisition_probe=True,
+                )
+            )
+        if listing.id not in listing_by_id:
+            raise _fail()
+        allowed_sources = (
+            supported_sources
+            if source_policy is None
+            else source_policy.price_sources_for(asset.asset_type)
+        )
+        if not candidates and any(
+            candidate.provider in allowed_sources and candidate.provider_symbol in (None, "")
+            for candidate in listings
+        ):
+            continue
+        try:
+            selection = select_listing(
+                requested_listing_id=listing.id,
+                asset_id=asset.id,
+                asset_type=asset.asset_type,
+                valuation_currency=_currency(listing.currency),
+                through=through,
+                now=selection_now,
+                candidates=tuple(candidates),
+            )
+        except ListingSelectionError as exc:
+            raise _fail() from exc
+        if selection.fallback_reason is not None:
+            logger.info(
+                "market_data_listing_fallback",
+                extra={
+                    "provider": selection.provider.value,
+                    "selection_reason": selection.reason.value,
+                    "fallback_reason": selection.fallback_reason.value,
+                },
+            )
+        selected_listing = listing_by_id[selection.selected_listing_id]
+        selected_candidate = next(
+            item for item in candidates if item.listing_id == selection.selected_listing_id
+        )
+        calendar = assess_market(
+            selected_listing.mic,
+            through.replace(tzinfo=UTC),
+            asset_type=asset.asset_type.value,
+        )
+        if selected_candidate.price_available and calendar.status in {
+            "closed",
+            "weekend",
+            "holiday",
+        }:
+            continue
+        selected_aliases = tuple(
+            alias
+            for alias in aliases
+            if alias.listing_id is None or alias.listing_id == selected_listing.id
+        )
+        selected_requirement = build_price_requirement(
             account_id=holding.account_id,
-            listing=listing,
+            listing=selected_listing,
             asset=asset,
-            aliases=persisted.aliases,
+            aliases=selected_aliases,
             supported_sources=supported_sources,
             through=through,
             source_policy=source_policy,
+            asset_listing_count=persisted.asset_listing_count,
+        )
+        requirement = replace(
+            selected_requirement,
+            listing_currency=next(
+                item.currency
+                for item in candidates
+                if item.listing_id == selection.selected_listing_id
+            ),
+            provider=selection.provider,
+            provider_symbol=selection.provider_symbol,
+            listing_mic=selected_listing.mic,
+            requested_listing_id=selection.requested_listing_id,
+            selection_reason=selection.reason.value,
+            fallback_reason=(
+                selection.fallback_reason.value if selection.fallback_reason is not None else None
+            ),
+            selected_base_priority=selection.base_priority,
+            selected_health=selection.health.value,
         )
         key = (requirement.listing_id, requirement.provider, requirement.through)
         existing = by_identity.get(key)
-        if existing is None or requirement.account_id < existing.account_id:
-            by_identity[key] = requirement
-        elif (
+        if existing is not None and (
             requirement.asset_id != existing.asset_id
             or requirement.listing_currency != existing.listing_currency
             or requirement.provider_symbol != existing.provider_symbol
+            or requirement.listing_mic != existing.listing_mic
+            or requirement.asset_type != existing.asset_type
         ):
             raise _fail()
+        if existing is None or (
+            requirement.account_id,
+            requirement.requested_listing_id or "",
+        ) < (
+            existing.account_id,
+            existing.requested_listing_id or "",
+        ):
+            by_identity[key] = requirement
     return tuple(
         sorted(
             by_identity.values(),
@@ -413,6 +675,7 @@ class MarketEvidenceRequirementsPlanner:
         *,
         price_sources: frozenset[PriceSource],
         fx_source: ExchangeRateSource | None,
+        policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
         repository: _Repository | None = None,
         source_policy: MarketEvidenceSourcePolicy | None = None,
     ) -> None:
@@ -421,9 +684,13 @@ class MarketEvidenceRequirementsPlanner:
         self.session = session
         self.price_sources = price_sources
         self.fx_source = fx_source
+        self.policy = validate_market_evidence_policy(policy)
         if source_policy is not None:
-            policy = validate_market_evidence_source_policy(source_policy)
-            if policy.price_sources != price_sources or policy.fx_source is not fx_source:
+            source_contract = validate_market_evidence_source_policy(source_policy)
+            if (
+                source_contract.price_sources != price_sources
+                or source_contract.fx_source is not fx_source
+            ):
                 raise _fail()
         self.source_policy = source_policy
         self.repository = repository or MarketEvidenceRequirementsRepository(session)
@@ -454,7 +721,10 @@ class MarketEvidenceRequirementsPlanner:
             _currency(account.currency)
             accounts[_nonblank(account.id)] = account
         account_ids = tuple(sorted(accounts))
-        holdings = await self.repository.load_holdings(account_ids)
+        holdings = await self.repository.load_holdings(
+            account_ids,
+            through=snapshot_timestamp,
+        )
         transactions = await self.repository.load_transactions(
             account_ids,
             through=snapshot_timestamp,
@@ -476,6 +746,12 @@ class MarketEvidenceRequirementsPlanner:
             accounts=accounts,
             supported_sources=self.price_sources,
             through=snapshot_timestamp,
+            policy=self.policy,
+            source_policy=self.source_policy,
+        )
+        identity_failures = _missing_provider_symbol_failures(
+            holdings,
+            supported_sources=self.price_sources,
             source_policy=self.source_policy,
         )
 
@@ -503,6 +779,16 @@ class MarketEvidenceRequirementsPlanner:
         for persisted in holdings:
             if _finite_decimal(persisted.holding.quantity) == 0:
                 continue
+            if persisted.listing is None:
+                raise _fail()
+            _add_account_conversion_requirements(
+                fx,
+                source_currency=persisted.listing.currency,
+                account=accounts[persisted.holding.account_id],
+                output_currency=output_currency,
+                through=snapshot_timestamp,
+                provider=self.fx_source,
+            )
             for source_currency in _holding_cost_currencies(persisted.holding):
                 _add_account_conversion_requirements(
                     fx,
@@ -643,4 +929,5 @@ class MarketEvidenceRequirementsPlanner:
             snapshot_timestamp=snapshot_timestamp,
             price_requirements=prices,
             fx_requirements=fx_requirements,
+            identity_failures=identity_failures,
         )

@@ -66,6 +66,12 @@ BASELINE_SCHEMA = BACKEND_ROOT / "database" / "baseline" / "schema.sql"
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
+    pytest.mark.skipif(
+        DATABASE_URL is not None
+        and make_url(normalize_database_url(DATABASE_URL)).database
+        != "finance_app_stabilization_test",
+        reason="requires the dedicated finance_app_stabilization_test control database",
+    ),
 ]
 
 _NOW = datetime(2026, 8, 20, 12)

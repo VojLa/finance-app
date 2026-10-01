@@ -3,6 +3,7 @@ from app.db.models.accounts import (
     AccountMemberModel,
     AccountModel,
 )
+from app.db.models.asset_alias_audit import AssetAliasAuditModel
 from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.background_jobs import (
     BackgroundJobModel,
@@ -52,6 +53,8 @@ from app.db.models.enums import (
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
+    MarketDataFailureReason,
+    MarketDataHealthState,
     MovementDirection,
     PriceSource,
     RuleField,
@@ -83,6 +86,7 @@ from app.db.models.ledger import (
     InvestmentMovementValuationEvidenceModel,
 )
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.publication_targets import ImportJobPublicationTargetModel
 from app.db.models.snapshot_series_jobs import (
@@ -124,6 +128,7 @@ __all__ = [
     "AccountSnapshotModel",
     "AccountType",
     "AliasMatchType",
+    "AssetAliasAuditModel",
     "AssetAliasModel",
     "AssetAliasProvider",
     "AssetListingModel",
@@ -171,6 +176,9 @@ __all__ = [
     "InvestmentMovementValuationEvidenceModel",
     "LiabilityBalanceModel",
     "LiabilityBalanceSource",
+    "MarketDataFailureReason",
+    "MarketDataHealthState",
+    "MarketDataListingHealthModel",
     "MovementDirection",
     "NetWorthSnapshotModel",
     "PortfolioSnapshotInputModel",

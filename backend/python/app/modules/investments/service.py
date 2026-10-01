@@ -3,22 +3,27 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthenticatedPrincipal
+from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.common import TIMESTAMP
 from app.db.models.enums import (
     AccountMemberRole,
     ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
+    MarketDataHealthState,
     MovementDirection,
     PriceSource,
 )
+from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.market_health import MarketDataListingHealthModel
+from app.db.models.prices import PriceSnapshotModel
 from app.modules.accounts.access import require_account_access
 from app.modules.canonical_state import (
     CanonicalChangeKind,
@@ -44,6 +49,17 @@ from app.modules.investments.models import (
     SymbolPositionResponse,
 )
 from app.modules.investments.repository import InvestmentRepository
+from app.modules.market_data.exchange_calendar import assess_market
+from app.modules.market_data.listing_selection import (
+    ListingSelectionCandidate,
+    ListingSelectionError,
+    ListingSelectionResult,
+    select_listing,
+)
+from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.policy import DEFAULT_MARKET_EVIDENCE_POLICY
+from app.modules.market_data.requirements import ResolvedPriceIdentity, resolve_price_identity
+from app.modules.market_data.source_policy import MarketEvidenceSourcePolicy
 from app.modules.portfolio_history.invalidation.service import (
     PortfolioHistoryInvalidationService,
     PortfolioHistoryInvalidationStateError,
@@ -77,6 +93,84 @@ class ManualInvestmentUnavailableError(ApplicationError):
             message="The investment event cannot be produced from the supplied evidence.",
             status_code=409,
         )
+
+
+def _trace_status(
+    *,
+    holding: HoldingModel,
+    listing: AssetListingModel | None,
+    asset: AssetModel | None,
+    identity: ResolvedPriceIdentity | None,
+    price: PriceSnapshotModel | None,
+    conflicting_price: bool,
+    as_of: datetime,
+    selected_listing: AssetListingModel | None = None,
+) -> Literal["ok", "unresolved", "conflict", "stale", "unavailable"]:
+    if listing is None or asset is None:
+        return "unresolved"
+    if (
+        holding.asset_id != asset.id
+        or holding.listing_id != listing.id
+        or listing.asset_id != asset.id
+        or holding.asset_type is not asset.asset_type
+    ):
+        return "conflict"
+    if identity is None:
+        return "unresolved"
+    if holding.currency != listing.currency:
+        return "conflict"
+    if price is None:
+        return "conflict" if conflicting_price else "unavailable"
+    actual_listing = selected_listing or listing
+    if (
+        price.asset_id != asset.id
+        or actual_listing.asset_id != asset.id
+        or price.listing_id != actual_listing.id
+        or price.source is not identity.provider
+        or price.currency != identity.price_currency
+    ):
+        return "conflict"
+    if price.provider_symbol is None:
+        return "unavailable"
+    if price.provider_symbol != identity.provider_symbol:
+        return "conflict"
+    if identity.price_currency != holding.currency:
+        return "unavailable"
+    if price.timestamp > as_of:
+        return "conflict"
+    if (
+        _price_freshness(
+            price=price, listing=actual_listing, asset_type=holding.asset_type.value, as_of=as_of
+        )
+        == "stale"
+    ):
+        return "stale"
+    if holding.current_price is None or holding.current_value is None:
+        return "unavailable"
+    return "ok"
+
+
+def _price_freshness(
+    *,
+    price: PriceSnapshotModel | None,
+    listing: AssetListingModel,
+    asset_type: str,
+    as_of: datetime,
+) -> Literal["fresh", "stale", "unavailable"]:
+    if price is None:
+        return "unavailable"
+    if price.timestamp > as_of:
+        return "stale"
+    if as_of - price.timestamp <= DEFAULT_MARKET_EVIDENCE_POLICY.maximum_price_age:
+        return "fresh"
+    calendar = assess_market(listing.mic, as_of.replace(tzinfo=UTC), asset_type=asset_type)
+    return (
+        "fresh"
+        if calendar.status in {"closed", "weekend", "holiday"}
+        and calendar.expected_previous_close is not None
+        and price.timestamp.replace(tzinfo=UTC) >= calendar.expected_previous_close
+        else "stale"
+    )
 
 
 class _SnapshotService(Protocol):
@@ -402,7 +496,7 @@ def _persisted_signature(movement: InvestmentMovementModel) -> tuple[object, ...
 
 def _event_action(
     event: InvestmentEventModel, movements: list[InvestmentMovementModel]
-) -> ManualInvestmentAction | str:
+) -> ManualInvestmentAction | Literal["transfer"]:
     asset = next(
         (movement for movement in movements if movement.kind is InvestmentMovementKind.asset),
         None,
@@ -614,7 +708,11 @@ class InvestmentService:
         )
 
     async def symbol_detail(
-        self, *, principal: AuthenticatedPrincipal, symbol: str
+        self,
+        *,
+        principal: AuthenticatedPrincipal,
+        symbol: str,
+        source_policy: MarketEvidenceSourcePolicy,
     ) -> SymbolDetailResponse:
         canonical_symbol = symbol.strip().upper()
         if not canonical_symbol or not canonical_symbol.isascii() or len(canonical_symbol) > 64:
@@ -622,31 +720,33 @@ class InvestmentService:
         positions = await self.repository.symbol_positions(
             user_id=principal.user_id, symbol=canonical_symbol
         )
+        asset_ids = tuple(sorted({asset.id for _, _, _, asset in positions if asset is not None}))
+        (
+            aliases_by_asset,
+            listings_by_asset,
+            health_by_identity,
+            provider_retry_after,
+        ) = await self.repository.symbol_identity_context(asset_ids)
         events = await self.repository.symbol_events(
             user_id=principal.user_id, symbol=canonical_symbol
         )
         response = SymbolDetailResponse(
             symbol=canonical_symbol,
             positions=[
-                SymbolPositionResponse(
-                    id=holding.id,
-                    account_id=holding.account_id,
+                await self._position_response(
+                    holding=holding,
                     account_name=account.name,
-                    asset_id=holding.asset_id,
-                    listing_id=holding.listing_id,
-                    symbol=holding.symbol,
-                    name=holding.name,
-                    asset_type=holding.asset_type,
-                    quantity=holding.quantity,
-                    avg_buy_price=holding.avg_buy_price,
-                    currency=holding.currency,
-                    current_price=holding.current_price,
-                    current_value=holding.current_value,
-                    unrealized_pnl=holding.unrealized_pnl,
-                    realized_pnl=holding.realized_pnl,
-                    calculated_at=holding.calculated_at,
+                    listing=listing,
+                    asset=asset,
+                    aliases=aliases_by_asset.get(asset.id, ()) if asset is not None else (),
+                    candidate_listings=listings_by_asset.get(asset.id, ())
+                    if asset is not None
+                    else (),
+                    health_by_identity=health_by_identity,
+                    provider_retry_after=provider_retry_after,
+                    source_policy=source_policy,
                 )
-                for holding, account in positions
+                for holding, account, listing, asset in positions
             ],
             events=[
                 self._event_response(event, account.name, movements)
@@ -655,6 +755,202 @@ class InvestmentService:
         )
         await self.session.commit()
         return response
+
+    async def _position_response(
+        self,
+        *,
+        holding: HoldingModel,
+        account_name: str,
+        listing: AssetListingModel | None,
+        asset: AssetModel | None,
+        aliases: tuple[AssetAliasModel, ...],
+        candidate_listings: tuple[AssetListingModel, ...],
+        health_by_identity: dict[tuple[str, PriceSource], MarketDataListingHealthModel],
+        provider_retry_after: dict[PriceSource, datetime],
+        source_policy: MarketEvidenceSourcePolicy,
+    ) -> SymbolPositionResponse:
+        as_of = datetime.now(UTC).replace(tzinfo=None)
+        identity: ResolvedPriceIdentity | None = None
+        price: PriceSnapshotModel | None = None
+        conflicting_price = False
+        selection: ListingSelectionResult | None = None
+        selected_listing: AssetListingModel | None = None
+        candidates: list[ListingSelectionCandidate] = []
+        prices: dict[str, PriceSnapshotModel] = {}
+        identities: dict[str, ResolvedPriceIdentity] = {}
+        listings = {
+            item.id: item
+            for item in candidate_listings
+            if asset is not None and item.asset_id == asset.id
+        }
+        if (
+            listing is not None
+            and asset is not None
+            and holding.asset_id == asset.id
+            and listing.asset_id == asset.id
+        ):
+            for candidate_listing in listings.values():
+                candidate_aliases = tuple(
+                    alias
+                    for alias in aliases
+                    if alias.listing_id is None or alias.listing_id == candidate_listing.id
+                )
+                try:
+                    candidate_identity = resolve_price_identity(
+                        listing=candidate_listing,
+                        asset=asset,
+                        aliases=candidate_aliases,
+                        supported_sources=source_policy.price_sources,
+                        source_policy=source_policy,
+                        asset_listing_count=len(listings),
+                    )
+                except MarketEvidenceStateError:
+                    continue
+                identities[candidate_listing.id] = candidate_identity
+                candidate_price, candidate_conflict = await self.repository.exact_price(
+                    listing_id=candidate_listing.id,
+                    asset_id=asset.id,
+                    source=candidate_identity.provider,
+                    provider_symbol=candidate_identity.provider_symbol,
+                    currency=candidate_identity.price_currency,
+                )
+                if candidate_listing.id == listing.id:
+                    identity, price, conflicting_price = (
+                        candidate_identity,
+                        candidate_price,
+                        candidate_conflict,
+                    )
+                health = health_by_identity.get((candidate_listing.id, candidate_identity.provider))
+                if health is not None and health.provider_symbol not in (
+                    None,
+                    candidate_identity.provider_symbol,
+                ):
+                    if candidate_listing.id == listing.id:
+                        price, conflicting_price = None, True
+                    continue
+                fresh = (
+                    _price_freshness(
+                        price=candidate_price,
+                        listing=candidate_listing,
+                        asset_type=asset.asset_type.value,
+                        as_of=as_of,
+                    )
+                    == "fresh"
+                )
+                if fresh and candidate_price is not None:
+                    prices[candidate_listing.id] = candidate_price
+                candidates.append(
+                    ListingSelectionCandidate(
+                        listing_id=candidate_listing.id,
+                        asset_id=candidate_listing.asset_id,
+                        asset_type=asset.asset_type,
+                        currency=candidate_identity.price_currency,
+                        provider=candidate_identity.provider,
+                        provider_symbol=candidate_identity.provider_symbol,
+                        mic=candidate_listing.mic,
+                        base_priority=candidate_listing.base_priority or 0,
+                        health=health.state
+                        if health is not None
+                        else MarketDataHealthState.unknown,
+                        retry_after=health.retry_after if health is not None else None,
+                        provider_retry_after=provider_retry_after.get(candidate_identity.provider),
+                        price_available=fresh,
+                        acquisition_eligible=False,
+                    )
+                )
+            if holding.currency == listing.currency and holding.asset_type is asset.asset_type:
+                try:
+                    selection = select_listing(
+                        requested_listing_id=listing.id,
+                        asset_id=asset.id,
+                        asset_type=asset.asset_type,
+                        valuation_currency=holding.currency,
+                        through=as_of,
+                        now=as_of,
+                        candidates=tuple(candidates),
+                    )
+                except ListingSelectionError:
+                    pass
+        requested_identity = identity
+        if selection is not None:
+            selected_listing = listings[selection.selected_listing_id]
+            identity = identities[selection.selected_listing_id]
+            price = prices[selection.selected_listing_id]
+            conflicting_price = False
+        freshness_listing = selected_listing if selected_listing is not None else listing
+        price_freshness: Literal["fresh", "stale", "unavailable"] = (
+            _price_freshness(
+                price=price,
+                listing=freshness_listing,
+                asset_type=holding.asset_type.value,
+                as_of=as_of,
+            )
+            if freshness_listing is not None
+            else "unavailable"
+        )
+        return SymbolPositionResponse(
+            id=holding.id,
+            account_id=holding.account_id,
+            account_name=account_name,
+            asset_id=holding.asset_id,
+            listing_id=holding.listing_id,
+            symbol=holding.symbol,
+            name=holding.name,
+            asset_type=holding.asset_type,
+            quantity=holding.quantity,
+            avg_buy_price=holding.avg_buy_price,
+            currency=holding.currency,
+            current_price=holding.current_price,
+            current_value=holding.current_value,
+            unrealized_pnl=holding.unrealized_pnl,
+            realized_pnl=holding.realized_pnl,
+            calculated_at=holding.calculated_at,
+            asset_name=asset.name if asset is not None else None,
+            asset_isin=asset.isin if asset is not None else None,
+            listing_symbol=listing.symbol if listing is not None else None,
+            listing_exchange=listing.exchange if listing is not None else None,
+            listing_mic=listing.mic if listing is not None else None,
+            listing_currency=listing.currency if listing is not None else None,
+            listing_base_priority=listing.base_priority if listing is not None else None,
+            requested_listing_id=holding.listing_id,
+            selected_listing_id=selection.selected_listing_id if selection is not None else None,
+            selection_reason=selection.reason.value if selection is not None else None,
+            fallback_reason=(
+                selection.fallback_reason.value
+                if selection is not None and selection.fallback_reason is not None
+                else None
+            ),
+            selected_base_priority=selection.base_priority if selection is not None else None,
+            selected_health=selection.health.value if selection is not None else None,
+            selected_provider=selection.provider.value if selection is not None else None,
+            selected_provider_symbol=selection.provider_symbol if selection is not None else None,
+            market_provider=(
+                requested_identity.provider.value if requested_identity is not None else None
+            ),
+            market_provider_symbol=(
+                requested_identity.provider_symbol if requested_identity is not None else None
+            ),
+            price_amount=price.price if price is not None else None,
+            price_currency=price.currency if price is not None else None,
+            price_timestamp=price.timestamp if price is not None else None,
+            price_source=price.source.value if price is not None else None,
+            price_provider_symbol=price.provider_symbol if price is not None else None,
+            price_snapshot_id=price.id if price is not None else None,
+            price_freshness=price_freshness,
+            fx_evidence_id=None,
+            fx_rate=None,
+            converted_value=None,
+            trace_status=_trace_status(
+                holding=holding,
+                listing=listing,
+                asset=asset,
+                identity=identity,
+                price=price,
+                conflicting_price=conflicting_price,
+                as_of=as_of,
+                selected_listing=selected_listing,
+            ),
+        )
 
     def _event_response(
         self,

@@ -22,6 +22,7 @@ def _body(
     symbol: str = "VUAA.MI",
     currency: str = "EUR",
     observed_at: datetime = OBSERVED_AT,
+    granularity: str | None = "1m",
 ) -> bytes:
     epoch = int(observed_at.replace(tzinfo=UTC).timestamp())
     document = {
@@ -32,6 +33,7 @@ def _body(
                         "symbol": symbol,
                         "currency": currency,
                         "priceHint": price_hint,
+                        "dataGranularity": granularity,
                         "exchangeName": "Milan",
                     },
                     "timestamp": [epoch],
@@ -64,14 +66,14 @@ class _Transport(YahooFinanceChartTransport):
         return YahooFinanceHttpResponse(200, "application/json", self.body)
 
 
-def _requirement() -> PriceRequirement:
+def _requirement(*, symbol: str = "VUAA.MI", currency: str = "EUR") -> PriceRequirement:
     return PriceRequirement(
         account_id="account-1",
         asset_id="asset-1",
         listing_id="listing-1",
-        listing_currency="EUR",
+        listing_currency=currency,
         provider=PriceSource.yahoo_finance,
-        provider_symbol="VUAA.MI",
+        provider_symbol=symbol,
         through=OBSERVED_AT + timedelta(hours=1),
     )
 
@@ -91,9 +93,57 @@ async def test_provider_records_yahoo_price_with_price_hint_normalization() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbol,currency",
+    [
+        ("AAPL", "USD"),
+        ("VWCE.DE", "EUR"),
+        ("CEZ.PR", "CZK"),
+        ("VUSA.L", "GBP"),
+        ("NESN.SW", "CHF"),
+        ("BTC-USD", "USD"),
+    ],
+)
+async def test_provider_preserves_exact_symbol_and_native_currency(
+    symbol: str, currency: str
+) -> None:
+    transport = _Transport(_body(symbol=symbol, currency=currency))
+
+    result = await YahooFinancePriceProvider(transport).fetch(
+        _requirement(symbol=symbol, currency=currency)
+    )
+
+    assert result.provider_symbol == symbol
+    assert result.currency == currency
+    assert transport.calls[0][0] == symbol
+
+
+@pytest.mark.asyncio
 async def test_provider_rejects_price_hint_above_persisted_precision() -> None:
     with pytest.raises(MarketEvidenceStateError):
         await YahooFinancePriceProvider(_Transport(_body(price_hint=11))).fetch(_requirement())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granularity", [None, "1d"])
+async def test_provider_rejects_non_minute_chart(granularity: str | None) -> None:
+    with pytest.raises(MarketEvidenceStateError):
+        await YahooFinancePriceProvider(_Transport(_body(granularity=granularity))).fetch(
+            _requirement()
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"chart":{"result":null,"error":{"code":"Not Found"}}}',
+        b'{"chart":{"result":[{"meta":{"symbol":"VUAA.MI"}}],"error":null}}',
+    ],
+)
+async def test_provider_rejects_unknown_or_partial_chart(body: bytes) -> None:
+    with pytest.raises(MarketEvidenceStateError):
+        await YahooFinancePriceProvider(_Transport(body)).fetch(_requirement())
 
 
 @pytest.mark.asyncio
