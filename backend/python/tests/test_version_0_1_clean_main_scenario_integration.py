@@ -825,7 +825,8 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         assert selected["rateId"] in persisted_rate_ids
     assert len(trading_rates["historicalRateIds"]) == 1
     assert set(trading_rates["historicalRateIds"]).issubset(persisted_rate_ids)
-    assert anycoin_rates["historicalRateIds"] == []
+    assert len(anycoin_rates["historicalRateIds"]) == 1
+    assert set(anycoin_rates["historicalRateIds"]).issubset(persisted_rate_ids)
     rb_snapshot = latest_snapshots[account_ids["raiffeisenbank"]]
     assert rb_snapshot.cash_value == Decimal("9826.550000")
     assert rb_snapshot.cash_value_by_currency == {"CZK": "9826.550000"}
