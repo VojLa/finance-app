@@ -116,7 +116,7 @@ def _client(settings: Settings) -> TestClient:
     return TestClient(app)
 
 
-def test_response_model_serializes_contract_and_accepts_truthful_coarser_only() -> None:
+def test_response_model_serializes_contract_and_requires_one_selected_resolution() -> None:
     response = PortfolioHistoryResponse.model_validate(_result().history, from_attributes=True)
     assert response.model_dump(mode="json", by_alias=True, exclude_none=True) == {
         "range": "1Y",
@@ -145,15 +145,14 @@ def test_response_model_serializes_contract_and_accepts_truthful_coarser_only() 
             }
         ],
     }
-    coarser = PortfolioHistoryResponse.model_validate(
-        _result(
-            history_range=HistoryPublicRange.three_months,
-            actual_resolution=1440,
-        ).history,
-        from_attributes=True,
-    )
-    assert coarser.preferred_resolution_minutes == 720
-    assert coarser.resolutions == (1440,)
+    with pytest.raises(ValidationError):
+        PortfolioHistoryResponse.model_validate(
+            _result(
+                history_range=HistoryPublicRange.three_months,
+                actual_resolution=1440,
+            ).history,
+            from_attributes=True,
+        )
     with pytest.raises(ValidationError):
         PortfolioHistoryResponse.model_validate(
             {**response.model_dump(), "snapshotId": "forbidden"}

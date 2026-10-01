@@ -37,6 +37,14 @@ belong to that same snapshot.
 Native `*ByCurrency` values are retained and the scalar output currency is only a
 derived presentation aggregate.
 
+Each response selects exactly one Prague-local lattice resolution for the whole
+graph and returns one close per bucket, plus the exact first-event boundary for
+`ALL` when distinct. Fixed ranges use their approved tier (`1Y` is one day).
+`ALL` chooses the finest tier that covers the complete span within the 480-point
+cap, so roughly 1.5 years selects the two-day tier. Public resolution metadata
+contains one resolution and one coverage segment; storage granularity and
+neighbor spacing never create mixed chart layers.
+
 Accepted account membership is checked on staging and every read; pending
 invitations do not authorize account or portfolio history. Scope changes and
 canonical/market changes create durable invalidation evidence. Publication and
@@ -46,6 +54,13 @@ restore stale data.
 Valuation freshness is the oldest live price or snapshot-FX evidence consumed by
 the selected point. Historical event-date FX used for cost or flow metrics does
 not make a current valuation look fresher.
+
+Historical rebuild freezes the holding listing separately from the listing used
+as market-evidence provenance. In `local_free` mode, crypto history may select one
+explicit persisted Yahoo/USD alternate up front when the canonical CoinGecko
+identity cannot cover the retained range; canonical policy remains unchanged.
+Published immutable price and FX evidence stays authoritative for the same exact
+provider coordinate on later rebuilds, and only missing evidence is appended.
 
 ## Navigation
 

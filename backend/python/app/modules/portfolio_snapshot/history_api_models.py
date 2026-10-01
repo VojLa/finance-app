@@ -199,11 +199,13 @@ class PortfolioHistoryResponse(BaseModel):
         coverage_resolutions = {item.resolution_minutes for item in self.coverage}
         point_resolutions = {item.resolution_minutes for item in self.points}
         if (
-            not self.resolutions
-            or set(self.resolutions) != coverage_resolutions
-            or not point_resolutions <= coverage_resolutions
+            len(self.resolutions) != 1
+            or len(self.coverage) != 1
+            or self.preferred_resolution_minutes != self.resolutions[0]
+            or coverage_resolutions != set(self.resolutions)
+            or point_resolutions != set(self.resolutions)
         ):
-            raise ValueError("Published history resolution evidence is incomplete.")
+            raise ValueError("Published history must use one complete graph resolution.")
         return self
 
 

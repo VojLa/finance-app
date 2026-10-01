@@ -12,9 +12,12 @@ rate.
 ## Portfolio history
 
 The portfolio chart offers `1D`, `1W`, `1M`, `3M`, `6M`, `1Y`, `5Y`, `10Y` and
-`ALL`. Older and newer parts of one chart can have different truthful resolutions;
-the point tooltip shows the resolution actually used. The application does not
-invent intraday values from daily data.
+`ALL`. One resolution is selected for the entire displayed graph and every point
+tooltip shows that same resolution. For example, `1Y` uses one-day points. `ALL`
+automatically chooses the finest level that fits the complete history within the
+chart limit; about 1.5 years therefore uses two-day points. The application does
+not mix older coarse points with newer fine points or invent intraday values from
+daily data.
 
 The chart follows the account selected above it. Choose `Vše` for the aggregate;
 the chart then uses the same complete published history generation rather than a
@@ -29,9 +32,12 @@ release the pin and resume temporary previews.
 The comparison line is shown automatically wherever the published snapshot
 contains exact evidence and can be hidden with its button. In `Čistá hodnota`
 mode it shows `Vložené prostředky`; in `Investice` mode it shows `Investováno`
-(the investment cost basis), so account deposits are never compared directly
-with investment value. Missing evidence is left as a gap rather than being
-interpolated.
+(the open investment cost basis), so account deposits are never compared directly
+with investment value. Both comparison values use event-date exchange rates and
+therefore stay unchanged when only market prices or current FX move. A deposit,
+withdrawal or acquisition changes the relevant value at its event-date rate; a
+partial disposal proportionally reduces the existing open cost and a full disposal
+removes it. Missing evidence is left as a gap rather than being interpolated.
 
 For a selected historical point, position quantities use adaptive precision so
 small holdings remain visible. Allocation and unrealized return percentages are

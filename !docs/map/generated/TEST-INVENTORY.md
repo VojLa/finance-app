@@ -104,7 +104,7 @@
 - `src/prisma-runtime-removal.test.ts`
 - `src/python-api-container-runtime.test.ts`
 
-## Python backend tests (269)
+## Python backend tests (271)
 
 - `backend/python/tests/test_account_access.py`
 - `backend/python/tests/test_account_invitations.py`
@@ -274,8 +274,10 @@
 - `backend/python/tests/test_portfolio_history_lattice.py`
 - `backend/python/tests/test_portfolio_history_lifespan.py`
 - `backend/python/tests/test_portfolio_history_market.py`
+- `backend/python/tests/test_portfolio_history_market_reconciliation.py`
 - `backend/python/tests/test_portfolio_history_planning.py`
 - `backend/python/tests/test_portfolio_history_rebuild.py`
+- `backend/python/tests/test_portfolio_history_replay_repository.py`
 - `backend/python/tests/test_portfolio_history_scheduler_runner.py`
 - `backend/python/tests/test_portfolio_service.py`
 - `backend/python/tests/test_portfolio_snapshot_aggregation.py`
@@ -376,4 +378,4 @@
 - `backend/python/tests/test_yahoo_finance_provider.py`
 - `backend/python/tests/test_yahoo_finance_transport.py`
 
-**Total test files:** 365
+**Total test files:** 367

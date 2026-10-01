@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react"
 import {
   Area,
-  AreaChart,
   CartesianGrid,
+  ComposedChart,
   Line,
   ResponsiveContainer,
   Tooltip,
@@ -68,7 +68,6 @@ export function PortfolioLineChart({
   valueMode,
   onValueModeChange,
   preferredResolutionMinutes,
-  resolutions,
   coverage,
   onPointSelect,
   onPointPreview,
@@ -111,7 +110,7 @@ export function PortfolioLineChart({
           <p className="text-xs text-gray-500">
             {preferredResolutionMinutes === undefined
               ? "Zatím není publikovaná žádná historická vrstva."
-              : `Preferované rozlišení: ${formatHistoryResolution(preferredResolutionMinutes)} · Použité vrstvy: ${resolutions.map(formatHistoryResolution).join(", ")} · Pokrytí: ${coverage.length}${coverage.length === 1 ? " úsek" : " úseků"}`}
+              : `Rozlišení celého grafu: ${formatHistoryResolution(preferredResolutionMinutes)} · Pokrytí: ${coverage.length}${coverage.length === 1 ? " úsek" : " úseků"}`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -175,7 +174,7 @@ export function PortfolioLineChart({
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={240}>
-          <AreaChart
+          <ComposedChart
             data={chartData}
             margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
             onMouseMove={(event) => {
@@ -242,7 +241,7 @@ export function PortfolioLineChart({
                 activeDot={{ r: 3 }}
               />
             )}
-          </AreaChart>
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </div>

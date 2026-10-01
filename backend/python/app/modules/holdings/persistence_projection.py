@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 
-from app.db.models.common import QUANTITY
+from app.db.models.common import MONEY, QUANTITY
 from app.db.models.enums import (
     AssetType,
     ImportSource,
@@ -89,6 +89,29 @@ class HoldingPersistenceProjection:
     account_id: str
     holdings: tuple[ExpectedPersistedHoldingPlan, ...]
     realized_pnl: tuple[ExpectedRealizedPnlPlan, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OpenCostBasisMovement:
+    """One canonical position change with acquisition cost already converted at its event."""
+
+    event_id: str
+    movement_id: str
+    event_date: datetime
+    listing_id: str
+    direction: MovementDirection
+    quantity: Decimal
+    settlement_amount: Decimal | None = None
+    settlement_currency: str | None = None
+    converted_amount: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpenCostBasisPosition:
+    listing_id: str
+    quantity: Decimal
+    native_cost_basis: tuple[tuple[str, Decimal], ...] | None
+    converted_cost_basis: Decimal | None
 
 
 @dataclass(slots=True)
@@ -400,6 +423,130 @@ def _dispose(
             position.cost_basis = scaled_cost_basis
         position.quantity = remaining
     return disposed_cost
+
+
+def project_open_event_cost_basis(
+    movements: tuple[OpenCostBasisMovement, ...],
+) -> tuple[OpenCostBasisPosition, ...]:
+    """Replay native and event-converted open principal with identical disposal ratios."""
+
+    positions: dict[str, tuple[Decimal, dict[str, Decimal] | None, Decimal | None]] = {}
+    seen: set[str] = set()
+    precision = QUANTITY.precision
+    if precision is None:
+        raise RuntimeError("Canonical QUANTITY must define precision.")
+    with localcontext() as context:
+        context.prec = max(precision * 3, 84)
+        for movement in sorted(
+            movements, key=lambda item: (item.event_date, item.event_id, item.movement_id)
+        ):
+            if (
+                not isinstance(movement, OpenCostBasisMovement)
+                or not movement.event_id
+                or not movement.movement_id
+                or not movement.listing_id
+                or movement.movement_id in seen
+                or not isinstance(movement.event_date, datetime)
+                or movement.event_date.tzinfo is not None
+            ):
+                raise _fail()
+            seen.add(movement.movement_id)
+            quantity = _exact(movement.quantity, positive=True)
+            previous = positions.get(movement.listing_id)
+            if movement.direction is MovementDirection.incoming:
+                known = movement.settlement_amount is not None
+                if known != (movement.settlement_currency is not None) or known != (
+                    movement.converted_amount is not None
+                ):
+                    raise _fail()
+                native_amount: Decimal | None = None
+                currency: str | None = None
+                acquired_converted: Decimal | None = None
+                if known:
+                    native_amount = _exact(movement.settlement_amount, positive=True)
+                    currency = _currency(movement.settlement_currency)
+                    assert movement.converted_amount is not None
+                    try:
+                        acquired_converted = canonical_rounded(movement.converted_amount, MONEY)
+                    except CanonicalArithmeticError as exc:
+                        raise _fail() from exc
+                    if acquired_converted != movement.converted_amount or acquired_converted <= 0:
+                        raise _fail()
+                if previous is None:
+                    if known:
+                        assert currency is not None and native_amount is not None
+                        assert acquired_converted is not None
+                        positions[movement.listing_id] = (
+                            quantity,
+                            {currency: native_amount},
+                            acquired_converted,
+                        )
+                    else:
+                        positions[movement.listing_id] = (quantity, None, None)
+                    continue
+                old_quantity, old_native, old_converted = previous
+                new_quantity = _exact(old_quantity + quantity, positive=True)
+                if not known or old_native is None or old_converted is None:
+                    positions[movement.listing_id] = (new_quantity, None, None)
+                    continue
+                assert currency is not None and native_amount is not None
+                assert acquired_converted is not None
+                updated_native = dict(old_native)
+                try:
+                    updated_native[currency] = canonical_rounded(
+                        updated_native.get(currency, Decimal(0)) + native_amount, QUANTITY
+                    )
+                    updated_converted = canonical_rounded(old_converted + acquired_converted, MONEY)
+                except CanonicalArithmeticError as exc:
+                    raise _fail() from exc
+                positions[movement.listing_id] = (new_quantity, updated_native, updated_converted)
+            elif movement.direction is MovementDirection.outgoing:
+                if (
+                    previous is None
+                    or movement.settlement_amount is not None
+                    or movement.settlement_currency is not None
+                    or movement.converted_amount is not None
+                ):
+                    raise _fail()
+                old_quantity, old_native, old_converted = previous
+                remaining = _exact(old_quantity - quantity)
+                if remaining < 0:
+                    raise _fail()
+                if remaining == 0:
+                    del positions[movement.listing_id]
+                    continue
+                try:
+                    native = (
+                        None
+                        if old_native is None
+                        else {
+                            currency: canonical_rounded(amount * remaining / old_quantity, QUANTITY)
+                            for currency, amount in old_native.items()
+                        }
+                    )
+                    remaining_converted = (
+                        None
+                        if old_converted is None
+                        else canonical_rounded(old_converted * remaining / old_quantity, MONEY)
+                    )
+                except (CanonicalArithmeticError, InvalidOperation, ZeroDivisionError) as exc:
+                    raise _fail() from exc
+                if native is not None and any(amount <= 0 for amount in native.values()):
+                    raise _fail()
+                if remaining_converted is not None and remaining_converted <= 0:
+                    raise _fail()
+                positions[movement.listing_id] = (remaining, native, remaining_converted)
+            else:
+                raise _fail()
+    return tuple(
+        OpenCostBasisPosition(
+            listing_id=listing_id,
+            quantity=quantity,
+            native_cost_basis=None if native is None else tuple(sorted(native.items())),
+            converted_cost_basis=converted,
+        )
+        for listing_id, (quantity, native, converted) in sorted(positions.items())
+    )
 
 
 def _expected_anycoin_realized_pnl(

@@ -43,6 +43,10 @@ from app.modules.market_data.policy import MarketEvidencePolicy
 from app.modules.market_data.source_policy import (
     LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
 )
+from app.modules.snapshots import (
+    AccountSnapshotPersistenceMetadata,
+    build_account_snapshot_persistence_projection,
+)
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
     AccountSnapshotProjectionStateError,
@@ -274,6 +278,72 @@ def _repository(**overrides: object) -> AccountSnapshotEvidenceRepository:
         "load_exchange_rate_candidates": (),
     }
     defaults.update(overrides)
+    holdings = cast(tuple[PersistedHoldingEvidence, ...], defaults["load_holdings"])
+    events = list(cast(tuple[InvestmentEventModel, ...], defaults["load_active_events"]))
+    movements = list(cast(tuple[InvestmentMovementModel, ...], defaults["load_active_movements"]))
+    existing_acquisitions = {
+        movement.listing_id
+        for movement in movements
+        if movement.kind is InvestmentMovementKind.asset
+        and movement.direction is MovementDirection.incoming
+    }
+    for persisted in holdings:
+        holding = persisted.holding
+        if (
+            holding.listing_id in existing_acquisitions
+            or holding.cost_basis_by_currency is None
+            or len(holding.cost_basis_by_currency) != 1
+        ):
+            continue
+        currency, raw_amount = next(iter(holding.cost_basis_by_currency.items()))
+        assert isinstance(raw_amount, str)
+        amount = Decimal(raw_amount)
+        sold = sum(
+            (
+                movement.quantity
+                for movement in movements
+                if movement.listing_id == holding.listing_id
+                and movement.kind is InvestmentMovementKind.asset
+                and movement.direction is MovementDirection.outgoing
+            ),
+            Decimal(0),
+        )
+        opening_quantity = holding.quantity + sold
+        opening_amount = amount * opening_quantity / holding.quantity
+        buy = _event(InvestmentEventType.trade)
+        buy.id = f"fixture-buy-{holding.id}"
+        buy.date = EARLIER - timedelta(days=1) if sold else NOW
+        interest = _event(InvestmentEventType.interest)
+        interest.id = f"fixture-funding-{holding.id}"
+        interest.date = buy.date
+        asset = _movement(currency=holding.currency)
+        asset.id = f"fixture-asset-{holding.id}"
+        asset.event_id = buy.id
+        asset.kind = InvestmentMovementKind.asset
+        asset.direction = MovementDirection.incoming
+        asset.quantity = opening_quantity
+        asset.asset_id = holding.asset_id
+        asset.listing_id = holding.listing_id
+        asset.source_symbol = holding.symbol
+        asset.source_asset_type = holding.asset_type
+        asset.price_per_unit = holding.avg_buy_price
+        asset.value_amount = opening_amount
+        asset.value_currency = currency
+        buy_cash = _movement(currency=currency)
+        buy_cash.id = f"fixture-buy-cash-{holding.id}"
+        buy_cash.event_id = buy.id
+        buy_cash.direction = MovementDirection.outgoing
+        buy_cash.quantity = opening_amount
+        buy_cash.value_amount = opening_amount
+        funding = _movement(currency=currency)
+        funding.id = f"fixture-funding-cash-{holding.id}"
+        funding.event_id = interest.id
+        funding.quantity = opening_amount
+        funding.value_amount = opening_amount
+        events.extend((buy, interest))
+        movements.extend((asset, buy_cash, funding))
+    defaults["load_active_events"] = tuple(events)
+    defaults["load_active_movements"] = tuple(movements)
     repository = SimpleNamespace()
     for name, value in defaults.items():
         setattr(repository, name, AsyncMock(return_value=value))
@@ -584,7 +654,7 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
     )
     assert result.selected_price_ids == ("selected-price",)
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-rate",)
-    assert result.selected_historical_exchange_rate_ids == ("event-rate",)
+    assert result.selected_historical_exchange_rate_ids == ("event-rate", "snapshot-rate")
 
 
 @pytest.mark.asyncio
@@ -709,9 +779,8 @@ async def test_mixed_currency_investment_selects_only_direct_output_pairs() -> N
     assert result.selected_snapshot_exchange_rate_ids == (
         "rate-chf",
         "rate-gbp",
-        "rate-usd",
     )
-    assert result.selected_historical_exchange_rate_ids == ()
+    assert result.selected_historical_exchange_rate_ids == ("rate-usd",)
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         ("CHF", "GBP", "USD"),
         "EUR",
@@ -808,7 +877,7 @@ async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_sepa
         (CurrencyAmount("USD", Decimal("10.000000")),),
     )
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-usd",)
-    assert result.selected_historical_exchange_rate_ids == ("event-usd",)
+    assert result.selected_historical_exchange_rate_ids == ("event-usd", "snapshot-usd")
 
 
 @pytest.mark.asyncio
@@ -1524,6 +1593,48 @@ async def test_asset_transfer_fails_when_externality_is_not_persisted() -> None:
             MagicMock(),
             repository=repository,
         ).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_valued_transfer_keeps_sub_money_native_principal_through_publication() -> None:
+    holdings = _holding_rows()
+    holdings[0].holding.cost_basis_by_currency = {"EUR": "20.0000000001"}
+    event = _event(InvestmentEventType.asset_transfer)
+    movement = _movement()
+    movement.kind = InvestmentMovementKind.asset
+    movement.asset_id = "asset-1"
+    movement.listing_id = "listing-1"
+    movement.quantity = Decimal("2")
+    movement.currency = "ABC"
+    movement.price_per_unit = Decimal("10")
+    movement.value_amount = Decimal("20.0000000001")
+    movement.value_currency = "EUR"
+    movement.source_symbol = "ABC"
+    movement.source_asset_type = AssetType.stock
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=holdings,
+        load_active_events=(event,),
+        load_active_movements=(movement,),
+        load_price_candidates=(_price("price", "15", NOW),),
+    )
+
+    evidence = await AccountSnapshotEvidenceService(MagicMock(), repository=repository).build(
+        _command(output_currency="EUR", calculation_version=3)
+    )
+    row = build_account_snapshot_persistence_projection(
+        evidence,
+        AccountSnapshotPersistenceMetadata(calculated_at=NOW, created_at=NOW, is_recalculated=True),
+    )
+
+    assert evidence.valuation.investment_cost_basis == Decimal("20.000000")
+    assert evidence.valuation.investment_cost_basis_by_currency == (
+        CurrencyAmount("EUR", Decimal("20.0000000001")),
+    )
+    assert row.snapshot.investment_cost_basis == Decimal("20.000000")
+    assert row.items[0].native_cost_basis_by_currency is not None
+    assert row.items[0].native_cost_basis_by_currency.to_json() == {"EUR": "20.0000000001"}
+    assert row.snapshot.unrealized_pnl_value == Decimal("10.000000")
 
 
 @pytest.mark.asyncio

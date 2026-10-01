@@ -127,6 +127,7 @@ class AccountSnapshotProjectionInput:
     exchange_rates: tuple[SelectedExchangeRateEvidence, ...]
     cash_balances: tuple[CashBalanceEvidence, ...]
     liabilities: tuple[LiabilityBalanceEvidence, ...]
+    event_cost_basis_by_listing: tuple[tuple[str, Decimal | None], ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +593,7 @@ def _raw_items(
     consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]],
     *,
     output_currency: str,
+    event_cost_basis_by_listing: dict[str, Decimal | None] | None,
 ) -> tuple[
     list[ExpectedAccountSnapshotItem],
     dict[str, Decimal],
@@ -620,16 +622,17 @@ def _raw_items(
             for component in holding.cost_basis_by_currency:
                 component_currency = _currency(component.currency)
                 component_amount = _exact(component.amount, QUANTITY, positive=True)
-                converted_costs.append(
-                    _convert(
-                        component_amount,
-                        base_currency=component_currency,
-                        output_currency=output_currency,
-                        rates=rates,
-                        consumed=consumed,
-                        numeric=MONEY,
+                if event_cost_basis_by_listing is None:
+                    converted_costs.append(
+                        _convert(
+                            component_amount,
+                            base_currency=component_currency,
+                            output_currency=output_currency,
+                            rates=rates,
+                            consumed=consumed,
+                            numeric=MONEY,
+                        )
                     )
-                )
                 if costs_by_currency is not None:
                     _add_breakdown(
                         costs_by_currency,
@@ -637,7 +640,11 @@ def _raw_items(
                         amount=component_amount,
                         numeric=QUANTITY,
                     )
-            cost_basis = _sum(converted_costs, MONEY)
+            cost_basis = (
+                _sum(converted_costs, MONEY)
+                if event_cost_basis_by_listing is None
+                else event_cost_basis_by_listing[listing_id]
+            )
         _add_breakdown(
             values_by_currency,
             currency=price_currency,
@@ -768,6 +775,20 @@ def build_account_snapshot_projection(
         raise _fail()
     account_id, output_currency = _validate_account_shape(evidence)
     holdings = _validate_holdings(evidence, account_id=account_id)
+    event_costs: dict[str, Decimal | None] | None = None
+    if evidence.event_cost_basis_by_listing is not None:
+        event_costs = {}
+        for listing_id, cost in evidence.event_cost_basis_by_listing:
+            if not isinstance(listing_id, str) or listing_id in event_costs:
+                raise _fail()
+            event_costs[_nonblank(listing_id)] = (
+                None if cost is None else _exact(cost, MONEY, positive=True)
+            )
+        if set(event_costs) != set(holdings) or any(
+            (event_costs[listing_id] is None) != (holding.cost_basis_by_currency is None)
+            for listing_id, holding in holdings.items()
+        ):
+            raise _fail()
     prices = _validate_prices(evidence, holdings=holdings)
     rates = _validate_rates(evidence)
     consumed: dict[tuple[str, str], set[ExchangeRateConsumptionRole]] = {}
@@ -778,6 +799,7 @@ def build_account_snapshot_projection(
         rates,
         consumed,
         output_currency=output_currency,
+        event_cost_basis_by_listing=event_costs,
     )
     investment_value = _sum([item.value for item in items], MONEY)
     known_costs = [item.cost_basis for item in items if item.cost_basis is not None]

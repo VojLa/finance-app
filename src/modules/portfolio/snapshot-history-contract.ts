@@ -72,8 +72,6 @@ const SIGNED_PERCENTAGE = /^-?(?:0|[1-9]\d*)\.\d{4}$/
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/
 const CURRENCY = /^[A-Z]{3}$/
 const MAX_POINTS = 480
-const MAX_RESOLUTIONS = 64
-const MAX_COVERAGE_SEGMENTS = 480
 
 export class SnapshotPortfolioHistoryContractError extends Error {
   constructor() {
@@ -331,9 +329,9 @@ export function parseSnapshotPortfolioHistory(
     !CURRENCY.test(value.currency) ||
     (expectedCurrency !== undefined && value.currency !== expectedCurrency) ||
     !Array.isArray(value.resolutions) ||
-    value.resolutions.length > MAX_RESOLUTIONS ||
+    value.resolutions.length > 1 ||
     !Array.isArray(value.coverage) ||
-    value.coverage.length > MAX_COVERAGE_SEGMENTS ||
+    value.coverage.length > 1 ||
     !Array.isArray(value.points) ||
     value.points.length > MAX_POINTS
   ) {
@@ -434,6 +432,7 @@ export function parseSnapshotPortfolioHistory(
     (isStale !== undefined && typeof isStale !== "boolean") ||
     hasPartialPublication !== hasPublication ||
     (hasPublication && resolutions.length === 0) ||
+    (hasPublication && preferredResolutionMinutes !== resolutions[0]) ||
     (!hasPublication &&
       (resolutions.length !== 0 || coverage.length !== 0 || points.length !== 0)) ||
     (value.state === "ready" && !hasPublication) ||

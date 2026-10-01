@@ -22,16 +22,22 @@ canonical movementu.
 
 Nakup prida principal do odpovidajici meny. Castecny prodej snizi vsechny
 otevrene cost komponenty stejnym pomerem zbyvajiciho mnozstvi k puvodnimu
-mnozstvi. Plny prodej pozici i breakdown odstrani. Snapshot prevede kazdou
-komponentu primo do output meny pomoci schvalene persisted FX evidence.
+mnozstvi. Plny prodej pozici i breakdown odstrani. Soucasne se kazdy nakup
+nebo ocenitelny prichozi prevod primo prevede do output meny kurzem z data
+udalosti. Otevrena prevedena hodnota se pri castecnem prodeji snizi stejnym
+pomerem; bez dalsi udalosti zustava mezi snapshoty stejna. Puvodni menovy
+breakdown se ve snapshotu zachova jako samostatny dukaz.
 Snapshot item navic zachova `averageBuyPrice` a menu listingu. Tato quote
 evidence nesmi byt zpetne odvozovana z vice-menoveho settlement breakdownu ani
 z output-currency kompatibilnich poli, protoze je nutna pro presny forward
 replay dalsich nakupu.
 
-Settlement castka kazdeho nakupu je event-date provedena castka. Agregovany
-otevreny breakdown se pri snapshotu prevadi primym snapshot-time kurzem; tento
-ADR nezavadi lot/date cost ledger.
+Settlement castka kazdeho nakupu je event-date provedena castka. Cost-basis
+scalar i cost kazde snapshot polozky pouzivaji prime event-date FX jednotlivych
+porizeni a zachovavaji jejich otevrenou hodnotu. Snapshot-time FX patri pouze
+k oceneni aktualni hodnoty, hotovosti a zavazku. Chybejici principal nebo
+potrebny primy event-date kurz zabrani publikaci zname cost hodnoty; kurz a
+udalost zustavaji v auditu. Tento postup nevyzaduje samostatny lot ledger.
 
 ## Dusledky
 

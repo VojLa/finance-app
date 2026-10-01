@@ -121,25 +121,23 @@ describe("snapshot portfolio history browser client", () => {
     ).resolves.toMatchObject({ status: "error" })
   })
 
-  it("accepts exact native precision and mixed minute, hour, and arbitrary coverage", async () => {
+  it("accepts exact native precision with one arbitrary graph resolution", async () => {
     const points = [
       {
         ...POINT,
         timestamp: "2036-01-01T00:00:00.000",
-        resolutionMinutes: 1,
+        resolutionMinutes: 30,
         cashByCurrency: [{ currency: "EUR", value: "0.123456789123" }],
       },
-      { ...POINT, timestamp: "2036-01-01T01:00:00.000", resolutionMinutes: 60 },
+      { ...POINT, timestamp: "2036-01-01T01:00:00.000", resolutionMinutes: 30 },
       { ...POINT, timestamp: "2036-01-01T01:30:00.000", resolutionMinutes: 30 },
     ]
     const payload = history({
       coveredThrough: "2036-01-01T01:30:00.000",
       preferredResolutionMinutes: 30,
-      resolutions: [1, 30, 60],
+      resolutions: [30],
       coverage: [
-        { resolutionMinutes: 1, start: points[0].timestamp, end: points[1].timestamp },
-        { resolutionMinutes: 60, start: points[1].timestamp, end: points[2].timestamp },
-        { resolutionMinutes: 30, start: points[2].timestamp, end: "2036-01-01T01:30:00.001" },
+        { resolutionMinutes: 30, start: points[0].timestamp, end: "2036-01-01T01:30:00.001" },
       ],
       points,
     })
@@ -221,6 +219,7 @@ describe("snapshot portfolio history browser client", () => {
     ["more than 480 points", history({ points: Array.from({ length: 481 }, () => POINT) })],
     ["duplicate resolutions", history({ resolutions: [1440, 1440] })],
     ["unused advertised resolution", history({ resolutions: [1440, 720] })],
+    ["preferred resolution mismatch", history({ preferredResolutionMinutes: 720 })],
     ["nonpositive preferred resolution", history({ preferredResolutionMinutes: 0 })],
     ["ready without points", history({ points: [] })],
     ["empty with points", history({ state: "empty" })],
@@ -314,7 +313,7 @@ describe("snapshot portfolio history browser client", () => {
     ).resolves.toMatchObject({ status: "error" })
   })
 
-  it("preserves a rebuilding mixed-resolution response without merging points", async () => {
+  it("rejects a rebuilding response that mixes graph resolutions", async () => {
     const mixed = history({
       state: "rebuilding",
       preferredResolutionMinutes: 720,
@@ -348,10 +347,10 @@ describe("snapshot portfolio history browser client", () => {
         "EUR",
         vi.fn(async () => jsonResponse(mixed))
       )
-    ).resolves.toEqual({ status: "rebuilding", data: mixed })
+    ).resolves.toMatchObject({ status: "error" })
   })
 
-  it("accepts truthful coarser-only coverage than the preferred range resolution", async () => {
+  it("rejects preferred metadata that differs from the selected graph resolution", async () => {
     const coarser = history({ preferredResolutionMinutes: 720 })
 
     await expect(
@@ -360,23 +359,18 @@ describe("snapshot portfolio history browser client", () => {
         "EUR",
         vi.fn(async () => jsonResponse(coarser))
       )
-    ).resolves.toEqual({ status: "ready", data: coarser })
+    ).resolves.toMatchObject({ status: "error" })
   })
 
-  it("assigns a seam point to the next half-open coverage segment and accepts final through", async () => {
+  it("accepts final through inside one half-open coverage segment", async () => {
     const seam = history({
-      preferredResolutionMinutes: 720,
-      resolutions: [1440, 720],
+      preferredResolutionMinutes: 1440,
+      resolutions: [1440],
       coverage: [
         {
           resolutionMinutes: 1440,
           start: "2036-01-01T00:00:00.000",
-          end: "2036-01-02T00:00:00.000",
-        },
-        {
-          resolutionMinutes: 720,
-          start: "2036-01-02T00:00:00.000",
-          end: "2036-01-02T12:00:00.000",
+          end: "2036-01-02T00:00:00.001",
         },
       ],
       coveredThrough: "2036-01-02T00:00:00.000",
@@ -385,7 +379,7 @@ describe("snapshot portfolio history browser client", () => {
         {
           ...POINT,
           timestamp: "2036-01-02T00:00:00.000",
-          resolutionMinutes: 720,
+          resolutionMinutes: 1440,
         },
       ],
     })

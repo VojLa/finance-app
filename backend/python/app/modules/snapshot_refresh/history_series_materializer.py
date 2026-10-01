@@ -12,9 +12,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from app.db.models.enums import SnapshotGranularity, SnapshotSource
+from app.db.models.common import MONEY
+from app.db.models.enums import (
+    InvestmentEventType,
+    InvestmentMovementKind,
+    MovementDirection,
+    SnapshotGranularity,
+    SnapshotSource,
+)
+from app.modules.holdings.persistence_projection import (
+    OpenCostBasisMovement,
+    project_open_event_cost_basis,
+)
 from app.modules.portfolio_history.builder.market import SelectedHistoricalPrice
-from app.modules.portfolio_history_rebuild.models import AccountReplayState
+from app.modules.portfolio_history_rebuild.models import AccountReplayState, InvestmentEventRoot
 from app.modules.portfolio_history_rebuild.repository import FrozenPortfolioReplayInput
 from app.modules.snapshot_refresh.metric_evidence import (
     build_complete_historical_metric_evidence,
@@ -30,11 +41,13 @@ from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
     CurrencyAmount,
+    ExchangeRateConsumptionRole,
     LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
     SnapshotHoldingEvidence,
     build_account_snapshot_projection,
+    convert_currency_amount,
 )
 from app.modules.snapshots.evidence_service import (
     CompleteAccountSnapshotEvidence,
@@ -44,7 +57,9 @@ from app.modules.snapshots.evidence_service import (
 )
 from app.modules.snapshots.financial_metrics import (
     AccountSnapshotEvidenceStateError,
+    ConsumedHistoricalExchangeRate,
     SelectedHistoricalRate,
+    exact_rate,
 )
 
 _SOURCE = SnapshotSource.holdings_recalculation
@@ -191,6 +206,7 @@ def _valuation(
     replay_scope: FrozenPortfolioReplayInput,
     prices: tuple[SelectedHistoricalPrice, ...],
     valuation_rates: tuple[FrozenHistorySeriesValuationRate, ...],
+    event_cost_basis_by_listing: tuple[tuple[str, Decimal | None], ...],
     calculation_version: int,
 ):
     account = next((item for item in replay_scope.accounts if item.account_id == account_id), None)
@@ -234,6 +250,7 @@ def _valuation(
             currency=item.observation.currency,
             source=item.observation.provider,
             timestamp=item.observation.observed_at,
+            requested_listing_id=item.listing.listing_id,
         )
         for item in prices
         if item.account_id == account_id and item.through == timestamp
@@ -288,6 +305,7 @@ def _valuation(
                 exchange_rates=selected_rates,
                 cash_balances=cash,
                 liabilities=liabilities,
+                event_cost_basis_by_listing=event_cost_basis_by_listing,
             )
         )
     except AccountSnapshotProjectionStateError as exc:
@@ -306,6 +324,7 @@ def _metric_rates(
         if (
             item.account_id != account_id
             or item.output_currency != output_currency
+            or item.evidence_id.startswith("cost:")
             or _timestamp(item.event_at) > as_of
         ):
             continue
@@ -322,6 +341,132 @@ def _metric_rates(
     return tuple(result)
 
 
+def _event_cost_basis(
+    *,
+    account_id: str,
+    state: AccountReplayState,
+    roots: tuple[object, ...],
+    as_of: datetime,
+    output_currency: str,
+    rates: tuple[FrozenHistorySeriesMetricRate, ...],
+) -> tuple[
+    tuple[tuple[str, Decimal | None], ...],
+    tuple[ConsumedHistoricalExchangeRate, ...],
+]:
+    movements: list[OpenCostBasisMovement] = []
+    consumed: list[ConsumedHistoricalExchangeRate] = []
+    rate_by_evidence: dict[str, FrozenHistorySeriesMetricRate] = {}
+    for rate in rates:
+        if (
+            rate.account_id == account_id
+            and rate.output_currency == output_currency
+            and rate.evidence_id.startswith("cost:")
+            and _timestamp(rate.event_at) <= as_of
+        ):
+            if rate.evidence_id in rate_by_evidence:
+                raise _fail()
+            rate_by_evidence[rate.evidence_id] = rate
+    used: set[str] = set()
+    for root in roots:
+        if not isinstance(root, InvestmentEventRoot) or root.event_date > as_of:
+            continue
+        if root.event_type not in {InvestmentEventType.trade, InvestmentEventType.asset_transfer}:
+            continue
+        assets = tuple(
+            movement for movement in root.movements if movement.kind is InvestmentMovementKind.asset
+        )
+        if len(assets) != 1:
+            raise _fail()
+        asset = assets[0]
+        if asset.listing_id is None:
+            raise _fail()
+        native_amount: Decimal | None = None
+        native_currency: str | None = None
+        converted: Decimal | None = None
+        if asset.direction is MovementDirection.incoming:
+            native_amount = asset.value_amount
+            native_currency = asset.value_currency
+            if (native_amount is None) != (native_currency is None):
+                raise _fail()
+            if native_amount is None and root.event_type is InvestmentEventType.trade:
+                raise _fail()
+            if native_amount is not None and native_currency is not None:
+                evidence_id = f"cost:{asset.movement_id}"
+                selected = rate_by_evidence.get(evidence_id)
+                required = native_currency != output_currency
+                if required != (selected is not None):
+                    raise _fail()
+                selected_rate_value: Decimal | None = None
+                if selected is not None:
+                    if (
+                        selected.base_currency != native_currency
+                        or selected.quote_currency != output_currency
+                        or selected.event_at != root.event_date
+                        or _timestamp(selected.timestamp) > root.event_date
+                    ):
+                        raise _fail()
+                    used.add(evidence_id)
+                    selected_rate_value = exact_rate(selected.rate)
+                    consumed.append(
+                        ConsumedHistoricalExchangeRate(
+                            rate_id=selected.rate_id,
+                            evidence_id=evidence_id,
+                            base_currency=native_currency,
+                            quote_currency=output_currency,
+                            rate=selected_rate_value,
+                            timestamp=selected.timestamp,
+                            role=ExchangeRateConsumptionRole.direct,
+                        )
+                    )
+                try:
+                    converted, _ = convert_currency_amount(
+                        native_amount,
+                        base_currency=native_currency,
+                        output_currency=output_currency,
+                        rates=(
+                            {(native_currency, output_currency): selected_rate_value}
+                            if selected_rate_value is not None
+                            else {}
+                        ),
+                        numeric=MONEY,
+                    )
+                except ValueError as exc:
+                    raise _fail() from exc
+        movements.append(
+            OpenCostBasisMovement(
+                event_id=root.event_id,
+                movement_id=asset.movement_id,
+                event_date=root.event_date,
+                listing_id=asset.listing_id,
+                direction=asset.direction,
+                quantity=asset.quantity,
+                settlement_amount=native_amount,
+                settlement_currency=native_currency,
+                converted_amount=converted,
+            )
+        )
+    if set(rate_by_evidence) != used:
+        raise _fail()
+    try:
+        positions = project_open_event_cost_basis(tuple(movements))
+    except ValueError as exc:
+        raise _fail() from exc
+    expected = {holding.listing_id: holding for holding in state.holdings}
+    if set(expected) != {position.listing_id for position in positions}:
+        raise _fail()
+    for position in positions:
+        holding = expected[position.listing_id]
+        if (
+            position.quantity != holding.quantity
+            or position.native_cost_basis != holding.cost_basis_by_currency
+        ):
+            raise _fail()
+    return (
+        tuple((position.listing_id, position.converted_cost_basis) for position in positions),
+        tuple(consumed),
+    )
+
+
 def _complete_evidence(
     *,
     account_id: str,
@@ -334,6 +479,15 @@ def _complete_evidence(
     metric_rates: tuple[FrozenHistorySeriesMetricRate, ...],
     calculation_version: int,
 ) -> CompleteAccountSnapshotEvidence:
+    account = next(item for item in replay_scope.accounts if item.account_id == account_id)
+    event_costs, consumed_cost_rates = _event_cost_basis(
+        account_id=account_id,
+        state=state,
+        roots=account.roots,
+        as_of=timestamp,
+        output_currency=output_currency,
+        rates=metric_rates,
+    )
     valuation = _valuation(
         account_id=account_id,
         state=state,
@@ -342,9 +496,9 @@ def _complete_evidence(
         replay_scope=replay_scope,
         prices=prices,
         valuation_rates=valuation_rates,
+        event_cost_basis_by_listing=event_costs,
         calculation_version=calculation_version,
     )
-    account = next(item for item in replay_scope.accounts if item.account_id == account_id)
     try:
         complete_metrics = build_complete_historical_metric_evidence(
             account_id=account_id,
@@ -408,8 +562,18 @@ def _complete_evidence(
         selected_snapshot_exchange_rate_ids=tuple(
             sorted(item.rate_id for item in valuation.exchange_rates)
         ),
-        selected_historical_exchange_rate_ids=metrics.selected_historical_rate_ids,
-        consumed_historical_exchange_rates=metrics.consumed_historical_exchange_rates,
+        selected_historical_exchange_rate_ids=tuple(
+            sorted(
+                set(metrics.selected_historical_rate_ids)
+                | {item.rate_id for item in consumed_cost_rates}
+            )
+        ),
+        consumed_historical_exchange_rates=tuple(
+            sorted(
+                metrics.consumed_historical_exchange_rates + consumed_cost_rates,
+                key=lambda item: (item.evidence_id, item.base_currency, item.quote_currency),
+            )
+        ),
         selected_liability_balance_id=(
             None if state.liability is None else state.liability.balance_id
         ),
