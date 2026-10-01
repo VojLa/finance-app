@@ -82,6 +82,7 @@ describe("generation portfolio history chart", () => {
     expect(component).toContain("Historický vývoj čisté hodnoty")
     expect(component).toContain("Měna historie: {currency}")
     expect(component).toContain("Vložené prostředky")
+    expect(component).toContain("const [showNetInvested, setShowNetInvested] = useState(true)")
     expect(component).toContain('strokeDasharray="6 5"')
     expect(component).toContain("point.netInvestedValue !== undefined")
     expect(component).toContain("Rozlišení bodu: {point.resolutionLabel}")
