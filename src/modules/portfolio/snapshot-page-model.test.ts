@@ -31,9 +31,13 @@ describe("snapshot portfolio page model", () => {
     expect(model.aggregate.positions).toHaveLength(2)
     expect(model.aggregate.positions[0]?.position).toBe(data.aggregatePositions[0]?.position)
     expect(model.aggregate.positions[0]?.position.allocationPct).toBe("60.0000")
+    expect(model.aggregate.positions[0]?.allocationPct).toBe("75.5287")
     expect(model.aggregate.positions[0]?.position.valueCurrency).toBe("EUR")
     expect(model.aggregate.currency).toBe("EUR")
-    expect(model.aggregate.hasServerAllocation).toBe(false)
+    expect(model.aggregate.allocations).toEqual([
+      { key: "account-a:listing-a", name: "AAA · Broker A", allocationPct: "75.5287" },
+      { key: "account-b:listing-b", name: "BBB · Wallet B", allocationPct: "24.4713" },
+    ])
   })
 
   it("selects the exact account-local server summary without a backend selector", () => {
@@ -53,7 +57,10 @@ describe("snapshot portfolio page model", () => {
     expect(selected?.positions[0]?.position).toBe(data.accounts[0]?.positions[0])
     expect(selected?.positions[0]?.position.valueCurrency).toBe("CZK")
     expect(selected?.positions[0]?.position.costCurrency).toBe("CZK")
-    expect(selected?.hasServerAllocation).toBe(true)
+    expect(selected?.positions[0]?.allocationPct).toBe("60.0000")
+    expect(selected?.allocations).toEqual([
+      { key: "listing-a", name: "AAA", allocationPct: "60.0000" },
+    ])
     expect(selectPortfolioAccountView(model, "unknown-account")).toBeNull()
   })
 

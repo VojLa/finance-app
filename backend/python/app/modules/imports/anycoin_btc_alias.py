@@ -239,7 +239,9 @@ def _alias_command(
     _currency(movement.listing_currency)
     provider, external_id = _provider_identity(source_policy)
     return OnboardAssetAliasCommand(
+        actor="system:anycoin-import",
         asset_id=movement.asset_id,
+        listing_id=(movement.listing_id if provider is AssetAliasProvider.yahoo_finance else None),
         provider=provider,
         external_id=external_id,
         expected_symbol=_SYMBOL,

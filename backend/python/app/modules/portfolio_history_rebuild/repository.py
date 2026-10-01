@@ -25,6 +25,7 @@ from app.db.models.enums import (
     AccountMemberRole,
     AccountRelationType,
     AccountType,
+    AssetType,
     BackgroundJobKind,
     BackgroundJobStatus,
     ImportStatus,
@@ -48,7 +49,8 @@ from app.modules.investments.transfer_valuation import (
     resolve_transfer_valuation,
     validate_transfer_valuation_citations,
 )
-from app.modules.market_data.requirements import resolve_price_identity
+from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.requirements import ResolvedPriceIdentity, resolve_price_identity
 from app.modules.market_data.source_policy import (
     MarketEvidenceSourcePolicy,
     validate_market_evidence_source_policy,
@@ -104,6 +106,7 @@ class FrozenCanonicalChange:
 @dataclass(frozen=True, slots=True)
 class FrozenListingIdentity:
     listing_id: str
+    evidence_listing_id: str
     asset_id: str
     symbol: str
     name: str | None
@@ -138,6 +141,61 @@ class FrozenPortfolioReplayInput:
 
 def _fail() -> PortfolioHistoryReplayRepositoryError:
     return PortfolioHistoryReplayRepositoryError()
+
+
+def _resolve_historical_price_identity(
+    *,
+    listing: AssetListingModel,
+    asset: AssetModel,
+    aliases: tuple[AssetAliasModel, ...],
+    asset_listings: tuple[AssetListingModel, ...],
+    source_policy: MarketEvidenceSourcePolicy,
+) -> tuple[ResolvedPriceIdentity, str]:
+    """Choose one persisted long-range identity before provider acquisition.
+
+    The local-free CoinGecko transport cannot backfill the full retained crypto
+    history without a paid entitlement. An explicit Yahoo crypto alias is a
+    persisted alternate listing identity, so history selects it up front rather
+    than falling back after a provider failure. Canonical policy is unchanged.
+    """
+
+    if source_policy.mode == "local_free" and asset.asset_type is AssetType.crypto:
+        yahoo_identities: list[tuple[ResolvedPriceIdentity, str]] = []
+        for candidate in asset_listings:
+            try:
+                identity = resolve_price_identity(
+                    listing=candidate,
+                    asset=asset,
+                    aliases=tuple(
+                        alias
+                        for alias in aliases
+                        if alias.listing_id is None or alias.listing_id == candidate.id
+                    ),
+                    supported_sources=source_policy.price_sources,
+                    source_policy=source_policy,
+                    asset_listing_count=len(asset_listings),
+                )
+            except (MarketEvidenceStateError, TypeError, ValueError):
+                continue
+            if identity.provider is PriceSource.yahoo_finance:
+                yahoo_identities.append((identity, _identifier(candidate.id)))
+        if yahoo_identities:
+            if len(yahoo_identities) != 1:
+                raise _fail()
+            return yahoo_identities[0]
+    try:
+        return (
+            resolve_price_identity(
+                listing=listing,
+                asset=asset,
+                aliases=aliases,
+                supported_sources=source_policy.price_sources,
+                source_policy=source_policy,
+            ),
+            _identifier(listing.id),
+        )
+    except (MarketEvidenceStateError, TypeError, ValueError) as exc:
+        raise _fail() from exc
 
 
 def _identifier(value: object) -> str:
@@ -614,20 +672,30 @@ class PortfolioHistoryReplayRepository:
                 ).all()
                 for alias in aliases:
                     aliases_by_asset[alias.asset_id].append(alias)
+            listings_by_asset: defaultdict[str, list[AssetListingModel]] = defaultdict(list)
+            for chunk in _chunks(asset_ids):
+                candidate_listings = (
+                    await self.session.scalars(
+                        select(AssetListingModel)
+                        .where(AssetListingModel.asset_id.in_(chunk))
+                        .order_by(AssetListingModel.asset_id, AssetListingModel.id)
+                        .execution_options(populate_existing=True, autoflush=False)
+                    )
+                ).all()
+                for candidate_listing in candidate_listings:
+                    listings_by_asset[candidate_listing.asset_id].append(candidate_listing)
             for listing_id in sorted(persisted):
                 listing, asset = persisted[listing_id]
-                try:
-                    provider_identity = resolve_price_identity(
-                        listing=listing,
-                        asset=asset,
-                        aliases=tuple(aliases_by_asset[asset.id]),
-                        supported_sources=self.source_policy.price_sources,
-                        source_policy=self.source_policy,
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise _fail() from exc
+                provider_identity, evidence_listing_id = _resolve_historical_price_identity(
+                    listing=listing,
+                    asset=asset,
+                    aliases=tuple(aliases_by_asset[asset.id]),
+                    asset_listings=tuple(listings_by_asset[asset.id]),
+                    source_policy=self.source_policy,
+                )
                 identities[listing.id] = FrozenListingIdentity(
                     listing_id=_identifier(listing.id),
+                    evidence_listing_id=evidence_listing_id,
                     asset_id=_identifier(asset.id),
                     symbol=_identifier(asset.symbol),
                     name=asset.name,

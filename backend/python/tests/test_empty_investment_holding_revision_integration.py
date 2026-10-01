@@ -326,7 +326,7 @@ async def test_previous_head_upgrade_initializes_only_proven_empty_investment_st
         downgrade = _run_alembic(target_database_url, "downgrade", "400001anycoinvaluation")
         assert downgrade.returncode != 0
         assert (
-            "Temporal snapshot-series metadata is irreversible after publication."
+            "Operator audit history must not be discarded by downgrade."
             in downgrade.stdout + downgrade.stderr
         )
 

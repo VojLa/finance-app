@@ -78,6 +78,8 @@ def _onboard_arguments(
 ) -> list[str]:
     arguments = [
         "onboard",
+        "--actor",
+        "test:asset-alias-onboarding-e2e",
         "--asset-id",
         item["assetId"],
         "--expected-symbol",
@@ -234,11 +236,16 @@ def test_clean_import_and_manual_recovery_use_actual_cli_without_direct_insert(
             item = next(value for value in inventory if value["assetId"] == asset_id)
             assert item["listings"] == [
                 {
+                    "basePriority": 0,
                     "currency": quote_currency,
                     "exchange": source.value,
+                    "healthState": None,
+                    "lastValidPriceAt": None,
                     "listingId": listing_id,
+                    "mic": None,
                     "provider": ("broker" if source is ImportSource.trading212 else "exchange"),
                     "providerSymbol": item["symbol"],
+                    "symbol": item["symbol"],
                 }
             ]
 

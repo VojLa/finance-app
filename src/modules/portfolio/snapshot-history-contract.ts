@@ -53,6 +53,7 @@ const POINT_KEYS = [
 ] as const
 const OPTIONAL_POINT_KEYS = [
   "netInvestedValue",
+  "investmentCostBasis",
   "portfolioSnapshotId",
   "realizedPnlValue",
   "unrealizedPnlValue",
@@ -67,11 +68,10 @@ const NATIVE_MONEY = /^-?(?:0|[1-9]\d*)\.[0-9]+$|^-?(?:0|[1-9]\d*)$/
 const NONNEGATIVE_MONEY = /^(?:0|[1-9]\d{0,11})\.\d{6}$/
 const QUANTITY = /^-?(?:0|[1-9]\d{0,17})\.\d{10}$/
 const PERCENTAGE = /^(?:0|[1-9]\d{0,2})\.\d{4}$/
+const SIGNED_PERCENTAGE = /^-?(?:0|[1-9]\d*)\.\d{4}$/
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/
 const CURRENCY = /^[A-Z]{3}$/
 const MAX_POINTS = 480
-const MAX_RESOLUTIONS = 64
-const MAX_COVERAGE_SEGMENTS = 480
 
 export class SnapshotPortfolioHistoryContractError extends Error {
   constructor() {
@@ -161,6 +161,9 @@ function readPoint(value: unknown): SnapshotPortfolioHistoryPoint {
     !MONEY.test(value.netWorthValue) ||
     (value.netInvestedValue !== undefined &&
       (typeof value.netInvestedValue !== "string" || !MONEY.test(value.netInvestedValue))) ||
+    (value.investmentCostBasis != null &&
+      (typeof value.investmentCostBasis !== "string" ||
+        !NONNEGATIVE_MONEY.test(value.investmentCostBasis))) ||
     (value.portfolioSnapshotId !== undefined &&
       (typeof value.portfolioSnapshotId !== "string" ||
         value.portfolioSnapshotId.length === 0 ||
@@ -191,6 +194,9 @@ function readPoint(value: unknown): SnapshotPortfolioHistoryPoint {
     liabilitiesValue: value.liabilitiesValue,
     netWorthValue: value.netWorthValue,
     ...(value.netInvestedValue === undefined ? {} : { netInvestedValue: value.netInvestedValue }),
+    ...(value.investmentCostBasis == null
+      ? {}
+      : { investmentCostBasis: value.investmentCostBasis }),
     ...(value.portfolioSnapshotId === undefined
       ? {}
       : { portfolioSnapshotId: value.portfolioSnapshotId }),
@@ -266,11 +272,14 @@ function readPosition(value: unknown) {
     "value",
     "costBasis",
     "allocationPct",
+    "unrealizedPnlPct",
     "accounts",
   ] as const
   if (
     !isRecord(value) ||
-    !keys.every((key) => key === "costBasis" || Object.hasOwn(value, key)) ||
+    !keys.every(
+      (key) => key === "costBasis" || key === "unrealizedPnlPct" || Object.hasOwn(value, key)
+    ) ||
     !Object.keys(value).every((key) => keys.includes(key as never))
   )
     fail()
@@ -287,6 +296,9 @@ function readPosition(value: unknown) {
       (typeof value.costBasis !== "string" || !NONNEGATIVE_MONEY.test(value.costBasis))) ||
     typeof value.allocationPct !== "string" ||
     !PERCENTAGE.test(value.allocationPct) ||
+    (value.unrealizedPnlPct !== undefined &&
+      (typeof value.unrealizedPnlPct !== "string" ||
+        !SIGNED_PERCENTAGE.test(value.unrealizedPnlPct))) ||
     !Array.isArray(value.accounts)
   )
     fail()
@@ -297,6 +309,7 @@ function readPosition(value: unknown) {
     value: value.value,
     ...(value.costBasis === undefined ? {} : { costBasis: value.costBasis }),
     allocationPct: value.allocationPct,
+    ...(value.unrealizedPnlPct === undefined ? {} : { unrealizedPnlPct: value.unrealizedPnlPct }),
     accounts: value.accounts.map(readPositionAccount),
   }
 }
@@ -316,9 +329,9 @@ export function parseSnapshotPortfolioHistory(
     !CURRENCY.test(value.currency) ||
     (expectedCurrency !== undefined && value.currency !== expectedCurrency) ||
     !Array.isArray(value.resolutions) ||
-    value.resolutions.length > MAX_RESOLUTIONS ||
+    value.resolutions.length > 1 ||
     !Array.isArray(value.coverage) ||
-    value.coverage.length > MAX_COVERAGE_SEGMENTS ||
+    value.coverage.length > 1 ||
     !Array.isArray(value.points) ||
     value.points.length > MAX_POINTS
   ) {
@@ -419,6 +432,7 @@ export function parseSnapshotPortfolioHistory(
     (isStale !== undefined && typeof isStale !== "boolean") ||
     hasPartialPublication !== hasPublication ||
     (hasPublication && resolutions.length === 0) ||
+    (hasPublication && preferredResolutionMinutes !== resolutions[0]) ||
     (!hasPublication &&
       (resolutions.length !== 0 || coverage.length !== 0 || points.length !== 0)) ||
     (value.state === "ready" && !hasPublication) ||

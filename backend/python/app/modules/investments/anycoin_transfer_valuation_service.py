@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings
 from app.db.models.accounts import AccountModel
-from app.db.models.assets import AssetAliasModel, AssetListingModel
+from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.canonical_lineage import (
     AccountCanonicalChangeModel,
     AccountCanonicalStateModel,
@@ -66,6 +66,24 @@ from app.shared.canonical_arithmetic import canonical_rounded
 
 _EVIDENCE_NAMESPACE = UUID("80d8a2b5-b8d5-4f61-87f0-455e3fda6c3f")
 _CALCULATION_VERSION = 1
+_YAHOO_REFERENCE_SYMBOL = "BTC-USD"
+_YAHOO_REFERENCE_EXCHANGE = "yahoo_crypto"
+
+
+def _yahoo_reference_listing_id(asset_id: str) -> str:
+    return f"{asset_id}-yahoo-btc-usd"
+
+
+def _is_exact_yahoo_reference_listing(listing: AssetListingModel, *, asset_id: str) -> bool:
+    return (
+        listing.asset_id == asset_id
+        and listing.symbol == _YAHOO_REFERENCE_SYMBOL
+        and listing.exchange == _YAHOO_REFERENCE_EXCHANGE
+        and listing.mic is None
+        and listing.currency == "USD"
+        and listing.provider is PriceSource.yahoo_finance
+        and listing.provider_symbol == _YAHOO_REFERENCE_SYMBOL
+    )
 
 
 class AnycoinTransferValuationConflictError(RuntimeError):
@@ -278,22 +296,43 @@ class AnycoinTransferValuationService:
                     "Anycoin valuation requires one exact BTC identity per account."
                 )
             listing = await self.session.get(AssetListingModel, transfers[0].listing_id)
-            alias = await self.session.scalar(
-                select(AssetAliasModel).where(
-                    AssetAliasModel.asset_id == transfers[0].asset_id,
-                    AssetAliasModel.provider == AssetAliasProvider.yahoo_finance,
-                )
-            )
+            asset = await self.session.get(AssetModel, transfers[0].asset_id)
             if (
                 account.currency != "CZK"
                 or listing is None
                 or listing.currency != "CZK"
-                or alias is None
-                or alias.external_id != "BTC-USD"
+                or listing.asset_id != transfers[0].asset_id
+                or listing.symbol != "BTC"
+                or listing.provider is not PriceSource.exchange
+                or listing.provider_symbol != "BTC"
+                or listing.exchange != ImportSource.anycoin.value
+                or asset is None
+                or asset.symbol != "BTC"
+                or asset.asset_type is not AssetType.crypto
+                or asset.currency != "BTC"
             ):
                 raise AnycoinTransferValuationConflictError(
                     "The exact Anycoin BTC market identity is unavailable."
                 )
+            yahoo_reference_listing = await self.session.scalar(
+                select(AssetListingModel).where(
+                    AssetListingModel.provider == PriceSource.yahoo_finance,
+                    AssetListingModel.provider_symbol == _YAHOO_REFERENCE_SYMBOL,
+                    AssetListingModel.currency == "USD",
+                )
+            )
+            if yahoo_reference_listing is not None and not _is_exact_yahoo_reference_listing(
+                yahoo_reference_listing,
+                asset_id=transfers[0].asset_id,
+            ):
+                raise AnycoinTransferValuationConflictError(
+                    "The exact Yahoo BTC-USD reference listing is unavailable."
+                )
+            yahoo_reference_listing_id = (
+                _yahoo_reference_listing_id(transfers[0].asset_id)
+                if yahoo_reference_listing is None
+                else yahoo_reference_listing.id
+            )
 
             existing_rows = list(
                 (
@@ -338,10 +377,10 @@ class AnycoinTransferValuationService:
             try:
                 price_requirement = HistoricalPriceRangeRequirement(
                     asset_id=transfers[0].asset_id,
-                    listing_id=transfers[0].listing_id,
+                    listing_id=yahoo_reference_listing_id,
                     listing_currency="USD",
                     provider=PriceSource.yahoo_finance,
-                    provider_symbol="BTC-USD",
+                    provider_symbol=_YAHOO_REFERENCE_SYMBOL,
                     requested_at=requested_at,
                     interval=interval,
                 )
@@ -375,6 +414,74 @@ class AnycoinTransferValuationService:
 
         prices_by_time = {item.through: item.observation for item in price_selections}
         rates_by_time = {item.through: item.observation for item in fx_selections}
+
+        # The provider response has now proved the exact BTC-USD identity.  Only
+        # now create its separate native-USD listing; a failed/unknown Yahoo
+        # symbol therefore cannot leave a synthetic listing behind.
+        async with self.session.begin():
+            locked_asset = await self.session.scalar(
+                select(AssetModel).where(AssetModel.id == transfers[0].asset_id).with_for_update()
+            )
+            if locked_asset is None:
+                raise AnycoinTransferValuationConflictError(
+                    "The Anycoin BTC asset disappeared during market acquisition."
+                )
+            persisted_reference = await self.session.scalar(
+                select(AssetListingModel)
+                .where(
+                    AssetListingModel.provider == PriceSource.yahoo_finance,
+                    AssetListingModel.provider_symbol == _YAHOO_REFERENCE_SYMBOL,
+                    AssetListingModel.currency == "USD",
+                )
+                .with_for_update()
+            )
+            if persisted_reference is None:
+                persisted_reference = AssetListingModel(
+                    id=yahoo_reference_listing_id,
+                    asset_id=transfers[0].asset_id,
+                    symbol=_YAHOO_REFERENCE_SYMBOL,
+                    exchange=_YAHOO_REFERENCE_EXCHANGE,
+                    mic=None,
+                    currency="USD",
+                    country=None,
+                    provider=PriceSource.yahoo_finance,
+                    provider_symbol=_YAHOO_REFERENCE_SYMBOL,
+                    is_primary=False,
+                    created_at=canonical.created_at,
+                    updated_at=canonical.created_at,
+                    base_priority=0,
+                )
+                self.session.add(persisted_reference)
+                await self.session.flush()
+            if (
+                persisted_reference.id != yahoo_reference_listing_id
+                or not _is_exact_yahoo_reference_listing(
+                    persisted_reference,
+                    asset_id=transfers[0].asset_id,
+                )
+            ):
+                raise AnycoinTransferValuationConflictError(
+                    "The Yahoo BTC-USD reference listing changed during acquisition."
+                )
+            yahoo_alias = await self.session.scalar(
+                select(AssetAliasModel)
+                .where(
+                    AssetAliasModel.provider == AssetAliasProvider.yahoo_finance,
+                    AssetAliasModel.external_id == _YAHOO_REFERENCE_SYMBOL,
+                )
+                .with_for_update()
+            )
+            if yahoo_alias is not None:
+                if yahoo_alias.asset_id != transfers[0].asset_id or yahoo_alias.listing_id not in {
+                    None,
+                    transfers[0].listing_id,
+                    yahoo_reference_listing_id,
+                }:
+                    raise AnycoinTransferValuationConflictError(
+                        "The Yahoo BTC-USD alias conflicts with its reference listing."
+                    )
+                yahoo_alias.listing_id = yahoo_reference_listing_id
+
         await MarketEvidenceWriter(self.session).write(
             PersistMarketEvidenceCommand(
                 price_observations=tuple(
@@ -463,7 +570,7 @@ class AnycoinTransferValuationService:
                     price is None
                     or rate is None
                     or price.asset_id != transfer.asset_id
-                    or price.listing_id != transfer.listing_id
+                    or price.listing_id != yahoo_reference_listing_id
                     or price.price != selected_price.price
                     or price.currency != "USD"
                     or price.source is not PriceSource.yahoo_finance

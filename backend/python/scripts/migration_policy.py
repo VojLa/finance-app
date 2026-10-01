@@ -55,7 +55,10 @@ SNAPSHOT_SERIES_JOBS_REVISION = "3y0001snapshotjobs"
 HISTORY_DROP_REVISION = "3z0001historydrop"
 VALUATION_EVIDENCE_REVISION = "400001anycoinvaluation"
 TEMPORAL_SERIES_REVISION = "410001serieslinks"
-HEAD_REVISION = TEMPORAL_SERIES_REVISION
+LISTING_IDENTITY_REVISION = "420001yahooidentity"
+LISTING_PROVIDER_HEALTH_REVISION = "430001markethealth"
+ASSET_ALIAS_AUDIT_REVISION = "440001assetaudit"
+HEAD_REVISION = ASSET_ALIAS_AUDIT_REVISION
 SCHEMA_REGISTRY = BACKEND_ROOT / "database" / "schema_revisions.toml"
 FIRST_SCHEMA_REVISION_PATH = (
     BACKEND_ROOT / "migrations" / "versions" / "3f0001acctnote_add_account_notes.py"
@@ -164,6 +167,12 @@ HISTORY_DROP_REVISION_PATH = (
     / "migrations"
     / "versions"
     / "3z0001historydrop_remove_legacy_portfolio_history.py"
+)
+LISTING_PROVIDER_HEALTH_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "430001markethealth_add_listing_provider_health.py"
+)
+ASSET_ALIAS_AUDIT_REVISION_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "440001assetaudit_add_operator_decision_audit.py"
 )
 ARCHIVE_HASH_PATTERN = re.compile(r'(?m)^archive_sha256 = "[^"]*"$')
 FORBIDDEN_RUNTIME_PATTERNS = (
@@ -321,7 +330,7 @@ def verify_ownership_manifest(
 ) -> None:
     manifest = load_toml(ownership_manifest)
     expected_top_level = {
-        "schema_version": 25,
+        "schema_version": 27,
         "current_migration_owner": "alembic",
         "target_migration_owner": "alembic",
         "cutover_status": "completed",
@@ -360,7 +369,7 @@ def verify_ownership_manifest(
         "baseline_revision": BASELINE_REVISION,
         "cutover_revision": CUTOVER_REVISION,
         "head_revision": HEAD_REVISION,
-        "revision_count": 26,
+        "revision_count": 29,
         "head_count": 1,
     }:
         raise RuntimeError("Alembic ownership metadata is invalid.")
@@ -368,8 +377,8 @@ def verify_ownership_manifest(
     current_schema = manifest.get("current_schema")
     if current_schema != {
         "revision": HEAD_REVISION,
-        "schema_source": "database/revisions/410001serieslinks/schema.sql",
-        "checksum_source": "database/revisions/410001serieslinks/schema.sha256",
+        "schema_source": "database/revisions/440001assetaudit/schema.sql",
+        "checksum_source": "database/revisions/440001assetaudit/schema.sha256",
     }:
         raise RuntimeError("Current schema artifact metadata is invalid.")
 
@@ -409,10 +418,8 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError(f"Alembic head must be {HEAD_REVISION}.")
     if directory.get_bases() != [BASELINE_REVISION]:
         raise RuntimeError(f"Alembic base must remain {BASELINE_REVISION}.")
-    if len(revisions) != 26:
-        raise RuntimeError(
-            "The snapshot-only schema requires exactly twenty-six Alembic revisions."
-        )
+    if len(revisions) != 29:
+        raise RuntimeError("The current schema requires exactly twenty-nine Alembic revisions.")
 
     by_revision = {revision.revision: revision for revision in revisions}
     baseline = by_revision.get(BASELINE_REVISION)
@@ -441,6 +448,9 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     history_drop = by_revision.get(HISTORY_DROP_REVISION)
     valuation_evidence = by_revision.get(VALUATION_EVIDENCE_REVISION)
     temporal_series = by_revision.get(TEMPORAL_SERIES_REVISION)
+    listing_identity = by_revision.get(LISTING_IDENTITY_REVISION)
+    listing_provider_health = by_revision.get(LISTING_PROVIDER_HEALTH_REVISION)
+    asset_alias_audit = by_revision.get(ASSET_ALIAS_AUDIT_REVISION)
     if baseline is None or baseline.down_revision is not None:
         raise RuntimeError("The inherited Prisma baseline revision is invalid.")
     if cutover is None or cutover.down_revision != BASELINE_REVISION:
@@ -533,6 +543,18 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
         raise RuntimeError("Investment-movement valuation evidence must follow history cleanup.")
     if temporal_series is None or temporal_series.down_revision != VALUATION_EVIDENCE_REVISION:
         raise RuntimeError("Temporal snapshot-series links must follow valuation evidence.")
+    if listing_identity is None or listing_identity.down_revision != TEMPORAL_SERIES_REVISION:
+        raise RuntimeError("Listing market identity must follow temporal snapshot-series links.")
+    if (
+        listing_provider_health is None
+        or listing_provider_health.down_revision != LISTING_IDENTITY_REVISION
+    ):
+        raise RuntimeError("Listing provider health must follow listing market identity.")
+    if (
+        asset_alias_audit is None
+        or asset_alias_audit.down_revision != LISTING_PROVIDER_HEALTH_REVISION
+    ):
+        raise RuntimeError("Asset alias audit must follow listing provider health.")
 
     cutover_module = cutover.module
     expected_cutover_metadata = {
@@ -1095,6 +1117,51 @@ def verify_alembic_graph(config_path: Path = ALEMBIC_CONFIG) -> None:
     ):
         if token not in history_drop_source:
             raise RuntimeError(f"History-drop revision is missing required safety token {token}.")
+
+    expected_listing_provider_health_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_listing_provider_health",
+        "affected_tables": ("MarketDataListingHealth",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_listing_provider_health_metadata.items():
+        if getattr(listing_provider_health.module, key, None) != value:
+            raise RuntimeError(f"Listing-provider-health metadata is invalid for {key}.")
+    listing_provider_health_source = LISTING_PROVIDER_HEALTH_REVISION_PATH.read_text(
+        encoding="utf-8"
+    )
+    for token in (
+        'CREATE TYPE "public"."MarketDataHealthState" AS ENUM',
+        'CREATE TYPE "public"."MarketDataFailureReason" AS ENUM',
+        '"MarketDataListingHealth"',
+        '"MarketDataHealthState"',
+        '"MarketDataFailureReason"',
+    ):
+        if token not in listing_provider_health_source:
+            raise RuntimeError(
+                f"Listing-provider-health revision is missing required token {token}."
+            )
+
+    expected_asset_alias_audit_metadata = {
+        "schema_change": True,
+        "schema_change_kind": "add_asset_alias_audit",
+        "affected_tables": ("AssetAliasAudit",),
+        "prisma_schema_impact": "required",
+        "data_migration": False,
+    }
+    for key, value in expected_asset_alias_audit_metadata.items():
+        if getattr(asset_alias_audit.module, key, None) != value:
+            raise RuntimeError(f"Asset-alias-audit metadata is invalid for {key}.")
+    asset_alias_audit_source = ASSET_ALIAS_AUDIT_REVISION_PATH.read_text(encoding="utf-8")
+    for token in (
+        '"AssetAliasAudit"',
+        "AssetAliasAudit_action_allowed",
+        "prevent_asset_alias_audit_mutation",
+        "AssetAliasAudit_append_only",
+    ):
+        if token not in asset_alias_audit_source:
+            raise RuntimeError(f"Asset-alias-audit revision is missing required token {token}.")
 
 
 def verify_schema_registry(

@@ -28,12 +28,12 @@ _EXCLUDED_TABLES = ("public._prisma_migrations", "public.alembic_version")
 
 
 def normalize_database_url(database_url: str) -> str:
-    """Remove Prisma-only URI parameters that libpq does not understand."""
+    """Return a libpq URI without ORM- or Prisma-only URL components."""
     parsed = urlsplit(database_url)
+    if parsed.scheme not in {"postgres", "postgresql", "postgresql+asyncpg"}:
+        raise ValueError("Unsupported PostgreSQL database URL.")
     query = [(key, value) for key, value in parse_qsl(parsed.query) if key != "schema"]
-    return urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
-    )
+    return urlunsplit(("postgresql", parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def normalize_schema_dump(raw_dump: str) -> str:

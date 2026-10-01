@@ -104,6 +104,7 @@ def _price(timestamp: datetime) -> PriceSnapshotModel:
         price=Decimal("110"),
         currency="EUR",
         source=PriceSource.twelve_data,
+        provider_symbol="EXACT",
         timestamp=timestamp,
     )
 
@@ -159,18 +160,112 @@ def _movement() -> InvestmentMovementModel:
     )
 
 
+def _holding_purchase() -> tuple[
+    tuple[InvestmentEventModel, ...],
+    tuple[InvestmentMovementModel, ...],
+]:
+    purchase = InvestmentEventModel(
+        id="event-purchase",
+        account_id="account-1",
+        type=InvestmentEventType.trade,
+        date=NOW,
+        source=None,
+        external_id=None,
+        order_id=None,
+        description=None,
+        realized_pnl=None,
+        realized_pnl_currency=None,
+        import_batch_id=None,
+        archived_at=None,
+        deleted_at=None,
+        updated_at=NOW,
+    )
+    funding = InvestmentEventModel(
+        id="event-funding",
+        account_id="account-1",
+        type=InvestmentEventType.interest,
+        date=NOW,
+        source=None,
+        external_id=None,
+        order_id=None,
+        description=None,
+        realized_pnl=None,
+        realized_pnl_currency=None,
+        import_batch_id=None,
+        archived_at=None,
+        deleted_at=None,
+        updated_at=NOW,
+    )
+    asset = InvestmentMovementModel(
+        id="movement-purchase-asset",
+        event_id=purchase.id,
+        account_id="account-1",
+        asset_id="asset-1",
+        listing_id="listing-1",
+        kind=InvestmentMovementKind.asset,
+        direction=MovementDirection.incoming,
+        quantity=Decimal("2"),
+        currency="EUR",
+        price_per_unit=Decimal("100"),
+        value_amount=Decimal("200"),
+        value_currency="EUR",
+        source_symbol="EXACT",
+        source_asset_type=AssetType.etf,
+        note=None,
+        updated_at=NOW,
+    )
+    purchase_cash = InvestmentMovementModel(
+        id="movement-purchase-cash",
+        event_id=purchase.id,
+        account_id="account-1",
+        asset_id=None,
+        listing_id=None,
+        kind=InvestmentMovementKind.cash,
+        direction=MovementDirection.outgoing,
+        quantity=Decimal("200"),
+        currency="EUR",
+        price_per_unit=None,
+        value_amount=Decimal("200"),
+        value_currency="EUR",
+        source_symbol=None,
+        source_asset_type=None,
+        note=None,
+        updated_at=NOW,
+    )
+    funding_cash = InvestmentMovementModel(
+        id="movement-funding-cash",
+        event_id=funding.id,
+        account_id="account-1",
+        asset_id=None,
+        listing_id=None,
+        kind=InvestmentMovementKind.cash,
+        direction=MovementDirection.incoming,
+        quantity=Decimal("200"),
+        currency="EUR",
+        price_per_unit=None,
+        value_amount=Decimal("200"),
+        value_currency="EUR",
+        source_symbol=None,
+        source_asset_type=None,
+        note=None,
+        updated_at=NOW,
+    )
+    return (purchase, funding), (asset, purchase_cash, funding_cash)
+
+
 def _repository(
     *,
     prices: tuple[PriceSnapshotModel, ...],
     rates: tuple[ExchangeRateModel, ...] = (),
     historical: bool = False,
 ) -> AccountSnapshotEvidenceRepository:
+    purchase_events, purchase_movements = _holding_purchase()
     values = {
         "load_account": _account(),
         "load_holdings": _holding(),
         "load_active_transactions": (),
-        "load_active_events": (_event(),) if historical else (),
-        "load_active_movements": (_movement(),) if historical else (),
+        "load_active_events": purchase_events + ((_event(),) if historical else ()),
+        "load_active_movements": purchase_movements + ((_movement(),) if historical else ()),
         "load_price_candidates": prices,
         "load_exchange_rate_candidates": rates,
     }
@@ -256,7 +351,10 @@ async def test_historical_metric_selects_event_date_rate_with_exact_boundary() -
     ).build(_command())
 
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-rate",)
-    assert result.selected_historical_exchange_rate_ids == ("historical-rate",)
+    assert result.selected_historical_exchange_rate_ids == (
+        "historical-rate",
+        "snapshot-rate",
+    )
     assert isinstance(result.net_deposits, ExactSnapshotMetric)
     assert result.net_deposits.value == Decimal("2500")
 

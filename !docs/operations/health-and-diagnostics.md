@@ -20,3 +20,10 @@ diagnostics. Production configuration fails startup when required settings are u
 
 Escalate when readiness repeatedly fails with a healthy process, a durable job has an
 ambiguous lease/owner, or persisted evidence conflicts with the requested identity.
+
+For market data, inspect the exact listing/provider health row rather than inferring
+health from `basePriority`. Cooldowns and leases are durable across worker restarts;
+an expired recoverable cooldown authorizes only an acquisition probe. The operator
+summary may expose state counts, safe classified reasons, cooldown/retry state,
+unresolved counts and last-valid-price age, but never provider payloads, price
+amounts, import rows or credentials.

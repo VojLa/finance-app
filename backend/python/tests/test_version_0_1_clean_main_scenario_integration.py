@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import INTERNAL_AUTH_SERVICE_SUBJECT
@@ -25,6 +25,7 @@ from app.db.models.assets import AssetAliasModel
 from app.db.models.holdings import HoldingModel
 from app.db.models.imports import ImportBatchModel, ImportLogModel, ImportRowModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
@@ -283,6 +284,34 @@ async def _financial_state() -> dict[str, Any]:
         "aliases": aliases,
         "logs": logs,
     }
+
+
+async def _expire_market_health_guards() -> tuple[int, int]:
+    engine = investment_support.engine()
+    async with AsyncSession(engine) as session:
+        cooldowns = len(
+            (
+                await session.scalars(
+                    update(MarketDataListingHealthModel)
+                    .where(MarketDataListingHealthModel.retry_after.is_not(None))
+                    .values(retry_after=datetime(2000, 1, 1))
+                    .returning(MarketDataListingHealthModel.id)
+                )
+            ).all()
+        )
+        leases = len(
+            (
+                await session.scalars(
+                    update(MarketDataListingHealthModel)
+                    .where(MarketDataListingHealthModel.lease_expires_at.is_not(None))
+                    .values(lease_expires_at=datetime(2000, 1, 1))
+                    .returning(MarketDataListingHealthModel.id)
+                )
+            ).all()
+        )
+        await session.commit()
+    await engine.dispose()
+    return cooldowns, leases
 
 
 def _create_account(
@@ -638,6 +667,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         )
 
         harness.twelve_status = 200
+        assert _run(_expire_market_health_guards()) == (1, 1)
         refresh_response = client.post(
             "/api/v1/snapshot-refresh/recalculate",
             headers=_headers(),
@@ -795,7 +825,8 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
         assert selected["rateId"] in persisted_rate_ids
     assert len(trading_rates["historicalRateIds"]) == 1
     assert set(trading_rates["historicalRateIds"]).issubset(persisted_rate_ids)
-    assert anycoin_rates["historicalRateIds"] == []
+    assert len(anycoin_rates["historicalRateIds"]) == 1
+    assert set(anycoin_rates["historicalRateIds"]).issubset(persisted_rate_ids)
     rb_snapshot = latest_snapshots[account_ids["raiffeisenbank"]]
     assert rb_snapshot.cash_value == Decimal("9826.550000")
     assert rb_snapshot.cash_value_by_currency == {"CZK": "9826.550000"}
@@ -864,6 +895,7 @@ def test_clean_main_scenario_reaches_exact_browser_owned_read_models_and_replays
             "resolutionMinutes",
             "cashValue",
             "investmentValue",
+            "investmentCostBasis",
             "liabilitiesValue",
             "netWorthValue",
             "netInvestedValue",

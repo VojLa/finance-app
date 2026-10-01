@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from typing import cast
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,7 +16,6 @@ from app.db.models.canonical_lineage import (
     DailySnapshotBaselineAccountModel,
     UserReadModelPublicationModel,
 )
-from app.db.models.enums import SnapshotGranularity
 from app.db.models.investment_snapshots import (
     PortfolioSnapshotItemAccountModel,
     PortfolioSnapshotItemModel,
@@ -30,9 +28,15 @@ from app.db.models.snapshot_series_publication import (
 from app.db.models.snapshots import (
     AccountSnapshotItemModel,
     AccountSnapshotModel,
-    NetWorthSnapshotModel,
 )
 from app.db.models.users import UserModel
+from app.modules.portfolio_history.lattice import (
+    MAX_PUBLIC_HISTORY_POINTS,
+    PortfolioHistoryLatticeError,
+    history_bucket,
+    resolution_minutes,
+    select_history_range,
+)
 from app.modules.portfolio_snapshot.history_api_models import (
     GenerationPortfolioHistoryPointResponse,
     PortfolioHistoryCoverageResponse,
@@ -50,27 +54,12 @@ from app.modules.portfolio_snapshot.history_contracts import (
 )
 from app.modules.portfolio_snapshot.writer import valuation_evidence_timestamp
 
-_MAX_POINTS = 480
+_MAX_POINTS = MAX_PUBLIC_HISTORY_POINTS
 _STALE_AFTER = timedelta(minutes=30)
-_RANGE_AGE = {
-    HistoryPublicRange.one_day: timedelta(days=1),
-    HistoryPublicRange.one_week: timedelta(days=7),
-    HistoryPublicRange.one_month: timedelta(days=31),
-    HistoryPublicRange.three_months: timedelta(days=93),
-    HistoryPublicRange.six_months: timedelta(days=186),
-    HistoryPublicRange.one_year: timedelta(days=366),
-    HistoryPublicRange.five_years: timedelta(days=366 * 5),
-    HistoryPublicRange.ten_years: timedelta(days=366 * 10),
-}
-_SNAPSHOT_RESOLUTION_MINUTES: dict[object, int] = {
-    SnapshotGranularity.minute: 1,
-    SnapshotGranularity.hour: 60,
-    SnapshotGranularity.day: 1_440,
-    SnapshotGranularity.week: 10_080,
-}
+_PERCENTAGE_QUANTUM = Decimal("0.0001")
 
 _SnapshotModel = PortfolioSnapshotModel | AccountSnapshotModel
-_AggregateModel = NetWorthSnapshotModel | AccountSnapshotModel | None
+_AggregateModel = AccountSnapshotModel | None
 _HistoryRow = tuple[_SnapshotModel, _AggregateModel, datetime]
 _HistoryRows = tuple[_HistoryRow, ...]
 
@@ -96,27 +85,13 @@ def _currency_amounts(value: object) -> tuple[PortfolioHistoryCurrencyAmountResp
     return tuple(result)
 
 
-def _snapshot_resolution_minutes(snapshot: object) -> int:
-    granularity = getattr(snapshot, "granularity", None)
-    try:
-        return _SNAPSHOT_RESOLUTION_MINUTES[granularity]
-    except (KeyError, TypeError):
-        # A month is calendar-relative and cannot truthfully be represented by
-        # this integer-minute API contract. Published baselines permit only
-        # minute and day rows today; fail closed if that contract changes.
-        raise GenerationPortfolioHistoryUnavailableError() from None
-
-
-def _point_resolution_minutes(rows: _HistoryRows, index: int) -> int:
-    snapshot = rows[index][0]
-    deltas: list[int] = []
-    for neighbor in (index - 1, index + 1):
-        if 0 <= neighbor < len(rows):
-            seconds = abs((rows[neighbor][0].timestamp - snapshot.timestamp).total_seconds())
-            if seconds <= 0 or seconds % 60:
-                raise GenerationPortfolioHistoryUnavailableError()
-            deltas.append(int(seconds // 60))
-    return max(_snapshot_resolution_minutes(snapshot), min(deltas, default=0))
+def _unrealized_pnl_percentage(*, value: Decimal, cost_basis: Decimal | None) -> Decimal | None:
+    if cost_basis is None or cost_basis <= 0:
+        return None
+    return (((value - cost_basis) / cost_basis) * Decimal(100)).quantize(
+        _PERCENTAGE_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
 
 
 class PublishedPortfolioSnapshotHistoryReader:
@@ -134,9 +109,12 @@ class PublishedPortfolioSnapshotHistoryReader:
     ) -> PortfolioHistoryResponse:
         if self.session.in_transaction():
             await self.session.rollback()
-        now = datetime.now(UTC).replace(tzinfo=None)
+        raw_now = datetime.now(UTC).replace(tzinfo=None)
+        now = raw_now.replace(microsecond=(raw_now.microsecond // 1_000) * 1_000)
         cutoff = (
-            None if history_range is HistoryPublicRange.all else now - _RANGE_AGE[history_range]
+            None
+            if history_range is HistoryPublicRange.all
+            else select_history_range(history_range, through=now).start
         )
         try:
             async with self.session.begin():
@@ -174,7 +152,13 @@ class PublishedPortfolioSnapshotHistoryReader:
                     )
                     if publication is None:
                         return self._empty(history_range, currency)
-                ordered = self._select_rows(rows)
+                if not rows:
+                    return self._empty(history_range, currency)
+                ordered, selected_resolution_minutes = self._select_rows(
+                    rows,
+                    history_range=history_range,
+                    through=now,
+                )
                 positions = await self._positions(
                     rows=ordered,
                     account_id=account_id,
@@ -187,28 +171,14 @@ class PublishedPortfolioSnapshotHistoryReader:
         if not ordered:
             return self._empty(history_range, currency)
         points: list[GenerationPortfolioHistoryPointResponse] = []
-        for index, row in enumerate(ordered):
+        for row in ordered:
             snapshot, aggregate, _published_at = row
-            resolution_minutes = _point_resolution_minutes(ordered, index)
             if account_id is None:
-                portfolio_aggregate = cast(NetWorthSnapshotModel | None, aggregate)
-                liabilities_value = (
-                    portfolio_aggregate.liabilities_value
-                    if portfolio_aggregate is not None
-                    else Decimal(0)
-                )
-                net_worth_value = (
-                    portfolio_aggregate.total_net_worth
-                    if portfolio_aggregate is not None
-                    else snapshot.cash_value + snapshot.investment_value
-                )
-                liabilities_breakdown = (
-                    portfolio_aggregate.liabilities_value_by_currency
-                    if portfolio_aggregate is not None
-                    else None
-                )
+                liabilities_value = Decimal(0)
+                net_worth_value = snapshot.cash_value + snapshot.investment_value
+                liabilities_breakdown = None
             else:
-                account_aggregate = cast(AccountSnapshotModel | None, aggregate)
+                account_aggregate = aggregate
                 liabilities_value = (
                     account_aggregate.liabilities_value
                     if account_aggregate is not None
@@ -227,9 +197,10 @@ class PublishedPortfolioSnapshotHistoryReader:
             points.append(
                 GenerationPortfolioHistoryPointResponse(
                     timestamp=snapshot.timestamp,
-                    resolution_minutes=resolution_minutes,
+                    resolution_minutes=selected_resolution_minutes,
                     cash_value=snapshot.cash_value,
                     investment_value=snapshot.investment_value,
+                    investment_cost_basis=snapshot.investment_cost_basis,
                     liabilities_value=liabilities_value,
                     net_worth_value=net_worth_value,
                     net_invested_value=snapshot.net_deposits_value,
@@ -245,27 +216,14 @@ class PublishedPortfolioSnapshotHistoryReader:
             )
         latest_snapshot = ordered[-1][0]
         latest_valuation_timestamp = ordered[-1][2]
-        latest_resolution_minutes = _point_resolution_minutes(ordered, len(ordered) - 1)
-        resolutions = tuple(sorted({point.resolution_minutes for point in points}))
-        coverage: list[PortfolioHistoryCoverageResponse] = []
-        for index, point in enumerate(points):
-            if index > 0 and points[index - 1].resolution_minutes == point.resolution_minutes:
-                continue
-            next_change = next(
-                (
-                    later.timestamp
-                    for later in points[index + 1 :]
-                    if later.resolution_minutes != point.resolution_minutes
-                ),
-                points[-1].timestamp + timedelta(milliseconds=1),
-            )
-            coverage.append(
-                PortfolioHistoryCoverageResponse(
-                    resolution_minutes=point.resolution_minutes,
-                    start=point.timestamp,
-                    end=next_change,
-                )
-            )
+        resolutions = (selected_resolution_minutes,)
+        coverage = (
+            PortfolioHistoryCoverageResponse(
+                resolution_minutes=selected_resolution_minutes,
+                start=points[0].timestamp,
+                end=points[-1].timestamp + timedelta(milliseconds=1),
+            ),
+        )
         return PortfolioHistoryResponse(
             range=history_range,
             state=PortfolioHistoryReadState.ready,
@@ -273,9 +231,9 @@ class PublishedPortfolioSnapshotHistoryReader:
             generation_id=publication.generation_id,
             publication_version=series_version,
             covered_through=latest_snapshot.timestamp,
-            preferred_resolution_minutes=latest_resolution_minutes,
+            preferred_resolution_minutes=selected_resolution_minutes,
             resolutions=resolutions,
-            coverage=tuple(coverage),
+            coverage=coverage,
             points=tuple(points),
             publication_id=publication.version,
             valuation_timestamp=latest_valuation_timestamp,
@@ -311,7 +269,7 @@ class PublishedPortfolioSnapshotHistoryReader:
         user_id: str,
         cutoff: datetime | None,
     ) -> tuple[
-        tuple[tuple[PortfolioSnapshotModel, NetWorthSnapshotModel | None, datetime], ...],
+        tuple[tuple[PortfolioSnapshotModel, None, datetime], ...],
         UserReadModelPublicationModel | None,
         int,
     ]:
@@ -323,14 +281,16 @@ class PublishedPortfolioSnapshotHistoryReader:
                 | (SnapshotSeriesPointLinkModel.valid_to_version > SnapshotSeriesHeadModel.version)
             )
         )
+        snapshot_visible = (
+            PortfolioSnapshotModel.id == SnapshotSeriesPointLinkModel.portfolio_snapshot_id
+        )
         if cutoff is not None:
-            visible &= SnapshotSeriesPointLinkModel.timestamp >= cutoff
+            snapshot_visible &= PortfolioSnapshotModel.timestamp >= cutoff
         statement = (
             select(
                 UserReadModelPublicationModel,
                 SnapshotSeriesHeadModel.version,
                 PortfolioSnapshotModel,
-                NetWorthSnapshotModel,
                 PortfolioSnapshotModel.valuation_timestamp,
             )
             .join(
@@ -340,11 +300,7 @@ class PublishedPortfolioSnapshotHistoryReader:
             .outerjoin(SnapshotSeriesPointLinkModel, visible)
             .outerjoin(
                 PortfolioSnapshotModel,
-                PortfolioSnapshotModel.id == SnapshotSeriesPointLinkModel.portfolio_snapshot_id,
-            )
-            .outerjoin(
-                NetWorthSnapshotModel,
-                NetWorthSnapshotModel.id == SnapshotSeriesPointLinkModel.net_worth_snapshot_id,
+                snapshot_visible,
             )
             .where(UserReadModelPublicationModel.user_id == user_id)
             .order_by(
@@ -358,8 +314,8 @@ class PublishedPortfolioSnapshotHistoryReader:
         publication, version = records[0][:2]
         return (
             tuple(
-                (snapshot, net_worth, valuation)
-                for _, _, snapshot, net_worth, valuation in records
+                (snapshot, None, valuation)
+                for _, _, snapshot, valuation in records
                 if snapshot is not None
             ),
             publication,
@@ -398,6 +354,10 @@ class PublishedPortfolioSnapshotHistoryReader:
                         value=item.value,
                         cost_basis=item.cost_basis,
                         allocation_pct=item.allocation_pct,
+                        unrealized_pnl_pct=_unrealized_pnl_percentage(
+                            value=item.value,
+                            cost_basis=item.cost_basis,
+                        ),
                         accounts=(
                             PortfolioHistoryPositionAccountResponse(
                                 account_id=account_id,
@@ -458,6 +418,10 @@ class PublishedPortfolioSnapshotHistoryReader:
                     value=portfolio_item.value,
                     cost_basis=portfolio_item.cost_basis,
                     allocation_pct=portfolio_item.allocation_pct,
+                    unrealized_pnl_pct=_unrealized_pnl_percentage(
+                        value=portfolio_item.value,
+                        cost_basis=portfolio_item.cost_basis,
+                    ),
                     accounts=tuple(by_item.get(portfolio_item.id, ())),
                 )
             )
@@ -504,11 +468,6 @@ class PublishedPortfolioSnapshotHistoryReader:
                         SnapshotSeriesPointLinkModel.valid_to_version
                         > SnapshotSeriesHeadModel.version
                     )
-                )
-                & (
-                    (SnapshotSeriesPointLinkModel.timestamp >= cutoff)
-                    if cutoff is not None
-                    else True
                 ),
             )
             .outerjoin(
@@ -521,8 +480,11 @@ class PublishedPortfolioSnapshotHistoryReader:
             )
             .outerjoin(
                 AccountSnapshotModel,
-                AccountSnapshotModel.id
-                == DailySnapshotBaselineAccountModel.presentation_snapshot_id,
+                (
+                    AccountSnapshotModel.id
+                    == DailySnapshotBaselineAccountModel.presentation_snapshot_id
+                )
+                & ((AccountSnapshotModel.timestamp >= cutoff) if cutoff is not None else True),
             )
             .where(UserReadModelPublicationModel.user_id == user_id)
             .order_by(
@@ -553,26 +515,49 @@ class PublishedPortfolioSnapshotHistoryReader:
         )
 
     @staticmethod
-    def _select_rows(rows: _HistoryRows) -> _HistoryRows:
-        """Keep the full time span while bounding the public chart payload.
-
-        Rows arrive newest first and can contain companion duplicates.  Taking
-        only the first 480 made the ``all`` range silently show just the newest
-        dense interval.  Deduplicate first, then sample uniformly while always
-        retaining both endpoints.
-        """
+    def _select_rows(
+        rows: _HistoryRows,
+        *,
+        history_range: HistoryPublicRange,
+        through: datetime,
+    ) -> tuple[_HistoryRows, int]:
+        """Select one lattice resolution and one close per bucket for the whole graph."""
 
         by_timestamp: dict[datetime, _HistoryRow] = {}
         for row in rows:
             snapshot = row[0]
             by_timestamp.setdefault(snapshot.timestamp, row)
-        ordered = tuple(reversed(tuple(by_timestamp.values())))
-        if len(ordered) <= _MAX_POINTS:
-            return ordered
-        indexes = tuple(
-            round(index * (len(ordered) - 1) / (_MAX_POINTS - 1)) for index in range(_MAX_POINTS)
-        )
-        return tuple(ordered[index] for index in indexes)
+        chronological = tuple(sorted(by_timestamp.values(), key=lambda row: row[0].timestamp))
+        if not chronological:
+            raise GenerationPortfolioHistoryUnavailableError()
+        try:
+            selection = select_history_range(
+                history_range,
+                through=through,
+                first_event_at=(
+                    chronological[0][0].timestamp
+                    if history_range is HistoryPublicRange.all
+                    else None
+                ),
+            )
+            bucket_closes: dict[datetime, _HistoryRow] = {}
+            for row in chronological:
+                timestamp = row[0].timestamp
+                if selection.start <= timestamp <= selection.through:
+                    bucket = history_bucket(timestamp, selection.resolution)
+                    bucket_closes[bucket.start] = row
+        except PortfolioHistoryLatticeError as exc:
+            raise GenerationPortfolioHistoryUnavailableError() from exc
+        selected = tuple(bucket_closes[key] for key in sorted(bucket_closes))
+        if (
+            history_range is HistoryPublicRange.all
+            and selected
+            and selected[0][0].timestamp != chronological[0][0].timestamp
+        ):
+            selected = (chronological[0], *selected)
+        if len(selected) > _MAX_POINTS:
+            raise GenerationPortfolioHistoryUnavailableError()
+        return selected, resolution_minutes(selection.resolution)
 
     @staticmethod
     def _empty(history_range: HistoryPublicRange, currency: str) -> PortfolioHistoryResponse:

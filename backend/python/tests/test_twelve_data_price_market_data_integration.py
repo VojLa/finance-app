@@ -110,7 +110,9 @@ async def test_production_twelve_data_registry_persists_exact_price_and_replays(
             )
             assert not session.in_transaction()
 
-        assert len(requests) == 2
+        # The exchange calendar makes the second refresh require no acquisition:
+        # the persisted close remains available to valuation through its own query.
+        assert len(requests) == 1
         for request in requests:
             assert request.url.params["symbol"] == symbol
             assert request.url.params["mic_code"] == "XNAS"
@@ -124,9 +126,9 @@ async def test_production_twelve_data_registry_persists_exact_price_and_replays(
         assert first.prices_created == 1
         assert first.prices_replayed == 0
         assert first.exchange_rate_ids == ()
-        assert replay.price_ids == first.price_ids
+        assert replay.price_ids == ()
         assert replay.prices_created == 0
-        assert replay.prices_replayed == 1
+        assert replay.prices_replayed == 0
 
         async with AsyncSession(engine) as session:
             persisted = await session.get(PriceSnapshotModel, first.price_ids[0])

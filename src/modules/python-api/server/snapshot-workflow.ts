@@ -14,6 +14,7 @@ const CURRENCY = /^[A-Z]{3}$/
 const MONEY = /^-?(?:0|[1-9]\d{0,11})\.\d{6}$/
 const QUANTITY = /^-?(?:0|[1-9]\d{0,17})\.\d{10}$/
 const PERCENTAGE = /^(?:0|[1-9]\d{0,3})\.\d{4}$/
+const SIGNED_PERCENTAGE = /^-?(?:0|[1-9]\d*)\.\d{4}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -155,6 +156,7 @@ function validatePosition(value: unknown, outputCurrency: string): void {
     value.costBasis,
     value.costCurrency,
     value.unrealizedPnl,
+    value.unrealizedPnlPct,
     value.nativeCostBasis,
     value.nativeCostCurrency,
     value.nativeCostBasisByCurrency,
@@ -166,6 +168,7 @@ function validatePosition(value: unknown, outputCurrency: string): void {
     !decimal(value.costBasis, QUANTITY) ||
     value.costCurrency !== outputCurrency ||
     !decimal(value.unrealizedPnl, QUANTITY) ||
+    !decimal(value.unrealizedPnlPct, SIGNED_PERCENTAGE) ||
     !decimal(value.nativeCostBasis, QUANTITY) ||
     !currency(value.nativeCostCurrency)
   ) {
@@ -210,7 +213,8 @@ function validatePortfolio(value: unknown): PortfolioSnapshotData {
       !isRecord(item) ||
       !text(item.accountId) ||
       !accountIds.has(item.accountId) ||
-      !currency(item.accountCurrency)
+      !currency(item.accountCurrency) ||
+      !decimal(item.portfolioAllocationPct, PERCENTAGE)
     ) {
       throw contractError()
     }

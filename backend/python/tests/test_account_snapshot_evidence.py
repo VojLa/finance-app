@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,6 +20,7 @@ from app.db.models.enums import (
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
+    MarketDataHealthState,
     MovementDirection,
     PriceSource,
     SnapshotGranularity,
@@ -29,6 +30,7 @@ from app.db.models.enums import (
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.modules.liabilities.evidence_service import (
@@ -37,8 +39,13 @@ from app.modules.liabilities.evidence_service import (
 from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
 )
+from app.modules.market_data.policy import MarketEvidencePolicy
 from app.modules.market_data.source_policy import (
     LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+)
+from app.modules.snapshots import (
+    AccountSnapshotPersistenceMetadata,
+    build_account_snapshot_persistence_projection,
 )
 from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionInput,
@@ -46,6 +53,8 @@ from app.modules.snapshots.account_projection import (
     CashBalanceEvidence,
     CurrencyAmount,
     ExpectedAccountSnapshotValuation,
+    SelectedPriceEvidence,
+    SnapshotHoldingEvidence,
     build_account_snapshot_projection,
 )
 from app.modules.snapshots.evidence_repository import (
@@ -127,6 +136,7 @@ def _holding_rows(
     *,
     holding_currency: str = "EUR",
     listing_currency: str = "EUR",
+    provider: PriceSource = PriceSource.twelve_data,
 ) -> tuple[PersistedHoldingEvidence, ...]:
     asset = AssetModel(
         id="asset-1",
@@ -145,7 +155,7 @@ def _holding_rows(
         mic=None,
         currency=listing_currency,
         country=None,
-        provider=PriceSource.broker,
+        provider=provider,
         provider_symbol="ABC",
         is_primary=False,
         updated_at=NOW,
@@ -179,6 +189,7 @@ def _price(
     *,
     currency: str = "EUR",
     source: PriceSource = PriceSource.twelve_data,
+    provider_symbol: str | None = "ABC",
 ) -> PriceSnapshotModel:
     return PriceSnapshotModel(
         id=price_id,
@@ -187,6 +198,7 @@ def _price(
         price=Decimal(value),
         currency=currency,
         source=source,
+        provider_symbol=provider_symbol,
         timestamp=timestamp,
     )
 
@@ -266,6 +278,72 @@ def _repository(**overrides: object) -> AccountSnapshotEvidenceRepository:
         "load_exchange_rate_candidates": (),
     }
     defaults.update(overrides)
+    holdings = cast(tuple[PersistedHoldingEvidence, ...], defaults["load_holdings"])
+    events = list(cast(tuple[InvestmentEventModel, ...], defaults["load_active_events"]))
+    movements = list(cast(tuple[InvestmentMovementModel, ...], defaults["load_active_movements"]))
+    existing_acquisitions = {
+        movement.listing_id
+        for movement in movements
+        if movement.kind is InvestmentMovementKind.asset
+        and movement.direction is MovementDirection.incoming
+    }
+    for persisted in holdings:
+        holding = persisted.holding
+        if (
+            holding.listing_id in existing_acquisitions
+            or holding.cost_basis_by_currency is None
+            or len(holding.cost_basis_by_currency) != 1
+        ):
+            continue
+        currency, raw_amount = next(iter(holding.cost_basis_by_currency.items()))
+        assert isinstance(raw_amount, str)
+        amount = Decimal(raw_amount)
+        sold = sum(
+            (
+                movement.quantity
+                for movement in movements
+                if movement.listing_id == holding.listing_id
+                and movement.kind is InvestmentMovementKind.asset
+                and movement.direction is MovementDirection.outgoing
+            ),
+            Decimal(0),
+        )
+        opening_quantity = holding.quantity + sold
+        opening_amount = amount * opening_quantity / holding.quantity
+        buy = _event(InvestmentEventType.trade)
+        buy.id = f"fixture-buy-{holding.id}"
+        buy.date = EARLIER - timedelta(days=1) if sold else NOW
+        interest = _event(InvestmentEventType.interest)
+        interest.id = f"fixture-funding-{holding.id}"
+        interest.date = buy.date
+        asset = _movement(currency=holding.currency)
+        asset.id = f"fixture-asset-{holding.id}"
+        asset.event_id = buy.id
+        asset.kind = InvestmentMovementKind.asset
+        asset.direction = MovementDirection.incoming
+        asset.quantity = opening_quantity
+        asset.asset_id = holding.asset_id
+        asset.listing_id = holding.listing_id
+        asset.source_symbol = holding.symbol
+        asset.source_asset_type = holding.asset_type
+        asset.price_per_unit = holding.avg_buy_price
+        asset.value_amount = opening_amount
+        asset.value_currency = currency
+        buy_cash = _movement(currency=currency)
+        buy_cash.id = f"fixture-buy-cash-{holding.id}"
+        buy_cash.event_id = buy.id
+        buy_cash.direction = MovementDirection.outgoing
+        buy_cash.quantity = opening_amount
+        buy_cash.value_amount = opening_amount
+        funding = _movement(currency=currency)
+        funding.id = f"fixture-funding-cash-{holding.id}"
+        funding.event_id = interest.id
+        funding.quantity = opening_amount
+        funding.value_amount = opening_amount
+        events.extend((buy, interest))
+        movements.extend((asset, buy_cash, funding))
+    defaults["load_active_events"] = tuple(events)
+    defaults["load_active_movements"] = tuple(movements)
     repository = SimpleNamespace()
     for name, value in defaults.items():
         setattr(repository, name, AsyncMock(return_value=value))
@@ -576,7 +654,76 @@ async def test_investment_account_selects_snapshot_and_event_date_fx_separately(
     )
     assert result.selected_price_ids == ("selected-price",)
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-rate",)
-    assert result.selected_historical_exchange_rate_ids == ("event-rate",)
+    assert result.selected_historical_exchange_rate_ids == ("event-rate", "snapshot-rate")
+
+
+@pytest.mark.asyncio
+async def test_investment_account_includes_operational_transactions_in_cash_and_net_deposits() -> (
+    None
+):
+    card_debit = _transaction(
+        "card-debit",
+        "-12.000000",
+        TransactionType.expense,
+        currency="EUR",
+    )
+    cashback = _transaction(
+        "cashback",
+        "4.000000",
+        TransactionType.income,
+        currency="EUR",
+    )
+    local_card_debit = _transaction(
+        "local-card-debit",
+        "-3.000000",
+        TransactionType.expense,
+        currency="CZK",
+    )
+    investment_transfer = _transaction(
+        "investment-transfer",
+        "5.000000",
+        TransactionType.transfer,
+        currency="EUR",
+    )
+    investment_transfer.classification = TransactionClassification.investment_transfer
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="CZK"),
+        load_active_transactions=(
+            card_debit,
+            cashback,
+            local_card_debit,
+            investment_transfer,
+        ),
+        load_active_events=(_event(),),
+        load_active_movements=(_movement(currency="EUR"),),
+        load_exchange_rate_candidates=(
+            _rate("event-rate", "25", EARLIER),
+            _rate("snapshot-rate", "25", NOW),
+        ),
+    )
+
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(),
+        repository=repository,
+    ).build(_command(output_currency="CZK"))
+
+    assert result.valuation.cash_value_by_currency == (
+        CurrencyAmount("CZK", Decimal("-3.000000")),
+        CurrencyAmount("EUR", Decimal("7.000000")),
+    )
+    assert result.valuation.cash_value == Decimal("172.000000")
+    assert result.valuation.total_value == Decimal("172.000000")
+    assert result.net_deposits == ExactSnapshotMetric(
+        Decimal("172.000000"),
+        (
+            CurrencyAmount("CZK", Decimal("-3.000000")),
+            CurrencyAmount("EUR", Decimal("7.000000")),
+        ),
+    )
+    cast(AsyncMock, repository.load_active_transactions).assert_awaited_once_with(
+        "account-1",
+        through=NOW,
+    )
 
 
 @pytest.mark.asyncio
@@ -632,9 +779,8 @@ async def test_mixed_currency_investment_selects_only_direct_output_pairs() -> N
     assert result.selected_snapshot_exchange_rate_ids == (
         "rate-chf",
         "rate-gbp",
-        "rate-usd",
     )
-    assert result.selected_historical_exchange_rate_ids == ()
+    assert result.selected_historical_exchange_rate_ids == ("rate-usd",)
     cast(AsyncMock, repository.load_exchange_rate_candidates).assert_awaited_once_with(
         ("CHF", "GBP", "USD"),
         "EUR",
@@ -731,7 +877,7 @@ async def test_explicit_output_currency_keeps_snapshot_and_event_time_rates_sepa
         (CurrencyAmount("USD", Decimal("10.000000")),),
     )
     assert result.selected_snapshot_exchange_rate_ids == ("snapshot-usd",)
-    assert result.selected_historical_exchange_rate_ids == ("event-usd",)
+    assert result.selected_historical_exchange_rate_ids == ("event-usd", "snapshot-usd")
 
 
 @pytest.mark.asyncio
@@ -921,10 +1067,128 @@ async def test_future_price_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_uses_same_asset_fallback_price_then_recovers_requested_listing() -> None:
+    requested = _holding_rows()[0]
+    assert requested.listing is not None and requested.asset is not None
+    requested.listing.provider_symbol = "ABC.DE"
+    requested.listing.base_priority = 10
+    fallback = AssetListingModel(
+        id="listing-mi",
+        asset_id=requested.asset.id,
+        symbol="ABC",
+        exchange="borsa-italiana",
+        mic="XMIL",
+        currency="EUR",
+        country="IT",
+        provider=PriceSource.twelve_data,
+        provider_symbol="ABC.MI",
+        is_primary=False,
+        base_priority=5,
+        updated_at=NOW,
+    )
+    degraded = cast(
+        MarketDataListingHealthModel,
+        SimpleNamespace(
+            listing_id=requested.listing.id,
+            provider=PriceSource.twelve_data,
+            provider_symbol="ABC.DE",
+            state=MarketDataHealthState.degraded,
+            retry_after=None,
+        ),
+    )
+    persisted = replace(
+        requested,
+        asset_listing_count=2,
+        candidate_listings=(requested.listing, fallback),
+        candidate_health=(degraded,),
+    )
+    de_price = _price("price-de", "12", NOW, provider_symbol="ABC.DE")
+    mi_price = _price("price-mi", "15", NOW, provider_symbol="ABC.MI")
+    mi_price.listing_id = fallback.id
+    rate = _rate("eur-czk", "25", NOW)
+    repository = _repository(
+        load_account=_account(AccountType.broker),
+        load_holdings=(persisted,),
+        load_price_candidates=(de_price, mi_price),
+        load_exchange_rate_candidates=(rate,),
+    )
+    captured: list[AccountSnapshotProjectionInput] = []
+    original_projection = build_account_snapshot_projection
+
+    def capture_projection(value: AccountSnapshotProjectionInput):
+        captured.append(value)
+        return original_projection(value)
+
+    with patch(
+        "app.modules.snapshots.evidence_service.build_account_snapshot_projection",
+        side_effect=capture_projection,
+    ):
+        result = await AccountSnapshotEvidenceService(MagicMock(), repository=repository).build(
+            _command()
+        )
+    assert result.selected_price_ids == ("price-mi",)
+    assert (captured[0].prices[0].listing_id, captured[0].prices[0].requested_listing_id) == (
+        "listing-mi",
+        "listing-1",
+    )
+    assert captured[0].prices[0].source is PriceSource.twelve_data
+    assert captured[0].prices[0].currency == "EUR"
+    assert result.valuation.items[0].listing_id == "listing-1"
+    assert result.valuation.items[0].native_value == Decimal("30")
+    assert result.valuation.items[0].value == Decimal("750")
+    assert result.selected_snapshot_exchange_rate_ids == ("eur-czk",)
+    cast(AsyncMock, repository.load_price_candidates).assert_awaited_once_with(
+        ("listing-1", "listing-mi"), through=NOW
+    )
+
+    degraded.state = MarketDataHealthState.healthy
+    recovered = await AccountSnapshotEvidenceService(MagicMock(), repository=repository).build(
+        _command()
+    )
+    assert recovered.selected_price_ids == ("price-de",)
+    assert recovered.valuation.items[0].listing_id == "listing-1"
+    assert recovered.valuation.items[0].value == Decimal("600")
+
+    mi_price.asset_id = "other-asset"
+    degraded.state = MarketDataHealthState.unavailable
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(MagicMock(), repository=repository).build(_command())
+
+
+@pytest.mark.asyncio
+async def test_snapshot_price_freshness_uses_supported_previous_close_only() -> None:
+    requested = _holding_rows()[0]
+    assert requested.listing is not None
+    requested.listing.mic = "XETR"
+    cutoff = datetime(2026, 7, 27)
+    friday_close = datetime(2026, 7, 24, 16)
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=(requested,),
+        load_price_candidates=(_price("last-close", "15", friday_close),),
+    )
+    policy = MarketEvidencePolicy(
+        maximum_price_age=timedelta(hours=1), maximum_fx_age=timedelta(days=7)
+    )
+    result = await AccountSnapshotEvidenceService(
+        MagicMock(), repository=repository, policy=policy
+    ).build(_command(snapshot_timestamp=cutoff))
+    assert result.selected_price_ids == ("last-close",)
+
+    cast(AsyncMock, repository.load_price_candidates).return_value = (
+        _price("before-close", "15", datetime(2026, 7, 24, 12)),
+    )
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(), repository=repository, policy=policy
+        ).build(_command(snapshot_timestamp=cutoff))
+
+
+@pytest.mark.asyncio
 async def test_local_free_selects_yahoo_and_ignores_newer_canonical_price() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="EUR"),
-        load_holdings=_holding_rows(),
+        load_holdings=_holding_rows(provider=PriceSource.yahoo_finance),
         load_price_candidates=(
             _price("yahoo", "15", EARLIER, source=PriceSource.yahoo_finance),
             _price("twelve-newer", "99", NOW, source=PriceSource.twelve_data),
@@ -938,6 +1202,36 @@ async def test_local_free_selects_yahoo_and_ignores_newer_canonical_price() -> N
     ).build(_command())
 
     assert result.selected_price_ids == ("yahoo",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "price_currency,provider_symbol",
+    [("EUR", "ABC.DE"), ("USD", "ABC"), ("EUR", None)],
+)
+async def test_fresh_price_with_wrong_listing_lineage_fails_closed(
+    price_currency: str, provider_symbol: str | None
+) -> None:
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=_holding_rows(provider=PriceSource.yahoo_finance),
+        load_price_candidates=(
+            _price(
+                "wrong-lineage",
+                "15",
+                NOW,
+                currency=price_currency,
+                source=PriceSource.yahoo_finance,
+                provider_symbol=provider_symbol,
+            ),
+        ),
+    )
+    with pytest.raises(AccountSnapshotEvidenceStateError):
+        await AccountSnapshotEvidenceService(
+            MagicMock(),
+            repository=repository,
+            source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        ).build(_command())
 
 
 @pytest.mark.asyncio
@@ -959,7 +1253,9 @@ async def test_canonical_policy_rejects_yahoo_only_price_evidence() -> None:
 async def test_local_free_selects_yahoo_direct_fx_and_ignores_twelve_data() -> None:
     repository = _repository(
         load_account=_account(AccountType.broker, currency="USD"),
-        load_holdings=_holding_rows(holding_currency="USD", listing_currency="USD"),
+        load_holdings=_holding_rows(
+            holding_currency="USD", listing_currency="USD", provider=PriceSource.yahoo_finance
+        ),
         load_price_candidates=(
             _price("yahoo-price", "15", NOW, currency="USD", source=PriceSource.yahoo_finance),
         ),
@@ -1300,6 +1596,48 @@ async def test_asset_transfer_fails_when_externality_is_not_persisted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_valued_transfer_keeps_sub_money_native_principal_through_publication() -> None:
+    holdings = _holding_rows()
+    holdings[0].holding.cost_basis_by_currency = {"EUR": "20.0000000001"}
+    event = _event(InvestmentEventType.asset_transfer)
+    movement = _movement()
+    movement.kind = InvestmentMovementKind.asset
+    movement.asset_id = "asset-1"
+    movement.listing_id = "listing-1"
+    movement.quantity = Decimal("2")
+    movement.currency = "ABC"
+    movement.price_per_unit = Decimal("10")
+    movement.value_amount = Decimal("20.0000000001")
+    movement.value_currency = "EUR"
+    movement.source_symbol = "ABC"
+    movement.source_asset_type = AssetType.stock
+    repository = _repository(
+        load_account=_account(AccountType.broker, currency="EUR"),
+        load_holdings=holdings,
+        load_active_events=(event,),
+        load_active_movements=(movement,),
+        load_price_candidates=(_price("price", "15", NOW),),
+    )
+
+    evidence = await AccountSnapshotEvidenceService(MagicMock(), repository=repository).build(
+        _command(output_currency="EUR", calculation_version=3)
+    )
+    row = build_account_snapshot_persistence_projection(
+        evidence,
+        AccountSnapshotPersistenceMetadata(calculated_at=NOW, created_at=NOW, is_recalculated=True),
+    )
+
+    assert evidence.valuation.investment_cost_basis == Decimal("20.000000")
+    assert evidence.valuation.investment_cost_basis_by_currency == (
+        CurrencyAmount("EUR", Decimal("20.0000000001")),
+    )
+    assert row.snapshot.investment_cost_basis == Decimal("20.000000")
+    assert row.items[0].native_cost_basis_by_currency is not None
+    assert row.items[0].native_cost_basis_by_currency.to_json() == {"EUR": "20.0000000001"}
+    assert row.snapshot.unrealized_pnl_value == Decimal("10.000000")
+
+
+@pytest.mark.asyncio
 async def test_asset_transfer_with_unknown_basis_keeps_value_and_marks_only_unsupported_metrics() -> (
     None
 ):
@@ -1413,6 +1751,61 @@ def _empty_valuation() -> ExpectedAccountSnapshotValuation:
             liabilities=(),
         )
     )
+
+
+def test_two_requested_listings_can_consume_one_exact_fallback_price() -> None:
+    holdings = tuple(
+        SnapshotHoldingEvidence(
+            holding_id=f"holding-{index}",
+            account_id="account-1",
+            asset_id="asset-1",
+            listing_id=f"requested-{index}",
+            listing_asset_id="asset-1",
+            symbol="AAA" if index == 1 else "BBB",
+            asset_type=AssetType.stock,
+            quantity=Decimal(index),
+            average_buy_price=None,
+            cost_currency="EUR",
+            cost_basis_by_currency=None,
+        )
+        for index in (1, 2)
+    )
+    prices = tuple(
+        SelectedPriceEvidence(
+            price_id="shared-price",
+            asset_id="asset-1",
+            listing_id="actual-fallback",
+            symbol="AAA" if index == 1 else "BBB",
+            price=Decimal("10"),
+            currency="EUR",
+            source=PriceSource.twelve_data,
+            timestamp=NOW,
+            requested_listing_id=f"requested-{index}",
+        )
+        for index in (1, 2)
+    )
+    evidence = AccountSnapshotProjectionInput(
+        account_id="account-1",
+        account_type=AccountType.broker,
+        account_currency="EUR",
+        output_currency="EUR",
+        snapshot_timestamp=NOW,
+        granularity=SnapshotGranularity.day,
+        source=SnapshotSource.price_refresh,
+        calculation_version=1,
+        holdings=holdings,
+        prices=prices,
+        exchange_rates=(),
+        cash_balances=(),
+        liabilities=(),
+    )
+    valuation = build_account_snapshot_projection(evidence)
+    assert tuple(item.listing_id for item in valuation.items) == ("requested-1", "requested-2")
+    assert valuation.investment_value == Decimal("30.000000")
+    with pytest.raises(AccountSnapshotProjectionStateError):
+        build_account_snapshot_projection(
+            replace(evidence, prices=(prices[0], replace(prices[1], price=Decimal("11"))))
+        )
 
 
 def test_financial_metrics_use_signed_flows_and_positive_expense_magnitudes() -> None:

@@ -300,6 +300,13 @@ def build_financial_metrics(
             multiply=False,
         )
 
+    # When every native amount is already denominated in the snapshot currency,
+    # the scalar aggregate is the canonical money boundary.  Reusing it for the
+    # one-currency breakdown prevents a one-quantum difference between
+    # ``round(sum(value) - sum(cost))`` and ``sum(round(value - cost))``.
+    if native_available and unrealized is not None and set(native_unrealized) == {output_currency}:
+        native_unrealized[output_currency] = unrealized
+
     return ExactFinancialMetrics(
         net_deposits_value=converted[HistoricalMetricKind.net_deposit],
         realized_pnl_value=converted[HistoricalMetricKind.realized_pnl],

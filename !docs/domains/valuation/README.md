@@ -20,6 +20,10 @@ Snapshots are immutable derived valuation evidence; canonical transactions, even
 - plan and execute manual or market-backed refresh atomically.
 
 Valuation consumes canonical and market evidence but cannot repair either source.
+For a Holding it accepts a price only when listing ID, configured source, exact
+provider symbol, native listing currency and freshness all match. Conversion from
+that native price currency into account or portfolio currency uses separate direct
+FX evidence. A Yahoo price is never persisted pre-converted into portfolio currency.
 
 ## Navigation
 

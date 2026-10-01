@@ -60,6 +60,7 @@ def _command(
 ) -> OnboardAssetAliasCommand:
     twelve = provider is AssetAliasProvider.twelve_data
     return OnboardAssetAliasCommand(
+        actor="operator-test",
         asset_id=f"{prefix}-asset-a",
         provider=provider,
         external_id=external_id,
@@ -169,6 +170,7 @@ async def test_postgresql_create_and_replay_are_physically_exact(
     command = _command(prefix, provider=provider, external_id=external_id)
     if provider is AssetAliasProvider.twelve_data:
         command = OnboardAssetAliasCommand(
+            actor="operator-test",
             asset_id=f"{prefix}-asset-stock",
             provider=provider,
             external_id=external_id,
@@ -197,6 +199,76 @@ async def test_postgresql_create_and_replay_are_physically_exact(
         assert rows[0].provider is provider
         assert rows[0].external_id == external_id
         assert rows[0].created_at == CREATED_AT
+    finally:
+        await engine.dispose()
+        await _cleanup(prefix)
+
+
+@pytest.mark.asyncio
+async def test_two_yahoo_listings_keep_independent_exact_aliases() -> None:
+    prefix = f"listing-yahoo-{uuid4().hex[:10]}"
+    await _seed(prefix)
+    engine = _engine()
+    try:
+        async with AsyncSession(engine) as session:
+            session.add_all(
+                AssetListingModel(
+                    id=f"{prefix}-listing-{suffix}",
+                    asset_id=f"{prefix}-asset-stock",
+                    symbol="AAPL",
+                    exchange=exchange,
+                    mic=None,
+                    currency=currency,
+                    country=None,
+                    provider=PriceSource.yahoo_finance,
+                    provider_symbol=provider_symbol,
+                    is_primary=suffix == "usd",
+                    created_at=CREATED_AT,
+                    updated_at=CREATED_AT,
+                )
+                for suffix, exchange, currency, provider_symbol in (
+                    ("usd", "NASDAQ", "USD", "AAPL"),
+                    ("gbp", "London", "GBP", "AAPL.L"),
+                )
+            )
+            await session.commit()
+
+        async with AsyncSession(engine) as session:
+            service = AssetAliasOnboardingService(session)
+            command = OnboardAssetAliasCommand(
+                actor="operator-test",
+                asset_id=f"{prefix}-asset-stock",
+                provider=AssetAliasProvider.yahoo_finance,
+                external_id="AAPL",
+                expected_symbol="AAPL",
+                expected_asset_type=AssetType.stock,
+                expected_currency="USD",
+                expected_isin="US0378331005",
+                created_at=CREATED_AT,
+                listing_id=f"{prefix}-listing-usd",
+            )
+            first = await service.onboard(command)
+            second = await service.onboard(
+                replace(command, external_id="AAPL.L", listing_id=f"{prefix}-listing-gbp")
+            )
+            replay = await service.onboard(
+                replace(
+                    command,
+                    external_id="AAPL.L",
+                    listing_id=f"{prefix}-listing-gbp",
+                    created_at=datetime(2026, 8, 5, 13),
+                )
+            )
+        rows = await _rows(prefix)
+        assert len(rows) == 2
+        assert {row.listing_id for row in rows} == {
+            f"{prefix}-listing-usd",
+            f"{prefix}-listing-gbp",
+        }
+        assert first.disposition is AssetAliasOnboardingDisposition.created
+        assert second.disposition is AssetAliasOnboardingDisposition.created
+        assert replay.disposition is AssetAliasOnboardingDisposition.replayed
+        assert replay.alias_id == second.alias_id
     finally:
         await engine.dispose()
         await _cleanup(prefix)
@@ -511,6 +583,8 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
     asset_specs = (
         ("crypto", "BTC", AssetType.crypto, Decimal("1")),
         ("stock", "AAPL", AssetType.stock, Decimal("2")),
+        ("ambiguous", "AMBIG", AssetType.stock, Decimal("1")),
+        ("blank", "BLANK", AssetType.stock, Decimal("1")),
         ("cash", "USD", AssetType.cash, Decimal("3")),
         ("zero", "ZERO", AssetType.crypto, Decimal("0")),
         ("resolved", "ETH", AssetType.crypto, Decimal("4")),
@@ -564,8 +638,12 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
                             mic=None,
                             currency="USD",
                             country=None,
-                            provider=PriceSource.broker,
-                            provider_symbol=f"{symbol}-provider-{sort_index}",
+                            provider=(
+                                PriceSource.twelve_data if suffix == "blank" else PriceSource.broker
+                            ),
+                            provider_symbol=(
+                                " " if suffix == "blank" else f"{symbol}-provider-{sort_index}"
+                            ),
                             is_primary=index == 0,
                             created_at=CREATED_AT,
                             updated_at=CREATED_AT,
@@ -592,6 +670,7 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
                         cost_basis_by_currency={"USD": f"{quantity:.10f}"},
                     )
                 )
+            await session.flush()
             session.add(
                 AssetAliasModel(
                     id=f"{prefix}-resolved-alias",
@@ -599,6 +678,34 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
                     provider=AssetAliasProvider.coingecko,
                     external_id=f"resolved-{prefix}",
                     created_at=CREATED_AT,
+                )
+            )
+            session.add(
+                AssetAliasModel(
+                    id=f"{prefix}-stock-scoped-alias",
+                    asset_id=f"{prefix}-asset-stock",
+                    listing_id=f"{prefix}-listing-stock-z",
+                    provider=AssetAliasProvider.twelve_data,
+                    external_id=f"AAPL:XNAS:{prefix}",
+                    created_at=CREATED_AT,
+                )
+            )
+            session.add_all(
+                (
+                    AssetAliasModel(
+                        id=f"{prefix}-ambiguous-alias-a",
+                        asset_id=f"{prefix}-asset-ambiguous",
+                        provider=AssetAliasProvider.twelve_data,
+                        external_id=f"AMBIG:XNAS:{prefix}:A",
+                        created_at=CREATED_AT,
+                    ),
+                    AssetAliasModel(
+                        id=f"{prefix}-ambiguous-alias-b",
+                        asset_id=f"{prefix}-asset-ambiguous",
+                        provider=AssetAliasProvider.twelve_data,
+                        external_id=f"AMBIG:XNAS:{prefix}:B",
+                        created_at=CREATED_AT,
+                    ),
                 )
             )
             await session.commit()
@@ -615,10 +722,19 @@ async def test_unresolved_inventory_filters_and_orders_physical_rows() -> None:
         coingecko_owned = tuple(item for item in coingecko if item.asset_id.startswith(prefix))
         twelve_data_owned = tuple(item for item in twelve_data if item.asset_id.startswith(prefix))
         assert tuple(item.asset_id for item in coingecko_owned) == (f"{prefix}-asset-crypto",)
-        assert tuple(item.asset_id for item in twelve_data_owned) == (f"{prefix}-asset-stock",)
+        assert tuple(item.asset_id for item in twelve_data_owned) == (
+            f"{prefix}-asset-stock",
+            f"{prefix}-asset-ambiguous",
+            f"{prefix}-asset-blank",
+        )
         assert tuple(listing.listing_id for listing in twelve_data_owned[0].listings) == (
             f"{prefix}-listing-stock-a",
-            f"{prefix}-listing-stock-z",
+        )
+        assert tuple(listing.listing_id for listing in twelve_data_owned[1].listings) == (
+            f"{prefix}-listing-ambiguous",
+        )
+        assert tuple(listing.listing_id for listing in twelve_data_owned[2].listings) == (
+            f"{prefix}-listing-blank",
         )
     finally:
         async with AsyncSession(engine) as session:

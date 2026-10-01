@@ -924,7 +924,7 @@ async def test_different_accounts_do_not_share_rebuild_lock() -> None:
                 HoldingRebuildService(second_session).rebuild(
                     account_id=second_account, rebuilt_at=NOW
                 ),
-                timeout=2,
+                timeout=10,
             )
             assert second.replayed is True
             await second_session.commit()

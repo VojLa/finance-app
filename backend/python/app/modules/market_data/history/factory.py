@@ -149,18 +149,25 @@ def create_local_free_historical_providers(
     settings: Settings,
     *,
     yahoo_transport: YahooFinanceChartTransport | None = None,
+    coingecko_transport: CoinGeckoHistoricalPriceTransport | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> tuple[
     YahooFinanceHistoricalPriceProvider,
+    CoinGeckoHistoricalPriceProvider,
     YahooFinanceHistoricalExchangeRateProvider,
 ]:
-    """Create the single Yahoo local-free price adapter and direct-FX adapter."""
+    """Create exact local-free listed, crypto and direct-FX history adapters."""
 
-    return create_local_free_historical_yahoo_providers(
+    listed_price, direct_fx = create_local_free_historical_yahoo_providers(
         settings,
         transport=yahoo_transport,
         http_transport=http_transport,
     )
+    crypto_transport = coingecko_transport or _create_coingecko_historical_transport(
+        settings,
+        http_transport=http_transport,
+    )
+    return listed_price, CoinGeckoHistoricalPriceProvider(crypto_transport), direct_fx
 
 
 __all__ = [

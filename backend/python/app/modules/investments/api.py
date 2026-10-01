@@ -1,9 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
+from app.config.settings import Settings
 from app.db.connection import get_db_session
 from app.modules.investments.models import (
     ManualInvestmentCreateRequest,
@@ -11,6 +12,7 @@ from app.modules.investments.models import (
     SymbolDetailResponse,
 )
 from app.modules.investments.service import InvestmentService
+from app.modules.market_data.source_policy import market_evidence_source_policy_from_settings
 from app.modules.snapshot_refresh.api import get_manual_user_snapshot_refresh_service
 from app.modules.snapshot_refresh.manual_service import ManualUserSnapshotRefreshService
 from app.shared.errors import ErrorResponse
@@ -50,8 +52,11 @@ async def read_symbol_detail(
     symbol: str,
     principal: CurrentPrincipal,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
 ) -> SymbolDetailResponse:
+    settings: Settings = request.app.state.settings
     return await InvestmentService(session).symbol_detail(
         principal=principal,
         symbol=symbol,
+        source_policy=market_evidence_source_policy_from_settings(settings),
     )

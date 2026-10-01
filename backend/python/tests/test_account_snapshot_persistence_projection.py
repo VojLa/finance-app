@@ -1292,6 +1292,17 @@ def test_all_output_items_use_the_generated_snapshot_identity() -> None:
     assert {item.snapshot_id for item in result.items} == {result.snapshot.id}
 
 
+def test_two_holdings_may_share_one_immutable_price_evidence_row() -> None:
+    result = _project(
+        _evidence(
+            _two_holding_valuation(),
+            price_ids=("shared-price", "shared-price"),
+        )
+    )
+
+    assert result.audit.selected_price_ids == ("shared-price",)
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [

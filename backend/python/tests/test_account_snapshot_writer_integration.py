@@ -220,12 +220,12 @@ async def _seed_investment(
                 id=listing_id,
                 asset_id=asset_id,
                 symbol=symbol,
-                exchange="trading212",
-                mic=None,
+                exchange="NASDAQ",
+                mic="XNAS",
                 currency=price_currency,
                 country=None,
-                provider=PriceSource.broker,
-                provider_symbol=symbol,
+                provider=PriceSource.twelve_data,
+                provider_symbol=f'{{"symbol":"{symbol}","mic_code":"XNAS"}}',
                 is_primary=False,
                 created_at=event_at,
                 updated_at=event_at,
@@ -266,6 +266,7 @@ async def _seed_investment(
                     # AccountSnapshotWriter exercises the canonical source
                     # policy; listed non-crypto prices are Twelve Data.
                     source=PriceSource.twelve_data,
+                    provider_symbol=f'{{"symbol":"{symbol}","mic_code":"XNAS"}}',
                     timestamp=snapshot_at,
                     created_at=snapshot_at,
                 ),
@@ -1252,6 +1253,9 @@ async def test_duplicate_canonical_price_is_rejected_by_database_uniqueness() ->
                     price=Decimal("16"),
                     currency="EUR",
                     source=PriceSource.twelve_data,
+                    provider_symbol=(
+                        f'{{"symbol":"{prefix.replace("-", "").upper()[-16:]}","mic_code":"XNAS"}}'
+                    ),
                     timestamp=snapshot_at,
                     created_at=snapshot_at,
                 )
@@ -1369,6 +1373,10 @@ async def test_duplicate_canonical_price_waits_then_is_rejected_without_mixed_sn
                         price=Decimal("16"),
                         currency="EUR",
                         source=PriceSource.twelve_data,
+                        provider_symbol=(
+                            f'{{"symbol":"{prefix.replace("-", "").upper()[-16:]}",'
+                            '"mic_code":"XNAS"}'
+                        ),
                         timestamp=snapshot_at,
                         created_at=snapshot_at,
                     )

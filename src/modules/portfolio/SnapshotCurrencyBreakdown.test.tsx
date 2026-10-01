@@ -4,7 +4,7 @@ import { createElement } from "react"
 import type { ReactNode } from "react"
 import { describe, expect, it } from "vitest"
 
-import { SnapshotCurrencyBreakdown } from "./SnapshotCurrencyBreakdown"
+import { SnapshotCurrencyBreakdown, splitCurrencyBreakdownItems } from "./SnapshotCurrencyBreakdown"
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as {
   renderToStaticMarkup(node: ReactNode): string
@@ -54,12 +54,32 @@ describe("SnapshotCurrencyBreakdown", () => {
     expect(output).toContain("USD")
   })
 
+  it("keeps three rows in the card and puts the remaining currencies in a dialog", () => {
+    const items = [
+      ...ITEMS,
+      { currency: "GBP", amount: "25.000000" },
+      { currency: "CHF", amount: "15.000000" },
+    ]
+    const split = splitCurrencyBreakdownItems(items)
+    const output = render(items)
+
+    expect(split.visible.map((item) => item.currency)).toEqual(["CZK", "EUR", "USD"])
+    expect(split.remaining.map((item) => item.currency)).toEqual(["GBP", "CHF"])
+    expect(output).toContain("h-[220px]")
+    expect(output).toContain("h-[108px]")
+    expect(output).toContain('aria-haspopup="dialog"')
+    expect(output).toContain("Zobrazit další měny (2)")
+    expect(output).toContain("Hotovost podle měny – další měny")
+    expect(output).toContain('<form method="dialog">')
+  })
+
   it("renders an explicit empty state without a synthetic currency row", () => {
     const output = render([])
 
     expect(output).toContain("Snapshot neobsahuje žádnou hotovost podle měny.")
     expect(output).not.toContain("<dl")
     expect(output).not.toContain("<dt")
+    expect(output).toContain("h-[108px]")
   })
 
   it("renders unavailable evidence distinctly from an empty zero-value breakdown", () => {

@@ -12,14 +12,17 @@ export type ReadModelUpdateDetail = Readonly<{
 }>
 
 type FetchImplementation = typeof fetch
+type TimeoutHandle = ReturnType<typeof globalThis.setTimeout>
+type ScheduleTimeout = (handler: () => void, delay: number) => TimeoutHandle
+type CancelTimeout = (handle: TimeoutHandle) => void
 
 type VersionPollerDependencies = Readonly<{
   fetchImplementation?: FetchImplementation
   now?: () => number
   document?: Document
   dispatchUpdate?: (detail: ReadModelUpdateDetail) => void
-  setTimeout?: typeof globalThis.setTimeout
-  clearTimeout?: typeof globalThis.clearTimeout
+  setTimeout?: ScheduleTimeout
+  clearTimeout?: CancelTimeout
 }>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -47,11 +50,11 @@ export class ReadModelVersionPoller {
   private readonly now: () => number
   private readonly document: Document
   private readonly dispatchUpdate: (detail: ReadModelUpdateDetail) => void
-  private readonly scheduleTimeout: typeof globalThis.setTimeout
-  private readonly cancelTimeout: typeof globalThis.clearTimeout
+  private readonly scheduleTimeout: ScheduleTimeout
+  private readonly cancelTimeout: CancelTimeout
   private version: string | null = null
   private lastRequestAt: number | null = null
-  private timeout: ReturnType<typeof globalThis.setTimeout> | null = null
+  private timeout: TimeoutHandle | null = null
   private started = false
   private inFlight = false
 
@@ -62,8 +65,16 @@ export class ReadModelVersionPoller {
     this.dispatchUpdate =
       dependencies.dispatchUpdate ??
       ((detail) => window.dispatchEvent(new CustomEvent(READ_MODEL_UPDATED_EVENT, { detail })))
-    this.scheduleTimeout = dependencies.setTimeout ?? globalThis.setTimeout
-    this.cancelTimeout = dependencies.clearTimeout ?? globalThis.clearTimeout
+    const timerHost = globalThis
+    this.scheduleTimeout =
+      dependencies.setTimeout === undefined
+        ? (handler, delay) => timerHost.setTimeout(handler, delay)
+        : (handler, delay) =>
+            Reflect.apply(dependencies.setTimeout as ScheduleTimeout, timerHost, [handler, delay])
+    this.cancelTimeout =
+      dependencies.clearTimeout === undefined
+        ? (handle) => timerHost.clearTimeout(handle)
+        : (handle) => Reflect.apply(dependencies.clearTimeout as CancelTimeout, timerHost, [handle])
   }
 
   start() {
@@ -92,7 +103,8 @@ export class ReadModelVersionPoller {
   private pollWhenDue() {
     if (!this.started || this.document.visibilityState !== "visible" || this.inFlight) return
 
-    const elapsed = this.lastRequestAt === null ? READ_MODEL_VERSION_INTERVAL_MS : this.now() - this.lastRequestAt
+    const elapsed =
+      this.lastRequestAt === null ? READ_MODEL_VERSION_INTERVAL_MS : this.now() - this.lastRequestAt
     if (elapsed < READ_MODEL_VERSION_INTERVAL_MS) {
       this.schedule(READ_MODEL_VERSION_INTERVAL_MS - elapsed)
       return

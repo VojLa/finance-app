@@ -231,7 +231,10 @@ async def _measure(database_url: str) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(os.getenv("DATABASE_URL") is None, reason="DATABASE_URL is required")
+@pytest.mark.skipif(
+    not (os.getenv("DATABASE_URL") or "").endswith("/finance_app_stabilization_test"),
+    reason="dedicated finance_app_stabilization_test database is required",
+)
 def test_recent_transactions_disposable_postgresql_timing() -> None:
     database_url = os.environ["DATABASE_URL"]
     assert database_url.endswith("/finance_app_stabilization_test")

@@ -280,6 +280,7 @@ def test_manual_after_import_same_bucket_preserves_old_generation_and_publishes_
                             price=observation.price,
                             currency=observation.currency,
                             source=observation.provider,
+                            provider_symbol=observation.provider_symbol,
                             timestamp=observation.observed_at,
                             created_at=COMPLETED_AT,
                         )
@@ -609,7 +610,7 @@ async def test_physical_postgresql_snapshot_contract_matches_final_5k_audit() ->
                     )
                 )
             ).one()
-            assert physical_counts == (62, 31)
+            assert physical_counts == (64, 33)
 
             columns = {
                 (row.table_name, row.column_name): row

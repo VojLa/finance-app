@@ -8,6 +8,7 @@ import pytest
 
 from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.prices.providers.twelve_data_identity import TwelveDataQuoteIdentity
+from app.modules.prices.providers.twelve_data_models import TwelveDataHttpResponse
 from app.modules.prices.providers.twelve_data_transport import (
     HttpxTwelveDataPriceTransport,
 )
@@ -97,10 +98,6 @@ async def test_missing_key_fails_before_client_or_http() -> None:
         (414, "application/json"),
         (429, "application/json"),
         (500, "application/json"),
-        (200, None),
-        (200, "text/html"),
-        (200, "application/xml"),
-        (200, "text/csv"),
     ],
 )
 async def test_transport_rejects_status_or_content_type(
@@ -115,9 +112,27 @@ async def test_transport_rejects_status_or_content_type(
         headers = {"content-type": content_type} if content_type else {}
         return httpx.Response(status, headers=headers, content=b"{}")
 
-    with pytest.raises(MarketEvidenceStateError, match="unavailable"):
-        await _transport(handler).fetch_quote(IDENTITY)
+    result = await _transport(handler).fetch_quote(IDENTITY)
     assert calls == 1
+    assert result == TwelveDataHttpResponse(status, "application/json", b"", None)
+
+
+@pytest.mark.asyncio
+async def test_transport_rejects_wrong_content_type() -> None:
+    with pytest.raises(MarketEvidenceStateError, match="unavailable"):
+        await _transport(
+            lambda _: httpx.Response(200, headers={"content-type": "text/html"}, content=b"{}")
+        ).fetch_quote(IDENTITY)
+
+
+@pytest.mark.asyncio
+async def test_transport_carries_sanitized_retry_after_without_response_body() -> None:
+    result = await _transport(
+        lambda _: httpx.Response(429, headers={"rEtRy-AfTeR": " 120 "}, content=b"private")
+    ).fetch_quote(IDENTITY)
+
+    assert result == TwelveDataHttpResponse(429, "", b"", "120")
+    assert "private" not in repr(result)
 
 
 @pytest.mark.asyncio

@@ -1644,6 +1644,8 @@ export interface components {
       investmentByCurrency?:
         | components["schemas"]["PortfolioHistoryCurrencyAmountResponse"][]
         | null
+      /** Investmentcostbasis */
+      investmentCostBasis?: string
       /** Investmentvalue */
       investmentValue: string
       /** Liabilitiesbycurrency */
@@ -2208,6 +2210,8 @@ export interface components {
       accountId: string
       /** Accountname */
       accountName: string
+      /** Portfolioallocationpct */
+      portfolioAllocationPct: string
       position: components["schemas"]["PortfolioSnapshotPositionResponse"]
     }
     /** MultiAccountPortfolioResponse */
@@ -2456,6 +2460,8 @@ export interface components {
       quantity: string
       /** Symbol */
       symbol: string
+      /** Unrealizedpnlpct */
+      unrealizedPnlPct?: string
       /** Value */
       value: string
     }
@@ -2547,6 +2553,8 @@ export interface components {
       symbol: string
       /** Unrealizedpnl */
       unrealizedPnl: string | null
+      /** Unrealizedpnlpct */
+      unrealizedPnlPct?: string
       /** Value */
       value: string
       /** Valuecurrency */
@@ -2728,29 +2736,91 @@ export interface components {
       accountName: string
       /** Assetid */
       assetId: string | null
+      /** Assetisin */
+      assetIsin: string | null
+      /** Assetname */
+      assetName: string | null
       assetType: components["schemas"]["app__db__models__enums__AssetType"]
       /** Avgbuyprice */
-      avgBuyPrice: string
+      avgBuyPrice: string | null
       /** Calculatedat */
       calculatedAt: string
+      /** Convertedvalue */
+      convertedValue: string | null
       /** Currency */
       currency: string
       /** Currentprice */
       currentPrice: string | null
       /** Currentvalue */
       currentValue: string | null
+      /** Fallbackreason */
+      fallbackReason: string | null
+      /** Fxevidenceid */
+      fxEvidenceId: string | null
+      /** Fxrate */
+      fxRate: string | null
       /** Id */
       id: string
+      /** Listingbasepriority */
+      listingBasePriority: number | null
+      /** Listingcurrency */
+      listingCurrency: string | null
+      /** Listingexchange */
+      listingExchange: string | null
       /** Listingid */
       listingId: string
+      /** Listingmic */
+      listingMic: string | null
+      /** Listingsymbol */
+      listingSymbol: string | null
+      /** Marketprovider */
+      marketProvider: string | null
+      /** Marketprovidersymbol */
+      marketProviderSymbol: string | null
       /** Name */
       name: string | null
+      /** Priceamount */
+      priceAmount: string | null
+      /** Pricecurrency */
+      priceCurrency: string | null
+      /**
+       * Pricefreshness
+       * @enum {string}
+       */
+      priceFreshness: "fresh" | "stale" | "unavailable"
+      /** Priceprovidersymbol */
+      priceProviderSymbol: string | null
+      /** Pricesnapshotid */
+      priceSnapshotId: string | null
+      /** Pricesource */
+      priceSource: string | null
+      /** Pricetimestamp */
+      priceTimestamp: string | null
       /** Quantity */
       quantity: string
       /** Realizedpnl */
       realizedPnl: string | null
+      /** Requestedlistingid */
+      requestedListingId: string
+      /** Selectedbasepriority */
+      selectedBasePriority: number | null
+      /** Selectedhealth */
+      selectedHealth: string | null
+      /** Selectedlistingid */
+      selectedListingId: string | null
+      /** Selectedprovider */
+      selectedProvider: string | null
+      /** Selectedprovidersymbol */
+      selectedProviderSymbol: string | null
+      /** Selectionreason */
+      selectionReason: string | null
       /** Symbol */
       symbol: string
+      /**
+       * Tracestatus
+       * @enum {string}
+       */
+      traceStatus: "ok" | "unresolved" | "conflict" | "stale" | "unavailable"
       /** Unrealizedpnl */
       unrealizedPnl: string | null
     }

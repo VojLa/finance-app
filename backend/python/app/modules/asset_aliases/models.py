@@ -41,6 +41,7 @@ class AssetAliasOnboardingDisposition(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class OnboardAssetAliasCommand:
+    actor: str
     asset_id: str
     provider: AssetAliasProvider
     external_id: str
@@ -49,6 +50,7 @@ class OnboardAssetAliasCommand:
     expected_currency: str
     expected_isin: str | None
     created_at: datetime
+    listing_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,12 +63,63 @@ class OnboardAssetAliasResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RejectAssetAliasCommand:
+    actor: str
+    asset_id: str
+    listing_id: str
+    provider: AssetAliasProvider
+    external_id: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RejectAssetAliasResult:
+    asset_id: str
+    listing_id: str
+    provider: AssetAliasProvider
+    external_id: str
+    disposition: str = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class CreateAssetListingCommand:
+    actor: str
+    asset_id: str
+    expected_symbol: str
+    expected_asset_type: AssetType
+    expected_currency: str
+    expected_isin: str | None
+    symbol: str
+    exchange: str
+    mic: str | None
+    currency: str
+    provider: AssetAliasProvider
+    provider_symbol: str
+    base_priority: int
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CreateAssetListingResult:
+    listing_id: str
+    asset_id: str
+    provider: AssetAliasProvider
+    provider_symbol: str
+    disposition: str
+
+
+@dataclass(frozen=True, slots=True)
 class UnresolvedAssetListing:
     listing_id: str
+    symbol: str
     provider: PriceSource | None
     provider_symbol: str | None
     exchange: str | None
+    mic: str | None
     currency: str
+    base_priority: int
+    health_state: str | None
+    last_valid_price_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +140,12 @@ __all__ = [
     "AssetAliasOnboardingDisposition",
     "AssetAliasOnboardingError",
     "AssetAliasStateError",
+    "CreateAssetListingCommand",
+    "CreateAssetListingResult",
     "OnboardAssetAliasCommand",
     "OnboardAssetAliasResult",
+    "RejectAssetAliasCommand",
+    "RejectAssetAliasResult",
     "UnresolvedAssetAlias",
     "UnresolvedAssetListing",
 ]

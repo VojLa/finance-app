@@ -85,12 +85,12 @@ describe("portfolio snapshot page cutover boundaries", () => {
       expect(content).not.toContain(".reduce(")
       expect(content).not.toContain(".sort(")
     }
-    expect(page.match(/\bNumber\s*\(/g)).toHaveLength(1)
-    expect(page).toContain("Number(position.allocationPct)")
-    expect(page).toContain("Math.min(100")
+    expect(page).not.toMatch(/\bNumber\s*\(/)
+    expect(page).toContain("<SnapshotAllocationPie items={allocationItems}")
     expect(allocation.match(/\bNumber\s*\(/g)).toHaveLength(1)
-    expect(allocation).toContain("Presentation-only conversion at the Recharts leaf boundary")
-    expect(allocation).not.toMatch(/\b(?:Math|parseFloat|parseInt)\b/)
+    expect(allocation).toContain("Presentation-only conversion at the SVG coordinate leaf boundary")
+    // SVG trigonometry is presentation geometry; permissive decimal parsing is still forbidden.
+    expect(allocation).not.toMatch(/\b(?:parseFloat|parseInt)\s*\(/)
     expect(allocation).not.toContain(".toFixed(")
   })
 

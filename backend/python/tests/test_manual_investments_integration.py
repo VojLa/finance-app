@@ -6,7 +6,8 @@ import json
 import os
 import time
 from collections.abc import Coroutine
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from app.db.models.enums import (
 )
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import InvestmentEventModel, InvestmentMovementModel
+from app.db.models.prices import PriceSnapshotModel
 from app.db.models.users import UserModel
 from app.db.url import normalize_database_url
 from app.main import create_app
@@ -137,13 +139,15 @@ async def _cleanup() -> None:
             (
                 await session.scalars(
                     select(AssetListingModel.id).where(
-                        AssetListingModel.provider == PriceSource.manual,
                         AssetListingModel.provider_symbol == SYMBOL,
                     )
                 )
             ).all()
         )
         if listings:
+            await session.execute(
+                delete(PriceSnapshotModel).where(PriceSnapshotModel.listing_id.in_(listings))
+            )
             asset_ids = tuple(
                 (
                     await session.scalars(
@@ -282,6 +286,48 @@ async def _counts_for_key(key: str) -> tuple[int, int]:
     return result
 
 
+async def _seed_exact_symbol_price() -> None:
+    engine = _engine()
+    async with AsyncSession(engine) as session:
+        listing = await session.scalar(
+            select(AssetListingModel).where(AssetListingModel.provider_symbol == SYMBOL)
+        )
+        holding = await session.scalar(
+            select(HoldingModel).where(HoldingModel.account_id == ACCOUNT_ID)
+        )
+        assert listing is not None and holding is not None
+        listing.provider = PriceSource.yahoo_finance
+        holding.current_price = Decimal("13")
+        holding.current_value = Decimal("78")
+        now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+        session.add_all(
+            [
+                PriceSnapshotModel(
+                    id=f"r11g-exact-price-{RUN_ID}",
+                    asset_id=listing.asset_id,
+                    listing_id=listing.id,
+                    price=Decimal("13"),
+                    currency="EUR",
+                    source=PriceSource.yahoo_finance,
+                    provider_symbol=SYMBOL,
+                    timestamp=now - timedelta(minutes=2),
+                ),
+                PriceSnapshotModel(
+                    id=f"r11g-other-price-{RUN_ID}",
+                    asset_id=listing.asset_id,
+                    listing_id=listing.id,
+                    price=Decimal("99"),
+                    currency="EUR",
+                    source=PriceSource.yahoo_finance,
+                    provider_symbol=f"WRONG{RUN_ID.upper()}",
+                    timestamp=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+        await session.commit()
+    await engine.dispose()
+
+
 @pytest.fixture
 def seeded_manual_data():
     _run(_seed())
@@ -303,6 +349,7 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         log_level="ERROR",
         log_json=False,
         internal_auth_secret=SECRET,
+        market_evidence_source_mode="local_free",
         _env_file=None,
     )
     app = create_app(settings)
@@ -418,9 +465,41 @@ def test_manual_investment_command_and_symbol_detail_on_postgresql(
         assert body["positions"][0]["accountId"] == ACCOUNT_ID
         assert body["positions"][0]["quantity"] == "6.0000000000"
         assert body["positions"][0]["avgBuyPrice"] == "10.0000000000"
+        assert body["positions"][0]["assetName"] == f"{SYMBOL} asset"
+        assert body["positions"][0]["listingSymbol"] == SYMBOL
+        assert body["positions"][0]["listingCurrency"] == "EUR"
+        assert body["positions"][0]["listingBasePriority"] == 0
+        assert body["positions"][0]["marketProvider"] is None
+        assert body["positions"][0]["priceAmount"] is None
+        assert body["positions"][0]["requestedListingId"] == body["positions"][0]["listingId"]
+        assert body["positions"][0]["selectedListingId"] is None
+        assert body["positions"][0]["priceFreshness"] == "unavailable"
+        assert body["positions"][0]["fxEvidenceId"] is None
+        assert body["positions"][0]["convertedValue"] is None
+        assert body["positions"][0]["traceStatus"] == "unresolved"
         assert [event["type"] for event in body["events"]] == ["sell", "buy"]
         assert all(event["accountId"] == ACCOUNT_ID for event in body["events"])
         assert body["events"][0]["totalAmount"] == "48.0000000000"
+
+        _run(_seed_exact_symbol_price())
+        priced = client.get(f"/api/v1/investments/symbols/{SYMBOL}", headers=_headers(OWNER_ID))
+        assert priced.status_code == 200, priced.text
+        trace = priced.json()["positions"][0]
+        assert trace["marketProvider"] == "yahoo_finance"
+        assert trace["marketProviderSymbol"] == SYMBOL
+        assert trace["priceAmount"] == "13.0000000000"
+        assert trace["priceProviderSymbol"] == SYMBOL
+        assert trace["selectedListingId"] == trace["requestedListingId"]
+        assert trace["selectionReason"] == "requested_listing"
+        assert trace["selectedBasePriority"] == 0
+        assert trace["selectedHealth"] == "unknown"
+        assert trace["selectedProvider"] == "yahoo_finance"
+        assert trace["selectedProviderSymbol"] == SYMBOL
+        assert trace["priceSnapshotId"] == f"r11g-exact-price-{RUN_ID}"
+        assert trace["priceFreshness"] == "fresh"
+        assert trace["fxEvidenceId"] is None
+        assert trace["convertedValue"] is None
+        assert trace["traceStatus"] == "ok"
 
         original_rebuild = HoldingRebuildService.rebuild
 

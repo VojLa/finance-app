@@ -286,6 +286,50 @@ def test_rejects_price_citation_for_different_asset_identity() -> None:
         )
 
 
+def test_accepts_exact_yahoo_btc_usd_reference_listing_for_anycoin_movement() -> None:
+    evidence = _evidence()
+    price = cast(
+        PriceSnapshotModel,
+        SimpleNamespace(
+            id="price",
+            asset_id="asset-btc",
+            listing_id="asset-btc-yahoo-btc-usd",
+            price=Decimal("50000.0000000000"),
+            currency="USD",
+            source=PriceSource.yahoo_finance,
+            provider_symbol="BTC-USD",
+            timestamp=datetime(2024, 1, 2),
+        ),
+    )
+    rate = cast(
+        ExchangeRateModel,
+        SimpleNamespace(
+            id="fx",
+            rate=Decimal("23.00000000"),
+            from_currency="USD",
+            to_currency="CZK",
+            source=ExchangeRateSource.yahoo_finance,
+            date=datetime(2024, 1, 2),
+        ),
+    )
+
+    validate_transfer_valuation_citations(
+        evidence=evidence,
+        movement=_movement(),
+        price=price,
+        exchange_rate=rate,
+    )
+
+    price.provider_symbol = "ETH-USD"
+    with pytest.raises(TransferValuationStateError):
+        validate_transfer_valuation_citations(
+            evidence=evidence,
+            movement=_movement(),
+            price=price,
+            exchange_rate=rate,
+        )
+
+
 def test_prior_day_intraday_selection_is_classified_for_daily_fallback() -> None:
     prior_day_price = SimpleNamespace(
         through=EVENT_AT,

@@ -76,12 +76,26 @@ def create_local_free_price_registry(
     settings: Settings,
     *,
     policy: MarketEvidencePolicy = DEFAULT_MARKET_EVIDENCE_POLICY,
+    coingecko_transport: CoinGeckoPriceTransport | None = None,
+    coingecko_http_transport: httpx.AsyncBaseTransport | None = None,
     yahoo_finance_transport: YahooFinanceChartTransport | None = None,
     yahoo_finance_http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> PriceProviderRegistry:
     source_policy = market_evidence_source_policy_from_settings(settings)
     if source_policy.mode != "local_free":
         raise MarketEvidenceSourcePolicyError()
+    coin_transport = coingecko_transport or HttpxCoinGeckoPriceTransport(
+        base_url=settings.coingecko_price_base_url,
+        timeout_seconds=settings.coingecko_price_timeout_seconds,
+        max_response_bytes=settings.coingecko_price_max_response_bytes,
+        user_agent=settings.coingecko_price_user_agent,
+        demo_api_key=(
+            settings.coingecko_demo_api_key.get_secret_value()
+            if settings.coingecko_demo_api_key is not None
+            else None
+        ),
+        transport=coingecko_http_transport,
+    )
     yahoo_transport = yahoo_finance_transport or HttpxYahooFinanceChartTransport(
         base_url=settings.yahoo_finance_chart_base_url,
         timeout_seconds=settings.yahoo_finance_timeout_seconds,
@@ -89,7 +103,12 @@ def create_local_free_price_registry(
         user_agent=settings.yahoo_finance_user_agent,
         transport=yahoo_finance_http_transport,
     )
-    return PriceProviderRegistry((YahooFinancePriceProvider(yahoo_transport, policy=policy),))
+    return PriceProviderRegistry(
+        (
+            CoinGeckoPriceProvider(coin_transport, policy=policy),
+            YahooFinancePriceProvider(yahoo_transport, policy=policy),
+        )
+    )
 
 
 __all__ = [

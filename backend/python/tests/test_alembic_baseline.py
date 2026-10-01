@@ -8,6 +8,7 @@ from types import ModuleType
 import pytest
 
 from scripts.alembic_baseline import (
+    ASSET_ALIAS_AUDIT_REVISION,
     BACKGROUND_JOB_REVISION,
     BASELINE_REVISION,
     CUTOVER_REVISION,
@@ -17,6 +18,8 @@ from scripts.alembic_baseline import (
     HEAD_REVISION,
     HISTORY_GENERATION_REVISION,
     IMPORT_PUBLICATION_ANCHOR_REVISION,
+    LISTING_MARKET_IDENTITY_REVISION,
+    LISTING_PROVIDER_HEALTH_REVISION,
     MULTI_CURRENCY_COST_BASIS_REVISION,
     PREVIOUS_HEAD_REVISION,
     RB_SCHEMA_FOUNDATION_REVISION,
@@ -67,6 +70,12 @@ RB_SCHEMA_FOUNDATION_PATH = (
     / "migrations"
     / "versions"
     / "3p0001rbfoundation_add_reconciliation_schema_foundation.py"
+)
+LISTING_PROVIDER_HEALTH_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "430001markethealth_add_listing_provider_health.py"
+)
+ASSET_ALIAS_AUDIT_PATH = (
+    BACKEND_ROOT / "migrations" / "versions" / "440001assetaudit_add_operator_decision_audit.py"
 )
 OWNERSHIP_PATH = BACKEND_ROOT / "database" / "schema_ownership.toml"
 
@@ -153,6 +162,39 @@ def test_twelve_data_identity_revision_metadata_and_downgrade_policy() -> None:
     assert source.count("ADD VALUE IF NOT EXISTS 'twelve_data'") == 2
     with pytest.raises(RuntimeError, match="cannot be downgraded automatically"):
         revision.downgrade()
+
+
+def test_listing_provider_health_revision_metadata_and_owned_types() -> None:
+    revision = load_revision(LISTING_PROVIDER_HEALTH_PATH, "listing_provider_health")
+    source = LISTING_PROVIDER_HEALTH_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == LISTING_PROVIDER_HEALTH_REVISION
+    assert revision.down_revision == LISTING_MARKET_IDENTITY_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_listing_provider_health"
+    assert revision.affected_tables == ("MarketDataListingHealth",)
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    assert 'CREATE TYPE "public"."MarketDataHealthState" AS ENUM' in source
+    assert 'CREATE TYPE "public"."MarketDataFailureReason" AS ENUM' in source
+    assert '"MarketDataListingHealth"' in source
+
+
+def test_asset_alias_audit_revision_metadata_and_append_only_guard() -> None:
+    revision = load_revision(ASSET_ALIAS_AUDIT_PATH, "asset_alias_audit")
+    source = ASSET_ALIAS_AUDIT_PATH.read_text(encoding="utf-8")
+
+    assert revision.revision == ASSET_ALIAS_AUDIT_REVISION
+    assert revision.down_revision == LISTING_PROVIDER_HEALTH_REVISION
+    assert revision.schema_change is True
+    assert revision.schema_change_kind == "add_asset_alias_audit"
+    assert revision.affected_tables == ("AssetAliasAudit",)
+    assert revision.prisma_schema_impact == "required"
+    assert revision.data_migration is False
+    assert '"AssetAliasAudit"' in source
+    assert "AssetAliasAudit_action_allowed" in source
+    assert "prevent_asset_alias_audit_mutation" in source
+    assert "AssetAliasAudit_append_only" in source
 
 
 def test_daily_baseline_lineage_revision_metadata_and_backfill_contract() -> None:
@@ -338,13 +380,13 @@ def test_manifest_records_first_alembic_schema_head() -> None:
     baseline = manifest["alembic_baseline"]
     alembic = manifest["alembic"]
 
-    assert manifest["schema_version"] == 25
+    assert manifest["schema_version"] == 27
     assert manifest["current_migration_owner"] == "alembic"
     assert manifest["cutover_status"] == "completed"
-    assert baseline["revision_count"] == 26
+    assert baseline["revision_count"] == 29
     assert baseline["head_revision"] == HEAD_REVISION
     assert alembic["head_revision"] == HEAD_REVISION
-    assert alembic["revision_count"] == 26
+    assert alembic["revision_count"] == 29
 
     verify_manifest()
     verify_revision_graph()
@@ -362,13 +404,15 @@ def test_database_state_accepts_all_known_single_head_states() -> None:
     verify_database_state(DatabaseState(38, 30, (UNKNOWN_INVESTMENT_COST_BASIS_REVISION,)))
     verify_database_state(DatabaseState(42, 30, (RB_SCHEMA_FOUNDATION_REVISION,)))
     verify_database_state(DatabaseState(54, 34, (HISTORY_GENERATION_REVISION,)))
-    verify_database_state(DatabaseState(61, 31, (HEAD_REVISION,)))
+    verify_database_state(DatabaseState(61, 31, (LISTING_MARKET_IDENTITY_REVISION,)))
+    verify_database_state(DatabaseState(62, 33, (LISTING_PROVIDER_HEALTH_REVISION,)))
+    verify_database_state(DatabaseState(63, 33, (ASSET_ALIAS_AUDIT_REVISION,)))
 
 
 def test_database_state_rejects_schema_or_revision_drift() -> None:
-    with pytest.raises(RuntimeError, match="Expected 61 application tables"):
+    with pytest.raises(RuntimeError, match="Expected 63 application tables"):
         verify_database_state(DatabaseState(31, 30, (HEAD_REVISION,)))
-    with pytest.raises(RuntimeError, match="Expected 31 enums"):
-        verify_database_state(DatabaseState(61, 27, (HEAD_REVISION,)))
+    with pytest.raises(RuntimeError, match="Expected 33 enums"):
+        verify_database_state(DatabaseState(63, 27, (HEAD_REVISION,)))
     with pytest.raises(RuntimeError, match="unknown Alembic revisions"):
         verify_database_state(DatabaseState(30, 27, ("unknown",)))

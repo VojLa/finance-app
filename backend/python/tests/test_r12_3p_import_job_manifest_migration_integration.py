@@ -520,7 +520,7 @@ def test_pre_3p_noncompleted_import_jobs_receive_exact_manifest_and_remain_recov
                 await engine.dispose()
             blocked = _command(target_url, "downgrade", PREVIOUS_REVISION)
             assert blocked.returncode != 0
-            assert "Temporal snapshot-series metadata is irreversible after publication" in (
+            assert "Operator audit history must not be discarded by downgrade" in (
                 blocked.stdout + blocked.stderr
             )
         finally:

@@ -310,6 +310,7 @@ def test_portfolio_adapter_maps_command_once_and_serializes_aliases(
     assert payload["accounts"][0]["positions"][0]["valueCurrency"] == "CZK"
     assert payload["accounts"][0]["positions"][0]["costCurrency"] == "CZK"
     assert payload["aggregatePositions"][0]["position"]["valueCurrency"] == "EUR"
+    assert payload["aggregatePositions"][0]["portfolioAllocationPct"] == "60.0000"
     _audit_no_leakage(payload)
 
 

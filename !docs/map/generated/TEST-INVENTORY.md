@@ -5,7 +5,7 @@
 
 # Test Inventory
 
-## Frontend and adapter tests (94)
+## Frontend and adapter tests (96)
 
 - `src/app/accounts/page.test.ts`
 - `src/app/api/accounts/[id]/liability-balances/route.test.ts`
@@ -76,6 +76,7 @@
 - `src/modules/imports/version-0-1-import-cutover-audit.test.ts`
 - `src/modules/investments/investment-client.test.ts`
 - `src/modules/investments/r11g-investment-cutover.test.ts`
+- `src/modules/portfolio/SnapshotAllocationPie.test.tsx`
 - `src/modules/portfolio/SnapshotCurrencyBreakdown.test.tsx`
 - `src/modules/portfolio/portfolio-cutover-final-audit.test.ts`
 - `src/modules/portfolio/r10b2-account-currency-audit.test.ts`
@@ -83,6 +84,7 @@
 - `src/modules/portfolio/r6-final-audit.test.ts`
 - `src/modules/portfolio/r7-final-audit.test.ts`
 - `src/modules/portfolio/snapshot-history-client.test.ts`
+- `src/modules/portfolio/snapshot-holdings-table.test.ts`
 - `src/modules/portfolio/snapshot-page-client.test.ts`
 - `src/modules/portfolio/snapshot-page-format.test.ts`
 - `src/modules/portfolio/snapshot-page-model.test.ts`
@@ -102,7 +104,7 @@
 - `src/prisma-runtime-removal.test.ts`
 - `src/python-api-container-runtime.test.ts`
 
-## Python backend tests (261)
+## Python backend tests (271)
 
 - `backend/python/tests/test_account_access.py`
 - `backend/python/tests/test_account_invitations.py`
@@ -175,6 +177,7 @@
 - `backend/python/tests/test_durable_import_job_executor.py`
 - `backend/python/tests/test_empty_investment_holding_revision_integration.py`
 - `backend/python/tests/test_errors.py`
+- `backend/python/tests/test_exchange_calendar.py`
 - `backend/python/tests/test_exchange_rate_audit_script.py`
 - `backend/python/tests/test_health.py`
 - `backend/python/tests/test_historical_market_data.py`
@@ -229,16 +232,21 @@
 - `backend/python/tests/test_liability_balance_evidence_integration.py`
 - `backend/python/tests/test_liability_balance_writer.py`
 - `backend/python/tests/test_liability_balance_writer_integration.py`
+- `backend/python/tests/test_listing_selection.py`
 - `backend/python/tests/test_manual_investments.py`
 - `backend/python/tests/test_manual_investments_integration.py`
 - `backend/python/tests/test_manual_liability_balance_api.py`
 - `backend/python/tests/test_market_acquisition_cache.py`
 - `backend/python/tests/test_market_backed_snapshot_refresh.py`
 - `backend/python/tests/test_market_backed_snapshot_refresh_integration.py`
+- `backend/python/tests/test_market_data_health.py`
+- `backend/python/tests/test_market_data_health_integration.py`
+- `backend/python/tests/test_market_data_health_repository.py`
 - `backend/python/tests/test_market_data_models.py`
 - `backend/python/tests/test_market_data_policy.py`
 - `backend/python/tests/test_market_data_requirements.py`
 - `backend/python/tests/test_market_data_requirements_integration.py`
+- `backend/python/tests/test_market_data_retry.py`
 - `backend/python/tests/test_market_data_service.py`
 - `backend/python/tests/test_market_data_snapshot_e2e_integration.py`
 - `backend/python/tests/test_market_data_writer.py`
@@ -266,8 +274,10 @@
 - `backend/python/tests/test_portfolio_history_lattice.py`
 - `backend/python/tests/test_portfolio_history_lifespan.py`
 - `backend/python/tests/test_portfolio_history_market.py`
+- `backend/python/tests/test_portfolio_history_market_reconciliation.py`
 - `backend/python/tests/test_portfolio_history_planning.py`
 - `backend/python/tests/test_portfolio_history_rebuild.py`
+- `backend/python/tests/test_portfolio_history_replay_repository.py`
 - `backend/python/tests/test_portfolio_history_scheduler_runner.py`
 - `backend/python/tests/test_portfolio_service.py`
 - `backend/python/tests/test_portfolio_snapshot_aggregation.py`
@@ -279,6 +289,7 @@
 - `backend/python/tests/test_portfolio_snapshot_reader.py`
 - `backend/python/tests/test_portfolio_snapshot_reader_integration.py`
 - `backend/python/tests/test_portfolio_snapshot_writer.py`
+- `backend/python/tests/test_price_provider_failures.py`
 - `backend/python/tests/test_published_snapshot_api_cache.py`
 - `backend/python/tests/test_published_snapshot_benchmark.py`
 - `backend/python/tests/test_r10_final_scope_reaudit_integration.py`
@@ -360,10 +371,11 @@
 - `backend/python/tests/test_version_0_1_account_cutover_integration.py`
 - `backend/python/tests/test_version_0_1_clean_database_flow_integration.py`
 - `backend/python/tests/test_version_0_1_clean_main_scenario_integration.py`
+- `backend/python/tests/test_yahoo_exchange_mapping.py`
 - `backend/python/tests/test_yahoo_finance_fx_provider.py`
 - `backend/python/tests/test_yahoo_finance_identity.py`
 - `backend/python/tests/test_yahoo_finance_parser.py`
 - `backend/python/tests/test_yahoo_finance_provider.py`
 - `backend/python/tests/test_yahoo_finance_transport.py`
 
-**Total test files:** 355
+**Total test files:** 367

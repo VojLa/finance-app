@@ -8,7 +8,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.db.models.enums import ExchangeRateSource, PriceSource
+from app.db.models.enums import (
+    ExchangeRateSource,
+    InvestmentEventType,
+    InvestmentMovementKind,
+    MovementDirection,
+    PriceSource,
+)
 from app.modules.fx.models import ExchangeRateObservation
 from app.modules.market_data.history.models import (
     HistoricalExchangeRateRangeRequirement,
@@ -27,7 +33,7 @@ from app.modules.market_data.policy import MarketEvidencePolicy
 from app.modules.market_data.source_policy import MarketEvidenceSourcePolicy
 from app.modules.market_data.writer import exchange_rate_id, price_snapshot_id
 from app.modules.portfolio_history.builder.planning import HistoryGenerationBuildError
-from app.modules.portfolio_history_rebuild.models import AccountReplayState
+from app.modules.portfolio_history_rebuild.models import AccountReplayState, InvestmentEventRoot
 from app.modules.portfolio_history_rebuild.repository import (
     FrozenAccountReplayInput,
     FrozenListingIdentity,
@@ -205,8 +211,7 @@ def _required_currencies(
         # basis component is converted.  Requesting its FX rate would pass
         # unused evidence to the strict projection and make the whole account
         # valuation fail closed.
-        if holding.cost_basis_by_currency is not None:
-            currencies.update(currency for currency, _ in holding.cost_basis_by_currency)
+        # Open principal is converted at acquisition, not at this snapshot.
     if state.liability is not None:
         currencies.add(state.liability.currency)
     return currencies
@@ -292,8 +297,8 @@ class HistoricalMarketAcquirer:
             tuple[str, str, ExchangeRateSource, HistoricalTimeSeriesInterval],
             set[datetime],
         ] = defaultdict(set)
-        price_accounts: defaultdict[
-            tuple[str, datetime, HistoricalTimeSeriesInterval], set[str]
+        price_consumers: defaultdict[
+            tuple[str, datetime, HistoricalTimeSeriesInterval], set[tuple[str, str]]
         ] = defaultdict(set)
         fx_accounts: defaultdict[
             tuple[str, str, datetime, HistoricalTimeSeriesInterval], dict[str, bool]
@@ -330,14 +335,16 @@ class HistoricalMarketAcquirer:
                     price_times[
                         (
                             identity.asset_id,
-                            identity.listing_id,
+                            identity.evidence_listing_id,
                             identity.price_currency,
                             identity.provider,
                             identity.provider_symbol,
                             interval,
                         )
                     ].add(through)
-                    price_accounts[(identity.listing_id, through, interval)].add(account_id)
+                    price_consumers[(identity.evidence_listing_id, through, interval)].add(
+                        (account_id, identity.listing_id)
+                    )
                 consumed_currencies = _required_currencies(
                     state,
                     listings,
@@ -432,6 +439,51 @@ class HistoricalMarketAcquirer:
                         metric_fx_evidence[
                             (item.currency, output_currency, item.timestamp, interval)
                         ].add((account.account_id, item.evidence_id))
+                for root in account.roots:
+                    if not isinstance(root, InvestmentEventRoot) or root.event_date > metric_as_of:
+                        continue
+                    if root.event_type not in {
+                        InvestmentEventType.trade,
+                        InvestmentEventType.asset_transfer,
+                    }:
+                        continue
+                    assets = tuple(
+                        movement
+                        for movement in root.movements
+                        if movement.kind is InvestmentMovementKind.asset
+                    )
+                    if len(assets) != 1:
+                        raise HistoryGenerationBuildError()
+                    asset = assets[0]
+                    if asset.direction is not MovementDirection.incoming:
+                        continue
+                    if asset.value_currency is None:
+                        if root.event_type is InvestmentEventType.trade:
+                            raise HistoryGenerationBuildError()
+                        continue
+                    for output_currency in {account.account_currency, scope.base_currency}:
+                        if asset.value_currency == output_currency:
+                            continue
+                        interval = _fx_interval(
+                            self.fx_providers.get(self.source_policy.fx_source),
+                            requires_subdaily=False,
+                        )
+                        _require_available(
+                            self.fx_providers[self.source_policy.fx_source],
+                            interval,
+                            at=root.event_date,
+                            as_of=metric_as_of,
+                        )
+                        pair = (
+                            asset.value_currency,
+                            output_currency,
+                            self.source_policy.fx_source,
+                            interval,
+                        )
+                        fx_times[pair].add(root.event_date)
+                        metric_fx_evidence[
+                            (asset.value_currency, output_currency, root.event_date, interval)
+                        ].add((account.account_id, f"cost:{asset.movement_id}"))
 
         semaphore = asyncio.Semaphore(self.maximum_parallel_calls)
 
@@ -485,7 +537,7 @@ class HistoricalMarketAcquirer:
         selected_prices: list[SelectedHistoricalPrice] = []
         price_observations: dict[str, PriceObservation] = {}
         listing_lookup = {
-            identity.listing_id: identity
+            (account.account_id, identity.listing_id): identity
             for account in scope.accounts
             for identity in account.listing_identities
         }
@@ -493,16 +545,16 @@ class HistoricalMarketAcquirer:
             for selection in select_historical_prices(
                 requirement, candidates, policy=self.evidence_policy
             ):
-                identity = listing_lookup[requirement.listing_id]
                 selected_id = price_snapshot_id(selection.observation)
                 existing = price_observations.setdefault(selected_id, selection.observation)
                 if existing != selection.observation:
                     raise HistoryGenerationBuildError()
-                for account_id in sorted(
-                    price_accounts[
+                for account_id, listing_id in sorted(
+                    price_consumers[
                         (requirement.listing_id, selection.through, requirement.interval)
                     ]
                 ):
+                    identity = listing_lookup[(account_id, listing_id)]
                     selected_prices.append(
                         SelectedHistoricalPrice(
                             account_id=account_id,

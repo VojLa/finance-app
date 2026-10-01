@@ -1,6 +1,15 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -45,6 +54,8 @@ class AssetListingModel(Base):
         UniqueConstraint("assetId", "symbol", "exchange", "currency"),
         UniqueConstraint("symbol", "exchange", "currency"),
         UniqueConstraint("provider", "providerSymbol", "currency"),
+        UniqueConstraint("id", "assetId", name="AssetListing_id_assetId_key"),
+        CheckConstraint('"basePriority" >= 0', name="AssetListing_basePriority_nonnegative"),
         Index(None, "assetId"),
         Index(None, "symbol"),
         Index(None, "provider", "providerSymbol"),
@@ -76,13 +87,24 @@ class AssetListingModel(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     updated_at: Mapped[datetime] = mapped_column("updatedAt", TIMESTAMP, nullable=False)
+    base_priority: Mapped[int] = mapped_column(
+        "basePriority", Integer, nullable=False, server_default=text("0")
+    )
 
 
 class AssetAliasModel(Base):
     __tablename__ = "AssetAlias"
     __table_args__ = (
         UniqueConstraint("provider", "externalId"),
+        UniqueConstraint("listingId", "provider", name="AssetAlias_listingId_provider_key"),
+        ForeignKeyConstraint(
+            ["listingId", "assetId"],
+            ["public.AssetListing.id", "public.AssetListing.assetId"],
+            name="AssetAlias_listing_asset_fkey",
+            ondelete="CASCADE",
+        ),
         Index(None, "assetId", "provider"),
+        Index(None, "listingId"),
         {"schema": "public"},
     )
 
@@ -103,3 +125,4 @@ class AssetAliasModel(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
+    listing_id: Mapped[str | None] = mapped_column("listingId", Text)

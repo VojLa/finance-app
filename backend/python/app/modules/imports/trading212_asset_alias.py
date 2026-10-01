@@ -30,6 +30,7 @@ from app.modules.market_data.source_policy import (
     MarketEvidenceSourcePolicy,
     validate_market_evidence_source_policy,
 )
+from app.modules.market_data.yahoo_exchange_mapping import suggest_yahoo_symbol
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,7 @@ class _PostedAsset:
     asset_type: AssetType | None
     asset_currency: str | None
     asset_isin: str | None
+    listing_id: str | None
     listing_asset_id: str | None
     listing_symbol: str | None
     listing_provider: PriceSource | None
@@ -177,6 +179,7 @@ class Trading212AssetAliasRepository:
                 asset_type=None if asset is None else asset.asset_type,
                 asset_currency=None if asset is None else asset.currency,
                 asset_isin=None if asset is None else asset.isin,
+                listing_id=None if listing is None else listing.id,
                 listing_asset_id=None if listing is None else listing.asset_id,
                 listing_symbol=None if listing is None else listing.symbol,
                 listing_provider=None if listing is None else listing.provider,
@@ -226,6 +229,7 @@ def _alias_command(
         or row.asset_type is None
         or row.source_asset_type is not row.asset_type
         or row.asset_currency != identity.currency
+        or row.listing_id is None
         or row.listing_asset_id != row.asset_id
         or row.listing_symbol != identity.symbol
         or row.listing_provider is not PriceSource.broker
@@ -237,6 +241,11 @@ def _alias_command(
     if price_source is PriceSource.yahoo_finance:
         provider = AssetAliasProvider.yahoo_finance
         external_id = identity.yahoo_symbol
+        if (
+            suggest_yahoo_symbol(symbol=identity.symbol, mic=identity.twelve_data_mic)
+            != external_id
+        ):
+            raise AssetAliasConflictError()
     elif price_source is PriceSource.twelve_data:
         provider = AssetAliasProvider.twelve_data
         external_id = canonical_external_id(
@@ -246,7 +255,9 @@ def _alias_command(
     else:
         raise AssetAliasConflictError()
     return OnboardAssetAliasCommand(
+        actor="system:trading212-import",
         asset_id=row.asset_id,
+        listing_id=(row.listing_id if provider is AssetAliasProvider.yahoo_finance else None),
         provider=provider,
         external_id=external_id,
         expected_symbol=identity.symbol,
@@ -289,20 +300,21 @@ class Trading212AssetAliasService:
         if self.session.in_transaction():
             await self.session.rollback()
             raise AssetAliasConflictError()
-        commands: dict[str, OnboardAssetAliasCommand] = {}
+        commands: dict[tuple[str, str | None], OnboardAssetAliasCommand] = {}
         for row in rows:
             alias = _alias_command(
                 row,
                 created_at=canonical.created_at,
                 source_policy=self.source_policy,
             )
-            current = commands.get(alias.asset_id)
+            key = (alias.asset_id, alias.listing_id)
+            current = commands.get(key)
             if current is not None and current != alias:
                 raise AssetAliasConflictError()
-            commands[alias.asset_id] = alias
+            commands[key] = alias
         results: list[OnboardAssetAliasResult] = []
-        for asset_id in sorted(commands):
-            results.append(await self.writer.write(commands[asset_id]))
+        for key in sorted(commands, key=lambda item: (item[0], item[1] or "")):
+            results.append(await self.writer.write(commands[key]))
             if self.session.in_transaction():
                 await self.session.rollback()
                 raise AssetAliasConflictError()

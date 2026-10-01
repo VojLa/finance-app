@@ -20,13 +20,17 @@ from app.db.models.enums import AssetAliasProvider, AssetType  # noqa: E402
 from app.modules.asset_aliases import (  # noqa: E402
     AssetAliasConflictError,
     AssetAliasDatabaseUnavailableError,
+    AssetAliasDecisionService,
     AssetAliasInvalidError,
     AssetAliasInventoryService,
     AssetAliasNotFoundError,
     AssetAliasOnboardingService,
     AssetAliasStateError,
+    AssetListingCreationService,
+    CreateAssetListingCommand,
     OnboardAssetAliasCommand,
     OnboardAssetAliasResult,
+    RejectAssetAliasCommand,
     UnresolvedAssetAlias,
 )
 
@@ -51,8 +55,13 @@ def _parser() -> argparse.ArgumentParser:
     unresolved = subparsers.add_parser("list-unresolved")
     unresolved.add_argument("--provider", required=True)
 
+    health_summary = subparsers.add_parser("health-summary")
+    health_summary.add_argument("--provider", required=True)
+
     onboard = subparsers.add_parser("onboard")
+    onboard.add_argument("--actor", required=True)
     onboard.add_argument("--asset-id", required=True)
+    onboard.add_argument("--listing-id")
     onboard.add_argument("--expected-symbol", required=True)
     onboard.add_argument("--expected-asset-type", required=True)
     onboard.add_argument("--expected-currency", required=True)
@@ -60,6 +69,27 @@ def _parser() -> argparse.ArgumentParser:
     onboard.add_argument("--provider", required=True)
     onboard.add_argument("--external-id", required=True)
     onboard.add_argument("--dry-run", action="store_true")
+    reject = subparsers.add_parser("reject")
+    reject.add_argument("--actor", required=True)
+    reject.add_argument("--asset-id", required=True)
+    reject.add_argument("--listing-id", required=True)
+    reject.add_argument("--provider", required=True)
+    reject.add_argument("--external-id", required=True)
+    reject.add_argument("--reason", required=True)
+    create_listing = subparsers.add_parser("create-listing")
+    create_listing.add_argument("--actor", required=True)
+    create_listing.add_argument("--asset-id", required=True)
+    create_listing.add_argument("--expected-symbol", required=True)
+    create_listing.add_argument("--expected-asset-type", required=True)
+    create_listing.add_argument("--expected-currency", required=True)
+    create_listing.add_argument("--expected-isin")
+    create_listing.add_argument("--symbol", required=True)
+    create_listing.add_argument("--exchange", required=True)
+    create_listing.add_argument("--mic")
+    create_listing.add_argument("--currency", required=True)
+    create_listing.add_argument("--provider", required=True)
+    create_listing.add_argument("--provider-symbol", required=True)
+    create_listing.add_argument("--base-priority", type=int, default=0)
     return parser
 
 
@@ -113,10 +143,19 @@ def _inventory_document(item: UnresolvedAssetAlias) -> dict[str, object]:
         "listings": [
             {
                 "listingId": listing.listing_id,
+                "symbol": listing.symbol,
                 "provider": (listing.provider.value if listing.provider is not None else None),
                 "providerSymbol": listing.provider_symbol,
                 "exchange": listing.exchange,
+                "mic": listing.mic,
                 "currency": listing.currency,
+                "basePriority": listing.base_priority,
+                "healthState": listing.health_state,
+                "lastValidPriceAt": (
+                    listing.last_valid_price_at.isoformat()
+                    if listing.last_valid_price_at is not None
+                    else None
+                ),
             }
             for listing in item.listings
         ],
@@ -137,11 +176,59 @@ async def _execute(args: argparse.Namespace) -> object:
             if args.command == "list-unresolved":
                 unresolved = await AssetAliasInventoryService(session).list_unresolved(provider)
                 return [_inventory_document(item) for item in unresolved]
+            if args.command == "health-summary":
+                return await AssetAliasInventoryService(session).health_summary(provider)
+            if args.command == "reject":
+                rejected = await AssetAliasDecisionService(session).reject(
+                    RejectAssetAliasCommand(
+                        actor=args.actor,
+                        asset_id=args.asset_id,
+                        listing_id=args.listing_id,
+                        provider=provider,
+                        external_id=args.external_id,
+                        reason=args.reason,
+                    )
+                )
+                return {
+                    "assetId": rejected.asset_id,
+                    "listingId": rejected.listing_id,
+                    "provider": rejected.provider.value,
+                    "externalId": rejected.external_id,
+                    "disposition": rejected.disposition,
+                }
+            if args.command == "create-listing":
+                created = await AssetListingCreationService(session).create(
+                    CreateAssetListingCommand(
+                        actor=args.actor,
+                        asset_id=args.asset_id,
+                        expected_symbol=args.expected_symbol,
+                        expected_asset_type=_asset_type(args.expected_asset_type),
+                        expected_currency=args.expected_currency,
+                        expected_isin=args.expected_isin,
+                        symbol=args.symbol,
+                        exchange=args.exchange,
+                        mic=args.mic,
+                        currency=args.currency,
+                        provider=provider,
+                        provider_symbol=args.provider_symbol,
+                        base_priority=args.base_priority,
+                        created_at=_created_at(),
+                    )
+                )
+                return {
+                    "listingId": created.listing_id,
+                    "assetId": created.asset_id,
+                    "provider": created.provider.value,
+                    "providerSymbol": created.provider_symbol,
+                    "disposition": created.disposition,
+                }
             if args.command != "onboard":
                 raise AssetAliasInvalidError()
             onboarded = await AssetAliasOnboardingService(session).onboard(
                 OnboardAssetAliasCommand(
+                    actor=args.actor,
                     asset_id=args.asset_id,
+                    listing_id=args.listing_id,
                     provider=provider,
                     external_id=args.external_id,
                     expected_symbol=args.expected_symbol,

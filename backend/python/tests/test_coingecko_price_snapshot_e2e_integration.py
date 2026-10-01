@@ -262,7 +262,7 @@ async def test_price_failure_creates_no_price_or_partial_snapshot(failure: str) 
                     Settings(environment="test", _env_file=None),
                     coingecko_http_transport=transport,
                 ).refresh(RefreshMarketEvidenceCommand(user_id, SNAPSHOT_AT, CREATED_AT))
-            assert len(requests) == 1
+            assert len(requests) == (3 if failure == "http" else 1)
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             assert (

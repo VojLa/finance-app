@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
-from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.assets import AssetAliasModel, AssetListingModel, AssetModel
 from app.db.models.canonical_lineage import AccountCanonicalChangeModel
-from app.db.models.enums import ExchangeRateSource
+from app.db.models.enums import ExchangeRateSource, MarketDataFailureReason, PriceSource
 from app.db.models.holdings import HoldingModel
 from app.db.models.ledger import (
     InvestmentEventModel,
     InvestmentMovementModel,
     InvestmentMovementValuationEvidenceModel,
 )
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
 from app.modules.investments.transfer_valuation import validate_transfer_valuation_citations
@@ -27,6 +29,12 @@ class PersistedHoldingEvidence:
     holding: HoldingModel
     listing: AssetListingModel | None
     asset: AssetModel | None
+    aliases: tuple[AssetAliasModel, ...] = ()
+    asset_listing_count: int | None = None
+    candidate_listings: tuple[AssetListingModel, ...] = ()
+    candidate_aliases: tuple[AssetAliasModel, ...] = ()
+    candidate_health: tuple[MarketDataListingHealthModel, ...] = ()
+    provider_retry_after: tuple[tuple[PriceSource, datetime], ...] = ()
 
 
 class AccountSnapshotEvidenceRepository:
@@ -52,7 +60,89 @@ class AccountSnapshotEvidenceRepository:
             .where(HoldingModel.account_id == account_id)
             .order_by(HoldingModel.listing_id, HoldingModel.id)
         )
-        return tuple(PersistedHoldingEvidence(*row) for row in result.all())
+        rows = result.all()
+        asset_ids = tuple(sorted({asset.id for _, _, asset in rows if asset is not None}))
+        aliases_by_asset: dict[str, list[AssetAliasModel]] = {}
+        listings_by_asset: dict[str, list[AssetListingModel]] = {}
+        health_by_asset: dict[str, list[MarketDataListingHealthModel]] = {}
+        provider_retry_after: tuple[tuple[PriceSource, datetime], ...] = ()
+        if asset_ids:
+            listings = await self.session.scalars(
+                select(AssetListingModel)
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(
+                    AssetListingModel.asset_id,
+                    AssetListingModel.base_priority.desc(),
+                    AssetListingModel.id,
+                )
+            )
+            for candidate in listings.all():
+                listings_by_asset.setdefault(candidate.asset_id, []).append(candidate)
+            aliases = await self.session.scalars(
+                select(AssetAliasModel)
+                .where(AssetAliasModel.asset_id.in_(asset_ids))
+                .order_by(
+                    AssetAliasModel.asset_id,
+                    AssetAliasModel.listing_id,
+                    AssetAliasModel.provider,
+                    AssetAliasModel.external_id,
+                    AssetAliasModel.id,
+                )
+            )
+            for alias in aliases.all():
+                aliases_by_asset.setdefault(alias.asset_id, []).append(alias)
+            health_rows = await self.session.execute(
+                select(MarketDataListingHealthModel, AssetListingModel.asset_id)
+                .join(
+                    AssetListingModel,
+                    AssetListingModel.id == MarketDataListingHealthModel.listing_id,
+                )
+                .where(AssetListingModel.asset_id.in_(asset_ids))
+                .order_by(
+                    AssetListingModel.asset_id,
+                    MarketDataListingHealthModel.listing_id,
+                    MarketDataListingHealthModel.provider,
+                )
+            )
+            for health, asset_id in health_rows.all():
+                health_by_asset.setdefault(asset_id, []).append(health)
+            retries = await self.session.execute(
+                select(
+                    MarketDataListingHealthModel.provider,
+                    func.max(MarketDataListingHealthModel.retry_after),
+                )
+                .where(
+                    MarketDataListingHealthModel.last_failure_reason
+                    == MarketDataFailureReason.rate_limit,
+                    MarketDataListingHealthModel.retry_after.is_not(None),
+                )
+                .group_by(MarketDataListingHealthModel.provider)
+                .order_by(MarketDataListingHealthModel.provider)
+            )
+            provider_retry_after = tuple(
+                (provider, retry_after)
+                for provider, retry_after in retries.all()
+                if retry_after is not None
+            )
+        return tuple(
+            PersistedHoldingEvidence(
+                holding,
+                listing,
+                asset,
+                tuple(
+                    alias
+                    for alias in aliases_by_asset.get(holding.asset_id or "", ())
+                    if alias.listing_id is None
+                    or (listing is not None and alias.listing_id == listing.id)
+                ),
+                len(listings_by_asset.get(holding.asset_id or "", ())),
+                tuple(listings_by_asset.get(holding.asset_id or "", ())),
+                tuple(aliases_by_asset.get(holding.asset_id or "", ())),
+                tuple(health_by_asset.get(holding.asset_id or "", ())),
+                provider_retry_after,
+            )
+            for holding, listing, asset in rows
+        )
 
     async def load_price_candidates(
         self,

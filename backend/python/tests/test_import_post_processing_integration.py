@@ -304,12 +304,12 @@ async def _seed_investment_identity(
                 id=f"{prefix}-listing",
                 asset_id=f"{prefix}-asset",
                 symbol=symbol,
-                exchange="trading212",
-                mic=None,
+                exchange="NASDAQ",
+                mic="XNAS",
                 currency="EUR",
                 country=None,
-                provider=PriceSource.broker,
-                provider_symbol=symbol,
+                provider=PriceSource.twelve_data,
+                provider_symbol=f'{{"symbol":"{symbol}","mic_code":"XNAS"}}',
                 is_primary=False,
                 created_at=now,
                 updated_at=now,
@@ -325,6 +325,7 @@ async def _seed_investment_identity(
                     price=Decimal("100"),
                     currency=price_currency,
                     source=price_source,
+                    provider_symbol=f'{{"symbol":"{symbol}","mic_code":"XNAS"}}',
                     timestamp=observed_at,
                     created_at=now,
                 )
@@ -337,6 +338,8 @@ async def _add_price(prefix: str, *, currency: str = "EUR") -> None:
     engine = posting_support._engine()
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     async with AsyncSession(engine) as session:
+        listing = await session.get(AssetListingModel, f"{prefix}-listing")
+        assert listing is not None and listing.provider_symbol is not None
         session.add(
             PriceSnapshotModel(
                 id=f"{prefix}-price",
@@ -345,6 +348,7 @@ async def _add_price(prefix: str, *, currency: str = "EUR") -> None:
                 price=Decimal("100"),
                 currency=currency,
                 source=PriceSource.twelve_data,
+                provider_symbol=listing.provider_symbol,
                 timestamp=now - timedelta(hours=1),
                 created_at=now,
             )
@@ -948,7 +952,7 @@ def test_missing_price_preserves_import_and_holdings_then_replay_completes() -> 
     asyncio.run(scenario())
 
 
-def test_missing_fx_preserves_committed_stages_then_replay_completes() -> None:
+def test_native_price_currency_conflict_stays_unavailable_after_unrelated_fx() -> None:
     async def scenario() -> None:
         prefix = "e2-r1-fx-recovery"
         symbol = "E2R1FX"
@@ -982,18 +986,13 @@ def test_missing_fx_preserves_committed_stages_then_replay_completes() -> None:
             recovered = await _post(prefix)
             assert recovered.replayed is True
             assert recovered.completed_at == completed_at
-            assert recovered.snapshot_refresh_status is ImportSnapshotRefreshStatus.created
-            assert await _row_counts(prefix) == (1, 2, 1, 1, 1)
+            assert recovered.snapshot_refresh_status is ImportSnapshotRefreshStatus.unavailable
+            assert await _row_counts(prefix) == (1, 2, 1, 0, 0)
 
             engine = posting_support._engine()
             async with AsyncSession(engine) as session:
                 holding_after = await session.scalar(
                     select(HoldingModel).where(HoldingModel.account_id == f"{prefix}-account")
-                )
-                snapshot = await session.scalar(
-                    select(AccountSnapshotModel).where(
-                        AccountSnapshotModel.account_id == f"{prefix}-account"
-                    )
                 )
                 assert holding_after is not None
                 assert (
@@ -1001,9 +1000,6 @@ def test_missing_fx_preserves_committed_stages_then_replay_completes() -> None:
                     holding_after.quantity,
                     holding_after.calculated_at,
                 ) == holding_identity
-                assert snapshot is not None
-                assert snapshot.timestamp == completed_at.replace(second=0, microsecond=0)
-                assert snapshot.currency == "EUR"
             await engine.dispose()
         finally:
             await _cleanup_holdings(prefix)

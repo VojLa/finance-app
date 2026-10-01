@@ -27,11 +27,18 @@ class MarketEvidenceSourcePolicy:
     price_sources: frozenset[PriceSource]
     fx_source: ExchangeRateSource
 
+    def price_sources_for(self, asset_type: AssetType) -> frozenset[PriceSource]:
+        """Return permitted explicit listing providers for one asset type."""
+
+        default = self.price_source_for(asset_type)
+        if self.mode == "local_free" and asset_type is AssetType.crypto:
+            return frozenset({PriceSource.coingecko, PriceSource.yahoo_finance})
+        return frozenset({default})
+
     def price_source_for(self, asset_type: AssetType) -> PriceSource:
         if not isinstance(asset_type, AssetType):
             raise MarketEvidenceSourcePolicyError()
         if self.mode == "local_free" and asset_type in {
-            AssetType.crypto,
             AssetType.stock,
             AssetType.etf,
             AssetType.bond,
@@ -60,7 +67,7 @@ CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY = MarketEvidenceSourcePolicy(
 
 LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY = MarketEvidenceSourcePolicy(
     mode="local_free",
-    price_sources=frozenset({PriceSource.yahoo_finance}),
+    price_sources=frozenset({PriceSource.coingecko, PriceSource.yahoo_finance}),
     fx_source=ExchangeRateSource.yahoo_finance,
 )
 

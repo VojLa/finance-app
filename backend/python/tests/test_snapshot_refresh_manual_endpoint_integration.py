@@ -16,7 +16,7 @@ import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from app.auth.dependencies import get_current_principal, get_request_settings
@@ -39,6 +39,7 @@ from app.db.models.enums import (
     SnapshotSource,
 )
 from app.db.models.liabilities import LiabilityBalanceModel
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotModel, NetWorthSnapshotModel
 from app.db.models.users import UserModel
@@ -70,6 +71,7 @@ market_support = cast(
     Any,
     importlib.import_module("tests.test_market_backed_snapshot_refresh_integration"),
 )
+_OWNED_PREFIXES: set[str] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +86,36 @@ class _AccountSpec:
 def _engine() -> AsyncEngine:
     assert DATABASE_URL is not None
     return create_async_engine(normalize_database_url(DATABASE_URL), pool_size=12)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_persisted_market_health() -> Any:
+    """Keep provider cooldowns durable inside a test but isolated between tests."""
+    before = set(_OWNED_PREFIXES)
+    yield
+    owned_prefixes = _OWNED_PREFIXES - before
+    if not owned_prefixes:
+        return
+
+    async def remove_owned_health() -> None:
+        engine = _engine()
+        try:
+            async with AsyncSession(engine) as session:
+                await session.execute(
+                    delete(MarketDataListingHealthModel).where(
+                        or_(
+                            *(
+                                MarketDataListingHealthModel.listing_id.startswith(prefix)
+                                for prefix in owned_prefixes
+                            )
+                        )
+                    )
+                )
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(remove_owned_health())
 
 
 def _user_id(prefix: str) -> str:
@@ -193,7 +225,12 @@ async def _seed(prefix: str, specs: tuple[_AccountSpec, ...]) -> None:
 
 
 def _unique_prefix(label: str) -> str:
-    return f"{label}-{uuid4()}"
+    return _register_prefix(f"{label}-{uuid4()}")
+
+
+def _register_prefix(prefix: str) -> str:
+    _OWNED_PREFIXES.add(prefix)
+    return prefix
 
 
 async def _write_viewer_snapshot(prefix: str, suffix: str) -> str:
@@ -472,7 +509,7 @@ async def _counts(prefix: str) -> tuple[int, int]:
 
 def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
     unique = uuid4().hex[:10]
-    prefix = f"r5b3b-mixed-{uuid4()}"
+    prefix = _register_prefix(f"r5b3b-mixed-{uuid4()}")
     listed_symbol = f"T{unique.upper()}"
     listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
     crypto_symbol = f"C{unique.upper()}"
@@ -526,7 +563,10 @@ def test_production_mixed_provider_endpoint_e2e_and_replay() -> None:
         ("twelve_data_fx", "USD/CZK@2026-08-01"),
         ("twelve_data_fx", "USD/CZK@2026-08-06"),
     ]
-    assert _flatten_provider_calls(provider_call_batches) == expected_calls * 2
+    assert _flatten_provider_calls(provider_call_batches) == [
+        *expected_calls,
+        *(call for call in expected_calls if call[0] != "twelve_data"),
+    ]
 
     forbidden_market_keys = {
         "market",
@@ -733,7 +773,7 @@ def test_provider_failure_endpoint_matrix_writes_no_market_or_snapshot_graph(
     expected_provider: str,
 ) -> None:
     unique = uuid4().hex[:10]
-    prefix = f"r5b3b-{failure}-{uuid4()}"
+    prefix = _register_prefix(f"r5b3b-{failure}-{uuid4()}")
     listed_symbol = f"T{unique.upper()}"
     listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
     crypto_alias = f"coin-{unique}"
@@ -797,7 +837,7 @@ def test_alias_failure_endpoint_stops_before_provider_http(
     alias_failure: str,
 ) -> None:
     unique = uuid4().hex[:10]
-    prefix = f"r5b3b-alias-{alias_failure}-{uuid4()}"
+    prefix = _register_prefix(f"r5b3b-alias-{alias_failure}-{uuid4()}")
     listed_symbol = f"T{unique.upper()}"
     listed_aliases = (
         ()
@@ -866,7 +906,7 @@ def test_alias_failure_endpoint_stops_before_provider_http(
 
 def test_snapshot_conflict_after_market_commit_preserves_market_evidence() -> None:
     unique = uuid4().hex[:10]
-    prefix = f"r5b3b-snapshot-conflict-{uuid4()}"
+    prefix = _register_prefix(f"r5b3b-snapshot-conflict-{uuid4()}")
     listed_symbol = f"T{unique.upper()}"
     listed_alias = f'{{"symbol":"{listed_symbol}","mic_code":"XNAS"}}'
     crypto_alias = f"coin-{unique}"

@@ -12,7 +12,7 @@ from app.modules.portfolio_snapshot.api_models import (
     PortfolioSnapshotSummaryResponse,
 )
 from app.modules.portfolio_snapshot.models import SnapshotGranularity, SnapshotSource
-from app.shared.numeric_serialization import serialize_money
+from app.shared.numeric_serialization import serialize_money, serialize_percentage
 
 _MODEL_CONFIG = ConfigDict(
     extra="forbid",
@@ -100,7 +100,12 @@ class MultiAccountPortfolioAggregatePositionResponse(BaseModel):
     account_id: str = Field(serialization_alias="accountId")
     account_name: str = Field(serialization_alias="accountName")
     account_currency: str = Field(serialization_alias="accountCurrency")
+    portfolio_allocation_pct: Decimal = Field(serialization_alias="portfolioAllocationPct")
     position: PortfolioSnapshotPositionResponse
+
+    @field_serializer("portfolio_allocation_pct")
+    def serialize_portfolio_allocation(self, value: Decimal) -> str:
+        return serialize_percentage(value)
 
 
 class MultiAccountPortfolioResponse(BaseModel):

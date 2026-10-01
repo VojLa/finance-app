@@ -5,7 +5,12 @@ from typing import Any, cast
 
 import pytest
 
-from app.db.models.enums import ExchangeRateSource, PriceSource
+from app.db.models.enums import (
+    AssetType,
+    ExchangeRateSource,
+    MarketDataFailureReason,
+    PriceSource,
+)
 from app.modules.fx.models import ExchangeRateObservation
 from app.modules.fx.validation import (
     ExchangeRateObservationValidationError,
@@ -118,6 +123,81 @@ def test_price_exact_freshness_boundary_is_accepted() -> None:
         ).observed_at
         == observation.observed_at
     )
+
+
+@pytest.mark.parametrize(
+    ("observation", "reason"),
+    [
+        (_price(provider_symbol="OTHER"), MarketDataFailureReason.provider_identity_conflict),
+        (_price(currency="USD"), MarketDataFailureReason.currency_conflict),
+        (_price(price=Decimal("0")), MarketDataFailureReason.invalid_price),
+        (
+            _price(observed_at=THROUGH - timedelta(hours=73)),
+            MarketDataFailureReason.stale_timestamp,
+        ),
+    ],
+)
+def test_price_validation_exposes_only_safe_health_reason(
+    observation: PriceObservation,
+    reason: MarketDataFailureReason,
+) -> None:
+    with pytest.raises(PriceObservationValidationError) as caught:
+        validate_price_observation(
+            observation,
+            requirement=PRICE_REQUIREMENT,
+            policy=POLICY,
+        )
+    assert caught.value.reason is reason
+
+
+def test_expected_previous_close_after_long_holiday_is_not_stale() -> None:
+    through = datetime(2026, 9, 8, 13)
+    requirement = replace(
+        PRICE_REQUIREMENT,
+        through=through,
+        listing_mic="XNAS",
+        asset_type=AssetType.etf,
+    )
+    observation = _price(observed_at=datetime(2026, 9, 4, 20))
+
+    assert (
+        validate_price_observation(
+            observation,
+            requirement=requirement,
+            policy=POLICY,
+        ).observed_at
+        == observation.observed_at
+    )
+
+
+def test_old_previous_close_during_open_session_is_stale() -> None:
+    requirement = replace(
+        PRICE_REQUIREMENT,
+        through=datetime(2026, 9, 8, 15),
+        listing_mic="XNAS",
+        asset_type=AssetType.etf,
+    )
+    with pytest.raises(PriceObservationValidationError):
+        validate_price_observation(
+            _price(observed_at=datetime(2026, 9, 4, 20)),
+            requirement=requirement,
+            policy=POLICY,
+        )
+
+
+def test_crypto_does_not_receive_exchange_calendar_freshness_exception() -> None:
+    requirement = replace(
+        PRICE_REQUIREMENT,
+        through=datetime(2026, 9, 8, 13),
+        listing_mic=None,
+        asset_type=AssetType.crypto,
+    )
+    with pytest.raises(PriceObservationValidationError):
+        validate_price_observation(
+            _price(observed_at=datetime(2026, 9, 4, 20)),
+            requirement=requirement,
+            policy=POLICY,
+        )
 
 
 def test_exchange_rate_observation_is_immutable_and_preserved_exactly() -> None:

@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from app.db.models.assets import AssetModel
-from app.db.models.enums import AssetType, ExchangeRateSource, PriceSource
+from app.db.models.assets import AssetListingModel, AssetModel
+from app.db.models.enums import AssetType, ExchangeRateSource, MarketDataHealthState, PriceSource
+from app.db.models.market_health import MarketDataListingHealthModel
 from app.db.models.prices import ExchangeRateModel
 from app.db.models.snapshots import AccountSnapshotItemModel, AccountSnapshotModel
-from app.modules.current_value.repository import CurrentValueRepository
+from app.modules.current_value.repository import (
+    CurrentListingSelectionContext,
+    CurrentValueRepository,
+)
 from app.modules.current_value.service import (
     CurrentValueUnavailableError,
+    _deduplicate_selected_requirements,
+    _same_market_plan_identity,
+    _select_current_price_requirement,
     _validate_baseline_market_evidence,
 )
+from app.modules.market_data.models import MarketEvidenceRefreshPlan
 from app.modules.market_data.source_policy import (
     CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
     LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
@@ -55,6 +65,129 @@ def _view(snapshot_id: str, *, positions: int) -> PortfolioSnapshotView:
 
 def _empty_audit() -> dict[str, object]:
     return {"version": 1, "snapshotRates": [], "historicalRateIds": []}
+
+
+NOW = datetime(2026, 9, 30, 12)
+
+
+def _listing(
+    listing_id: str, *, asset_id: str = "asset", currency: str = "EUR", priority: int = 1
+) -> AssetListingModel:
+    return AssetListingModel(
+        id=listing_id,
+        asset_id=asset_id,
+        symbol="AAA",
+        currency=currency,
+        provider=PriceSource.twelve_data,
+        provider_symbol=f"AAA:{listing_id}",
+        base_priority=priority,
+    )
+
+
+def _selection_context(
+    *, requested_state: MarketDataHealthState, retry_after: datetime | None = None
+) -> CurrentListingSelectionContext:
+    return CurrentListingSelectionContext(
+        requested_listing=_listing("preferred", priority=10),
+        asset=AssetModel(id="asset", symbol="AAA", asset_type=AssetType.stock, currency="EUR"),
+        candidate_listings=(
+            _listing("preferred", priority=10),
+            _listing("fallback", priority=5),
+            _listing("other-asset", asset_id="other", priority=100),
+            _listing("other-currency", currency="USD", priority=100),
+        ),
+        aliases=(),
+        health=(
+            cast(
+                MarketDataListingHealthModel,
+                SimpleNamespace(
+                    listing_id="preferred",
+                    provider=PriceSource.twelve_data,
+                    provider_symbol="AAA:preferred",
+                    state=requested_state,
+                    retry_after=retry_after,
+                    lease_expires_at=None,
+                ),
+            ),
+        ),
+        provider_retry_after=(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "retry_after", "selected", "reason"),
+    (
+        (MarketDataHealthState.degraded, None, "fallback", "requested_listing_degraded"),
+        (
+            MarketDataHealthState.healthy,
+            NOW + timedelta(minutes=5),
+            "fallback",
+            "requested_listing_cooldown",
+        ),
+        (MarketDataHealthState.healthy, None, "preferred", None),
+    ),
+)
+def test_current_price_requirement_uses_safe_listing_fallback(
+    state: MarketDataHealthState,
+    retry_after: datetime | None,
+    selected: str,
+    reason: str | None,
+) -> None:
+    requirement = _select_current_price_requirement(
+        context=_selection_context(requested_state=state, retry_after=retry_after),
+        account_id="account",
+        existing_prices=(),
+        as_of=NOW,
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
+    assert requirement.requested_listing_id == "preferred"
+    assert requirement.listing_id == selected
+    assert requirement.fallback_reason == reason
+    assert requirement.provider_symbol == f"AAA:{selected}"
+    assert requirement.listing_currency == "EUR"
+
+
+def test_current_plan_pins_selected_listing_across_health_refresh() -> None:
+    requirement = _select_current_price_requirement(
+        context=_selection_context(requested_state=MarketDataHealthState.degraded),
+        account_id="account",
+        existing_prices=(),
+        as_of=NOW,
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
+    plan = MarketEvidenceRefreshPlan(
+        user_id="user",
+        output_currency="EUR",
+        snapshot_timestamp=NOW,
+        price_requirements=(requirement,),
+        fx_requirements=(),
+    )
+    updated = replace(
+        plan,
+        price_requirements=(replace(requirement, selected_health="healthy"),),
+    )
+    changed_listing = replace(
+        plan,
+        price_requirements=(replace(requirement, listing_id="preferred"),),
+    )
+    assert _same_market_plan_identity(plan, updated)
+    assert not _same_market_plan_identity(plan, changed_listing)
+
+
+def test_current_plan_acquires_one_price_for_two_requested_listings() -> None:
+    first = _select_current_price_requirement(
+        context=_selection_context(requested_state=MarketDataHealthState.degraded),
+        account_id="account-a",
+        existing_prices=(),
+        as_of=NOW,
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    )
+    second = replace(first, account_id="account-b", requested_listing_id="other-requested")
+    assert _deduplicate_selected_requirements((first, second)) == (first,)
+    with pytest.raises(CurrentValueUnavailableError):
+        _deduplicate_selected_requirements(
+            (first, replace(second, provider_symbol="different-provider-identity"))
+        )
 
 
 @pytest.mark.asyncio

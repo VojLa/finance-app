@@ -7,23 +7,34 @@ import pytest
 
 from app.db.models.enums import (
     AccountType,
+    AssetType,
     ExchangeRateSource,
     ImportSource,
     InvestmentEventType,
     InvestmentMovementKind,
     MovementDirection,
+    PriceSource,
     TransactionClassification,
     TransactionType,
 )
 from app.modules.fx.models import ExchangeRateObservation
-from app.modules.holdings.persistence_projection import HoldingPersistenceMovement
+from app.modules.holdings.persistence_projection import (
+    ExpectedPersistedHoldingPlan,
+    HoldingPersistenceMovement,
+)
 from app.modules.market_data.history.models import (
     HistoricalExchangeRateProviderCapability,
     HistoricalExchangeRateRangeRequirement,
+    HistoricalPriceProviderCapability,
+    HistoricalPriceRangeRequirement,
+    HistoricalProviderGranularity,
     HistoricalTimeSeriesInterval,
 )
 from app.modules.market_data.policy import DEFAULT_MARKET_EVIDENCE_POLICY
-from app.modules.market_data.source_policy import CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY
+from app.modules.market_data.source_policy import (
+    CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+    LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+)
 from app.modules.portfolio_history.builder.market import HistoricalMarketAcquirer
 from app.modules.portfolio_history_rebuild.models import (
     AccountReplayState,
@@ -35,8 +46,10 @@ from app.modules.portfolio_history_rebuild.models import (
 from app.modules.portfolio_history_rebuild.repository import (
     FrozenAccountReplayInput,
     FrozenCanonicalRevision,
+    FrozenListingIdentity,
     FrozenPortfolioReplayInput,
 )
+from app.modules.prices.models import PriceObservation
 from app.modules.snapshot_refresh.history_series_bridge import (
     build_history_snapshot_series_materialization_input,
 )
@@ -208,6 +221,131 @@ class _FxProvider:
             )
             for timestamp in requirement.requested_at
         )
+
+
+class _SharedPriceProvider:
+    capability = HistoricalPriceProviderCapability(
+        source=PriceSource.yahoo_finance,
+        native_granularity=HistoricalProviderGranularity.daily,
+        supports_subdaily_backfill=False,
+        supported_intervals=(HistoricalTimeSeriesInterval.daily,),
+    )
+
+    def __init__(self) -> None:
+        self.requirements: list[HistoricalPriceRangeRequirement] = []
+
+    async def fetch_range(
+        self, requirement: HistoricalPriceRangeRequirement
+    ) -> tuple[PriceObservation, ...]:
+        self.requirements.append(requirement)
+        return tuple(
+            PriceObservation(
+                asset_id=requirement.asset_id,
+                listing_id=requirement.listing_id,
+                provider=requirement.provider,
+                provider_symbol=requirement.provider_symbol,
+                price=Decimal("100.000000"),
+                currency=requirement.listing_currency,
+                observed_at=timestamp,
+            )
+            for timestamp in requirement.requested_at
+        )
+
+
+@pytest.mark.asyncio
+async def test_shared_evidence_listing_keeps_each_original_holding_listing() -> None:
+    evidence_listing_id = "btc-yahoo-usd"
+
+    account_id = "account"
+    listing_ids = ("btc-exchange-a", "btc-exchange-b")
+    account = FrozenAccountReplayInput(
+        account_id=account_id,
+        account_name=account_id,
+        account_type=AccountType.broker,
+        account_currency="USD",
+        canonical_revision=FrozenCanonicalRevision(
+            last_revision=1,
+            last_investment_revision=1,
+            holding_revision=1,
+        ),
+        canonical_manifest=(),
+        listing_identities=tuple(
+            FrozenListingIdentity(
+                listing_id=listing_id,
+                evidence_listing_id=evidence_listing_id,
+                asset_id="btc",
+                symbol="BTC",
+                name="Bitcoin",
+                asset_type=AssetType.crypto.value,
+                currency="USD",
+                price_currency="USD",
+                provider=PriceSource.yahoo_finance,
+                provider_symbol="BTC-USD",
+            )
+            for listing_id in listing_ids
+        ),
+        roots=(),
+        earliest_event_at=_EVENT_AT,
+    )
+
+    scope = FrozenPortfolioReplayInput(
+        user_id="owner",
+        base_currency="USD",
+        accounts=(account,),
+        earliest_event_at=_EVENT_AT,
+        scope_hash="shared-evidence",
+    )
+    states = {
+        _POINT_AT: {
+            account_id: AccountReplayState(
+                account_id=account_id,
+                account_type=AccountType.broker,
+                account_currency="USD",
+                active=True,
+                holdings=tuple(
+                    ExpectedPersistedHoldingPlan(
+                        account_id=account_id,
+                        asset_id="btc",
+                        listing_id=listing_id,
+                        symbol="BTC",
+                        name="Bitcoin",
+                        asset_type=AssetType.crypto,
+                        quantity=Decimal("1"),
+                        avg_buy_price=Decimal("90"),
+                        currency="USD",
+                        current_price=None,
+                        current_value=None,
+                        unrealized_pnl=None,
+                        realized_pnl=None,
+                        cost_basis_by_currency=(("USD", Decimal("90")),),
+                    )
+                    for listing_id in listing_ids
+                ),
+            )
+        }
+    }
+    provider = _SharedPriceProvider()
+
+    selection = await HistoricalMarketAcquirer(
+        price_providers={PriceSource.yahoo_finance: provider},
+        fx_providers={},
+        source_policy=LOCAL_FREE_MARKET_EVIDENCE_SOURCE_POLICY,
+        evidence_policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+    ).acquire(
+        scope=scope,
+        states=states,
+        requested_at=(_POINT_AT,),
+        subdaily_at=(),
+    )
+
+    assert len(provider.requirements) == 1
+    assert provider.requirements[0].listing_id == evidence_listing_id
+    assert [(item.account_id, item.listing.listing_id) for item in selection.prices] == [
+        (account_id, "btc-exchange-a"),
+        (account_id, "btc-exchange-b"),
+    ]
+    assert len({item.price_id for item in selection.prices}) == 1
+    assert {item.observation.listing_id for item in selection.prices} == {evidence_listing_id}
 
 
 @pytest.mark.asyncio
@@ -437,3 +575,125 @@ async def test_bridge_fails_closed_in_the_materializer_when_metric_evidence_is_m
 
     with pytest.raises(SnapshotHistorySeriesMaterializationError):
         materialize_history_snapshot_series(value)
+
+
+@pytest.mark.asyncio
+async def test_closed_position_requests_acquisition_fx_without_snapshot_cost_fx() -> None:
+    def trade(event_id: str, *, incoming: bool, at: datetime) -> InvestmentEventRoot:
+        return InvestmentEventRoot(
+            event_id=event_id,
+            account_id=_ACCOUNT_ID,
+            event_type=InvestmentEventType.trade,
+            event_date=at,
+            movements=(
+                HoldingPersistenceMovement(
+                    movement_id=f"{event_id}-asset",
+                    event_id=event_id,
+                    account_id=_ACCOUNT_ID,
+                    kind=InvestmentMovementKind.asset,
+                    direction=(
+                        MovementDirection.incoming if incoming else MovementDirection.outgoing
+                    ),
+                    quantity=Decimal("1"),
+                    currency="USD",
+                    asset_id="asset",
+                    listing_id="listing",
+                    listing_asset_id="asset",
+                    source_symbol="ABC",
+                    source_asset_type=AssetType.stock,
+                    price_per_unit=Decimal("100"),
+                    value_amount=Decimal("100"),
+                    value_currency="USD",
+                    listing_currency="USD",
+                ),
+                HoldingPersistenceMovement(
+                    movement_id=f"{event_id}-cash",
+                    event_id=event_id,
+                    account_id=_ACCOUNT_ID,
+                    kind=InvestmentMovementKind.cash,
+                    direction=(
+                        MovementDirection.outgoing if incoming else MovementDirection.incoming
+                    ),
+                    quantity=Decimal("100"),
+                    currency="USD",
+                    asset_id=None,
+                    listing_id=None,
+                    listing_asset_id=None,
+                    source_symbol=None,
+                    source_asset_type=None,
+                    price_per_unit=None,
+                    value_amount=None,
+                    value_currency=None,
+                ),
+            ),
+            source=ImportSource.manual,
+        )
+
+    original = _scope()
+    account = original.accounts[0]
+    sold_at = _EVENT_AT.replace(hour=11)
+    scope = replace(
+        original,
+        accounts=(
+            replace(
+                account,
+                account_type=AccountType.broker,
+                roots=(
+                    trade("buy", incoming=True, at=_EVENT_AT),
+                    trade("sell", incoming=False, at=sold_at),
+                ),
+                canonical_revision=FrozenCanonicalRevision(
+                    last_revision=2,
+                    last_investment_revision=2,
+                    holding_revision=0,
+                ),
+            ),
+        ),
+    )
+    states = {
+        _POINT_AT: {
+            _ACCOUNT_ID: AccountReplayState(
+                account_id=_ACCOUNT_ID,
+                account_type=AccountType.broker,
+                account_currency="USD",
+                active=True,
+            )
+        }
+    }
+    provider = _FxProvider()
+    market = await HistoricalMarketAcquirer(
+        price_providers={},
+        fx_providers={ExchangeRateSource.twelve_data: provider},
+        source_policy=CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
+        evidence_policy=DEFAULT_MARKET_EVIDENCE_POLICY,
+    ).acquire(
+        scope=scope,
+        states=states,
+        requested_at=(_POINT_AT,),
+        subdaily_at=(_POINT_AT,),
+    )
+
+    assert market.snapshot_rates == ()
+    assert [(item.evidence_id, item.event_at) for item in market.metric_rates] == [
+        ("cost:buy-asset", _EVENT_AT)
+    ]
+    assert [
+        (item.from_currency, item.to_currency, item.requested_at) for item in provider.requirements
+    ] == [("USD", "EUR", (_EVENT_AT,))]
+    value = build_history_snapshot_series_materialization_input(
+        job_id="closed-cost",
+        replay_scope=scope,
+        states=states,
+        market=market,
+        calculation_version=1,
+        calculated_at=_POINT_AT,
+        created_at=_POINT_AT,
+    )
+    command = materialize_history_snapshot_series(value)
+    eur_evidence = next(
+        item.evidence
+        for item in command.points[0].account_evidence
+        if item.evidence.valuation.currency == "EUR"
+    )
+    assert eur_evidence.valuation.investment_cost_basis == Decimal(0)
+    assert eur_evidence.selected_historical_exchange_rate_ids == (market.metric_rates[0].rate_id,)

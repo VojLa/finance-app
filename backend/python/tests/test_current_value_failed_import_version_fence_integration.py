@@ -48,7 +48,7 @@ pytestmark = [
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "410001serieslinks" / "schema.sql"
+CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "440001assetaudit" / "schema.sql"
 
 
 def _support() -> ModuleType:
@@ -236,7 +236,7 @@ async def test_failed_investment_import_retains_exact_coherent_v2_publication_on
                 "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
             )
             await target.execute(
-                "INSERT INTO public.alembic_version (version_num) VALUES ('410001serieslinks')"
+                "INSERT INTO public.alembic_version (version_num) VALUES ('440001assetaudit')"
             )
         finally:
             await target.close()

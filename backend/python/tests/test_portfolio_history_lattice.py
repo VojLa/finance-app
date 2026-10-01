@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.modules.portfolio_history.lattice import (
+    ALL_RANGE_HISTORY_RESOLUTIONS,
     CORE_HISTORY_RESOLUTIONS,
     LONG_TERM_HISTORY_RESOLUTIONS,
     MAX_PUBLIC_HISTORY_POINTS,
@@ -68,6 +69,7 @@ def test_resolution_lattice_is_exact_and_nested() -> None:
     assert PORTFOLIO_HISTORY_LATTICE_POLICY_VERSION == 1
     assert CORE_HISTORY_RESOLUTIONS == resolutions[:10]
     assert LONG_TERM_HISTORY_RESOLUTIONS == resolutions[7:]
+    assert ALL_RANGE_HISTORY_RESOLUTIONS == resolutions
     assert [resolution_level(value) for value in resolutions] == list(range(len(resolutions)))
     assert [resolution_minutes(value) for value in resolutions] == [
         30,
@@ -279,6 +281,30 @@ def test_all_selects_finest_long_term_layer_below_cap(
     assert selection.start == first_event
     assert selection.resolution is expected_resolution
     assert selection.maximum_point_count <= MAX_PUBLIC_HISTORY_POINTS
+
+
+def test_all_uses_two_day_resolution_for_one_and_a_half_years() -> None:
+    through = datetime(2026, 10, 1)
+    selection = select_history_range(
+        HistoryPublicRange.all,
+        through=through,
+        first_event_at=datetime(2025, 4, 1),
+    )
+
+    assert selection.resolution is HistoryResolution.days_2
+    assert selection.start == datetime(2025, 4, 1)
+    assert selection.maximum_point_count <= MAX_PUBLIC_HISTORY_POINTS
+
+
+def test_all_keeps_thirty_minute_resolution_for_short_history() -> None:
+    through = datetime(2026, 10, 1, 12)
+    selection = select_history_range(
+        HistoryPublicRange.all,
+        through=through,
+        first_event_at=through - timedelta(hours=6),
+    )
+
+    assert selection.resolution is HistoryResolution.minutes_30
 
 
 @pytest.mark.parametrize(

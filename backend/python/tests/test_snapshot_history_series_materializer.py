@@ -2,6 +2,7 @@ import importlib
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -18,6 +19,8 @@ from app.db.models.enums import (
 from app.modules.holdings.persistence_projection import (
     ExpectedPersistedHoldingPlan,
     HoldingPersistenceMovement,
+    OpenCostBasisMovement,
+    project_open_event_cost_basis,
 )
 from app.modules.portfolio_history.builder.market import SelectedHistoricalPrice
 from app.modules.portfolio_history_rebuild.models import AccountReplayState, InvestmentEventRoot
@@ -37,7 +40,7 @@ from app.modules.snapshot_refresh.history_series_materializer import (
     materialize_history_snapshot_series,
 )
 from app.modules.snapshot_refresh.series_executor import SnapshotSeriesTarget
-from app.modules.snapshots.account_projection import SelectedExchangeRateEvidence
+from app.modules.snapshots.account_projection import CurrencyAmount, SelectedExchangeRateEvidence
 from app.modules.snapshots.evidence_service import ExactSnapshotMetric
 
 _EVENT_AT = datetime(2025, 1, 2, 10, 0)
@@ -74,9 +77,57 @@ def _root() -> InvestmentEventRoot:
     )
 
 
+def _buy_root() -> InvestmentEventRoot:
+    return InvestmentEventRoot(
+        event_id="buy-event",
+        account_id=_ACCOUNT_ID,
+        event_type=InvestmentEventType.trade,
+        event_date=_EVENT_AT,
+        movements=(
+            HoldingPersistenceMovement(
+                movement_id="buy-asset",
+                event_id="buy-event",
+                account_id=_ACCOUNT_ID,
+                kind=InvestmentMovementKind.asset,
+                direction=MovementDirection.incoming,
+                quantity=Decimal("1.0000000000"),
+                currency="USD",
+                asset_id="asset-aapl",
+                listing_id="listing-aapl",
+                listing_asset_id="asset-aapl",
+                source_symbol="AAPL",
+                source_asset_type=AssetType.stock,
+                price_per_unit=Decimal("80.0000000000"),
+                value_amount=Decimal("80.0000000000"),
+                value_currency="USD",
+                listing_currency="USD",
+            ),
+            HoldingPersistenceMovement(
+                movement_id="buy-cash",
+                event_id="buy-event",
+                account_id=_ACCOUNT_ID,
+                kind=InvestmentMovementKind.cash,
+                direction=MovementDirection.outgoing,
+                quantity=Decimal("80.0000000000"),
+                currency="USD",
+                asset_id=None,
+                listing_id=None,
+                listing_asset_id=None,
+                source_symbol=None,
+                source_asset_type=None,
+                price_per_unit=None,
+                value_amount=None,
+                value_currency=None,
+            ),
+        ),
+        source=ImportSource.manual,
+    )
+
+
 def _input(*, metric_rates: tuple[FrozenHistorySeriesMetricRate, ...] | None = None):
     listing = FrozenListingIdentity(
         listing_id="listing-aapl",
+        evidence_listing_id="listing-aapl",
         asset_id="asset-aapl",
         symbol="AAPL",
         name="Apple",
@@ -98,7 +149,7 @@ def _input(*, metric_rates: tuple[FrozenHistorySeriesMetricRate, ...] | None = N
         ),
         canonical_manifest=(),
         listing_identities=(listing,),
-        roots=(_root(),),
+        roots=(_root(), _buy_root()),
         earliest_event_at=_EVENT_AT,
     )
     replay_scope = FrozenPortfolioReplayInput(
@@ -188,6 +239,28 @@ def _input(*, metric_rates: tuple[FrozenHistorySeriesMetricRate, ...] | None = N
                 event_at=_EVENT_AT,
                 timestamp=_EVENT_AT,
             ),
+            FrozenHistorySeriesMetricRate(
+                account_id=_ACCOUNT_ID,
+                output_currency="EUR",
+                rate_id="usd-eur-event-rate",
+                evidence_id="cost:buy-asset",
+                base_currency="USD",
+                quote_currency="EUR",
+                rate=Decimal("0.7000000000"),
+                event_at=_EVENT_AT,
+                timestamp=_EVENT_AT,
+            ),
+            FrozenHistorySeriesMetricRate(
+                account_id=_ACCOUNT_ID,
+                output_currency="CZK",
+                rate_id="usd-czk-event-rate",
+                evidence_id="cost:buy-asset",
+                base_currency="USD",
+                quote_currency="CZK",
+                rate=Decimal("18.0000000000"),
+                event_at=_EVENT_AT,
+                timestamp=_EVENT_AT,
+            ),
         )
     return HistorySnapshotSeriesMaterializationInput(
         job_id="history-job",
@@ -237,6 +310,13 @@ def test_materializes_native_and_all_shared_user_outputs_with_event_date_metrics
     assert evidence["USD"].valuation.investment_value == Decimal("100.000000")
     assert evidence["EUR"].valuation.investment_value == Decimal("80.000000")
     assert evidence["CZK"].valuation.investment_value == Decimal("2000.000000")
+    assert evidence["USD"].valuation.investment_cost_basis == Decimal("80.000000")
+    assert evidence["EUR"].valuation.investment_cost_basis == Decimal("56.000000")
+    assert evidence["CZK"].valuation.investment_cost_basis == Decimal("1440.000000")
+    assert evidence["EUR"].valuation.items[0].cost_basis == Decimal("56.000000")
+    assert evidence["EUR"].valuation.investment_cost_basis_by_currency == (
+        CurrencyAmount("USD", Decimal("80.000000")),
+    )
     assert all(item.valuation.items for item in evidence.values())
 
     eur_deposits = evidence["EUR"].net_deposits
@@ -246,6 +326,135 @@ def test_materializes_native_and_all_shared_user_outputs_with_event_date_metrics
     assert evidence["EUR"].selected_historical_exchange_rate_ids == ("usd-eur-event-rate",)
     assert evidence["EUR"].consumed_historical_exchange_rates[0].timestamp == _EVENT_AT
     assert evidence["USD"].selected_historical_exchange_rate_ids == ()
+
+
+def test_cost_basis_stays_fixed_when_only_snapshot_fx_changes() -> None:
+    first = _input()
+    later = _POINT_AT + timedelta(days=1)
+    second_price = replace(
+        first.prices[0],
+        through=later,
+        observation=replace(first.prices[0].observation, observed_at=later),
+    )
+    second_rates = tuple(
+        replace(
+            item,
+            timestamp=later,
+            evidence=replace(
+                item.evidence,
+                rate=Decimal("0.9000000000")
+                if item.output_currency == "EUR"
+                else Decimal("25.0000000000"),
+                timestamp=later,
+                rate_id=f"later-{item.evidence.rate_id}",
+            ),
+        )
+        for item in first.valuation_rates
+    )
+    command = materialize_history_snapshot_series(
+        replace(
+            first,
+            points=(
+                first.points[0],
+                FrozenHistorySeriesPoint(later, first.points[0].account_states),
+            ),
+            prices=(*first.prices, second_price),
+            valuation_rates=first.valuation_rates + second_rates,
+        )
+    )
+    by_point = [
+        {item.evidence.valuation.currency: item.evidence for item in point.account_evidence}
+        for point in command.points
+    ]
+    assert [point["EUR"].valuation.investment_value for point in by_point] == [
+        Decimal("80.000000"),
+        Decimal("90.000000"),
+    ]
+    assert [point["EUR"].valuation.investment_cost_basis for point in by_point] == [
+        Decimal("56.000000"),
+        Decimal("56.000000"),
+    ]
+    assert [point["CZK"].valuation.investment_cost_basis for point in by_point] == [
+        Decimal("1440.000000"),
+        Decimal("1440.000000"),
+    ]
+    assert [cast(ExactSnapshotMetric, point["EUR"].unrealized_pnl).value for point in by_point] == [
+        Decimal("24.000000"),
+        Decimal("34.000000"),
+    ]
+
+
+def test_open_cost_replay_scales_converted_and_native_basis_on_disposal() -> None:
+    buy_usd = OpenCostBasisMovement(
+        "buy-usd",
+        "asset-usd",
+        _EVENT_AT,
+        "listing",
+        MovementDirection.incoming,
+        Decimal("4"),
+        Decimal("100"),
+        "USD",
+        Decimal("1800"),
+    )
+    sell_one = OpenCostBasisMovement(
+        "sell-one",
+        "sale-one",
+        _EVENT_AT + timedelta(days=1),
+        "listing",
+        MovementDirection.outgoing,
+        Decimal("1"),
+    )
+    buy_eur = OpenCostBasisMovement(
+        "buy-eur",
+        "asset-eur",
+        _EVENT_AT + timedelta(days=2),
+        "listing",
+        MovementDirection.incoming,
+        Decimal("1"),
+        Decimal("50"),
+        "EUR",
+        Decimal("1250"),
+    )
+    sell_two = OpenCostBasisMovement(
+        "sell-two",
+        "sale-two",
+        _EVENT_AT + timedelta(days=3),
+        "listing",
+        MovementDirection.outgoing,
+        Decimal("2"),
+    )
+    close = OpenCostBasisMovement(
+        "close",
+        "sale-close",
+        _EVENT_AT + timedelta(days=4),
+        "listing",
+        MovementDirection.outgoing,
+        Decimal("2"),
+    )
+    assert project_open_event_cost_basis((buy_usd, sell_one))[0].converted_cost_basis == Decimal(
+        "1350.000000"
+    )
+    open_position = project_open_event_cost_basis((buy_usd, sell_one, buy_eur, sell_two))[0]
+    assert open_position.quantity == Decimal("2")
+    assert open_position.native_cost_basis == (
+        ("EUR", Decimal("25.0000000000")),
+        ("USD", Decimal("37.5000000000")),
+    )
+    assert open_position.converted_cost_basis == Decimal("1300.000000")
+    assert project_open_event_cost_basis((buy_usd, sell_one, buy_eur, sell_two, close)) == ()
+
+
+def test_missing_acquisition_rate_fails_closed() -> None:
+    frozen = _input()
+    with pytest.raises(SnapshotHistorySeriesMaterializationError):
+        materialize_history_snapshot_series(
+            replace(
+                frozen,
+                metric_rates=tuple(
+                    item for item in frozen.metric_rates if item.evidence_id != "cost:buy-asset"
+                ),
+            )
+        )
 
 
 def test_known_total_unrealized_pnl_allows_unavailable_native_breakdown(

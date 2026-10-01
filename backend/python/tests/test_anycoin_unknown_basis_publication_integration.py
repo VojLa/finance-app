@@ -94,7 +94,7 @@ pytestmark = [
     pytest.mark.skipif(DATABASE_URL is None, reason="DATABASE_URL is required"),
 ]
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "410001serieslinks" / "schema.sql"
+CURRENT_SCHEMA = BACKEND_ROOT / "database" / "revisions" / "440001assetaudit" / "schema.sql"
 REAL_ANYCOIN_FIXTURE = (
     Path(__file__).parents[3] / "test_imports" / "AnyCoin" / "transactions (2).csv"
 )
@@ -122,6 +122,7 @@ def _yahoo_body(
                         "symbol": symbol,
                         "currency": currency,
                         "priceHint": price_hint,
+                        "dataGranularity": "1m",
                     },
                     "timestamp": timestamps,
                     "indicators": {
@@ -419,16 +420,36 @@ async def _seed_anycoin_transfer_valuation_evidence(
 
     first_movement = rows[0][1]
     assert first_movement.asset_id is not None and first_movement.listing_id is not None
+    yahoo_reference_listing_id = f"{first_movement.asset_id}-yahoo-btc-usd"
+    session.add(
+        AssetListingModel(
+            id=yahoo_reference_listing_id,
+            asset_id=first_movement.asset_id,
+            symbol="BTC-USD",
+            exchange="yahoo_crypto",
+            mic=None,
+            currency="USD",
+            country=None,
+            provider=PriceSource.yahoo_finance,
+            provider_symbol="BTC-USD",
+            is_primary=False,
+            created_at=created_at,
+            updated_at=created_at,
+            base_priority=0,
+        )
+    )
+    await session.flush()
     for timestamp, (price_id, rate_id) in timestamp_ids.items():
         session.add_all(
             [
                 PriceSnapshotModel(
                     id=price_id,
                     asset_id=first_movement.asset_id,
-                    listing_id=first_movement.listing_id,
+                    listing_id=yahoo_reference_listing_id,
                     price=Decimal("10000.0000000000"),
                     currency="USD",
                     source=PriceSource.yahoo_finance,
+                    provider_symbol="BTC-USD",
                     timestamp=timestamp,
                     created_at=created_at,
                 ),
@@ -528,7 +549,7 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                 "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
             )
             await target.execute(
-                "INSERT INTO public.alembic_version (version_num) VALUES ('410001serieslinks')"
+                "INSERT INTO public.alembic_version (version_num) VALUES ('440001assetaudit')"
             )
         finally:
             await target.close()
@@ -595,10 +616,11 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                 alias = await session.scalar(
                     select(AssetAliasModel).where(
                         AssetAliasModel.asset_id == holding.asset_id,
-                        AssetAliasModel.provider == AssetAliasProvider.yahoo_finance,
+                        AssetAliasModel.provider == AssetAliasProvider.coingecko,
                     )
                 )
-                assert alias is not None and alias.external_id == "BTC-USD"
+                assert alias is not None and alias.external_id == "bitcoin"
+                assert alias.listing_id is None
                 # Holding rebuild participates in the caller-owned transaction.
                 # Commit the same boundary used by durable import finalization before
                 # the market planner opens its repeatable-read transaction.
@@ -645,17 +667,17 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                         created_at=SNAPSHOT_AT,
                     )
                 )
-                assert requests == []
+                assert len(requests) == 1
+                assert requests[0].url.params["ids"] == "bitcoin"
+                assert requests[0].url.params["vs_currencies"] == "czk"
                 assert {call[0] for call in yahoo_transport.calls} == {
                     "AAA",
-                    "BTC-USD",
                     "EURCZK=X",
-                    "CZK=X",
                 }
                 assert market.required_price_count == 2
-                assert market.required_fx_count == 3
+                assert market.required_fx_count == 2
                 assert market.prices_created == 2
-                assert market.rates_created == 3
+                assert market.rates_created == 2
 
                 publication = await UserSnapshotRefreshExecutor(
                     session,
@@ -691,7 +713,7 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                 assert snapshot.investment_cost_basis == Decimal("29167.553720")
                 assert snapshot.net_deposits_value == Decimal("40818.385000")
                 assert snapshot.realized_pnl_value == Decimal("-4250.322065")
-                assert snapshot.unrealized_pnl_value == Decimal("-770.323720")
+                assert snapshot.unrealized_pnl_value == Decimal("-770.324916")
                 assert snapshot.fees_value >= 0
                 assert snapshot.taxes_value >= 0
 
@@ -749,14 +771,15 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                 ).one()
                 assert holding_sql_null is False
                 assert item_sql_null is False
-                assert tuple(snapshot_sql_nulls) == (False, False, False, True)
+                assert tuple(snapshot_sql_nulls) == (False, False, False, False)
+                assert snapshot.unrealized_pnl_by_currency == {"CZK": "-770.324916"}
 
                 net_worth = await session.get(
                     NetWorthSnapshotModel,
                     publication.net_worth_snapshot_id,
                 )
                 assert net_worth is not None
-                assert net_worth.total_net_worth == Decimal("28897.230000")
+                assert net_worth.total_net_worth == Decimal("28897.228804")
 
                 command = ReadAuthorizedMultiAccountPortfolioSnapshotCommand(
                     principal=AuthenticatedPrincipal(
@@ -786,7 +809,7 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                 ).dashboard
                 assert portfolio.summary.total_value == dashboard.summary.total_value
                 assert portfolio.summary.investment_value == dashboard.summary.investment_value
-                assert portfolio.summary.total_value == Decimal("28897.230000")
+                assert portfolio.summary.total_value == Decimal("28897.228804")
                 assert portfolio.summary.investment_cost_basis == Decimal("31667.553720")
                 assert dashboard.summary.investment_cost_basis == Decimal("31667.553720")
                 assert {account.account.name for account in portfolio.accounts} == {
@@ -803,7 +826,7 @@ async def test_actual_anycoin_transfer_evidence_publishes_quantity_value_and_cos
                     for account in portfolio.accounts
                     if account.account.account_id == trading_account_id
                 )
-                assert anycoin_view.positions[0].native_value == Decimal("1135.8892000000")
+                assert anycoin_view.positions[0].native_value == Decimal("28397.2288036193")
                 assert anycoin_view.summary.investment_cost_basis == Decimal("29167.553720")
                 assert trading_view.summary.investment_cost_basis == Decimal("2500.000000")
                 assert dashboard.top_positions[0].name == "Bitcoin"

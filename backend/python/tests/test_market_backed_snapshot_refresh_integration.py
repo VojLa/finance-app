@@ -759,7 +759,9 @@ async def test_mixed_production_market_backed_refresh_e2e_and_replay() -> None:
             )
             replay = await replay_service.execute(_command(user_id))
             assert replay.market.prices_created == 0
-            assert replay.market.prices_replayed == 2
+            # XNAS is closed for this replay window, so the valid persisted close
+            # is reused without a second Twelve Data acquisition.
+            assert replay.market.prices_replayed == 1
             assert replay.market.rates_created == 0
             assert replay.market.rates_replayed == 4
             assert replay.snapshots.created_account_snapshot_count == 0

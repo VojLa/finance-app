@@ -124,6 +124,9 @@ LONG_TERM_HISTORY_RESOLUTIONS = tuple(
     for resolution in HistoryResolution
     if _RESOLUTION_MINUTES[resolution] >= _RESOLUTION_MINUTES[HistoryResolution.days_8]
 )
+# ``ALL`` uses the ordered lattice from its finest tier. The first tier that
+# covers the complete span under the public point cap owns the entire graph.
+ALL_RANGE_HISTORY_RESOLUTIONS = tuple(HistoryResolution)
 _RESOLUTION_LEVEL = {resolution: level for level, resolution in enumerate(HistoryResolution)}
 _FIXED_RANGE_RESOLUTION = {
     HistoryPublicRange.one_day: HistoryResolution.minutes_30,
@@ -413,7 +416,7 @@ def select_history_range(
     if history_range is HistoryPublicRange.all:
         if canonical_first is None:
             raise _fail()
-        for candidate in LONG_TERM_HISTORY_RESOLUTIONS:
+        for candidate in ALL_RANGE_HISTORY_RESOLUTIONS:
             start = canonical_first
             try:
                 point_count = _point_upper_bound(
@@ -637,6 +640,7 @@ def rollup_history_children(
 
 
 __all__ = [
+    "ALL_RANGE_HISTORY_RESOLUTIONS",
     "CORE_HISTORY_RESOLUTIONS",
     "LONG_TERM_HISTORY_RESOLUTIONS",
     "MAX_PUBLIC_HISTORY_POINTS",

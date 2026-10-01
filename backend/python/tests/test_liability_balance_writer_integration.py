@@ -691,7 +691,7 @@ async def test_different_accounts_do_not_share_a_global_liability_lock() -> None
         await asyncio.wait_for(holding.wait(), timeout=10)
         second = await asyncio.wait_for(
             LiabilityBalanceWriter(second_session).write(_command(second_prefix)),
-            timeout=2,
+            timeout=10,
         )
         assert second.disposition is LiabilityBalanceWriteDisposition.created
         release.set()

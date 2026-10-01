@@ -13,6 +13,8 @@ from app.modules.fx.providers import (
     create_production_exchange_rate_registry,
 )
 from app.modules.market_data.acquisition_cache import CycleMarketAcquisitionCache
+from app.modules.market_data.health_repository import MarketDataHealthRepository
+from app.modules.market_data.health_service import MarketDataHealthService
 from app.modules.market_data.models import MarketEvidenceRefreshPlan
 from app.modules.market_data.policy import (
     DEFAULT_MARKET_EVIDENCE_POLICY,
@@ -57,6 +59,8 @@ def create_production_market_evidence_service(
         price_registry = create_local_free_price_registry(
             settings,
             policy=policy,
+            coingecko_transport=coingecko_transport,
+            coingecko_http_transport=coingecko_http_transport,
             yahoo_finance_transport=yahoo_finance_transport,
             yahoo_finance_http_transport=yahoo_finance_http_transport,
         )
@@ -92,6 +96,7 @@ def create_production_market_evidence_service(
         source_policy=source_policy,
         policy=policy,
         planner=planner,
+        health=MarketDataHealthService(MarketDataHealthRepository(session)),
     )
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 
 from app.modules.portfolio_snapshot.aggregate_models import (
     MultiAccountPortfolioAccountView,
@@ -27,6 +27,7 @@ _ERROR_MESSAGE = "Portfolio snapshot views cannot produce a complete multi-accou
 _MONEY = (18, 6)
 _MONEY_LIMIT = Decimal("1000000000000")
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+_PERCENTAGE_QUANTUM = Decimal("0.0001")
 
 
 class MultiAccountPortfolioProjectionError(ValueError):
@@ -82,6 +83,28 @@ def _sum_optional_money(values: tuple[Decimal | None, ...]) -> Decimal | None:
     if any(value is None for value in values):
         return None
     return _sum_money(tuple(value for value in values if value is not None))
+
+
+def portfolio_allocation_percentage(value: Decimal, total: Decimal) -> Decimal:
+    """Return one exact current position contribution against the portfolio total."""
+
+    exact_value = _exact_money(value)
+    exact_total = _exact_money(total)
+    if exact_value < 0 or exact_total < 0 or exact_value > exact_total:
+        raise _fail()
+    if exact_total == 0:
+        if exact_value != 0:
+            raise _fail()
+        return Decimal("0.0000")
+    try:
+        with localcontext() as context:
+            context.prec = 112
+            return ((exact_value / exact_total) * Decimal(100)).quantize(
+                _PERCENTAGE_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            )
+    except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
+        raise _fail() from exc
 
 
 def _sum_breakdowns(

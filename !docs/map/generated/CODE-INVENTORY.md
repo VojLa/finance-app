@@ -7,10 +7,10 @@
 
 This inventory lists production source files only; tests and generated transport types are covered separately.
 
-**Total files:** 552
+**Total files:** 567
 
-- [`backend/python/app/`](CODE-INVENTORY-BACKEND-PYTHON-APP.md) — 329 files
+- [`backend/python/app/`](CODE-INVENTORY-BACKEND-PYTHON-APP.md) — 340 files
 
 - [`backend/rust/`](CODE-INVENTORY-BACKEND-RUST.md) — 1 files
 
-- [`src/`](CODE-INVENTORY-SRC.md) — 222 files
+- [`src/`](CODE-INVENTORY-SRC.md) — 226 files

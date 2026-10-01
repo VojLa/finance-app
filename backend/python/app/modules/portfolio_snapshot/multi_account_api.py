@@ -7,9 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentPrincipal
 from app.db.connection import get_db_session
+from app.modules.portfolio_snapshot.aggregation import portfolio_allocation_percentage
+from app.modules.portfolio_snapshot.api_models import (
+    PortfolioSnapshotAccountResponse,
+    PortfolioSnapshotPositionResponse,
+    PortfolioSnapshotSummaryResponse,
+)
 from app.modules.portfolio_snapshot.multi_account_api_models import (
     ExactPortfolioSnapshotSetRequest,
+    MultiAccountPortfolioAccountResponse,
+    MultiAccountPortfolioAggregatePositionResponse,
     MultiAccountPortfolioResponse,
+    MultiAccountPortfolioSummaryResponse,
 )
 from app.modules.portfolio_snapshot.multi_account_service import (
     AuthorizedMultiAccountPortfolioSnapshotService,
@@ -31,26 +40,33 @@ def build_multi_account_portfolio_response(
         granularity=result.portfolio.granularity,
         currency=result.portfolio.currency,
         calculation_version=result.portfolio.calculation_version,
-        summary=result.portfolio.summary,
+        summary=MultiAccountPortfolioSummaryResponse.model_validate(result.portfolio.summary),
         accounts=tuple(
-            {
-                "snapshot_id": account.presentation_snapshot_id,
-                "primary_snapshot_id": account.primary_snapshot_id,
-                "currency": account.currency,
-                "account": account.account,
-                "source": account.source,
-                "summary": account.summary,
-                "positions": account.positions,
-            }
+            MultiAccountPortfolioAccountResponse(
+                snapshot_id=account.presentation_snapshot_id,
+                primary_snapshot_id=account.primary_snapshot_id,
+                currency=account.currency,
+                account=PortfolioSnapshotAccountResponse.model_validate(account.account),
+                source=account.source,
+                summary=PortfolioSnapshotSummaryResponse.model_validate(account.summary),
+                positions=tuple(
+                    PortfolioSnapshotPositionResponse.model_validate(position)
+                    for position in account.positions
+                ),
+            )
             for account in result.account_presentations
         ),
         aggregate_positions=tuple(
-            {
-                "account_id": account.account.account_id,
-                "account_name": account.account.name,
-                "account_currency": account.account.currency,
-                "position": position,
-            }
+            MultiAccountPortfolioAggregatePositionResponse(
+                account_id=account.account.account_id,
+                account_name=account.account.name,
+                account_currency=account.account.currency,
+                portfolio_allocation_pct=portfolio_allocation_percentage(
+                    position.value,
+                    result.portfolio.summary.investment_value,
+                ),
+                position=PortfolioSnapshotPositionResponse.model_validate(position),
+            )
             for account in result.portfolio.accounts
             for position in account.positions
         ),

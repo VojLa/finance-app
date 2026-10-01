@@ -46,6 +46,7 @@ class PriceSnapshotModel(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
     )
+    provider_symbol: Mapped[str | None] = mapped_column("providerSymbol", Text)
 
 
 class ExchangeRateModel(Base):

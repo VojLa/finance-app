@@ -256,7 +256,7 @@ async def test_concurrent_service_calls_delegate_to_writer_identity_lock_boundar
     assert len(writer.commands) == 2
 
 
-async def test_local_free_anycoin_btc_writes_only_yahoo_btc_usd() -> None:
+async def test_local_free_anycoin_btc_uses_asset_wide_coingecko_identity() -> None:
     writer = _Writer()
     result = await AnycoinBtcAliasService(
         _Session(),  # type: ignore[arg-type]
@@ -268,9 +268,11 @@ async def test_local_free_anycoin_btc_writes_only_yahoo_btc_usd() -> None:
     assert len(result.aliases) == 1
     assert writer.commands == [
         OnboardAssetAliasCommand(
+            actor="system:anycoin-import",
             asset_id="asset-btc",
-            provider=AssetAliasProvider.yahoo_finance,
-            external_id="BTC-USD",
+            listing_id=None,
+            provider=AssetAliasProvider.coingecko,
+            external_id="bitcoin",
             expected_symbol="BTC",
             expected_asset_type=AssetType.crypto,
             expected_currency="BTC",

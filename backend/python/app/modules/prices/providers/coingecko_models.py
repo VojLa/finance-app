@@ -9,6 +9,7 @@ class CoinGeckoHttpResponse:
     status_code: int
     content_type: str
     body: bytes
+    retry_after: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

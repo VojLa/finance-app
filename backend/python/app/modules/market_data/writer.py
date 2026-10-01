@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -257,6 +258,7 @@ def _price_matches(
         and row.price == observation.price
         and row.currency == observation.currency
         and row.source is observation.provider
+        and row.provider_symbol == observation.provider_symbol
         and row.timestamp == observation.observed_at
         and isinstance(row.created_at, datetime)
         and (created_at is None or row.created_at == created_at)
@@ -332,6 +334,8 @@ class MarketEvidenceWriter:
     async def write(
         self,
         command: PersistMarketEvidenceCommand,
+        *,
+        transactional_finalize: Callable[[], Awaitable[None]] | None = None,
     ) -> PersistMarketEvidenceResult:
         prices, rates, created_at, reuse_persisted_fx_on_conflict = _validate_command(command)
         if self.session.in_transaction():
@@ -339,12 +343,15 @@ class MarketEvidenceWriter:
         for attempt in range(_MAX_TRANSACTION_ATTEMPTS):
             try:
                 async with self.session.begin():
-                    return await self._write_attempt(
+                    result = await self._write_attempt(
                         prices=prices,
                         rates=rates,
                         created_at=created_at,
                         reuse_persisted_fx_on_conflict=reuse_persisted_fx_on_conflict,
                     )
+                    if transactional_finalize is not None:
+                        await transactional_finalize()
+                    return result
             except (MarketEvidenceConflictError, MarketEvidenceStateError):
                 raise
             except SQLAlchemyError as exc:
@@ -466,6 +473,7 @@ class MarketEvidenceWriter:
                     price=price_observation.price,
                     currency=price_observation.currency,
                     source=price_observation.provider,
+                    provider_symbol=price_observation.provider_symbol,
                     timestamp=price_observation.observed_at,
                     created_at=created_at,
                 )

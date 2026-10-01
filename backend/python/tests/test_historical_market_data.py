@@ -768,16 +768,17 @@ def test_local_free_factory_rejects_production_even_if_settings_were_mutated() -
         create_local_free_historical_yahoo_providers(settings)
 
 
-def test_local_free_factory_exposes_one_yahoo_price_and_direct_fx_capability() -> None:
+def test_local_free_factory_exposes_listed_crypto_and_direct_fx_capabilities() -> None:
     settings = Settings(environment="test", market_evidence_source_mode="local_free")
     yahoo = _YahooTransport(b"unused")
 
-    price, fx = create_local_free_historical_providers(
+    price, crypto, fx = create_local_free_historical_providers(
         settings,
         yahoo_transport=yahoo,
     )
 
     assert price.source is PriceSource.yahoo_finance
+    assert crypto.source is PriceSource.coingecko
     assert fx.source is ExchangeRateSource.yahoo_finance
     assert HistoricalTimeSeriesInterval.provider_determined in price.capability.supported_intervals
     assert HistoricalTimeSeriesInterval.provider_determined in fx.capability.supported_intervals

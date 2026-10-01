@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Protocol
@@ -18,12 +18,13 @@ from app.db.models.enums import (
     AccountType,
     AssetType,
     ExchangeRateSource,
+    MarketDataHealthState,
     PriceSource,
     SnapshotGranularity,
     SnapshotSource,
 )
 from app.db.models.liabilities import LiabilityBalanceModel
-from app.db.models.prices import ExchangeRateModel
+from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.snapshots import AccountSnapshotModel
 from app.modules.current_value.delta_projection import (
     CurrentDeltaProjectionError,
@@ -35,7 +36,10 @@ from app.modules.current_value.delta_projection import (
     apply_investment_events,
 )
 from app.modules.current_value.models import CurrentPortfolioResult, CurrentValuePlan
-from app.modules.current_value.repository import CurrentValueRepository
+from app.modules.current_value.repository import (
+    CurrentListingSelectionContext,
+    CurrentValueRepository,
+)
 from app.modules.daily_baselines.service import (
     DailyBaselineAccount,
     DailyBaselineChange,
@@ -45,12 +49,18 @@ from app.modules.daily_baselines.service import (
 )
 from app.modules.holdings.persistence_projection import ExpectedPersistedHoldingPlan
 from app.modules.market_data.factory import create_production_market_evidence_service
+from app.modules.market_data.listing_selection import (
+    ListingSelectionCandidate,
+    ListingSelectionError,
+    select_listing,
+)
 from app.modules.market_data.models import (
     ExchangeRateRequirement,
     MarketEvidenceConflictError,
     MarketEvidenceRefreshPlan,
     MarketEvidenceRefreshResult,
     MarketEvidenceStateError,
+    PriceRequirement,
 )
 from app.modules.market_data.policy import (
     DEFAULT_MARKET_EVIDENCE_POLICY,
@@ -59,6 +69,7 @@ from app.modules.market_data.policy import (
 from app.modules.market_data.requirements import (
     BuildMarketEvidenceRefreshPlanCommand,
     build_price_requirement,
+    resolve_price_identity,
 )
 from app.modules.market_data.service import RefreshMarketEvidenceCommand
 from app.modules.market_data.source_policy import (
@@ -713,35 +724,68 @@ def _fx_keys(
     }
 
 
+def _deduplicate_selected_requirements(
+    selections: tuple[PriceRequirement, ...],
+) -> tuple[PriceRequirement, ...]:
+    by_selected: dict[tuple[str, PriceSource, datetime], PriceRequirement] = {}
+    for requirement in selections:
+        key = (requirement.listing_id, requirement.provider, requirement.through)
+        previous = by_selected.get(key)
+        if previous is not None:
+            if (
+                previous.asset_id != requirement.asset_id
+                or previous.provider_symbol != requirement.provider_symbol
+                or previous.listing_currency != requirement.listing_currency
+                or previous.listing_mic != requirement.listing_mic
+            ):
+                raise _fail()
+            continue
+        by_selected[key] = requirement
+    return tuple(
+        sorted(
+            by_selected.values(),
+            key=lambda item: (
+                item.account_id,
+                item.asset_id,
+                item.listing_id,
+                item.provider.value,
+                item.provider_symbol,
+            ),
+        )
+    )
+
+
 async def _build_market_plan(
     repository: CurrentValueRepository,
     state: _PreparedState,
     *,
     as_of: datetime,
     source_policy: MarketEvidenceSourcePolicy,
-) -> MarketEvidenceRefreshPlan:
+) -> tuple[MarketEvidenceRefreshPlan, tuple[tuple[str, str], ...]]:
     holding_accounts: dict[str, str] = {}
     for account in state.accounts:
         for holding in account.holdings:
             current = holding_accounts.get(holding.listing_id)
             if current is None or account.lineage.account_id < current:
                 holding_accounts[holding.listing_id] = account.lineage.account_id
-    identities = await repository.load_listing_identities(tuple(sorted(holding_accounts)))
-    if {listing.id for listing, _, _ in identities} != set(holding_accounts):
+    contexts = await repository.load_listing_selection_contexts(tuple(sorted(holding_accounts)))
+    if {context.requested_listing.id for context in contexts} != set(holding_accounts):
         raise _fail()
-    prices = tuple(
+    candidate_ids = tuple(
+        sorted({listing.id for context in contexts for listing in context.candidate_listings})
+    )
+    existing_prices = await repository.load_price_candidates(candidate_ids, through=as_of)
+    selections = tuple(
         sorted(
             (
-                build_price_requirement(
-                    account_id=holding_accounts[listing.id],
-                    listing=listing,
-                    asset=asset,
-                    aliases=aliases,
-                    supported_sources=source_policy.price_sources,
-                    through=as_of,
+                _select_current_price_requirement(
+                    context=context,
+                    account_id=holding_accounts[context.requested_listing.id],
+                    existing_prices=existing_prices,
+                    as_of=as_of,
                     source_policy=source_policy,
                 )
-                for listing, asset, aliases in identities
+                for context in contexts
             ),
             key=lambda item: (
                 item.account_id,
@@ -752,7 +796,13 @@ async def _build_market_plan(
             ),
         )
     )
-    price_by_listing = {item.listing_id: item for item in prices}
+    listing_selections = tuple(
+        sorted(
+            (item.requested_listing_id or item.listing_id, item.listing_id) for item in selections
+        )
+    )
+    prices = _deduplicate_selected_requirements(selections)
+    price_by_listing = {item.requested_listing_id: item for item in selections}
     required_fx: set[tuple[str, str, datetime, ExchangeRateSource]] = set()
     for account in state.accounts:
         targets = {state.baseline.currency, account.lineage.account_currency}
@@ -789,12 +839,151 @@ async def _build_market_plan(
             key=lambda item: (item[0], item[1], item[2], item[3].value),
         )
     )
-    return MarketEvidenceRefreshPlan(
-        user_id=state.baseline.user_id,
-        output_currency=state.baseline.currency,
-        snapshot_timestamp=as_of,
-        price_requirements=prices,
-        fx_requirements=fx,
+    return (
+        MarketEvidenceRefreshPlan(
+            user_id=state.baseline.user_id,
+            output_currency=state.baseline.currency,
+            snapshot_timestamp=as_of,
+            price_requirements=prices,
+            fx_requirements=fx,
+        ),
+        listing_selections,
+    )
+
+
+def _select_current_price_requirement(
+    *,
+    context: CurrentListingSelectionContext,
+    account_id: str,
+    existing_prices: tuple[PriceSnapshotModel, ...],
+    as_of: datetime,
+    source_policy: MarketEvidenceSourcePolicy,
+) -> PriceRequirement:
+    requested = context.requested_listing
+    asset = context.asset
+    if requested.asset_id != asset.id:
+        raise _fail()
+    try:
+        requested_identity = resolve_price_identity(
+            listing=requested,
+            asset=asset,
+            aliases=tuple(
+                alias
+                for alias in context.aliases
+                if alias.listing_id is None or alias.listing_id == requested.id
+            ),
+            supported_sources=source_policy.price_sources,
+            source_policy=source_policy,
+            asset_listing_count=len(context.candidate_listings),
+        )
+        valuation_currency = requested_identity.price_currency
+    except MarketEvidenceStateError:
+        valuation_currency = requested.currency
+    health_by_identity = {(row.listing_id, row.provider): row for row in context.health}
+    retry_by_provider = dict(context.provider_retry_after)
+    if len(health_by_identity) != len(context.health) or len(retry_by_provider) != len(
+        context.provider_retry_after
+    ):
+        raise _fail()
+    candidates: list[ListingSelectionCandidate] = []
+    for listing in context.candidate_listings:
+        if listing.asset_id != asset.id:
+            continue
+        try:
+            identity = resolve_price_identity(
+                listing=listing,
+                asset=asset,
+                aliases=tuple(
+                    alias
+                    for alias in context.aliases
+                    if alias.listing_id is None or alias.listing_id == listing.id
+                ),
+                supported_sources=source_policy.price_sources,
+                source_policy=source_policy,
+                asset_listing_count=len(context.candidate_listings),
+            )
+        except MarketEvidenceStateError:
+            continue
+        # Current-value has no pre-selection cross-currency FX proof.
+        if identity.price_currency != valuation_currency:
+            continue
+        health = health_by_identity.get((listing.id, identity.provider))
+        if (
+            health is not None
+            and health.provider_symbol is not None
+            and health.provider_symbol != identity.provider_symbol
+        ):
+            continue
+        available = any(
+            price.listing_id == listing.id
+            and price.asset_id == asset.id
+            and price.source is identity.provider
+            and price.provider_symbol == identity.provider_symbol
+            and price.currency == identity.price_currency
+            and price.timestamp <= as_of
+            and as_of - price.timestamp <= DEFAULT_MARKET_EVIDENCE_POLICY.maximum_price_age
+            for price in existing_prices
+        )
+        lease_active = (
+            health is not None
+            and health.lease_expires_at is not None
+            and health.lease_expires_at > as_of
+        )
+        candidates.append(
+            ListingSelectionCandidate(
+                listing_id=listing.id,
+                asset_id=listing.asset_id,
+                asset_type=asset.asset_type,
+                currency=identity.price_currency,
+                provider=identity.provider,
+                provider_symbol=identity.provider_symbol,
+                mic=listing.mic,
+                base_priority=listing.base_priority or 0,
+                health=health.state if health is not None else MarketDataHealthState.unknown,
+                retry_after=health.retry_after if health is not None else None,
+                provider_retry_after=retry_by_provider.get(identity.provider),
+                price_available=available,
+                acquisition_eligible=not lease_active,
+            )
+        )
+    try:
+        selection = select_listing(
+            requested_listing_id=requested.id,
+            asset_id=asset.id,
+            asset_type=asset.asset_type,
+            valuation_currency=valuation_currency,
+            through=as_of,
+            now=as_of,
+            candidates=tuple(candidates),
+        )
+    except ListingSelectionError as exc:
+        raise _fail() from exc
+    listing = next(
+        item for item in context.candidate_listings if item.id == selection.selected_listing_id
+    )
+    selected = build_price_requirement(
+        account_id=account_id,
+        listing=listing,
+        asset=asset,
+        aliases=tuple(
+            alias
+            for alias in context.aliases
+            if alias.listing_id is None or alias.listing_id == listing.id
+        ),
+        supported_sources=source_policy.price_sources,
+        through=as_of,
+        source_policy=source_policy,
+        asset_listing_count=len(context.candidate_listings),
+    )
+    return replace(
+        selected,
+        requested_listing_id=requested.id,
+        selection_reason=selection.reason.value,
+        fallback_reason=(
+            selection.fallback_reason.value if selection.fallback_reason is not None else None
+        ),
+        selected_base_priority=selection.base_priority,
+        selected_health=selection.health.value,
     )
 
 
@@ -816,6 +1005,30 @@ def _validate_market_result(result: object, plan: MarketEvidenceRefreshPlan) -> 
         or len(set(result.exchange_rate_ids)) != len(result.exchange_rate_ids)
     ):
         raise _fail()
+
+
+def _same_market_plan_identity(
+    planned: MarketEvidenceRefreshPlan,
+    current: MarketEvidenceRefreshPlan,
+) -> bool:
+    """Accept health changes from refresh while pinning exact selected evidence."""
+
+    def stable(requirement: PriceRequirement) -> PriceRequirement:
+        return replace(
+            requirement,
+            selection_reason=None,
+            fallback_reason=None,
+            selected_health=None,
+        )
+
+    return (
+        planned.user_id == current.user_id
+        and planned.output_currency == current.output_currency
+        and planned.snapshot_timestamp == current.snapshot_timestamp
+        and tuple(stable(item) for item in planned.price_requirements)
+        == tuple(stable(item) for item in current.price_requirements)
+        and planned.fx_requirements == current.fx_requirements
+    )
 
 
 def _snapshot_holdings(account: _PreparedAccount) -> tuple[SnapshotHoldingEvidence, ...]:
@@ -924,17 +1137,59 @@ async def _project_account(
     as_of: datetime,
     policy: MarketEvidencePolicy,
     source_policy: MarketEvidenceSourcePolicy,
+    price_requirements: tuple[PriceRequirement, ...],
+    listing_selections: tuple[tuple[str, str], ...],
 ) -> PortfolioSnapshotView:
     holdings = _snapshot_holdings(account)
+    requirements = {requirement.listing_id: requirement for requirement in price_requirements}
+    if len(requirements) != len(price_requirements):
+        raise _fail()
+    selected_by_requested = dict(listing_selections)
+    if len(selected_by_requested) != len(listing_selections):
+        raise _fail()
+    if not {holding.listing_id for holding in holdings} <= selected_by_requested.keys():
+        raise _fail()
+    selected_ids = tuple(
+        sorted({selected_by_requested[holding.listing_id] for holding in holdings})
+    )
+    if not set(selected_ids) <= requirements.keys():
+        raise _fail()
+    identity_rows = await repository.load_listing_identities(selected_ids)
+    if {listing.id for listing, _, _, _ in identity_rows} != set(selected_ids):
+        raise _fail()
+    identities = {}
+    listings = {}
+    for listing, asset, aliases, listing_count in identity_rows:
+        listings[listing.id] = listing
+        identities[listing.id] = resolve_price_identity(
+            listing=listing,
+            asset=asset,
+            aliases=aliases,
+            supported_sources=source_policy.price_sources,
+            source_policy=source_policy,
+            asset_listing_count=listing_count,
+        )
+    for holding in holdings:
+        requirement = requirements.get(selected_by_requested[holding.listing_id])
+        if requirement is None or requirement.asset_id != holding.asset_id:
+            raise _fail()
+        identity = identities[requirement.listing_id]
+        if (
+            identity.provider is not requirement.provider
+            or identity.provider_symbol != requirement.provider_symbol
+            or identity.price_currency != requirement.listing_currency
+        ):
+            raise _fail()
     price_candidates = await repository.load_price_candidates(
-        tuple(item.listing_id for item in holdings),
+        selected_ids,
         through=as_of,
     )
     prices = tuple(
         select_latest_price_evidence(
             price_candidates,
             holding=holding,
-            source=source_policy.price_source_for(holding.asset_type),
+            listing=listings[selected_by_requested[holding.listing_id]],
+            identity=identities[selected_by_requested[holding.listing_id]],
             through=as_of,
             policy=policy,
         )
@@ -1306,7 +1561,7 @@ class CurrentValueService:
                 ),
                 account_types,
             )
-            market_plan = await _build_market_plan(
+            market_plan, listing_selections = await _build_market_plan(
                 repository,
                 state,
                 as_of=as_of,
@@ -1318,6 +1573,7 @@ class CurrentValueService:
             baseline=baseline,
             market_plan=market_plan,
             frozen_account_ids=frozen_account_ids,
+            listing_selections=listing_selections,
         )
 
     async def _project(
@@ -1355,14 +1611,15 @@ class CurrentValueService:
                 ),
                 account_types,
             )
-            if (
-                await _build_market_plan(
-                    repository,
-                    state,
-                    as_of=plan.as_of,
-                    source_policy=self.source_policy,
-                )
-                != plan.market_plan
+            current_market_plan, current_selections = await _build_market_plan(
+                repository,
+                state,
+                as_of=plan.as_of,
+                source_policy=self.source_policy,
+            )
+            if current_selections != plan.listing_selections or not _same_market_plan_identity(
+                plan.market_plan,
+                current_market_plan,
             ):
                 raise _fail()
             primary_views: list[PortfolioSnapshotView] = []
@@ -1375,6 +1632,8 @@ class CurrentValueService:
                     as_of=plan.as_of,
                     policy=DEFAULT_MARKET_EVIDENCE_POLICY,
                     source_policy=self.source_policy,
+                    price_requirements=plan.market_plan.price_requirements,
+                    listing_selections=plan.listing_selections,
                 )
                 presentation = primary
                 if account.lineage.account_currency != baseline.currency:
@@ -1385,6 +1644,8 @@ class CurrentValueService:
                         as_of=plan.as_of,
                         policy=DEFAULT_MARKET_EVIDENCE_POLICY,
                         source_policy=self.source_policy,
+                        price_requirements=plan.market_plan.price_requirements,
+                        listing_selections=plan.listing_selections,
                     )
                 primary_views.append(primary)
                 presentations.append(

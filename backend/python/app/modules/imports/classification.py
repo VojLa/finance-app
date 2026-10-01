@@ -440,6 +440,8 @@ def _classify_investment(
             or (rate_raw is not None and rate is None)
         ):
             return _investment_review()
+        assert isinstance(from_money, InvestmentMoneyPostingIntent)
+        assert isinstance(to_money, InvestmentMoneyPostingIntent)
         conversion = InvestmentConversionPostingIntent(
             from_=from_money, to=to_money, exchange_rate=rate
         )

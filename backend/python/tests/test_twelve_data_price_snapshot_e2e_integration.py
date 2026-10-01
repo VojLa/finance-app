@@ -237,9 +237,12 @@ async def test_twelve_data_price_reaches_snapshots_and_exact_read_models() -> No
                     created_at=CREATED_AT,
                 )
             )
-            assert replay_market.prices_replayed == 1
+            # XNAS is closed at this snapshot cutoff and the exact persisted
+            # previous close is acceptable, so acquisition planning performs no
+            # redundant provider call or writer replay.
+            assert replay_market.prices_replayed == 0
             assert replay_refresh.replayed_account_snapshot_count == 1
-            assert len(replay_requests) == 1
+            assert len(replay_requests) == 0
     finally:
         await engine.dispose()
         await cleanup(prefix)
@@ -290,7 +293,10 @@ async def test_quote_failure_creates_no_market_or_snapshot_graph(failure: str) -
                     _settings(with_key=failure != "missing_key"),
                     twelve_data_http_transport=transport,
                 ).refresh(RefreshMarketEvidenceCommand(user_id, SNAPSHOT_AT, CREATED_AT))
-            assert len(requests) == (0 if failure == "missing_key" else 1)
+            expected_requests = (
+                0 if failure == "missing_key" else 3 if failure == "timestamp_mismatch" else 1
+            )
+            assert len(requests) == expected_requests
             assert not session.in_transaction()
         async with AsyncSession(engine) as session:
             assert (

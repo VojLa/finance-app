@@ -170,7 +170,8 @@ describe("R7 checkout-portable production inventory", () => {
     expect(chartProjection).toContain(
       "Presentation-only conversion at the Recharts coordinate leaf boundary"
     )
-    expect(chartProjection).toContain("netInvestedExactValue")
+    expect(chartProjection).toContain("comparisonExactValue")
+    expect(chartProjection).toContain('"Vložené prostředky" : "Investováno"')
     expect(chartProjection).toContain("source: point")
     expect(chart).toContain("formatSnapshotAmount(point.exactValue, currency)")
     expect(historyChart).not.toMatch(
@@ -284,8 +285,9 @@ describe("R7 in-process browser and state acceptance", () => {
         dateLabel: expect.any(String),
         resolutionMinutes: 1440,
         resolutionLabel: "1 d",
-        netInvestedExactValue: null,
-        netInvestedDisplayValue: null,
+        comparisonExactValue: null,
+        comparisonDisplayValue: null,
+        comparisonLabel: "Vložené prostředky",
         source: history.points[0],
       },
     ])

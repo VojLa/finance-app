@@ -3,24 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.enums import ExchangeRateSource
+from app.db.models.enums import ExchangeRateSource, MarketDataFailureReason, PriceSource
 from app.modules.fx.models import ExchangeRateObservation
 from app.modules.fx.validation import (
     ExchangeRateObservationValidationError,
     validate_exchange_rate_observation,
 )
+from app.modules.market_data.exchange_calendar import assess_market
+from app.modules.market_data.health import ListingHealthOutcome
 from app.modules.market_data.models import (
     ExchangeRateRequirement,
     MarketEvidenceRefreshPlan,
     MarketEvidenceRefreshResult,
     MarketEvidenceStateError,
+    PriceIdentityFailure,
     PriceRequirement,
 )
 from app.modules.market_data.policy import (
@@ -28,6 +33,7 @@ from app.modules.market_data.policy import (
     MarketEvidencePolicy,
     validate_market_evidence_policy,
 )
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.market_data.providers import (
     BatchExchangeRateProvider,
     ExchangeRateProviderRegistry,
@@ -55,6 +61,8 @@ from app.modules.prices.validation import (
     validate_price_observation,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class RefreshMarketEvidenceCommand:
@@ -75,11 +83,36 @@ class _Writer(Protocol):
     async def write(
         self,
         command: PersistMarketEvidenceCommand,
+        *,
+        transactional_finalize: Callable[[], Awaitable[None]] | None = None,
     ) -> PersistMarketEvidenceResult: ...
 
 
 class _ReadBoundary(Protocol):
     async def set_transaction_repeatable_read_only(self) -> None: ...
+
+
+class _HealthCoordinator(Protocol):
+    async def claim(
+        self,
+        *,
+        listing_id: str,
+        provider: PriceSource,
+        provider_symbol: str,
+        lease_owner: str,
+        now: datetime,
+        lease_for: timedelta,
+    ) -> bool: ...
+
+    async def record(
+        self,
+        *,
+        listing_id: str,
+        provider: PriceSource,
+        provider_symbol: str | None,
+        outcome: ListingHealthOutcome,
+        lease_owner: str | None = None,
+    ) -> object | None: ...
 
 
 _MAX_CONCURRENT_ACQUISITIONS = 4
@@ -91,9 +124,9 @@ async def _acquire_bounded[T](
 ) -> tuple[T, ...]:
     """Run independent provider acquisitions with deterministic result slots.
 
-    A TaskGroup cancels every unfinished acquisition when one provider fails.
-    Callers receive results only after all work completed successfully, so a
-    persistence boundary can never observe a partial acquisition batch.
+    A TaskGroup cancels unfinished operations when one raises. Health-enabled
+    price operations convert provider failures into result values so sibling
+    acquisitions can finish before their outcomes are recorded.
     """
 
     if not operations:
@@ -120,11 +153,43 @@ class _AcquiredPrice:
 
 
 @dataclass(frozen=True, slots=True)
+class _FailedPrice:
+    index: int
+    reason: MarketDataFailureReason
+    retry_after: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _FailedFx:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class _AcquiredExchangeRates:
     observations: tuple[tuple[int, ExchangeRateObservation], ...]
 
 
-type _Acquisition = _AcquiredPrice | _AcquiredExchangeRates
+type _Acquisition = _AcquiredPrice | _FailedPrice | _AcquiredExchangeRates | _FailedFx
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimedPrice:
+    index: int
+    started_at: datetime
+    token: str
+
+
+_HEALTH_LEASE = timedelta(minutes=5)
+
+
+def _health_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _health_timestamp(value: object) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is not None:
+        raise _fail()
+    return value
 
 
 def _fail() -> MarketEvidenceStateError:
@@ -168,6 +233,7 @@ def _validate_plan(
         or value.snapshot_timestamp != snapshot_timestamp
         or not isinstance(value.price_requirements, tuple)
         or not isinstance(value.fx_requirements, tuple)
+        or not isinstance(value.identity_failures, tuple)
     ):
         raise _fail()
     _currency(value.output_currency)
@@ -202,6 +268,28 @@ def _validate_plan(
                 item.provider.value,
                 item.provider_symbol,
             ),
+        )
+    ):
+        raise _fail()
+
+    failure_keys: set[tuple[str, PriceSource]] = set()
+    for identity_failure in value.identity_failures:
+        if (
+            not isinstance(identity_failure, PriceIdentityFailure)
+            or identity_failure.provider not in price_registry.sources
+            or identity_failure.reason is not MarketDataFailureReason.missing_provider_symbol
+            or not isinstance(identity_failure.configured_at, datetime)
+            or identity_failure.configured_at.tzinfo is not None
+        ):
+            raise _fail()
+        key = (_nonblank(identity_failure.listing_id), identity_failure.provider)
+        if key in failure_keys:
+            raise _fail()
+        failure_keys.add(key)
+    if value.identity_failures != tuple(
+        sorted(
+            value.identity_failures,
+            key=lambda item: (item.provider.value, item.listing_id),
         )
     ):
         raise _fail()
@@ -346,6 +434,9 @@ class MarketEvidenceRefreshService:
         read_boundary: _ReadBoundary | None = None,
         planner: _Planner | None = None,
         writer: _Writer | None = None,
+        health: _HealthCoordinator | None = None,
+        health_clock: Callable[[], datetime] = _health_now,
+        health_token: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
         self.session = session
         self.price_registry = price_registry or PriceProviderRegistry()
@@ -371,9 +462,13 @@ class MarketEvidenceRefreshService:
             session,
             price_sources=self.price_registry.sources,
             fx_source=self.fx_source,
+            policy=self.policy,
             source_policy=self.source_policy,
         )
         self.writer = writer or MarketEvidenceWriter(session)
+        self.health = health
+        self.health_clock = health_clock
+        self.health_token = health_token
 
     async def refresh(
         self,
@@ -402,6 +497,59 @@ class MarketEvidenceRefreshService:
         if self.session.in_transaction():
             raise _fail()
 
+        if self.health is not None and plan.identity_failures:
+            async with self.session.begin():
+                for config_failure in plan.identity_failures:
+                    observed_at = max(
+                        _health_timestamp(self.health_clock()), config_failure.configured_at
+                    )
+                    recorded = await self.health.record(
+                        listing_id=config_failure.listing_id,
+                        provider=config_failure.provider,
+                        provider_symbol=None,
+                        outcome=ListingHealthOutcome(
+                            attempt_started_at=config_failure.configured_at,
+                            attempt_token="configuration:missing-provider-symbol",
+                            observed_at=observed_at,
+                            reason=config_failure.reason,
+                        ),
+                    )
+                    if recorded is None:
+                        raise _fail()
+
+        claims: dict[int, _ClaimedPrice] = {}
+        if self.health is not None and plan.price_requirements:
+            try:
+                # All claims commit together before any provider request. A denial
+                # rolls back earlier claims so no unused lease survives this run.
+                async with self.session.begin():
+                    for index, requirement in sorted(
+                        enumerate(plan.price_requirements),
+                        key=lambda item: (
+                            item[1].provider.value,
+                            item[1].listing_id,
+                            item[1].provider_symbol,
+                        ),
+                    ):
+                        started_at = _health_timestamp(self.health_clock())
+                        token = _nonblank(self.health_token())
+                        if any(claim.token == token for claim in claims.values()):
+                            raise _fail()
+                        if not await self.health.claim(
+                            listing_id=requirement.listing_id,
+                            provider=requirement.provider,
+                            provider_symbol=requirement.provider_symbol,
+                            lease_owner=token,
+                            now=started_at,
+                            lease_for=_HEALTH_LEASE,
+                        ):
+                            raise _fail()
+                        claims[index] = _ClaimedPrice(index, started_at, token)
+            except Exception as exc:
+                raise _fail() from exc
+            if self.session.in_transaction():
+                raise _fail()
+
         try:
             operations: list[Callable[[], Awaitable[_Acquisition]]] = []
             for price_index, price_requirement in enumerate(plan.price_requirements):
@@ -410,17 +558,36 @@ class MarketEvidenceRefreshService:
                     *,
                     index: int = price_index,
                     requirement: PriceRequirement = price_requirement,
-                ) -> _AcquiredPrice:
-                    price_provider = self.price_registry.get(requirement.provider)
-                    observation = await price_provider.fetch(requirement)
-                    return _AcquiredPrice(
-                        index=index,
-                        observation=validate_price_observation(
-                            observation,
-                            requirement=requirement,
-                            policy=self.policy,
-                        ),
-                    )
+                ) -> _AcquiredPrice | _FailedPrice:
+                    try:
+                        price_provider = self.price_registry.get(requirement.provider)
+                        observation = await price_provider.fetch(requirement)
+                        return _AcquiredPrice(
+                            index=index,
+                            observation=validate_price_observation(
+                                observation,
+                                requirement=requirement,
+                                policy=self.policy,
+                            ),
+                        )
+                    except ProviderFailure as exc:
+                        if self.health is None:
+                            raise
+                        return _FailedPrice(index, exc.reason, exc.retry_after)
+                    except PriceObservationValidationError as exc:
+                        if self.health is None:
+                            raise
+                        reason = getattr(exc, "reason", None)
+                        if (
+                            not isinstance(reason, MarketDataFailureReason)
+                            or reason is MarketDataFailureReason.market_closed
+                        ):
+                            reason = MarketDataFailureReason.incomplete_response
+                        return _FailedPrice(index, reason)
+                    except Exception:
+                        if self.health is None:
+                            raise
+                        return _FailedPrice(index, MarketDataFailureReason.incomplete_response)
 
                 operations.append(_acquire_price)
 
@@ -440,49 +607,124 @@ class MarketEvidenceRefreshService:
                     indexed: tuple[tuple[int, ExchangeRateRequirement], ...] = tuple(
                         indexed_requirements
                     ),
-                ) -> _AcquiredExchangeRates:
-                    fx_provider = self.fx_registry.get(source)
-                    ordered_requirements = tuple(requirement for _, requirement in indexed)
-                    if isinstance(fx_provider, BatchExchangeRateProvider):
-                        observations = await fx_provider.fetch_many(ordered_requirements)
-                        if not isinstance(observations, tuple) or len(observations) != len(
-                            ordered_requirements
-                        ):
-                            raise _fail()
-                    else:
-                        observations_list: list[ExchangeRateObservation] = []
-                        for requirement in ordered_requirements:
-                            observations_list.append(await fx_provider.fetch(requirement))
-                        observations = tuple(observations_list)
-                    return _AcquiredExchangeRates(
-                        observations=tuple(
-                            (
-                                index,
-                                validate_exchange_rate_observation(
-                                    observation,
-                                    requirement=requirement,
-                                    policy=self.policy,
-                                ),
-                            )
-                            for (index, requirement), observation in zip(
-                                indexed,
-                                observations,
-                                strict=True,
+                ) -> _AcquiredExchangeRates | _FailedFx:
+                    try:
+                        fx_provider = self.fx_registry.get(source)
+                        ordered_requirements = tuple(requirement for _, requirement in indexed)
+                        if isinstance(fx_provider, BatchExchangeRateProvider):
+                            observations = await fx_provider.fetch_many(ordered_requirements)
+                            if not isinstance(observations, tuple) or len(observations) != len(
+                                ordered_requirements
+                            ):
+                                raise _fail()
+                        else:
+                            observations_list: list[ExchangeRateObservation] = []
+                            for requirement in ordered_requirements:
+                                observations_list.append(await fx_provider.fetch(requirement))
+                            observations = tuple(observations_list)
+                        return _AcquiredExchangeRates(
+                            observations=tuple(
+                                (
+                                    index,
+                                    validate_exchange_rate_observation(
+                                        observation,
+                                        requirement=requirement,
+                                        policy=self.policy,
+                                    ),
+                                )
+                                for (index, requirement), observation in zip(
+                                    indexed,
+                                    observations,
+                                    strict=True,
+                                )
                             )
                         )
-                    )
+                    except Exception:
+                        if self.health is None:
+                            raise
+                        return _FailedFx()
 
                 operations.append(_acquire_fx_source)
 
             acquired = await _acquire_bounded(tuple(operations))
             price_slots: list[PriceObservation | object] = [_UNSET] * len(plan.price_requirements)
             fx_slots: list[ExchangeRateObservation | object] = [_UNSET] * len(plan.fx_requirements)
+            price_failures: dict[int, _FailedPrice] = {}
+            fx_failed = False
             for acquisition in acquired:
                 if isinstance(acquisition, _AcquiredPrice):
                     price_slots[acquisition.index] = acquisition.observation
+                elif isinstance(acquisition, _FailedPrice):
+                    price_failures[acquisition.index] = acquisition
+                elif isinstance(acquisition, _FailedFx):
+                    fx_failed = True
                 else:
                     for index, observation in acquisition.observations:
                         fx_slots[index] = observation
+            if self.health is not None:
+                for index, requirement in enumerate(plan.price_requirements):
+                    claim = claims[index]
+                    failure = price_failures.get(index)
+                    if failure is None:
+                        continue
+                    observed_at = max(_health_timestamp(self.health_clock()), claim.started_at)
+                    retry_after = failure.retry_after if failure is not None else None
+                    if retry_after is not None and (
+                        retry_after.tzinfo is not None or retry_after <= observed_at
+                    ):
+                        retry_after = None
+                    reason = failure.reason if failure is not None else None
+                    next_session_at = None
+                    if (
+                        reason
+                        in {
+                            MarketDataFailureReason.incomplete_response,
+                            MarketDataFailureReason.stale_timestamp,
+                        }
+                        and requirement.asset_type is not None
+                    ):
+                        calendar = assess_market(
+                            requirement.listing_mic,
+                            observed_at.replace(tzinfo=UTC),
+                            asset_type=requirement.asset_type.value,
+                        )
+                        if (
+                            calendar.status in {"closed", "weekend", "holiday"}
+                            and calendar.next_session_at is not None
+                        ):
+                            reason = MarketDataFailureReason.market_closed
+                            next_session_at = calendar.next_session_at.replace(tzinfo=None)
+                    outcome = ListingHealthOutcome(
+                        attempt_started_at=claim.started_at,
+                        attempt_token=claim.token,
+                        observed_at=observed_at,
+                        reason=reason,
+                        retry_after=retry_after,
+                        next_session_at=next_session_at,
+                    )
+                    async with self.session.begin():
+                        recorded = await self.health.record(
+                            listing_id=requirement.listing_id,
+                            provider=requirement.provider,
+                            provider_symbol=requirement.provider_symbol,
+                            outcome=outcome,
+                            lease_owner=claim.token,
+                        )
+                        if recorded is None:
+                            raise _fail()
+            if price_failures or fx_failed:
+                logger.warning(
+                    "market_data_refresh_failed",
+                    extra={
+                        "price_failures": len(price_failures),
+                        "fx_failed": fx_failed,
+                        "fallback_count": sum(
+                            requirement.fallback_reason is not None
+                            for requirement in plan.price_requirements
+                        ),
+                    },
+                )
+                raise _fail()
             if any(observation is _UNSET for observation in price_slots) or any(
                 observation is _UNSET for observation in fx_slots
             ):
@@ -506,13 +748,56 @@ class MarketEvidenceRefreshService:
         except Exception as exc:
             raise _fail() from exc
 
+        async def finalize_health_success() -> None:
+            if self.health is None:
+                return
+            for index, requirement in sorted(
+                enumerate(plan.price_requirements),
+                key=lambda item: (
+                    item[1].provider.value,
+                    item[1].listing_id,
+                    item[1].provider_symbol,
+                ),
+            ):
+                claim = claims[index]
+                observed_at = max(_health_timestamp(self.health_clock()), claim.started_at)
+                recorded = await self.health.record(
+                    listing_id=requirement.listing_id,
+                    provider=requirement.provider,
+                    provider_symbol=requirement.provider_symbol,
+                    outcome=ListingHealthOutcome(
+                        attempt_started_at=claim.started_at,
+                        attempt_token=claim.token,
+                        observed_at=observed_at,
+                    ),
+                    lease_owner=claim.token,
+                )
+                if recorded is None:
+                    raise _fail()
+
         persisted = await self.writer.write(
             PersistMarketEvidenceCommand(
                 price_observations=coalesced_prices,
                 exchange_rate_observations=coalesced_rates,
                 created_at=created_at,
                 reuse_persisted_fx_on_conflict=command.reuse_persisted_fx_on_conflict,
-            )
+            ),
+            transactional_finalize=(
+                finalize_health_success
+                if self.health is not None and plan.price_requirements
+                else None
+            ),
+        )
+        logger.info(
+            "market_data_refresh_succeeded",
+            extra={
+                "price_count": len(plan.price_requirements),
+                "fx_count": len(plan.fx_requirements),
+                "fallback_count": sum(
+                    requirement.fallback_reason is not None
+                    for requirement in plan.price_requirements
+                ),
+            },
         )
         return MarketEvidenceRefreshResult(
             user_id=plan.user_id,

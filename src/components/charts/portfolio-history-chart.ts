@@ -17,7 +17,50 @@ export type PortfolioHistoryChartProps = Readonly<{
   resolutions: readonly number[]
   coverage: readonly SnapshotPortfolioHistoryCoverage[]
   onPointSelect?: (point: SnapshotPortfolioHistoryPoint) => void
+  onPointPreview?: (point: SnapshotPortfolioHistoryPoint | null) => void
 }>
+
+export type PortfolioHistoryInteractionState = Readonly<{
+  pinnedPoint: SnapshotPortfolioHistoryPoint | null
+  previewPoint: SnapshotPortfolioHistoryPoint | null
+}>
+
+export type PortfolioHistoryInteractionAction =
+  | Readonly<{ type: "preview"; point: SnapshotPortfolioHistoryPoint }>
+  | Readonly<{ type: "leave" }>
+  | Readonly<{ type: "reset" }>
+  | Readonly<{ type: "toggle-pin"; point: SnapshotPortfolioHistoryPoint }>
+
+export const EMPTY_PORTFOLIO_HISTORY_INTERACTION: PortfolioHistoryInteractionState = {
+  pinnedPoint: null,
+  previewPoint: null,
+}
+
+export function reducePortfolioHistoryInteraction(
+  state: PortfolioHistoryInteractionState,
+  action: PortfolioHistoryInteractionAction
+): PortfolioHistoryInteractionState {
+  if (action.type === "reset") return EMPTY_PORTFOLIO_HISTORY_INTERACTION
+  if (action.type === "leave") {
+    return state.previewPoint === null ? state : { ...state, previewPoint: null }
+  }
+  if (action.type === "preview") {
+    if (state.pinnedPoint !== null || state.previewPoint?.timestamp === action.point.timestamp) {
+      return state
+    }
+    return { ...state, previewPoint: action.point }
+  }
+  if (state.pinnedPoint !== null) {
+    return { pinnedPoint: null, previewPoint: action.point }
+  }
+  return { pinnedPoint: action.point, previewPoint: null }
+}
+
+export function portfolioHistoryInteractionPoint(
+  state: PortfolioHistoryInteractionState
+): SnapshotPortfolioHistoryPoint | null {
+  return state.pinnedPoint ?? state.previewPoint
+}
 
 export type PortfolioHistoryChartPoint = Readonly<{
   timestamp: string
@@ -26,8 +69,9 @@ export type PortfolioHistoryChartPoint = Readonly<{
   dateLabel: string
   resolutionMinutes: number
   resolutionLabel: string
-  netInvestedExactValue: string | null
-  netInvestedDisplayValue: number | null
+  comparisonExactValue: string | null
+  comparisonDisplayValue: number | null
+  comparisonLabel: "Vložené prostředky" | "Investováno"
   source: SnapshotPortfolioHistoryPoint
 }>
 
@@ -53,6 +97,10 @@ export function buildPortfolioHistoryChartPoints(
 ): PortfolioHistoryChartPoint[] {
   return points.map((point) => {
     const exactValue = valueMode === "netWorth" ? point.netWorthValue : point.investmentValue
+    const comparisonExactValue =
+      valueMode === "netWorth"
+        ? (point.netInvestedValue ?? null)
+        : (point.investmentCostBasis ?? null)
     return {
       timestamp: point.timestamp,
       exactValue,
@@ -61,9 +109,9 @@ export function buildPortfolioHistoryChartPoints(
       dateLabel: dateLabel(point.timestamp),
       resolutionMinutes: point.resolutionMinutes,
       resolutionLabel: formatHistoryResolution(point.resolutionMinutes),
-      netInvestedExactValue: point.netInvestedValue ?? null,
-      netInvestedDisplayValue:
-        point.netInvestedValue === undefined ? null : Number(point.netInvestedValue),
+      comparisonExactValue,
+      comparisonDisplayValue: comparisonExactValue === null ? null : Number(comparisonExactValue),
+      comparisonLabel: valueMode === "netWorth" ? "Vložené prostředky" : "Investováno",
       source: point,
     }
   })

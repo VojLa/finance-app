@@ -2,9 +2,14 @@
 
 import Link from "next/link"
 import dynamic from "next/dynamic"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 
 import { type PortfolioHistoryValueMode } from "@/components/charts/PortfolioLineChart"
+import {
+  EMPTY_PORTFOLIO_HISTORY_INTERACTION,
+  portfolioHistoryInteractionPoint,
+  reducePortfolioHistoryInteraction,
+} from "@/components/charts/portfolio-history-chart"
 import { SnapshotAllocationPie } from "@/modules/portfolio/SnapshotAllocationPie"
 import { SnapshotCurrencyBreakdown } from "@/modules/portfolio/SnapshotCurrencyBreakdown"
 import { SnapshotHoldingsTable } from "@/modules/portfolio/SnapshotHoldingsTable"
@@ -53,8 +58,11 @@ export default function PortfolioPage() {
   >({ status: "idle" })
   const [historyRange, setHistoryRange] = useState<SnapshotPortfolioHistoryRange>("1Y")
   const [historyValueMode, setHistoryValueMode] = useState<PortfolioHistoryValueMode>("netWorth")
-  const [selectedHistoryPoint, setSelectedHistoryPoint] =
-    useState<SnapshotPortfolioHistoryPoint | null>(null)
+  const [historyInteraction, dispatchHistoryInteraction] = useReducer(
+    reducePortfolioHistoryInteraction,
+    EMPTY_PORTFOLIO_HISTORY_INTERACTION
+  )
+  const selectedHistoryPoint = portfolioHistoryInteractionPoint(historyInteraction)
   const initialLoadStarted = useRef(false)
   const refreshGate = useRef(createSerializedRefreshGate())
   const lastReadyState = useRef<Extract<PortfolioPageState, { status: "ready" }> | null>(null)
@@ -124,7 +132,7 @@ export default function PortfolioPage() {
     }
 
     setHistoryState({ status: "loading" })
-    setSelectedHistoryPoint(null)
+    dispatchHistoryInteraction({ type: "reset" })
     return startPortfolioHistoryRequest(
       historyRange,
       historyCurrency,
@@ -186,7 +194,10 @@ export default function PortfolioPage() {
       )}
 
       {state.status === "ready" && state.current.isStale && (
-        <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+        <div
+          role="status"
+          className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+        >
           Ceny jsou starší než 30 minut. Zobrazuji poslední bezpečně publikovaný stav oceněný k{" "}
           {formatSnapshotTimestamp(state.current.valuationTimestamp)}.
         </div>
@@ -199,19 +210,28 @@ export default function PortfolioPage() {
           selectedAccountId={selectedAccountId}
           selectedAccount={selectedAccount}
           onSelectAccount={(accountId) => {
-            setSelectedHistoryPoint(null)
+            dispatchHistoryInteraction({ type: "reset" })
             setSelectedAccountId(accountId)
           }}
           historyState={historyState}
           historyRange={historyRange}
           onHistoryRangeChange={(range) => {
-            setSelectedHistoryPoint(null)
+            dispatchHistoryInteraction({ type: "reset" })
             setHistoryRange(range)
           }}
           historyValueMode={historyValueMode}
           onHistoryValueModeChange={setHistoryValueMode}
           selectedHistoryPoint={selectedHistoryPoint}
-          onSelectHistoryPoint={setSelectedHistoryPoint}
+          isHistoryPointPinned={historyInteraction.pinnedPoint !== null}
+          onPreviewHistoryPoint={(point) =>
+            dispatchHistoryInteraction(
+              point === null ? { type: "leave" } : { type: "preview", point }
+            )
+          }
+          onSelectHistoryPoint={(point) =>
+            dispatchHistoryInteraction({ type: "toggle-pin", point })
+          }
+          onClearHistoryPoint={() => dispatchHistoryInteraction({ type: "reset" })}
         />
       )}
     </div>
@@ -244,7 +264,10 @@ type ReadyPortfolioProps = {
   historyValueMode: PortfolioHistoryValueMode
   onHistoryValueModeChange: (mode: PortfolioHistoryValueMode) => void
   selectedHistoryPoint: SnapshotPortfolioHistoryPoint | null
-  onSelectHistoryPoint: (point: SnapshotPortfolioHistoryPoint | null) => void
+  isHistoryPointPinned: boolean
+  onPreviewHistoryPoint: (point: SnapshotPortfolioHistoryPoint | null) => void
+  onSelectHistoryPoint: (point: SnapshotPortfolioHistoryPoint) => void
+  onClearHistoryPoint: () => void
 }
 
 function ReadyPortfolio({
@@ -259,29 +282,47 @@ function ReadyPortfolio({
   historyValueMode,
   onHistoryValueModeChange,
   selectedHistoryPoint,
+  isHistoryPointPinned,
+  onPreviewHistoryPoint,
   onSelectHistoryPoint,
+  onClearHistoryPoint,
 }: ReadyPortfolioProps) {
   const view = selectedAccount ?? model.aggregate
-  const showAccount = view.scope === "aggregate" && model.accounts.length > 1
-  const selectedCurrency = selectedHistoryPoint ? historyState.status === "ready"
-    ? historyState.data.currency
-    : view.currency : view.currency
-  const summaryCards: ReadonlyArray<readonly [string, string | null]> = selectedHistoryPoint
+  const historyData =
+    historyState.status === "ready" ||
+    historyState.status === "rebuilding" ||
+    historyState.status === "failed" ||
+    historyState.status === "empty"
+      ? historyState.data
+      : null
+  const displayHistoryPoint = selectedHistoryPoint
+  const selectedCurrency = displayHistoryPoint
+    ? (historyData?.currency ?? view.currency)
+    : view.currency
+  const allocationItems = displayHistoryPoint
+    ? (displayHistoryPoint.positions ?? []).map((position) => ({
+        key: position.listingId,
+        name: position.symbol,
+        allocationPct: position.allocationPct,
+      }))
+    : view.allocations
+  const summaryCards: ReadonlyArray<readonly [string, string | null]> = displayHistoryPoint
     ? [
-        ["Celková hodnota", selectedHistoryPoint.netWorthValue],
-        ["Hodnota investic", selectedHistoryPoint.investmentValue],
-        ["Nákladová báze investic", null],
-        ["Hotovost", selectedHistoryPoint.cashValue],
-        ["Závazky", selectedHistoryPoint.liabilitiesValue],
-        ["Čisté vklady", selectedHistoryPoint.netInvestedValue ?? null],
-        ["Realizované P/L", selectedHistoryPoint.realizedPnlValue ?? null],
-        ["Nerealizované P/L", selectedHistoryPoint.unrealizedPnlValue ?? null],
+        ["Celková hodnota", displayHistoryPoint.netWorthValue],
+        ["Hodnota investic", displayHistoryPoint.investmentValue],
+        ["Nákladová báze investic", displayHistoryPoint.investmentCostBasis ?? null],
+        ["Hotovost", displayHistoryPoint.cashValue],
+        ["Závazky", displayHistoryPoint.liabilitiesValue],
+        ["Čisté vklady", displayHistoryPoint.netInvestedValue ?? null],
+        ["Realizované P/L", displayHistoryPoint.realizedPnlValue ?? null],
+        ["Nerealizované P/L", displayHistoryPoint.unrealizedPnlValue ?? null],
       ]
     : [
         ["Celková hodnota", view.summary.totalValue],
         ["Hodnota investic", view.summary.investmentValue],
         ["Nákladová báze investic", view.summary.investmentCostBasis],
         ["Hotovost", view.summary.cashValue],
+        ["Závazky", view.summary.liabilitiesValue],
         ["Čisté vklady", view.summary.netDepositsValue],
         ["Realizované P/L", view.summary.realizedPnlValue],
         ["Nerealizované P/L", view.summary.unrealizedPnlValue],
@@ -290,14 +331,24 @@ function ReadyPortfolio({
   return (
     <>
       <CurrentMetadata current={state.current} />
-      {selectedHistoryPoint && (
-        <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-          <span>Historický stav: {formatSnapshotTimestamp(selectedHistoryPoint.timestamp)}</span>
-          <button type="button" className="underline" onClick={() => onSelectHistoryPoint(null)}>
+      <div
+        className={`flex min-h-[50px] items-center justify-between rounded-lg border px-4 py-3 text-sm ${
+          selectedHistoryPoint
+            ? "border-blue-200 bg-blue-50 text-blue-900"
+            : "border-gray-200 bg-gray-50 text-gray-600"
+        }`}
+      >
+        <span>
+          {selectedHistoryPoint
+            ? `${isHistoryPointPinned ? "Připnutý historický stav" : "Náhled historického stavu"}: ${formatSnapshotTimestamp(selectedHistoryPoint.timestamp)}`
+            : `Aktuální stav: ${formatSnapshotTimestamp(state.current.asOf)}`}
+        </span>
+        {isHistoryPointPinned && (
+          <button type="button" className="underline" onClick={onClearHistoryPoint}>
             Zpět na aktuální stav
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {model.accounts.length > 1 && (
         <div className="flex flex-wrap gap-2" aria-label="Výběr účtu">
@@ -333,7 +384,10 @@ function ReadyPortfolio({
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {summaryCards.map(([label, value]) => (
-          <div key={label} className="min-w-0 rounded-xl border border-gray-200 bg-white p-5">
+          <div
+            key={label}
+            className="min-h-[92px] min-w-0 rounded-xl border border-gray-200 bg-white p-5"
+          >
             <p className="mb-1 text-sm text-gray-500">{label}</p>
             <p className="break-all text-xl font-semibold">
               {value === null ? "—" : formatSnapshotAmount(value, selectedCurrency)}
@@ -343,34 +397,40 @@ function ReadyPortfolio({
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {selectedHistoryPoint && selectedHistoryPoint.cashByCurrency === undefined ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-medium">Hotovost podle měny</h2>
-            <p className="mt-3 text-sm text-amber-700">Historická hodnota není dostupná.</p>
-          </section>
-        ) : (
-          <SnapshotCurrencyBreakdown
-            title="Hotovost podle měny"
-            emptyMessage="Snapshot neobsahuje žádnou hotovost podle měny."
-            items={selectedHistoryPoint
-              ? selectedHistoryPoint.cashByCurrency!.map(({ currency, value }) => ({ currency, amount: value }))
-              : view.summary.cashByCurrency}
-          />
-        )}
-        {selectedHistoryPoint && selectedHistoryPoint.netInvestedByCurrency === undefined ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h2 className="text-lg font-medium">Čisté vklady podle měny</h2>
-            <p className="mt-3 text-sm text-amber-700">Historická hodnota není dostupná.</p>
-          </section>
-        ) : (
-          <SnapshotCurrencyBreakdown
-            title="Čisté vklady podle měny"
-            emptyMessage="Snapshot neobsahuje žádné čisté vklady podle měny."
-            items={selectedHistoryPoint
-              ? selectedHistoryPoint.netInvestedByCurrency!.map(({ currency, value }) => ({ currency, amount: value }))
-              : view.summary.netDepositsByCurrency}
-          />
-        )}
+        <SnapshotCurrencyBreakdown
+          title="Hotovost podle měny"
+          emptyMessage="Snapshot neobsahuje žádnou hotovost podle měny."
+          unavailableMessage={
+            displayHistoryPoint
+              ? "Historická hodnota není dostupná."
+              : "Rozpad hotovosti podle měny není pro aktuální snapshot dostupný."
+          }
+          items={
+            displayHistoryPoint
+              ? (displayHistoryPoint.cashByCurrency?.map(({ currency, value }) => ({
+                  currency,
+                  amount: value,
+                })) ?? null)
+              : view.summary.cashByCurrency
+          }
+        />
+        <SnapshotCurrencyBreakdown
+          title="Čisté vklady podle měny"
+          emptyMessage="Snapshot neobsahuje žádné čisté vklady podle měny."
+          unavailableMessage={
+            displayHistoryPoint
+              ? "Historická hodnota není dostupná."
+              : "Rozpad čistých vkladů podle měny není pro aktuální snapshot dostupný."
+          }
+          items={
+            displayHistoryPoint
+              ? (displayHistoryPoint.netInvestedByCurrency?.map(({ currency, value }) => ({
+                  currency,
+                  amount: value,
+                })) ?? null)
+              : view.summary.netDepositsByCurrency
+          }
+        />
       </div>
 
       <section
@@ -429,84 +489,32 @@ function ReadyPortfolio({
             preferredResolutionMinutes={historyState.data.preferredResolutionMinutes ?? undefined}
             resolutions={historyState.data.resolutions}
             coverage={historyState.data.coverage}
+            onPointPreview={onPreviewHistoryPoint}
             onPointSelect={onSelectHistoryPoint}
           />
         )}
       </section>
 
-      {selectedHistoryPoint ? (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
-            <h2 className="mb-4 text-lg font-medium">Pozice k vybranému času</h2>
-            {(selectedHistoryPoint.positions?.length ?? 0) === 0 ? (
-              <p className="text-sm text-gray-500">Snapshot neobsahuje žádné pozice.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-gray-500">
-                    <th className="py-2">Instrument</th>
-                    <th>Počet</th>
-                    <th>Hodnota</th>
-                    <th>Nákladová báze</th>
-                    <th>Alokace</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedHistoryPoint.positions?.map((position) => (
-                    <tr key={position.listingId} className="border-b last:border-0">
-                      <td className="py-2 font-medium">{position.symbol}</td>
-                      <td>{position.quantity}</td>
-                      <td>{formatSnapshotAmount(position.value, selectedCurrency)}</td>
-                      <td>
-                        {position.costBasis === undefined
-                          ? "—"
-                          : formatSnapshotAmount(position.costBasis, selectedCurrency)}
-                      </td>
-                      <td>{position.allocationPct} %</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          <div className="rounded-xl border border-gray-200 bg-white p-6">
-            <h2 className="mb-4 text-lg font-medium">Alokace k vybranému času</h2>
-            <div className="space-y-3">
-              {selectedHistoryPoint.positions?.map((position) => (
-                <div key={position.listingId}>
-                  <div className="mb-1 flex justify-between text-sm">
-                    <span>{position.symbol}</span>
-                    <span>{position.allocationPct} %</span>
-                  </div>
-                  <div className="h-2 rounded bg-gray-100">
-                    <div
-                      className="h-2 rounded bg-emerald-500"
-                      style={{ width: `${Math.min(100, Number(position.allocationPct))}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
+          <h2 className="mb-4 text-lg font-medium">
+            {selectedHistoryPoint ? "Pozice k vybranému času" : "Aktuální pozice"}
+          </h2>
+          <SnapshotHoldingsTable
+            positions={view.positions}
+            historicalPositions={
+              displayHistoryPoint ? (displayHistoryPoint.positions ?? []) : undefined
+            }
+            currency={selectedCurrency}
+          />
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
-            <h2 className="mb-4 text-lg font-medium">Pozice</h2>
-            <SnapshotHoldingsTable positions={view.positions} showAccount={showAccount} />
-          </div>
-          <div className="rounded-xl border border-gray-200 bg-white p-6">
-            <h2 className="mb-4 text-lg font-medium">Alokace</h2>
-            {view.hasServerAllocation ? (
-              <SnapshotAllocationPie positions={view.positions} showAccount={showAccount} />
-            ) : (
-              <p className="py-8 text-center text-sm text-gray-500">
-                Souhrnná alokace přes více účtů zatím není v portfolio snapshot response dostupná.
-              </p>
-            )}
-          </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h2 className="mb-4 text-lg font-medium">
+            {selectedHistoryPoint ? "Alokace k vybranému času" : "Aktuální alokace"}
+          </h2>
+          <SnapshotAllocationPie items={allocationItems} />
         </div>
-      )}
+      </div>
     </>
   )
 }

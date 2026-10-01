@@ -32,6 +32,18 @@ function number(value: string | null): number | null {
   return value === null ? null : Number(value)
 }
 
+const TRACE_STATUS: Record<string, { label: string; style: string }> = {
+  ok: { label: "OK", style: "bg-green-50 text-green-700" },
+  unresolved: { label: "Nevyřešená identita", style: "bg-amber-50 text-amber-700" },
+  conflict: { label: "Rozpor v evidenci", style: "bg-red-50 text-red-700" },
+  stale: { label: "Zastaralá cena", style: "bg-amber-50 text-amber-700" },
+  unavailable: { label: "Nedostupné podklady", style: "bg-gray-100 text-gray-600" },
+}
+
+function evidence(value: string | number | null): string {
+  return value === null ? "Nedostupné" : String(value)
+}
+
 export default function SymbolPage() {
   const { symbol } = useParams<{ symbol: string }>()
   const [detail, setDetail] = useState<SymbolDetail | null>(null)
@@ -96,7 +108,83 @@ export default function SymbolPage() {
 
       {detail.positions.map((position) => (
         <section key={position.id} className="rounded-xl border border-gray-200 bg-white p-5">
-          <h2 className="mb-4 font-medium">{position.accountName}</h2>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <h2 className="font-medium">{position.accountName}</h2>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${TRACE_STATUS[position.traceStatus]?.style ?? TRACE_STATUS.unavailable.style}`}
+            >
+              {TRACE_STATUS[position.traceStatus]?.label ?? TRACE_STATUS.unavailable.label}
+            </span>
+          </div>
+          <div className="mb-5 grid gap-3 rounded-lg bg-gray-50 p-4 text-sm md:grid-cols-2 xl:grid-cols-6">
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Broker → aktivum</p>
+              <p className="text-gray-600">{position.symbol}</p>
+              <p className="font-medium">{evidence(position.assetName ?? position.name)}</p>
+              <p className="text-gray-600">
+                {evidence(position.assetIsin)} · {position.assetType}
+              </p>
+              <p className="break-all text-xs text-gray-400">ID: {evidence(position.assetId)}</p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Požadovaný listing</p>
+              <p className="font-medium">{evidence(position.listingSymbol)}</p>
+              <p className="text-gray-600">
+                {evidence(position.listingExchange)} · {evidence(position.listingMic)} ·{" "}
+                {evidence(position.listingCurrency)}
+              </p>
+              <p className="break-all text-xs text-gray-400">
+                ID: {position.requestedListingId} · priorita: {evidence(position.listingBasePriority)}
+              </p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Vybraný listing</p>
+              <p className="break-all font-medium">{evidence(position.selectedListingId)}</p>
+              <p className="text-gray-600">
+                Priorita: {evidence(position.selectedBasePriority)} · stav: {evidence(position.selectedHealth)}
+              </p>
+              <p className="text-xs text-gray-500">
+                Výběr: {evidence(position.selectionReason)} · důvod změny: {evidence(position.fallbackReason)}
+              </p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Skutečný tržní zdroj</p>
+              <p className="font-medium">{evidence(position.selectedProvider)}</p>
+              <p className="break-all text-gray-600">{evidence(position.selectedProviderSymbol)}</p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Uložená cena</p>
+              <p className="font-medium">
+                {position.priceAmount === null
+                  ? "Nedostupné"
+                  : `${position.priceAmount} ${evidence(position.priceCurrency)}`}
+              </p>
+              <p className="text-gray-600">
+                {evidence(position.priceSource)} · {evidence(position.priceProviderSymbol)}
+              </p>
+              <p className="text-xs text-gray-400">
+                {position.priceTimestamp
+                  ? new Date(position.priceTimestamp).toLocaleString("cs-CZ")
+                  : "Nedostupné datum"}
+              </p>
+              <p className="break-all text-xs text-gray-400">
+                Snapshot: {evidence(position.priceSnapshotId)} · čerstvost: {position.priceFreshness}
+              </p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs text-gray-500">Aktuální pozice</p>
+              <p className="font-medium">{fmt(Number(position.quantity), 6)} ks</p>
+              <p className="text-gray-600">
+                {position.currentValue === null
+                  ? "Hodnota nedostupná"
+                  : `${fmt(Number(position.currentValue))} ${position.currency}`}
+              </p>
+              <p className="text-xs text-gray-400">
+                FX reference: {evidence(position.fxEvidenceId)} · kurz: {evidence(position.fxRate)} ·
+                přepočtená hodnota: {evidence(position.convertedValue)}
+              </p>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
             <div>
               <p className="text-sm text-gray-500">Množství</p>
@@ -105,7 +193,9 @@ export default function SymbolPage() {
             <div>
               <p className="text-sm text-gray-500">Průměrná nákupní cena</p>
               <p className="font-mono text-lg font-semibold">
-                {fmt(Number(position.avgBuyPrice))} {position.currency}
+                {position.avgBuyPrice === null
+                  ? "Nedostupné"
+                  : `${fmt(Number(position.avgBuyPrice))} ${position.currency}`}
               </p>
             </div>
             <div>

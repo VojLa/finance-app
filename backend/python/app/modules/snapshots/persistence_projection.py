@@ -407,15 +407,21 @@ def _metric(
     return exact_value, breakdown
 
 
-def _stable_ids(values: object, *, expected_count: int | None = None) -> tuple[str, ...]:
+def _stable_ids(
+    values: object,
+    *,
+    expected_count: int | None = None,
+    allow_duplicate_references: bool = False,
+) -> tuple[str, ...]:
     if not isinstance(values, tuple):
         raise _fail()
     result = tuple(sorted(_nonblank(value) for value in values))
-    if len(set(result)) != len(result) or (
-        expected_count is not None and len(result) != expected_count
-    ):
+    if expected_count is not None and len(result) != expected_count:
         raise _fail()
-    return result
+    unique = tuple(sorted(set(result)))
+    if not allow_duplicate_references and len(unique) != len(result):
+        raise _fail()
+    return unique
 
 
 def _snapshot_id(valuation: ExpectedAccountSnapshotValuation, generation_id: str) -> str:
@@ -903,6 +909,11 @@ def build_account_snapshot_persistence_projection(
         snapshot_price_ids = _stable_ids(
             evidence.selected_price_ids,
             expected_count=len(valuation.items),
+            # More than one holding listing may consume the same immutable
+            # market observation through an explicit alternate evidence
+            # listing. Validate one reference per item, then persist the
+            # audit relation only once per evidence row.
+            allow_duplicate_references=True,
         )
         snapshot_rate_ids = _stable_ids(evidence.selected_snapshot_exchange_rate_ids)
         historical_rate_ids = _stable_ids(evidence.selected_historical_exchange_rate_ids)

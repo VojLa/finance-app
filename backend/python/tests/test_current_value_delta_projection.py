@@ -153,8 +153,8 @@ def test_investment_cash_transactions_change_cash_and_net_deposits_only() -> Non
                 timestamp=AT,
                 amount=Decimal("-12.000000"),
                 currency="USD",
-                transaction_type=TransactionType.transfer,
-                classification=TransactionClassification.investment_transfer,
+                transaction_type=TransactionType.expense,
+                classification=TransactionClassification.real_expense,
             ),
             CurrentTransaction(
                 transaction_id="cashback",
@@ -162,16 +162,26 @@ def test_investment_cash_transactions_change_cash_and_net_deposits_only() -> Non
                 timestamp=AT,
                 amount=Decimal("4.000000"),
                 currency="USD",
+                transaction_type=TransactionType.income,
+                classification=TransactionClassification.real_income,
+            ),
+            CurrentTransaction(
+                transaction_id="investment-transfer",
+                account_id="account-1",
+                timestamp=AT,
+                amount=Decimal("20.000000"),
+                currency="USD",
                 transaction_type=TransactionType.transfer,
                 classification=TransactionClassification.investment_transfer,
             ),
         ),
     )
 
-    assert result.cash_by_currency == (_amount("USD", "92.000000"),)
+    assert result.cash_by_currency == (_amount("USD", "112.000000"),)
     assert [(item.kind.value, item.amount) for item in result.historical_metrics] == [
         ("net_deposit", Decimal("-12.000000")),
         ("net_deposit", Decimal("4.000000")),
+        ("net_deposit", Decimal("20.000000")),
     ]
 
 

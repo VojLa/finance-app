@@ -685,14 +685,19 @@ async def seed_price(
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
     price_id = f"{prefix}-price"
     async with AsyncSession(db) as session:
+        listing = await session.get(AssetListingModel, f"{prefix}-market-listing")
+        if listing is None:
+            listing = await session.get(AssetListingModel, f"{prefix}-listing")
+        assert listing is not None and listing.provider is source
         session.add(
             PriceSnapshotModel(
                 id=price_id,
                 asset_id=f"{prefix}-asset",
-                listing_id=f"{prefix}-listing",
+                listing_id=listing.id,
                 price=Decimal(price),
                 currency="EUR",
                 source=source,
+                provider_symbol=listing.provider_symbol,
                 timestamp=(snapshot_timestamp - timedelta(hours=1)).replace(tzinfo=None),
                 created_at=now,
             )
@@ -700,6 +705,45 @@ async def seed_price(
         await session.commit()
     await db.dispose()
     return price_id
+
+
+async def seed_market_listing(
+    prefix: str,
+    *,
+    source: PriceSource,
+    quote_currency: str = "EUR",
+) -> str:
+    assert source in {PriceSource.twelve_data, PriceSource.coingecko}
+    db = engine()
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    listing_id = f"{prefix}-market-listing"
+    async with AsyncSession(db) as session:
+        asset = await session.get(AssetModel, f"{prefix}-asset")
+        assert asset is not None
+        session.add(
+            AssetListingModel(
+                id=listing_id,
+                asset_id=asset.id,
+                symbol=asset.symbol,
+                exchange="NASDAQ" if source is PriceSource.twelve_data else "crypto",
+                mic="XNAS" if source is PriceSource.twelve_data else None,
+                currency=quote_currency,
+                country=None,
+                provider=source,
+                provider_symbol=(
+                    f'{{"symbol":"{asset.symbol}","mic_code":"XNAS"}}'
+                    if source is PriceSource.twelve_data
+                    else "bitcoin"
+                ),
+                is_primary=False,
+                base_priority=100,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+    await db.dispose()
+    return listing_id
 
 
 def fixture(

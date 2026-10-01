@@ -388,7 +388,12 @@ class MarketBackedSnapshotRefreshService:
                     snapshot_timestamp=canonical.snapshot_timestamp,
                     created_at=canonical.created_at,
                     reuse_persisted_fx_on_conflict=(
-                        canonical.source is SnapshotSource.manual_recalculation
+                        canonical.source
+                        in {
+                            SnapshotSource.scheduled,
+                            SnapshotSource.price_refresh,
+                            SnapshotSource.manual_recalculation,
+                        }
                     ),
                 )
             )

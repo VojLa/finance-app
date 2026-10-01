@@ -158,6 +158,28 @@ class PriceSource(StrEnum):
     exchange = "exchange"
 
 
+class MarketDataHealthState(StrEnum):
+    healthy = "healthy"
+    suspect = "suspect"
+    degraded = "degraded"
+    unavailable = "unavailable"
+    unknown = "unknown"
+
+
+class MarketDataFailureReason(StrEnum):
+    timeout = "timeout"
+    rate_limit = "rate_limit"
+    server_error = "server_error"
+    unknown_symbol = "unknown_symbol"
+    currency_conflict = "currency_conflict"
+    provider_identity_conflict = "provider_identity_conflict"
+    incomplete_response = "incomplete_response"
+    invalid_price = "invalid_price"
+    stale_timestamp = "stale_timestamp"
+    market_closed = "market_closed"
+    missing_provider_symbol = "missing_provider_symbol"
+
+
 class ExchangeRateSource(StrEnum):
     twelve_data = "twelve_data"
     cnb = "cnb"
@@ -293,6 +315,10 @@ BUDGET_ALERT_TYPE_DB = postgres_enum(BudgetAlertType, name="BudgetAlertType")
 ASSET_ALIAS_PROVIDER_DB = postgres_enum(AssetAliasProvider, name="AssetAliasProvider")
 ASSET_TYPE_DB = postgres_enum(AssetType, name="AssetType")
 PRICE_SOURCE_DB = postgres_enum(PriceSource, name="PriceSource")
+MARKET_DATA_HEALTH_STATE_DB = postgres_enum(MarketDataHealthState, name="MarketDataHealthState")
+MARKET_DATA_HEALTH_FAILURE_REASON_DB = postgres_enum(
+    MarketDataFailureReason, name="MarketDataFailureReason"
+)
 EXCHANGE_RATE_SOURCE_DB = postgres_enum(ExchangeRateSource, name="ExchangeRateSource")
 INVESTMENT_EVENT_TYPE_DB = postgres_enum(InvestmentEventType, name="InvestmentEventType")
 INVESTMENT_MOVEMENT_KIND_DB = postgres_enum(

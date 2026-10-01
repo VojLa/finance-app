@@ -146,33 +146,40 @@ def _reconcile_historical_market_selection(
         (item.from_currency, item.to_currency, item.date, item.source): item
         for item in persisted_rates
     }
-    canonical_prices: dict[str, PriceObservation] = {}
+    canonical_prices: dict[str, tuple[str, PriceObservation, bool]] = {}
     for observation in selection.price_observations:
+        requested_id = price_snapshot_id(observation)
         persisted = prices_by_key.get(
             (observation.listing_id, observation.observed_at, observation.provider)
         )
         if persisted is None:
             canonical = observation
+            canonical_id = requested_id
+            needs_write = True
         else:
             canonical = PriceObservation(
                 asset_id=persisted.asset_id,
                 listing_id=persisted.listing_id,
                 provider=persisted.source,
-                provider_symbol=observation.provider_symbol,
+                provider_symbol=persisted.provider_symbol or observation.provider_symbol,
                 price=persisted.price,
                 currency=persisted.currency,
                 observed_at=persisted.timestamp,
             )
             if (
-                persisted.id != price_snapshot_id(canonical)
-                or canonical.asset_id != observation.asset_id
+                canonical.asset_id != observation.asset_id
                 or canonical.currency != observation.currency
+                or canonical.provider_symbol != observation.provider_symbol
             ):
+                logger.warning("portfolio_history_persisted_price_identity_conflict")
                 raise MarketEvidenceConflictError()
-        canonical_prices[price_snapshot_id(observation)] = canonical
+            canonical_id = persisted.id
+            needs_write = False
+        canonical_prices[requested_id] = (canonical_id, canonical, needs_write)
 
-    canonical_rates: dict[str, ExchangeRateObservation] = {}
+    canonical_rates: dict[str, tuple[str, ExchangeRateObservation, bool]] = {}
     for rate_observation in selection.rate_observations:
+        requested_id = exchange_rate_id(rate_observation)
         persisted_rate = rates_by_key.get(
             (
                 rate_observation.from_currency,
@@ -183,6 +190,8 @@ def _reconcile_historical_market_selection(
         )
         if persisted_rate is None:
             canonical_rate_observation = rate_observation
+            canonical_rate_id = requested_id
+            needs_write = True
         else:
             canonical_rate_observation = ExchangeRateObservation(
                 from_currency=persisted_rate.from_currency,
@@ -191,30 +200,38 @@ def _reconcile_historical_market_selection(
                 rate=persisted_rate.rate,
                 effective_at=persisted_rate.date,
             )
-            if persisted_rate.id != exchange_rate_id(canonical_rate_observation):
-                raise MarketEvidenceConflictError()
-        canonical_rates[exchange_rate_id(rate_observation)] = canonical_rate_observation
+            canonical_rate_id = persisted_rate.id
+            needs_write = False
+        canonical_rates[requested_id] = (
+            canonical_rate_id,
+            canonical_rate_observation,
+            needs_write,
+        )
 
     def canonical_price(item: SelectedHistoricalPrice) -> SelectedHistoricalPrice:
-        observation = canonical_prices.get(item.price_id)
-        if observation is None:
+        canonical = canonical_prices.get(item.price_id)
+        if canonical is None:
+            logger.warning("portfolio_history_selected_price_missing")
             raise MarketEvidenceConflictError()
+        canonical_id, observation, _needs_write = canonical
         return SelectedHistoricalPrice(
             account_id=item.account_id,
             through=item.through,
             listing=item.listing,
-            price_id=item.price_id,
+            price_id=canonical_id,
             observation=observation,
         )
 
     def selected_canonical_rate(item: SelectedHistoricalRate) -> SelectedHistoricalRate:
-        observation = canonical_rates.get(item.rate_id)
-        if observation is None:
+        canonical = canonical_rates.get(item.rate_id)
+        if canonical is None:
+            logger.warning("portfolio_history_selected_rate_missing")
             raise MarketEvidenceConflictError()
+        canonical_id, observation, _needs_write = canonical
         return SelectedHistoricalRate(
             account_id=item.account_id,
             through=item.through,
-            rate_id=item.rate_id,
+            rate_id=canonical_id,
             observation=observation,
             consumed=item.consumed,
         )
@@ -222,29 +239,33 @@ def _reconcile_historical_market_selection(
     def canonical_snapshot_rate(
         item: SelectedHistoricalSnapshotRate,
     ) -> SelectedHistoricalSnapshotRate:
-        observation = canonical_rates.get(item.rate_id)
-        if observation is None:
+        canonical = canonical_rates.get(item.rate_id)
+        if canonical is None:
+            logger.warning("portfolio_history_selected_snapshot_rate_missing")
             raise MarketEvidenceConflictError()
+        canonical_id, observation, _needs_write = canonical
         return SelectedHistoricalSnapshotRate(
             account_id=item.account_id,
             through=item.through,
             output_currency=item.output_currency,
-            rate_id=item.rate_id,
+            rate_id=canonical_id,
             observation=observation,
         )
 
     def canonical_metric_rate(
         item: SelectedHistoricalMetricRate,
     ) -> SelectedHistoricalMetricRate:
-        observation = canonical_rates.get(item.rate_id)
-        if observation is None:
+        canonical = canonical_rates.get(item.rate_id)
+        if canonical is None:
+            logger.warning("portfolio_history_selected_metric_rate_missing")
             raise MarketEvidenceConflictError()
+        canonical_id, observation, _needs_write = canonical
         return SelectedHistoricalMetricRate(
             account_id=item.account_id,
             evidence_id=item.evidence_id,
             event_at=item.event_at,
             output_currency=item.output_currency,
-            rate_id=item.rate_id,
+            rate_id=canonical_id,
             observation=observation,
         )
 
@@ -252,10 +273,26 @@ def _reconcile_historical_market_selection(
         prices=tuple(canonical_price(item) for item in selection.prices),
         rates=tuple(selected_canonical_rate(item) for item in selection.rates),
         price_observations=tuple(
-            canonical_prices[price_snapshot_id(item)] for item in selection.price_observations
+            by_id[key]
+            for by_id in (
+                {
+                    canonical_id: observation
+                    for canonical_id, observation, needs_write in canonical_prices.values()
+                    if needs_write
+                },
+            )
+            for key in sorted(by_id)
         ),
         rate_observations=tuple(
-            canonical_rates[exchange_rate_id(item)] for item in selection.rate_observations
+            by_id[key]
+            for by_id in (
+                {
+                    canonical_id: observation
+                    for canonical_id, observation, needs_write in canonical_rates.values()
+                    if needs_write
+                },
+            )
+            for key in sorted(by_id)
         ),
         provider_call_count=selection.provider_call_count,
         snapshot_rates=tuple(canonical_snapshot_rate(item) for item in selection.snapshot_rates),

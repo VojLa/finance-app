@@ -9,7 +9,9 @@ from urllib.parse import quote
 
 import httpx
 
+from app.db.models.enums import MarketDataFailureReason
 from app.modules.market_data.models import MarketEvidenceStateError
+from app.modules.market_data.provider_failure import ProviderFailure
 from app.modules.prices.providers.yahoo_finance_models import YahooFinanceHttpResponse
 
 
@@ -60,12 +62,12 @@ class HttpxYahooFinanceChartTransport:
             or start >= end
             or interval not in {"1m", "30m", "1d"}
         ):
-            raise MarketEvidenceStateError()
+            raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict)
         try:
             period1 = int(start.replace(tzinfo=UTC).timestamp())
             period2 = int(end.replace(tzinfo=UTC).timestamp())
         except (OverflowError, OSError, ValueError) as exc:
-            raise MarketEvidenceStateError() from exc
+            raise ProviderFailure(MarketDataFailureReason.provider_identity_conflict) from exc
         try:
             async with self._client_factory(
                 timeout=httpx.Timeout(self._timeout_seconds),
@@ -78,26 +80,48 @@ class HttpxYahooFinanceChartTransport:
                     f"{self._base_url}/{quote(symbol, safe='')}",
                     params={"period1": str(period1), "period2": str(period2), "interval": interval},
                 ) as response:
+                    retry_after = _sanitized_retry_after(response.headers.get("retry-after"))
                     content_type = (
                         response.headers.get("content-type", "").partition(";")[0].strip().lower()
                     )
-                    if response.status_code != 200 or content_type != "application/json":
-                        raise MarketEvidenceStateError()
+                    if response.status_code != 200:
+                        return YahooFinanceHttpResponse(
+                            response.status_code, content_type, b"", retry_after
+                        )
+                    if content_type != "application/json":
+                        raise ProviderFailure(MarketDataFailureReason.incomplete_response)
                     chunks: list[bytes] = []
                     size = 0
                     async for chunk in response.aiter_bytes():
                         size += len(chunk)
                         if size > self._max_response_bytes:
-                            raise MarketEvidenceStateError()
+                            raise ProviderFailure(MarketDataFailureReason.incomplete_response)
                         chunks.append(chunk)
                     body = b"".join(chunks)
                     if not body:
-                        raise MarketEvidenceStateError()
-                    return YahooFinanceHttpResponse(response.status_code, content_type, body)
+                        raise ProviderFailure(MarketDataFailureReason.incomplete_response)
+                    return YahooFinanceHttpResponse(
+                        response.status_code, content_type, body, retry_after
+                    )
         except MarketEvidenceStateError:
             raise
+        except httpx.TimeoutException as exc:
+            raise ProviderFailure(MarketDataFailureReason.timeout) from exc
         except httpx.HTTPError as exc:
-            raise MarketEvidenceStateError() from exc
+            raise ProviderFailure(MarketDataFailureReason.server_error) from exc
+
+
+def _sanitized_retry_after(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if (
+        len(value) > 128
+        or not value.isascii()
+        or any(ord(char) < 32 or ord(char) > 126 for char in value)
+    ):
+        return None
+    return value or None
 
 
 __all__ = ["HttpxYahooFinanceChartTransport", "YahooFinanceChartTransport"]

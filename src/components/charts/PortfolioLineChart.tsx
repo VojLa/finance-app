@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react"
 import {
   Area,
-  AreaChart,
   CartesianGrid,
+  ComposedChart,
   Line,
   ResponsiveContainer,
   Tooltip,
@@ -68,15 +68,17 @@ export function PortfolioLineChart({
   valueMode,
   onValueModeChange,
   preferredResolutionMinutes,
-  resolutions,
   coverage,
   onPointSelect,
+  onPointPreview,
 }: PortfolioHistoryChartProps) {
-  const [showNetInvested, setShowNetInvested] = useState(true)
   const chartData = useMemo(
     () => buildPortfolioHistoryChartPoints(points, valueMode),
     [points, valueMode]
   )
+  const [showComparison, setShowComparison] = useState(true)
+  const hasComparison = chartData.some((point) => point.comparisonExactValue !== null)
+  const comparisonLabel = valueMode === "netWorth" ? "Vložené prostředky" : "Investováno"
 
   const renderTooltip = ({ active, payload }: TooltipProps<number, string>) => {
     if (!active) return null
@@ -89,9 +91,9 @@ export function PortfolioLineChart({
         <p className="font-medium text-gray-900">
           {formatSnapshotAmount(point.exactValue, currency)}
         </p>
-        {showNetInvested && point.netInvestedExactValue !== null && (
+        {showComparison && point.comparisonExactValue !== null && (
           <p className="text-xs text-gray-600">
-            Vložené prostředky: {formatSnapshotAmount(point.netInvestedExactValue, currency)}
+            {point.comparisonLabel}: {formatSnapshotAmount(point.comparisonExactValue, currency)}
           </p>
         )}
         <p className="text-xs text-gray-500">Rozlišení bodu: {point.resolutionLabel}</p>
@@ -108,7 +110,7 @@ export function PortfolioLineChart({
           <p className="text-xs text-gray-500">
             {preferredResolutionMinutes === undefined
               ? "Zatím není publikovaná žádná historická vrstva."
-              : `Preferované rozlišení: ${formatHistoryResolution(preferredResolutionMinutes)} · Použité vrstvy: ${resolutions.map(formatHistoryResolution).join(", ")} · Pokrytí: ${coverage.length}${coverage.length === 1 ? " úsek" : " úseků"}`}
+              : `Rozlišení celého grafu: ${formatHistoryResolution(preferredResolutionMinutes)} · Pokrytí: ${coverage.length}${coverage.length === 1 ? " úsek" : " úseků"}`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -129,22 +131,20 @@ export function PortfolioLineChart({
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2" aria-label="Doplňková řada grafu">
-            <button
-              type="button"
-              disabled={!points.some((point) => point.netInvestedValue !== undefined)}
-              aria-pressed={showNetInvested}
-              onClick={() => setShowNetInvested((value) => !value)}
-              title="Zobrazit vložené prostředky"
-              className={`rounded-md border px-3 py-1 text-xs font-medium ${
-                showNetInvested
-                  ? "border-gray-500 bg-gray-100 text-gray-800"
-                  : "border-gray-200 text-gray-600"
-              } disabled:cursor-not-allowed disabled:text-gray-400`}
-            >
-              Vložené prostředky
-            </button>
-          </div>
+          <button
+            type="button"
+            disabled={!hasComparison}
+            aria-pressed={showComparison && hasComparison}
+            onClick={() => setShowComparison((value) => !value)}
+            className={`flex items-center gap-2 rounded-md border px-3 py-1 text-xs font-medium ${
+              showComparison && hasComparison
+                ? "border-gray-400 bg-gray-50 text-gray-800"
+                : "border-gray-200 text-gray-500"
+            } disabled:cursor-not-allowed disabled:text-gray-300`}
+          >
+            <span className="w-6 border-t-2 border-dashed border-gray-500" aria-hidden="true" />
+            {comparisonLabel}
+          </button>
           <div
             className="flex flex-wrap gap-1 rounded-lg bg-gray-100 p-1"
             aria-label="Období grafu"
@@ -174,9 +174,16 @@ export function PortfolioLineChart({
         </p>
       ) : (
         <ResponsiveContainer width="100%" height={240}>
-          <AreaChart
+          <ComposedChart
             data={chartData}
             margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+            onMouseMove={(event) => {
+              const index = event?.activeTooltipIndex
+              if (typeof index === "number" && chartData[index]) {
+                onPointPreview?.(chartData[index].source)
+              }
+            }}
+            onMouseLeave={() => onPointPreview?.(null)}
             onClick={(event) => {
               const index = event?.activeTooltipIndex
               if (typeof index === "number" && chartData[index]) {
@@ -222,20 +229,19 @@ export function PortfolioLineChart({
               dot={chartData.length === 1 ? { r: 4 } : false}
               activeDot={{ r: 4 }}
             />
-            {showNetInvested && (
+            {showComparison && hasComparison && (
               <Line
                 type="linear"
-                dataKey="netInvestedDisplayValue"
-                name="Vložené prostředky"
+                dataKey="comparisonDisplayValue"
+                name={comparisonLabel}
                 stroke="#6b7280"
                 strokeWidth={2}
                 strokeDasharray="6 5"
                 dot={false}
                 activeDot={{ r: 3 }}
-                connectNulls
               />
             )}
-          </AreaChart>
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </div>

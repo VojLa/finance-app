@@ -109,6 +109,7 @@ class PortfolioSnapshotPositionResponse(BaseModel):
     cost_basis: Decimal | None = Field(serialization_alias="costBasis")
     cost_currency: str | None = Field(serialization_alias="costCurrency")
     unrealized_pnl: Decimal | None = Field(serialization_alias="unrealizedPnl")
+    unrealized_pnl_pct: Decimal | None = Field(default=None, serialization_alias="unrealizedPnlPct")
     allocation_pct: Decimal = Field(serialization_alias="allocationPct")
     native_value: Decimal = Field(serialization_alias="nativeValue")
     native_value_currency: str = Field(serialization_alias="nativeValueCurrency")
@@ -135,6 +136,10 @@ class PortfolioSnapshotPositionResponse(BaseModel):
 
     @field_serializer("allocation_pct")
     def serialize_percentage(self, value: Decimal) -> str:
+        return serialize_percentage(value)
+
+    @field_serializer("unrealized_pnl_pct", when_used="unless-none")
+    def serialize_optional_percentage(self, value: Decimal) -> str:
         return serialize_percentage(value)
 
     @field_serializer("price_timestamp")

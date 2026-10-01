@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from typing import Protocol
@@ -11,6 +11,7 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.accounts import AccountModel
+from app.db.models.assets import AssetListingModel
 from app.db.models.common import MONEY
 from app.db.models.enums import (
     AccountType,
@@ -19,8 +20,8 @@ from app.db.models.enums import (
     InvestmentEventType,
     InvestmentMovementKind,
     LiabilityBalanceSource,
+    MarketDataHealthState,
     MovementDirection,
-    PriceSource,
     SnapshotGranularity,
     SnapshotSource,
     TransactionClassification,
@@ -33,6 +34,10 @@ from app.db.models.ledger import (
 )
 from app.db.models.prices import ExchangeRateModel, PriceSnapshotModel
 from app.db.models.transactions import TransactionModel
+from app.modules.holdings.persistence_projection import (
+    OpenCostBasisMovement,
+    project_open_event_cost_basis,
+)
 from app.modules.investments.transfer_valuation import (
     TransferValuationStateError,
     index_latest_transfer_valuations,
@@ -46,11 +51,19 @@ from app.modules.liabilities.evidence_service import (
     LiabilityBalanceEvidenceStateError,
     SelectLiabilityBalanceCommand,
 )
+from app.modules.market_data.exchange_calendar import price_is_acceptable_for_market
+from app.modules.market_data.listing_selection import (
+    ListingSelectionCandidate,
+    ListingSelectionError,
+    select_listing,
+)
+from app.modules.market_data.models import MarketEvidenceStateError
 from app.modules.market_data.policy import (
     DEFAULT_MARKET_EVIDENCE_POLICY,
     MarketEvidencePolicy,
     validate_market_evidence_policy,
 )
+from app.modules.market_data.requirements import ResolvedPriceIdentity, resolve_price_identity
 from app.modules.market_data.source_policy import (
     CANONICAL_MARKET_EVIDENCE_SOURCE_POLICY,
     MarketEvidenceSourcePolicy,
@@ -61,12 +74,14 @@ from app.modules.snapshots.account_projection import (
     AccountSnapshotProjectionStateError,
     CashBalanceEvidence,
     CurrencyAmount,
+    ExchangeRateConsumptionRole,
     ExpectedAccountSnapshotValuation,
     LiabilityBalanceEvidence,
     SelectedExchangeRateEvidence,
     SelectedPriceEvidence,
     SnapshotHoldingEvidence,
     build_account_snapshot_projection,
+    convert_currency_amount,
 )
 from app.modules.snapshots.evidence_repository import (
     AccountSnapshotEvidenceRepository,
@@ -247,15 +262,18 @@ def _select_latest_price(
     candidates: tuple[PriceSnapshotModel, ...],
     *,
     holding: SnapshotHoldingEvidence,
-    source: PriceSource,
+    listing: AssetListingModel,
+    identity: ResolvedPriceIdentity,
     through: datetime,
     policy: MarketEvidencePolicy,
 ) -> SelectedPriceEvidence:
     matching = [
         candidate
         for candidate in candidates
-        if candidate.listing_id == holding.listing_id
-        and candidate.source is source
+        if candidate.listing_id == listing.id
+        and candidate.source is identity.provider
+        and candidate.provider_symbol == identity.provider_symbol
+        and candidate.currency == identity.price_currency
         and canonical_timestamp(candidate.timestamp) <= through
     ]
     if not matching:
@@ -268,9 +286,18 @@ def _select_latest_price(
     if (
         _nonblank(selected.id) == ""
         or selected.asset_id != holding.asset_id
-        or selected.listing_id != holding.listing_id
-        or selected.source is not source
-        or through - canonical_timestamp(selected.timestamp) > policy.maximum_price_age
+        or selected.listing_id != listing.id
+        or selected.source is not identity.provider
+        or selected.provider_symbol != identity.provider_symbol
+        or selected.currency != identity.price_currency
+    ):
+        raise _fail()
+    if not price_is_acceptable_for_market(
+        mic=listing.mic,
+        asset_type=holding.asset_type.value,
+        observed_at=canonical_timestamp(selected.timestamp),
+        through=through,
+        maximum_age=policy.maximum_price_age,
     ):
         raise _fail()
     return SelectedPriceEvidence(
@@ -282,6 +309,7 @@ def _select_latest_price(
         currency=canonical_currency(selected.currency),
         source=selected.source,
         timestamp=selected.timestamp,
+        requested_listing_id=holding.listing_id,
     )
 
 
@@ -587,6 +615,7 @@ select_snapshot_exchange_rates = _selected_snapshot_rates
 def _investment_history(
     events: tuple[InvestmentEventModel, ...],
     movements: tuple[InvestmentMovementModel, ...],
+    transactions: tuple[TransactionModel, ...],
     *,
     account_id: str,
     snapshot_timestamp: datetime,
@@ -768,6 +797,49 @@ def _investment_history(
         ):
             has_missing_anycoin_realized_pnl = True
 
+    transaction_ids: set[str] = set()
+    for transaction in transactions:
+        transaction_id = _nonblank(transaction.id)
+        amount = exact_money(transaction.amount)
+        supported_cash_flow = (
+            (
+                transaction.type is TransactionType.transfer
+                and transaction.classification is TransactionClassification.investment_transfer
+            )
+            or (
+                transaction.type is TransactionType.income
+                and transaction.classification is TransactionClassification.real_income
+                and amount > 0
+            )
+            or (
+                transaction.type is TransactionType.expense
+                and transaction.classification is TransactionClassification.real_expense
+                and amount < 0
+            )
+        )
+        if (
+            transaction_id in transaction_ids
+            or transaction.account_id != account_id
+            or canonical_timestamp(transaction.date) > snapshot_timestamp
+            or transaction.archived_at is not None
+            or transaction.deleted_at is not None
+            or not supported_cash_flow
+            or amount == 0
+        ):
+            raise _fail()
+        transaction_ids.add(transaction_id)
+        currency = canonical_currency(transaction.currency)
+        cash[currency] = exact_money(cash.get(currency, Decimal(0)) + amount)
+        metrics.append(
+            HistoricalMetricEvidence(
+                evidence_id=f"transaction:{transaction_id}",
+                timestamp=transaction.date,
+                kind=HistoricalMetricKind.net_deposit,
+                currency=currency,
+                amount=amount,
+            )
+        )
+
     balances = tuple(
         CashBalanceEvidence(
             balance_id=f"movements:{account_id}:{currency}",
@@ -777,6 +849,7 @@ def _investment_history(
             timestamp=snapshot_timestamp,
         )
         for currency, amount in sorted(cash.items())
+        if amount != 0
     )
     return (
         balances,
@@ -949,8 +1022,21 @@ class AccountSnapshotEvidenceService:
 
             persisted_holdings = await self.repository.load_holdings(account_id)
             holdings = _holding_evidence(persisted_holdings, account_id=account_id)
+            open_cost_movements: list[OpenCostBasisMovement] = []
             if account_type in _CASH_ACCOUNT_TYPES and holdings:
                 raise _fail()
+            candidate_contexts: dict[
+                str, tuple[PersistedHoldingEvidence, tuple[AssetListingModel, ...]]
+            ] = {}
+            all_listing_ids: set[str] = set()
+            for persisted in persisted_holdings:
+                if persisted.listing is None or persisted.asset is None:
+                    continue
+                listings = persisted.candidate_listings or (persisted.listing,)
+                if persisted.listing.id not in {listing.id for listing in listings}:
+                    raise _fail()
+                candidate_contexts[persisted.listing.id] = (persisted, listings)
+                all_listing_ids.update(listing.id for listing in listings)
 
             if account_type in _CASH_ACCOUNT_TYPES:
                 transactions = await self.repository.load_active_transactions(
@@ -964,6 +1050,10 @@ class AccountSnapshotEvidenceService:
                 )
                 historical_evidence: tuple[HistoricalMetricEvidence, ...] = ()
             else:
+                transactions = await self.repository.load_active_transactions(
+                    account_id,
+                    through=snapshot_timestamp,
+                )
                 events = await self.repository.load_active_events(
                     account_id,
                     through=snapshot_timestamp,
@@ -1000,41 +1090,190 @@ class AccountSnapshotEvidenceService:
                 ) = _investment_history(
                     events,
                     movements,
+                    transactions,
                     account_id=account_id,
                     snapshot_timestamp=snapshot_timestamp,
                     transfer_valuations=transfer_valuations,
                     canonical_revisions=canonical_revisions,
                 )
+                by_event: dict[str, list[InvestmentMovementModel]] = {}
+                for movement in movements:
+                    by_event.setdefault(movement.event_id, []).append(movement)
+                for event in events:
+                    if event.type not in {
+                        InvestmentEventType.trade,
+                        InvestmentEventType.asset_transfer,
+                    }:
+                        continue
+                    assets = tuple(
+                        movement
+                        for movement in by_event.get(event.id, ())
+                        if movement.kind is InvestmentMovementKind.asset
+                    )
+                    if len(assets) != 1 or assets[0].listing_id is None:
+                        raise _fail()
+                    asset = assets[0]
+                    listing_id = asset.listing_id
+                    if listing_id is None:
+                        raise _fail()
+                    native_amount: Decimal | None = None
+                    native_currency: str | None = None
+                    if asset.direction is MovementDirection.incoming:
+                        if event.type is InvestmentEventType.asset_transfer:
+                            try:
+                                transfer = resolve_transfer_valuation(
+                                    event=event,
+                                    movement=asset,
+                                    evidence=transfer_valuations.get(asset.id),
+                                    canonical_revision=canonical_revisions.get(event.id),
+                                )
+                            except TransferValuationStateError as exc:
+                                raise _fail() from exc
+                            native_amount = (
+                                transfer.value_amount
+                                if transfer is not None
+                                else asset.value_amount
+                            )
+                            native_currency = (
+                                transfer.value_currency
+                                if transfer is not None
+                                else asset.value_currency
+                            )
+                        else:
+                            native_amount = asset.value_amount
+                            native_currency = asset.value_currency
+                        if (native_amount is None) != (native_currency is None):
+                            raise _fail()
+                        if native_amount is None and event.type is InvestmentEventType.trade:
+                            raise _fail()
+                    open_cost_movements.append(
+                        OpenCostBasisMovement(
+                            event_id=event.id,
+                            movement_id=asset.id,
+                            event_date=event.date,
+                            listing_id=listing_id,
+                            direction=asset.direction,
+                            quantity=asset.quantity,
+                            settlement_amount=native_amount,
+                            settlement_currency=native_currency,
+                        )
+                    )
 
             if account_type in _CASH_ACCOUNT_TYPES:
                 has_asset_transfer = False
                 has_missing_anycoin_realized_pnl = False
 
             price_candidates = await self.repository.load_price_candidates(
-                tuple(item.listing_id for item in holdings),
+                tuple(sorted(all_listing_ids)),
                 through=snapshot_timestamp,
             )
-            prices = tuple(
-                _select_latest_price(
-                    price_candidates,
-                    holding=holding,
-                    source=self.source_policy.price_source_for(holding.asset_type),
-                    through=snapshot_timestamp,
-                    policy=self.policy,
-                )
-                for holding in holdings
-            )
+            prices_list: list[SelectedPriceEvidence] = []
+            selection_now = max(datetime.now(UTC).replace(tzinfo=None), snapshot_timestamp)
+            for holding in holdings:
+                persisted, listings = candidate_contexts[holding.listing_id]
+                assert persisted.asset is not None and persisted.listing is not None
+                aliases = persisted.candidate_aliases or persisted.aliases
+                health_by_identity = {
+                    (row.listing_id, row.provider): row for row in persisted.candidate_health
+                }
+                retry_by_provider = dict(persisted.provider_retry_after)
+                if len(health_by_identity) != len(persisted.candidate_health) or len(
+                    retry_by_provider
+                ) != len(persisted.provider_retry_after):
+                    raise _fail()
+                selector_candidates: list[ListingSelectionCandidate] = []
+                prices_by_listing: dict[str, SelectedPriceEvidence] = {}
+                seen_listing_ids: set[str] = set()
+                for listing in listings:
+                    if not isinstance(listing, AssetListingModel):
+                        raise _fail()
+                    listing_id = _nonblank(listing.id)
+                    if listing_id in seen_listing_ids:
+                        raise _fail()
+                    seen_listing_ids.add(listing_id)
+                    if listing.asset_id != holding.asset_id:
+                        continue
+                    try:
+                        identity = resolve_price_identity(
+                            listing=listing,
+                            asset=persisted.asset,
+                            aliases=tuple(
+                                alias
+                                for alias in aliases
+                                if alias.listing_id is None or alias.listing_id == listing_id
+                            ),
+                            supported_sources=self.source_policy.price_sources,
+                            source_policy=self.source_policy,
+                            asset_listing_count=persisted.asset_listing_count,
+                        )
+                    except MarketEvidenceStateError:
+                        continue
+                    if identity.price_currency != persisted.listing.currency:
+                        continue
+                    health = health_by_identity.get((listing_id, identity.provider))
+                    if (
+                        health is not None
+                        and health.provider_symbol is not None
+                        and health.provider_symbol != identity.provider_symbol
+                    ):
+                        continue
+                    try:
+                        selected_price = _select_latest_price(
+                            price_candidates,
+                            holding=holding,
+                            listing=listing,
+                            identity=identity,
+                            through=snapshot_timestamp,
+                            policy=self.policy,
+                        )
+                    except AccountSnapshotEvidenceStateError:
+                        continue
+                    prices_by_listing[listing_id] = selected_price
+                    selector_candidates.append(
+                        ListingSelectionCandidate(
+                            listing_id=listing_id,
+                            asset_id=listing.asset_id,
+                            asset_type=holding.asset_type,
+                            currency=identity.price_currency,
+                            provider=identity.provider,
+                            provider_symbol=identity.provider_symbol,
+                            mic=listing.mic,
+                            base_priority=listing.base_priority or 0,
+                            health=(
+                                health.state
+                                if health is not None
+                                else MarketDataHealthState.unknown
+                            ),
+                            retry_after=health.retry_after if health is not None else None,
+                            provider_retry_after=retry_by_provider.get(identity.provider),
+                            price_available=True,
+                            acquisition_eligible=False,
+                        )
+                    )
+                try:
+                    selection = select_listing(
+                        requested_listing_id=holding.listing_id,
+                        asset_id=holding.asset_id,
+                        asset_type=holding.asset_type,
+                        valuation_currency=canonical_currency(persisted.listing.currency),
+                        through=snapshot_timestamp,
+                        now=selection_now,
+                        candidates=tuple(selector_candidates),
+                    )
+                except ListingSelectionError as exc:
+                    raise _fail() from exc
+                prices_list.append(prices_by_listing[selection.selected_listing_id])
+            prices = tuple(prices_list)
 
             snapshot_currencies = {
                 *(item.currency for item in prices),
-                *(
-                    component.currency
-                    for item in holdings
-                    for component in (item.cost_basis_by_currency or ())
-                ),
                 *(item.currency for item in cash_balances),
             }
-            historical_currencies = {item.currency for item in historical_evidence}
+            historical_currencies = {item.currency for item in historical_evidence} | {
+                item.settlement_currency
+                for item in open_cost_movements
+                if item.settlement_currency is not None
+            }
             required_pairs = {
                 pair
                 for currency in snapshot_currencies | historical_currencies
@@ -1089,6 +1328,74 @@ class AccountSnapshotEvidenceService:
                         )
                     )
 
+            converted_cost_movements: list[OpenCostBasisMovement] = []
+            consumed_cost_rates: list[ConsumedHistoricalExchangeRate] = []
+            for cost_movement in open_cost_movements:
+                if cost_movement.direction is not MovementDirection.incoming or (
+                    cost_movement.settlement_amount is None
+                ):
+                    converted_cost_movements.append(cost_movement)
+                    continue
+                assert cost_movement.settlement_currency is not None
+                selected_cost_rate = None
+                if cost_movement.settlement_currency != output_currency:
+                    selected_cost_rate = _select_latest_rate(
+                        rate_candidates,
+                        base_currency=cost_movement.settlement_currency,
+                        quote_currency=output_currency,
+                        source=self.source_policy.fx_source,
+                        through=cost_movement.event_date,
+                        policy=self.policy,
+                    )
+                    consumed_cost_rates.append(
+                        ConsumedHistoricalExchangeRate(
+                            rate_id=selected_cost_rate.id,
+                            evidence_id=f"cost:{cost_movement.movement_id}",
+                            base_currency=cost_movement.settlement_currency,
+                            quote_currency=output_currency,
+                            rate=selected_cost_rate.rate,
+                            timestamp=selected_cost_rate.date,
+                            role=ExchangeRateConsumptionRole.direct,
+                        )
+                    )
+                converted_cost, _ = convert_currency_amount(
+                    cost_movement.settlement_amount,
+                    base_currency=cost_movement.settlement_currency,
+                    output_currency=output_currency,
+                    rates=(
+                        {}
+                        if selected_cost_rate is None
+                        else {
+                            (
+                                cost_movement.settlement_currency,
+                                output_currency,
+                            ): selected_cost_rate.rate
+                        }
+                    ),
+                    numeric=MONEY,
+                )
+                converted_cost_movements.append(
+                    replace(cost_movement, converted_amount=converted_cost)
+                )
+            try:
+                cost_positions = project_open_event_cost_basis(tuple(converted_cost_movements))
+            except ValueError as exc:
+                raise _fail() from exc
+            holdings_by_listing = {holding.listing_id: holding for holding in holdings}
+            if set(holdings_by_listing) != {item.listing_id for item in cost_positions}:
+                raise _fail()
+            for position in cost_positions:
+                holding = holdings_by_listing[position.listing_id]
+                if position.quantity != holding.quantity or position.native_cost_basis != (
+                    None
+                    if holding.cost_basis_by_currency is None
+                    else tuple(
+                        (component.currency, component.amount)
+                        for component in holding.cost_basis_by_currency
+                    )
+                ):
+                    raise _fail()
+
             valuation = build_account_snapshot_projection(
                 AccountSnapshotProjectionInput(
                     account_id=account_id,
@@ -1104,6 +1411,9 @@ class AccountSnapshotEvidenceService:
                     exchange_rates=snapshot_rates,
                     cash_balances=cash_balances,
                     liabilities=(),
+                    event_cost_basis_by_listing=tuple(
+                        (item.listing_id, item.converted_cost_basis) for item in cost_positions
+                    ),
                 )
             )
             selected_snapshot_rate_ids = _validate_snapshot_rate_audit(
@@ -1170,6 +1480,18 @@ class AccountSnapshotEvidenceService:
                 consumed_historical_exchange_rates = metrics.consumed_historical_exchange_rates
             if account_type in _CASH_ACCOUNT_TYPES:
                 consumed_historical_exchange_rates = ()
+            selected_historical_rate_ids = tuple(
+                sorted(
+                    set(selected_historical_rate_ids)
+                    | {item.rate_id for item in consumed_cost_rates}
+                )
+            )
+            consumed_historical_exchange_rates = tuple(
+                sorted(
+                    consumed_historical_exchange_rates + tuple(consumed_cost_rates),
+                    key=lambda item: (item.evidence_id, item.base_currency, item.quote_currency),
+                )
+            )
             return CompleteAccountSnapshotEvidence(
                 valuation=valuation,
                 net_deposits=net_deposits,
