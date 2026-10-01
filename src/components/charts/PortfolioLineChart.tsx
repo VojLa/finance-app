@@ -72,7 +72,7 @@ export function PortfolioLineChart({
   coverage,
   onPointSelect,
 }: PortfolioHistoryChartProps) {
-  const [showNetInvested, setShowNetInvested] = useState(false)
+  const [showNetInvested, setShowNetInvested] = useState(true)
   const chartData = useMemo(
     () => buildPortfolioHistoryChartPoints(points, valueMode),
     [points, valueMode]
